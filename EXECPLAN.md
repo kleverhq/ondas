@@ -25,8 +25,8 @@ The sibling fixture provider is not copied into the image. Its 194 waveform arti
 - [x] (2026-09-01 14:54Z) Document every public Rust API item and enable missing-documentation diagnostics.
 - [x] (2026-09-01 14:54Z) Add local rustdoc instructions and docs.rs metadata.
 - [x] (2026-09-01 14:54Z) Add GitHub Actions using the public devcontainer and the same `just ci` command.
-- [ ] Validate the launcher, recipes, formatting, compilation, Clippy, rustdoc, MSRV, and container recreation behavior (completed: local public gate, MSRV, nested cwd, exit status, marker, invalid config, fingerprint refusal, recreation, and fixture mount; remaining: temporary Git worktree and final clean-tree audit).
-- [ ] Complete the outcome audit and record exact evidence.
+- [x] (2026-09-01 14:56Z) Validate the launcher, recipes, formatting, compilation, Clippy, rustdoc, MSRV, nested cwd, exit status, marker, invalid config, fingerprint refusal, recreation, fixture mount, and separate temporary Git worktree container.
+- [x] (2026-09-01 14:56Z) Complete the outcome audit and record exact evidence.
 
 ## Surprises & Discoveries
 
@@ -76,7 +76,13 @@ The sibling fixture provider is not copied into the image. Its 194 waveform arti
 
 ## Outcomes & Retrospective
 
-Implementation is in progress. This section will be replaced with the final observable results, remaining gaps, and validation evidence.
+The plan is complete. A fresh checkout now has one public host entry point, `./dev`, backed by the pinned Rust 1.98.0 devcontainer. The container also carries Rust 1.85.0, and `just msrv` derives that promised version from `Cargo.toml`. The public recipes cover only formatting, Clippy, library compilation, and rustdoc, as intended.
+
+Every public API item has rustdoc and `warn(missing_docs)` is enabled. `./dev just docs` generated `target/doc/ondas/index.html` with warnings denied. GitHub Actions uses `.devcontainer/devcontainer.json` and runs `just ci && just msrv`; actionlint accepted the workflow.
+
+The launcher was exercised from the repository root and `src/`, propagated exit status 23 unchanged, rejected an invalid profile, rejected a changed configuration until `--recreate`, mounted an explicitly configured fixture root, and assigned a separate labeled container to a temporary detached Git worktree. ShellCheck accepted the final script. No test file, benchmark target, fixture tool, proprietary profile, release workflow, or runtime implementation was added.
+
+The main implementation lesson was to follow the Dev Container CLI's inferred workspace mount path with `${localWorkspaceFolderBasename}` rather than imposing a fixed path. Dynamic fixture mounts are writable because CLI 0.86.0 does not expose a read-only bind option through `devcontainer up --mount`; the launcher does not itself write to the mount.
 
 ## Context and Orientation
 
@@ -164,6 +170,20 @@ Expected public CI core:
     just ci
     just msrv
 
+Final local evidence:
+
+    ./dev just ci
+    Finished `dev` profile ...
+    Generated /workspaces/ondas-lib/target/doc/ondas/index.html
+
+    ./dev just msrv
+    cargo +1.85.0 check --locked --lib --all-features
+    Finished `dev` profile ...
+
+    shellcheck dev
+    actionlint .github/workflows/ci.yml
+    # both exited 0
+
 No expected command includes `cargo test`, `cargo bench`, fixture installation, or publishing.
 
 ### Interfaces and Dependencies
@@ -175,3 +195,5 @@ The only new project command dependency is `just` version 1.58.0, installed in t
 Revision note (2026-09-01): Initial self-contained plan created after repository, fixture corpus, and project specification review. The scope deliberately excludes tests and runtime implementation per the user's request.
 
 Revision note (2026-09-01 14:54Z): Recorded completed implementation milestones, launcher discoveries, the fixture-mount decision, and remaining validation work.
+
+Revision note (2026-09-01 14:56Z): Marked validation complete and recorded final commands, worktree behavior, generated documentation, exclusions, and implementation lessons.
