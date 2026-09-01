@@ -13,6 +13,9 @@ documentation = "https://docs.rs/ondas"
 keywords = ["waveform", "vcd", "fst", "rtl", "eda"]
 categories = ["development-tools"]
 
+[dependencies]
+thiserror = "2"
+
 [package.metadata.docs.rs]
 default-target = "x86_64-unknown-linux-gnu"
 targets = []
