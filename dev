@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+    echo "usage: ./dev [--recreate] <command> [args...]" >&2
+    exit 2
+}
+
+fail() {
+    echo "error: $*" >&2
+    exit 1
+}
+
+recreate=0
+if [[ ${1:-} == --recreate ]]; then
+    recreate=1
+    shift
+fi
+(( $# > 0 )) || usage
+
+for tool in git docker devcontainer sha256sum realpath; do
+    command -v "$tool" >/dev/null 2>&1 || fail "required host command not found: $tool"
+done
+docker info >/dev/null 2>&1 || fail "Docker daemon is unavailable"
+
+root=$(git rev-parse --show-toplevel 2>/dev/null) || fail "not inside an Ondas Git worktree"
+root=$(realpath "$root")
+case "$(realpath "$PWD")/" in
+    "$root/"*) ;;
+    *) fail "current directory is outside the worktree root: $root" ;;
+esac
+
+if [[ -f $root/.env ]]; then
+    set -a
+    # shellcheck disable=SC1091
+    source "$root/.env"
+    set +a
+fi
+
+config_relative=${ONDAS_DEV_CONFIG:-.devcontainer/devcontainer.json}
+[[ $config_relative != /* ]] || fail "ONDAS_DEV_CONFIG must be relative to the worktree root"
+config=$(realpath -m "$root/$config_relative")
+case "$config" in
+    "$root/"*) ;;
+    *) fail "ONDAS_DEV_CONFIG escapes the worktree root: $config_relative" ;;
+esac
+[[ -f $config ]] || fail "devcontainer config not found: $config_relative"
+
+fixture_host=
+fixture_target=/workspaces/.ondas-fixtures
+if [[ -n ${ONDAS_FIXTURES:-} ]]; then
+    [[ $ONDAS_FIXTURES == /* ]] || fail "ONDAS_FIXTURES must be an absolute host path"
+    fixture_host=$(realpath "$ONDAS_FIXTURES" 2>/dev/null) || fail "fixture root not found: $ONDAS_FIXTURES"
+    [[ -d $fixture_host ]] || fail "fixture root is not a directory: $fixture_host"
+    [[ $fixture_host != *,* ]] || fail "fixture root cannot contain a comma"
+fi
+
+config_dir=$(dirname "$config")
+fingerprint=$(
+    {
+        find "$root/.devcontainer" "$config_dir" -type f -print0 2>/dev/null \
+            | sort -zu \
+            | xargs -0 sha256sum
+        printf 'config=%s\nfixtures=%s\n' "$config" "$fixture_host"
+    } | sha256sum | cut -d' ' -f1
+)
+worktree_id=$(printf '%s' "$root" | sha256sum | cut -d' ' -f1)
+worktree_label="dev.ondas.worktree=$worktree_id"
+config_label="dev.ondas.config=$fingerprint"
+
+mapfile -t containers < <(docker ps -aq --filter "label=$worktree_label")
+if (( ${#containers[@]} > 1 && ! recreate )); then
+    fail "multiple containers exist for this worktree; run ./dev --recreate <command>"
+fi
+for container in "${containers[@]}"; do
+    previous=$(docker inspect --format '{{ index .Config.Labels "dev.ondas.config" }}' "$container")
+    if (( recreate )); then
+        docker rm -f "$container" >/dev/null
+    elif [[ $previous != "$fingerprint" ]]; then
+        fail "devcontainer configuration changed; run ./dev --recreate <command>"
+    fi
+done
+
+up=(
+    devcontainer up
+    --workspace-folder "$root"
+    --config "$config"
+    --id-label "$worktree_label"
+    --id-label "$config_label"
+)
+exec_args=(
+    devcontainer exec
+    --workspace-folder "$root"
+    --config "$config"
+    --id-label "$worktree_label"
+    --id-label "$config_label"
+)
+if [[ -n $fixture_host ]]; then
+    up+=(--mount "type=bind,source=$fixture_host,target=$fixture_target")
+    up+=(--remote-env "ONDAS_FIXTURES=$fixture_target")
+    exec_args+=(--remote-env "ONDAS_FIXTURES=$fixture_target")
+fi
+
+"${up[@]}" >/dev/null
+
+relative_cwd=$(realpath --relative-to "$root" "$PWD")
+container_cwd="/workspaces/$(basename "$root")"
+[[ $relative_cwd == . ]] || container_cwd+="/$relative_cwd"
+
+# shellcheck disable=SC2016
+"${exec_args[@]}" bash -c 'cd "$1"; shift; exec "$@"' ondas-dev "$container_cwd" "$@"

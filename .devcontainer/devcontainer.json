@@ -1,0 +1,13 @@
+{
+  "name": "Ondas public development",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+  "remoteUser": "vscode",
+  "updateRemoteUserUID": true,
+  "containerEnv": {
+    "ONDAS_IN_CONTAINER": "1"
+  }
+}

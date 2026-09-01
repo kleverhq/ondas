@@ -2,7 +2,7 @@
 name = "ondas"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.85.0"
 authors = ["esynr3z"]
 description = "Read-only, format-independent waveform analysis library"
 license = "Apache-2.0"
@@ -17,5 +17,6 @@ categories = ["development-tools"]
 thiserror = "2"
 
 [package.metadata.docs.rs]
+all-features = true
 default-target = "x86_64-unknown-linux-gnu"
 targets = []

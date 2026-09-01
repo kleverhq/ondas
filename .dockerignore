@@ -1,0 +1,6 @@
+.git
+.env
+.devcontainer.local
+target
+fixtures
+tools.local

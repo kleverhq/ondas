@@ -1,1 +1,7 @@
 /target/
+
+/.env
+/.devcontainer.local/
+/fixtures/
+/just.local
+/tools.local/
