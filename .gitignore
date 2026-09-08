@@ -1,4 +1,6 @@
 /target/
+/tmp/
+__pycache__/
 
 /.env
 /.devcontainer.local/

@@ -33,5 +33,13 @@ docs: _inside
 msrv: _inside
     cargo +{{msrv}} check --locked --lib --all-features
 
-# Run the public static-quality gate. Tests are intentionally not part of this scaffold.
-ci: fmt-check lint check docs
+# Test repository automation without Docker or external fixtures.
+tools-test: _inside
+    python3 -B -m unittest discover -s tools/repo -p 'test_*.py'
+
+# Run the same pre-commit checks against all tracked files.
+pre-commit: _inside
+    pre-commit run --all-files
+
+# Run public static-quality and repository-tool checks.
+ci: fmt-check lint check docs tools-test

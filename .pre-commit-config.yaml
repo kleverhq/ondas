@@ -1,0 +1,11 @@
+fail_fast: true
+repos:
+  - repo: local
+    hooks:
+      - id: ondas-ci
+        name: Ondas quality gate
+        entry: just ci
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]

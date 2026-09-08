@@ -2,7 +2,8 @@
 set -euo pipefail
 
 usage() {
-    echo "usage: ./dev [--recreate] <command> [args...]" >&2
+    echo "usage: ./dev [--recreate | --exec-only] <command> [args...]" >&2
+    echo "       ./dev --install-hooks" >&2
     exit 2
 }
 
@@ -11,11 +12,30 @@ fail() {
     exit 1
 }
 
-recreate=0
-if [[ ${1:-} == --recreate ]]; then
-    recreate=1
-    shift
+if [[ ${1:-} == --install-hooks ]]; then
+    (( $# == 1 )) || usage
+    root=$(git rev-parse --show-toplevel 2>/dev/null) || fail "not inside an Ondas Git worktree"
+    git_dir=$(git rev-parse --path-format=absolute --absolute-git-dir)
+    hooks_dir="$git_dir/ondas-hooks"
+    git config extensions.worktreeConfig true
+    configured=$(git config --get core.hooksPath || true)
+    if [[ -n $configured && $configured != "$hooks_dir" ]]; then
+        fail "refusing to replace existing worktree core.hooksPath: $configured"
+    fi
+    install -d -m 0755 "$hooks_dir"
+    install -m 0755 "$root/dev" "$hooks_dir/dev"
+    install -m 0755 "$root/tools/repo/git-hook" "$hooks_dir/pre-commit"
+    git config --worktree core.hooksPath "$hooks_dir"
+    echo "Installed host Git hook in $hooks_dir"
+    exit 0
 fi
+
+recreate=0
+exec_only=0
+case ${1:-} in
+    --recreate) recreate=1; shift ;;
+    --exec-only) exec_only=1; shift ;;
+esac
 (( $# > 0 )) || usage
 
 for tool in git docker devcontainer sha256sum realpath; do
@@ -25,6 +45,8 @@ docker info >/dev/null 2>&1 || fail "Docker daemon is unavailable"
 
 root=$(git rev-parse --show-toplevel 2>/dev/null) || fail "not inside an Ondas Git worktree"
 root=$(realpath "$root")
+common_dir=$(git rev-parse --path-format=absolute --git-common-dir)
+common_dir=$(realpath "$common_dir")
 case "$(realpath "$PWD")/" in
     "$root/"*) ;;
     *) fail "current directory is outside the worktree root: $root" ;;
@@ -61,7 +83,7 @@ fingerprint=$(
         find "$root/.devcontainer" "$config_dir" -type f -print0 2>/dev/null \
             | sort -zu \
             | xargs -0 sha256sum
-        printf 'config=%s\nfixtures=%s\n' "$config" "$fixture_host"
+        printf 'config=%s\nfixtures=%s\ngit-common=%s\n' "$config" "$fixture_host" "$common_dir"
     } | sha256sum | cut -d' ' -f1
 )
 worktree_id=$(printf '%s' "$root" | sha256sum | cut -d' ' -f1)
@@ -95,13 +117,22 @@ exec_args=(
     --id-label "$worktree_label"
     --id-label "$config_label"
 )
+if [[ $common_dir != "$root/.git" ]]; then
+    up+=(--mount "type=bind,source=$common_dir,target=$common_dir")
+fi
 if [[ -n $fixture_host ]]; then
     up+=(--mount "type=bind,source=$fixture_host,target=$fixture_target")
     up+=(--remote-env "ONDAS_FIXTURES=$fixture_target")
     exec_args+=(--remote-env "ONDAS_FIXTURES=$fixture_target")
 fi
 
-"${up[@]}" >/dev/null
+if (( exec_only )); then
+    (( ${#containers[@]} == 1 )) || fail "no existing container; start this worktree explicitly with: ./dev true"
+    [[ $(docker inspect --format '{{.State.Running}}' "${containers[0]}") == true ]] \
+        || fail "container is stopped; start this worktree explicitly with: ./dev true"
+else
+    "${up[@]}" >/dev/null
+fi
 
 relative_cwd=$(realpath --relative-to "$root" "$PWD")
 container_cwd="/workspaces/$(basename "$root")"

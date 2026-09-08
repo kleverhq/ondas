@@ -2,5 +2,7 @@
 .env
 .devcontainer.local
 target
+tmp
+**/__pycache__
 fixtures
 tools.local
