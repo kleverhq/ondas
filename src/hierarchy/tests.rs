@@ -81,6 +81,8 @@ fn hierarchy_views_aliases_and_metadata() {
     assert_eq!(data.type_name(), Some("state_t"));
     assert_eq!(data.range(), Some(BitRange::new(-16, 15)));
     assert_eq!(data.range().unwrap().width(), 32);
+    assert_eq!(data.range().unwrap().msb(), -16);
+    assert_eq!(data.range().unwrap().lsb(), 15);
     let enumeration = data.enumeration().unwrap();
     assert_eq!(enumeration.name(), Some("state_t"));
     assert_eq!(
@@ -329,6 +331,55 @@ fn paths_round_trip_and_keep_exact_components() {
         let path = HierarchyPath::from_components([name]);
         assert_eq!(HierarchyPath::parse(&path.to_string()).unwrap(), path);
     }
+}
+
+#[test]
+fn exact_unicode_paths_do_not_normalize_names() {
+    let names = ["é", "e\u{301}"];
+    let hierarchy = Hierarchy::new(
+        vec![],
+        names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| VariableData {
+                name: (*name).into(),
+                parent: None,
+                kind: "wire".into(),
+                direction: Direction::Unknown,
+                range: None,
+                is_constant: false,
+                type_name: None,
+                enumeration: None,
+                signal: Some(index),
+            })
+            .collect(),
+        vec![Encoding::Bits { width: 1 }; 2],
+    );
+    let root = HierarchyPath::from_components(Vec::<String>::new());
+    let mut resolved = Vec::new();
+    for name in names {
+        let path = root.join(name);
+        assert!(root.is_empty(), "join must not mutate its source");
+        assert_eq!(path.len(), 1);
+        assert_eq!(path.components().len(), 1);
+        assert_eq!(path.parent(), Some(root.clone()));
+        let parsed: HierarchyPath = path.to_string().parse().unwrap();
+        assert_eq!(parsed, path);
+        let declaration = hierarchy.variable_path(&parsed).unwrap();
+        assert_eq!(declaration.name(), name);
+        assert_eq!(declaration.path(), path);
+        resolved.push(hierarchy.signal_path(&parsed).unwrap());
+        assert!(
+            matches!(path.to_verilog(), Err(PathFormatError::NotRepresentable { component }) if component == name)
+        );
+    }
+    assert_ne!(resolved[0], resolved[1]);
+    assert_eq!(hierarchy.signal(r#""\u00e9""#).unwrap(), resolved[0]);
+    let bad: std::result::Result<HierarchyPath, _> = "é..x".parse();
+    assert_eq!(bad.unwrap_err().offset, 3);
+    assert!(
+        matches!(hierarchy.variable("é..x"), Err(LookupError::InvalidPath(error)) if error.offset == 3)
+    );
 }
 
 #[test]

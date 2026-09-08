@@ -345,6 +345,68 @@ mod tests {
     }
 
     #[test]
+    fn detection_prefers_content_and_falls_back_to_case_insensitive_extensions() {
+        for (name, content, format) in [
+            ("dump.FST", &b" \n$version test $end"[..], Format::Vcd),
+            ("dump.vcd", &b"GHDLwave"[..], Format::Ghw),
+            ("dump.VCD", &b""[..], Format::Vcd),
+            ("dump.GHW", &b""[..], Format::Ghw),
+            ("dump.FSDB", &b""[..], Format::Fsdb),
+            ("dump.WLF", &b""[..], Format::Wlf),
+        ] {
+            assert!(
+                matches!(open_bytes(name, bytes(content)), Err(Error::NoBackend { format: actual }) if actual == format),
+                "{name}"
+            );
+            assert!(
+                matches!(open_bytes_with(name, bytes(content), "fst-native"), Err(Error::BackendDoesNotSupport { backend, format: actual }) if backend == "fst-native" && actual == format),
+                "{name}"
+            );
+        }
+        // Invalid explicit selection is rejected before attempting filesystem I/O.
+        assert!(
+            matches!(open_with("", "unknown-reader"), Err(Error::UnknownBackend { backend }) if backend == "unknown-reader")
+        );
+        assert!(matches!(open_with("", "fst-native"), Err(Error::Io(_))));
+    }
+
+    #[test]
+    fn metadata_preserves_optional_fields_and_comment_order() {
+        let mut wave = Waveform::memory(vec![], vec![], None);
+        let metadata = wave.metadata();
+        assert_eq!(metadata.source_name(), "memory");
+        assert_eq!(metadata.timescale(), None);
+        assert_eq!(metadata.time_span(), None);
+        assert_eq!(metadata.writer(), None);
+        assert_eq!(metadata.date(), None);
+        assert_eq!(metadata.comments().len(), 0);
+        wave.metadata = Metadata {
+            source_name: "logical name".into(),
+            timescale: Some(Timescale::new(10, crate::TimeUnit::Picosecond)),
+            time_span: Some(TimeSpan::new(Time::from_ticks(7), Time::from_ticks(13))),
+            writer: Some("writer".into()),
+            date: Some("source date".into()),
+            comments: vec!["second".into(), "".into(), "first".into(), "second".into()],
+        };
+        let metadata = wave.metadata();
+        assert_eq!(metadata.source_name(), "logical name");
+        assert_eq!(metadata.writer(), Some("writer"));
+        assert_eq!(metadata.date(), Some("source date"));
+        assert_eq!(metadata.timescale().unwrap().factor(), 10);
+        assert_eq!(
+            metadata.timescale().unwrap().unit(),
+            crate::TimeUnit::Picosecond
+        );
+        assert_eq!(metadata.time_span().unwrap().first(), Time::from_ticks(7));
+        assert_eq!(metadata.time_span().unwrap().last(), Time::from_ticks(13));
+        let mut comments = metadata.comments();
+        assert_eq!(comments.len(), 4);
+        assert_eq!(comments.next(), Some("second"));
+        assert_eq!(comments.len(), 3);
+        assert_eq!(comments.collect::<Vec<_>>(), ["", "first", "second"]);
+    }
+
+    #[test]
     fn opening_errors_distinguish_detection_selection_and_io() {
         fn send_sync<T: Send + Sync>() {}
         send_sync::<Waveform>();
