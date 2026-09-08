@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Ondas sparse oracle schema 1",
+  "oneOf": [
+    {"type": "object", "maxProperties": 0},
+    {"$ref": "#/$defs/oracle"}
+  ],
+  "$defs": {
+    "tick": {"type": "string", "pattern": "^(0|[1-9][0-9]{0,19})$"},
+    "path": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+    "value": {
+      "oneOf": [
+        {"type": "object", "required": ["bits"], "properties": {"bits": {"type": "string", "pattern": "^[01xzhuwl-]+$"}}, "additionalProperties": false},
+        {"type": "object", "required": ["real_bits"], "properties": {"real_bits": {"type": "string", "pattern": "^[0-9a-f]{16}$"}}, "additionalProperties": false},
+        {"type": "object", "required": ["string"], "properties": {"string": {"type": "string"}}, "additionalProperties": false},
+        {"type": "object", "required": ["event"], "properties": {"event": {"const": true}}, "additionalProperties": false}
+      ]
+    },
+    "state": {
+      "type": "object", "required": ["value"],
+      "properties": {"value": {"$ref": "#/$defs/value"}, "changed_at": {"oneOf": [{"$ref": "#/$defs/tick"}, {"type": "null"}]}},
+      "additionalProperties": false
+    },
+    "error": {
+      "type": "object", "required": ["kind"],
+      "properties": {"kind": {"enum": ["malformed", "unsupported-signal"]}},
+      "additionalProperties": false
+    },
+    "sample": {
+      "type": "object", "required": ["time"],
+      "properties": {
+        "time": {"$ref": "#/$defs/tick"}, "value": {"$ref": "#/$defs/value"},
+        "changed_at": {"oneOf": [{"$ref": "#/$defs/tick"}, {"type": "null"}]},
+        "missing": {"const": true}, "occurrences": {"$ref": "#/$defs/tick"}, "error": {"$ref": "#/$defs/error"}
+      },
+      "oneOf": [
+        {"required": ["value"], "not": {"anyOf": [{"required": ["missing"]}, {"required": ["occurrences"]}, {"required": ["error"]}]}},
+        {"required": ["missing"], "not": {"anyOf": [{"required": ["value"]}, {"required": ["changed_at"]}, {"required": ["occurrences"]}, {"required": ["error"]}]}},
+        {"required": ["occurrences"], "not": {"anyOf": [{"required": ["value"]}, {"required": ["changed_at"]}, {"required": ["missing"]}, {"required": ["error"]}]}},
+        {"required": ["error"], "not": {"anyOf": [{"required": ["value"]}, {"required": ["changed_at"]}, {"required": ["missing"]}, {"required": ["occurrences"]}]}}
+      ],
+      "additionalProperties": false
+    },
+    "window": {
+      "type": "object", "required": ["start", "end"],
+      "properties": {
+        "start": {"$ref": "#/$defs/tick"}, "end": {"$ref": "#/$defs/tick"},
+        "initial": {"oneOf": [{"$ref": "#/$defs/state"}, {"type": "null"}]},
+        "changes": {"type": "array", "items": {
+          "type": "object", "required": ["time", "value"],
+          "properties": {"time": {"$ref": "#/$defs/tick"}, "value": {"$ref": "#/$defs/value"}}, "additionalProperties": false
+        }},
+        "error": {"$ref": "#/$defs/error"}
+      },
+      "oneOf": [
+        {"required": ["initial", "changes"], "not": {"required": ["error"]}},
+        {"required": ["error"], "not": {"anyOf": [{"required": ["initial"]}, {"required": ["changes"]}]}}
+      ],
+      "additionalProperties": false
+    },
+    "encoding": {
+      "oneOf": [
+        {"type": "object", "required": ["kind", "width"], "properties": {"kind": {"const": "bits"}, "width": {"type": "integer", "minimum": 1, "maximum": 4294967295}}, "additionalProperties": false},
+        {"type": "object", "required": ["kind"], "properties": {"kind": {"enum": ["real", "string", "event", "unsupported"]}}, "additionalProperties": false}
+      ]
+    },
+    "signal": {
+      "type": "object", "required": ["encoding"],
+      "properties": {"encoding": {"$ref": "#/$defs/encoding"}, "samples": {"type": "array", "items": {"$ref": "#/$defs/sample"}}, "windows": {"type": "array", "items": {"$ref": "#/$defs/window"}}},
+      "additionalProperties": false
+    },
+    "spellings": {
+      "type": "object",
+      "properties": {"canonical": {"type": "string"}, "accepted": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}},
+      "additionalProperties": false
+    },
+    "scope": {
+      "type": "object", "required": ["path"],
+      "properties": {
+        "path": {"$ref": "#/$defs/path"}, "kind": {"type": "string"}, "definition_name": {"type": ["string", "null"]},
+        "packing": {"enum": ["packed", "unpacked", "sparse", "tagged-packed", null]}, "spellings": {"$ref": "#/$defs/spellings"}
+      }, "additionalProperties": false
+    },
+    "variable": {
+      "type": "object", "required": ["path"],
+      "properties": {
+        "path": {"$ref": "#/$defs/path"}, "kind": {"type": "string"},
+        "direction": {"enum": ["unknown", "implicit", "input", "output", "inout", "buffer", "linkage"]},
+        "range": {"oneOf": [{"type": "null"}, {
+          "type": "object", "required": ["msb", "lsb"], "properties": {
+            "msb": {"type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807},
+            "lsb": {"type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807}
+          }, "additionalProperties": false
+        }]},
+        "is_constant": {"type": "boolean"}, "type_name": {"type": ["string", "null"]},
+        "enumeration": {"oneOf": [{"type": "null"}, {
+          "type": "object", "required": ["variants"], "properties": {
+            "name": {"type": ["string", "null"]}, "variants": {"type": "array", "items": {
+              "type": "object", "required": ["encoded", "label"], "properties": {"encoded": {"type": "string"}, "label": {"type": "string"}}, "additionalProperties": false
+            }}
+          }, "additionalProperties": false
+        }]},
+        "signal": {"type": ["string", "null"], "minLength": 1}, "spellings": {"$ref": "#/$defs/spellings"}
+      }, "additionalProperties": false
+    },
+    "metadata": {
+      "type": "object", "properties": {
+        "timescale": {"oneOf": [{"type": "null"}, {
+          "type": "object", "required": ["factor", "unit"], "properties": {
+            "factor": {"type": "integer", "minimum": 1, "maximum": 4294967295},
+            "unit": {"enum": ["s", "ms", "us", "ns", "ps", "fs", "as", "zs"]}
+          }, "additionalProperties": false
+        }]},
+        "time_span": {"oneOf": [{"type": "null"}, {
+          "type": "object", "required": ["first", "last"], "properties": {"first": {"$ref": "#/$defs/tick"}, "last": {"$ref": "#/$defs/tick"}}, "additionalProperties": false
+        }]},
+        "writer": {"type": ["string", "null"]}, "date": {"type": ["string", "null"]},
+        "comments": {"type": "array", "items": {"type": "string"}}
+      }, "additionalProperties": false
+    },
+    "oracle": {
+      "type": "object", "required": ["schema", "open"],
+      "properties": {
+        "schema": {"const": 1},
+        "open": {"oneOf": [
+          {"type": "object", "required": ["result"], "properties": {"result": {"const": "ok"}}, "additionalProperties": false},
+          {"type": "object", "required": ["result", "kind"], "properties": {"result": {"const": "error"}, "kind": {"enum": ["unknown-format", "malformed"]}}, "additionalProperties": false}
+        ]},
+        "metadata": {"$ref": "#/$defs/metadata"},
+        "hierarchy": {"type": "object", "properties": {
+          "scopes": {"type": "array", "items": {"$ref": "#/$defs/scope"}},
+          "variables": {"type": "array", "items": {"$ref": "#/$defs/variable"}}
+        }, "additionalProperties": false},
+        "signals": {"type": "object", "propertyNames": {"minLength": 1}, "additionalProperties": {"$ref": "#/$defs/signal"}}
+      },
+      "allOf": [{"if": {"properties": {"open": {"properties": {"result": {"const": "error"}}}}}, "then": {"not": {"anyOf": [{"required": ["metadata"]}, {"required": ["hierarchy"]}, {"required": ["signals"]}]}}}],
+      "additionalProperties": false
+    }
+  }
+}

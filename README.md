@@ -2,8 +2,14 @@
 
 Read-only Rust library for format-independent waveform analysis.
 
-The public API is under development. This release contains the documented API
-skeleton; waveform backends and query implementations are not available yet.
+Reads FST files and in-memory bytes through the independent `fst-native` backend,
+using the unmodified Rust `fst-reader` library. Other waveform formats have no
+reader in this release. Requires Rust 1.88 or newer.
+
+## Public Documentation
+
+The [API documentation on docs.rs](https://docs.rs/ondas) explains the public
+contracts and usage. Its source is rustdoc in `src/`.
 
 ## Development
 
@@ -11,23 +17,44 @@ Linux development uses the public devcontainer. The host requires Git, Docker,
 and the [Dev Container CLI](https://github.com/devcontainers/cli).
 
 ```sh
+./dev --install-hooks
 ./dev just ci
 ./dev just msrv
+./dev just conformance
 ```
 
-The current gate checks formatting, Clippy, compilation, and API documentation.
-It intentionally does not run tests while the library remains a skeleton.
+The CI recipe checks formatting, Clippy, compilation, API documentation,
+self-contained Rust tests/doctests, and repository-tool tests. Conformance is a
+separate explicit suite: it requires the provider pinned in `fixtures.lock.toml`
+and supplied through `ONDAS_FIXTURES` in the ignored root `.env`. Missing fixtures
+fail that suite rather than being skipped. It covers a selected seven-file FST
+corpus, not every provider artifact.
 
-Generate local API documentation with:
+See the public API documentation for reader limitations: some malformed FSTs can
+trigger upstream panics, and first-tick event callbacks can include initialization.
+FST character bytes are mapped as Latin-1 rather than guessed as UTF-8.
 
-```sh
-./dev just docs
-```
+Hook installation is explicit and per worktree. Start that worktree's container
+before committing on the host: the pre-commit hook runs the gate on staged changes
+through the existing container without starting or rebuilding it. Reinstall hooks
+after reviewing changes to `dev` or `tools/repo/git-hook`. Use
+`./dev just pre-commit` to check all tracked files manually.
 
-Open `target/doc/ondas/index.html` after the command completes. Set
-`ONDAS_FIXTURES` in a root `.env` to an absolute fixture-provider root when a
-future command needs external waveforms; fixtures are never downloaded by
-`./dev`.
+Generate local API documentation with `./dev just docs`, then open
+`target/doc/ondas/index.html`.
+
+Developer sources of truth:
+
+- [Library model](docs/model.md)
+- [Testing](docs/testing.md) and [fixture catalog/oracles](docs/fixtures.md)
+- [Benchmarking](docs/benchmarking.md)
+- [Environment and automation](docs/automation.md)
+- Format integration: [VCD](docs/vcd.md), [FST](docs/fst.md),
+  [GHW](docs/ghw.md), [FSDB](docs/fsdb.md), [WLF](docs/wlf.md)
+
+Agent guidance starts in `AGENTS.md`. Use ignored `tmp/` for local scratch and
+`docs/wip/yymmdd-slug/` for temporary work that needs committing; remove task
+directories before merge into `master`.
 
 ## License
 

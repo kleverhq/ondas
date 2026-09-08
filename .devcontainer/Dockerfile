@@ -6,7 +6,7 @@ ARG USER_UID=1000
 ARG USER_GID=1000
 
 RUN rustup component add clippy rustfmt \
-    && rustup toolchain install 1.85.0 --profile minimal \
+    && rustup toolchain install 1.88.0 --profile minimal \
     && cargo install just --locked --version "${JUST_VERSION}" \
     && groupadd --gid "${USER_GID}" "${USERNAME}" \
     && useradd --uid "${USER_UID}" --gid "${USER_GID}" --create-home --shell /bin/bash "${USERNAME}" \

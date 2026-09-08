@@ -17,13 +17,13 @@ fmt: _inside
 fmt-check: _inside
     cargo fmt --all -- --check
 
-# Run Clippy on the public library.
+# Run Clippy on the library and test targets.
 lint: _inside
-    cargo clippy --locked --lib --all-features -- -D warnings
+    cargo clippy --locked --all-targets --all-features -- -D warnings
 
-# Check the public library on the pinned stable toolchain.
+# Compile the library and test targets on the pinned development toolchain.
 check: _inside
-    cargo check --locked --lib --all-features
+    cargo check --locked --all-targets --all-features
 
 # Generate the docs.rs-equivalent API documentation.
 docs: _inside
@@ -33,6 +33,14 @@ docs: _inside
 msrv: _inside
     cargo +{{msrv}} check --locked --lib --all-features
 
+# Run self-contained Rust tests and public documentation examples.
+test: _inside
+    cargo test --locked --all-features
+
+# Run the selected real-FST oracle suite; requires the locked fixture provider.
+conformance: _inside
+    cargo test --locked --test fst_conformance -- --ignored
+
 # Test repository automation without Docker or external fixtures.
 tools-test: _inside
     python3 -B -m unittest discover -s tools/repo -p 'test_*.py'
@@ -41,5 +49,5 @@ tools-test: _inside
 pre-commit: _inside
     pre-commit run --all-files
 
-# Run public static-quality and repository-tool checks.
-ci: fmt-check lint check docs tools-test
+# Run public static-quality, self-contained Rust, and repository-tool checks.
+ci: fmt-check lint check docs test tools-test

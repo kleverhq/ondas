@@ -1,6 +1,9 @@
 use crate::{Format, HierarchyPath, Signal};
 
 /// An error encountered while parsing a hierarchy path.
+///
+/// Syntax diagnostics are separate from file and backend failures. The offset is
+/// a byte position in the input, not a character index.
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("invalid hierarchy path at byte {offset}: {message}")]
 pub struct PathError {
@@ -30,7 +33,7 @@ pub enum SliceError {
     #[error("only bit-vector signals can be sliced")]
     NotBits,
 
-    /// The requested bounds do not form a valid slice.
+    /// The requested bounds are reversed (`msb < lsb`).
     #[error("invalid slice [{msb}:{lsb}]")]
     InvalidRange {
         /// The requested most-significant bit.
@@ -39,7 +42,7 @@ pub enum SliceError {
         lsb: u32,
     },
 
-    /// The requested slice extends beyond the signal width.
+    /// The requested slice extends beyond the current signal or projection width.
     #[error("slice [{msb}:{lsb}] is outside signal width {width}")]
     OutOfBounds {
         /// The width of the signal.
@@ -52,6 +55,10 @@ pub enum SliceError {
 }
 
 /// An error encountered while resolving hierarchy metadata.
+///
+/// Missing, ambiguous, and signal-less declarations are normal metadata
+/// resolution outcomes, not backend failures. Invalid selectors retain separate
+/// path and slice diagnostics rather than becoming [`Error::Backend`].
 #[derive(Debug, Clone, thiserror::Error)]
 #[non_exhaustive]
 pub enum LookupError {
@@ -96,6 +103,23 @@ pub enum LookupError {
 }
 
 /// An error encountered while opening or querying a waveform.
+///
+/// Categories distinguish recovery actions: I/O may require checking the path,
+/// permissions, or filesystem; unavailable backends may require a runtime library
+/// or license; unsupported formats and input kinds require a different reader.
+/// [`LookupError`] and [`SliceError`] separately describe metadata resolution and
+/// projection errors.
+///
+/// # Failure contract
+///
+/// Failures reported by a backend return this type. Upstream reader panics are
+/// not intercepted; see the [reader limits](crate#reader-support-and-limits).
+/// Empty results are not error sentinels: no known persistent state is [`Sample::Missing`](crate::Sample::Missing),
+/// no event is an occurrence count of zero, and no changes is an empty trace
+/// change list. Invalid handles and unsupported values remain errors.
+///
+/// A scan may have delivered observations before a late backend error. Owned
+/// sample and trace queries return no partial result.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
@@ -126,6 +150,8 @@ pub enum Error {
     },
 
     /// The selected backend is known but unavailable at runtime.
+    ///
+    /// For example, a required dependency, license, or vendor library is missing.
     #[error("backend {backend} is unavailable: {message}")]
     BackendUnavailable {
         /// The backend name.
@@ -134,7 +160,7 @@ pub enum Error {
         message: String,
     },
 
-    /// The selected backend cannot read the waveform format.
+    /// The explicitly selected backend cannot read the detected waveform format.
     #[error("backend {backend} does not support {format:?}")]
     BackendDoesNotSupport {
         /// The backend name.
@@ -170,14 +196,14 @@ pub enum Error {
         signal: Signal,
     },
 
-    /// The signal encoding is not supported by the query API.
+    /// The hierarchy exposes the signal, but its value class is unsupported for queries.
     #[error("signal encoding is not supported: {signal:?}")]
     UnsupportedSignal {
         /// The unsupported signal handle.
         signal: Signal,
     },
 
-    /// The backend failed while performing an operation.
+    /// The underlying reader failed in a way not covered by a more specific category.
     #[error("backend {backend} failed during {operation}: {message}")]
     Backend {
         /// The backend name.

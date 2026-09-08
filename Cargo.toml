@@ -2,7 +2,7 @@
 name = "ondas"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85.0"
+rust-version = "1.88.0"
 authors = ["esynr3z"]
 description = "Read-only, format-independent waveform analysis library"
 license = "Apache-2.0"
@@ -14,7 +14,13 @@ keywords = ["waveform", "vcd", "fst", "rtl", "eda"]
 categories = ["development-tools"]
 
 [dependencies]
+fst-reader = "=0.17.0"
+serde_json = "1"
 thiserror = "2"
+
+[dev-dependencies]
+sha2 = "0.10"
+toml = "0.9"
 
 [package.metadata.docs.rs]
 all-features = true
