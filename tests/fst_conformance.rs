@@ -1,12 +1,12 @@
-//! Bounded public-API conformance: three positive FSTs and four opening errors.
-//! The oracle is sparse; unlisted declarations and tick-zero event behavior are
-//! not assertions. In particular the event oracle starts at tick one.
+//! Full-pool FST conformance plus focused public-API regressions.
+//! The independent oracle is sparse: only listed declarations and observations
+//! are assertions. Every discovered FST runs in file and bytes modes.
 use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fs,
     ops::ControlFlow,
-    path::PathBuf,
-    sync::{Arc, OnceLock},
+    path::{Path, PathBuf},
+    sync::OnceLock,
 };
 
 use ondas::{
@@ -29,7 +29,6 @@ const CASES: [&str; 7] = [
 
 struct Fixture {
     path: PathBuf,
-    bytes: Arc<[u8]>,
     oracle: Json,
 }
 
@@ -173,10 +172,18 @@ fn validate_oracle(oracle: &Json, positive: bool) {
     assert!(!signals.is_empty(), "empty positive oracle");
     let mut referenced = BTreeSet::new();
     for (key, allowed) in [
-        ("scopes", &["path", "kind"][..]),
+        ("scopes", &["path", "kind", "definition_name"][..]),
         (
             "variables",
-            &["path", "kind", "direction", "range", "type_name", "signal"][..],
+            &[
+                "path",
+                "kind",
+                "direction",
+                "range",
+                "type_name",
+                "is_constant",
+                "signal",
+            ][..],
         ),
     ] {
         let mut paths = HashSet::new();
@@ -255,130 +262,152 @@ fn validate_oracle(oracle: &Json, positive: bool) {
     }
 }
 
+fn provider() -> PathBuf {
+    let lock: toml::Value =
+        toml::from_str(include_str!("../fixtures.lock.toml")).expect("fixture lock TOML");
+    let provider_version = lock["providers"][PROVIDER]
+        .as_str()
+        .expect("selected provider version must be a string");
+    assert!(!provider_version.is_empty(), "empty provider version");
+    let root = PathBuf::from(
+        std::env::var_os("ONDAS_FIXTURES")
+            .expect("ONDAS_FIXTURES is required; run just conformance"),
+    );
+    let provider = root.join(PROVIDER);
+    assert!(provider.is_dir(), "missing provider {}", provider.display());
+    let catalog: Json =
+        serde_json::from_slice(&fs::read(provider.join("catalog.json")).expect("provider catalog"))
+            .unwrap();
+    assert_eq!(catalog["schema"], 1, "catalog schema");
+    assert_eq!(catalog["provider"], PROVIDER, "provider identity");
+    assert_eq!(
+        catalog["version"].as_str(),
+        Some(provider_version),
+        "provider version mismatch"
+    );
+    provider.canonicalize().unwrap()
+}
+
+fn load_fixture(provider: &Path, name: &str) -> Fixture {
+    let directory = provider
+        .join(name)
+        .canonicalize()
+        .unwrap_or_else(|e| panic!("{name}: fixture directory: {e}"));
+    assert!(
+        directory.starts_with(provider),
+        "{name}: fixture escapes provider"
+    );
+    let sidecar: Json = serde_json::from_slice(
+        &fs::read(directory.join("fixture.json"))
+            .unwrap_or_else(|e| panic!("{name}: sidecar: {e}")),
+    )
+    .expect("fixture JSON");
+    assert_eq!(sidecar["schema"], 1, "{name}: sidecar schema");
+    let artifact = &sidecar["artifact"];
+    assert_eq!(
+        artifact["file"], "waveform.fst",
+        "{name}: artifact filename"
+    );
+    assert_eq!(artifact["format"], "fst", "{name}: declared format");
+    let path = directory.join("waveform.fst").canonicalize().unwrap();
+    assert!(
+        path.starts_with(&directory) && path.is_file(),
+        "{name}: artifact containment/type"
+    );
+    let bytes = fs::read(&path).unwrap();
+    assert_eq!(
+        Some(bytes.len() as u64),
+        artifact["size"].as_u64(),
+        "{name}: artifact size"
+    );
+    assert_eq!(
+        format!("{:x}", Sha256::digest(&bytes)),
+        artifact["sha256"].as_str().unwrap(),
+        "{name}: artifact SHA256"
+    );
+    let provenance = &sidecar["provenance"];
+    match provenance["kind"].as_str().unwrap() {
+        "authored" => (),
+        "imported" | "converted" => {
+            assert!(!provenance["source"].as_str().unwrap().is_empty());
+            if provenance["kind"] == "converted" {
+                assert!(!provenance["transform"].as_str().unwrap().is_empty());
+            }
+        }
+        kind => panic!("{name}: invalid provenance {kind}"),
+    }
+    let mut tags = HashSet::new();
+    for tag in list(&sidecar, "tags") {
+        let tag = tag.as_str().expect("fixture tag string");
+        assert!(
+            [
+                "conformance",
+                "metadata",
+                "hierarchy",
+                "paths",
+                "aliases",
+                "values",
+                "bits",
+                "real",
+                "strings",
+                "events",
+                "unknown-states",
+                "ranges",
+                "projections",
+                "same-time",
+                "constants",
+                "enumerations",
+                "malformed",
+                "large",
+            ]
+            .contains(&tag)
+                && tags.insert(tag),
+            "{name}: unknown/duplicate tag {tag}"
+        );
+    }
+    let oracle = sidecar["oracle"].clone();
+    eprintln!("validating {PROVIDER}/{name}");
+    validate_oracle(&oracle, oracle["open"]["result"] == "ok");
+    Fixture { path, oracle }
+}
+
 fn fixtures() -> &'static [Fixture] {
     static FIXTURES: OnceLock<Vec<Fixture>> = OnceLock::new();
     FIXTURES.get_or_init(|| {
-        let lock: toml::Value =
-            toml::from_str(include_str!("../fixtures.lock.toml")).expect("fixture lock TOML");
-        let provider_version = lock["providers"][PROVIDER]
-            .as_str()
-            .expect("selected provider version must be a string");
-        assert!(!provider_version.is_empty(), "empty provider version");
-        let root = PathBuf::from(
-            std::env::var_os("ONDAS_FIXTURES")
-                .expect("ONDAS_FIXTURES is required; run just conformance"),
-        );
-        let provider = root.join(PROVIDER);
-        assert!(provider.is_dir(), "missing provider {}", provider.display());
-        let catalog: Json = serde_json::from_slice(
-            &fs::read(provider.join("catalog.json")).expect("provider catalog"),
-        )
-        .unwrap();
-        assert_eq!(catalog["schema"], 1, "catalog schema");
-        assert_eq!(catalog["provider"], PROVIDER, "provider identity");
-        assert_eq!(
-            catalog["version"].as_str(),
-            Some(provider_version),
-            "provider version mismatch"
-        );
+        let provider = provider();
         CASES
             .iter()
-            .enumerate()
-            .map(|(index, name)| {
-                let directory = provider
-                    .join(name)
-                    .canonicalize()
-                    .unwrap_or_else(|e| panic!("{name}: fixture directory: {e}"));
-                assert!(
-                    directory.starts_with(provider.canonicalize().unwrap()),
-                    "{name}: fixture escapes provider"
-                );
-                let sidecar: Json = serde_json::from_slice(
-                    &fs::read(directory.join("fixture.json"))
-                        .unwrap_or_else(|e| panic!("{name}: sidecar: {e}")),
-                )
-                .expect("fixture JSON");
-                assert_eq!(sidecar["schema"], 1, "{name}: sidecar schema");
-                let artifact = &sidecar["artifact"];
-                assert_eq!(
-                    artifact["file"], "waveform.fst",
-                    "{name}: artifact filename"
-                );
-                assert_eq!(artifact["format"], "fst", "{name}: declared format");
-                let path = directory.join("waveform.fst").canonicalize().unwrap();
-                assert!(
-                    path.starts_with(&directory) && path.is_file(),
-                    "{name}: artifact containment/type"
-                );
-                let bytes: Arc<[u8]> = fs::read(&path).unwrap().into();
-                assert_eq!(
-                    Some(bytes.len() as u64),
-                    artifact["size"].as_u64(),
-                    "{name}: artifact size"
-                );
-                assert_eq!(
-                    format!("{:x}", Sha256::digest(&bytes)),
-                    artifact["sha256"].as_str().unwrap(),
-                    "{name}: artifact SHA256"
-                );
-                let provenance = &sidecar["provenance"];
-                match provenance["kind"].as_str().unwrap() {
-                    "authored" => (),
-                    "imported" | "converted" => {
-                        assert!(!provenance["source"].as_str().unwrap().is_empty());
-                        if provenance["kind"] == "converted" {
-                            assert!(!provenance["transform"].as_str().unwrap().is_empty());
-                        }
-                    }
-                    kind => panic!("{name}: invalid provenance {kind}"),
-                }
-                let mut tags = HashSet::new();
-                for tag in list(&sidecar, "tags") {
-                    let tag = tag.as_str().expect("fixture tag string");
-                    assert!(
-                        [
-                            "conformance",
-                            "metadata",
-                            "hierarchy",
-                            "paths",
-                            "aliases",
-                            "values",
-                            "bits",
-                            "real",
-                            "strings",
-                            "events",
-                            "unknown-states",
-                            "ranges",
-                            "projections",
-                            "same-time",
-                            "constants",
-                            "enumerations",
-                            "malformed",
-                            "large",
-                        ]
-                        .contains(&tag)
-                            && tags.insert(tag),
-                        "{name}: unknown/duplicate tag {tag}"
-                    );
-                }
-                let oracle = sidecar["oracle"].clone();
-                eprintln!("validating {PROVIDER}/{name}");
-                validate_oracle(&oracle, index < 3);
-                Fixture {
-                    path,
-                    bytes,
-                    oracle,
-                }
-            })
+            .map(|name| load_fixture(&provider, name))
             .collect()
     })
 }
 
 fn open(fixture: &Fixture, bytes: bool) -> ondas::Result<Waveform> {
     if bytes {
-        ondas::open_bytes_with("conformance.fst", fixture.bytes.clone(), "fst-native")
+        ondas::open_bytes_with(
+            "conformance.fst",
+            fs::read(&fixture.path).unwrap().into(),
+            "fst-native",
+        )
     } else {
         ondas::open_with(&fixture.path, "fst-native")
+    }
+}
+
+fn checked_open(fixture: &Fixture, bytes: bool, context: &str) -> Option<Waveform> {
+    let result = open(fixture, bytes);
+    if fixture.oracle["open"]["result"] == "error" {
+        assert!(
+            matches!(result, Err(Error::Malformed { format: Format::Fst, ref backend, .. }) if backend == "fst-native"),
+            "{context}: expected Malformed FST opening error, got {}",
+            match result {
+                Ok(_) => "success".to_owned(),
+                Err(e) => e.to_string(),
+            }
+        );
+        None
+    } else {
+        Some(result.unwrap_or_else(|e| panic!("{context}: open: {e}")))
     }
 }
 
@@ -429,45 +458,87 @@ fn metadata(wave: &Waveform, expected: &Json, bytes: bool, fixture: &Fixture) {
     }
 }
 
-fn hierarchy(wave: &Waveform, oracle: &Json) -> BTreeMap<String, Signal> {
+fn hierarchy(wave: &Waveform, oracle: &Json, check_lookups: bool) -> BTreeMap<String, Signal> {
     let hierarchy = wave.hierarchy();
+    // Index only oracle-listed declarations from public traversal. Large FSTs
+    // can list thousands of aliases; repeated linear lookups would be quadratic.
+    let wanted_scopes: HashSet<_> = list(&oracle["hierarchy"], "scopes")
+        .iter()
+        .map(|v| path(&v["path"]))
+        .collect();
+    let wanted_variables: HashSet<_> = list(&oracle["hierarchy"], "variables")
+        .iter()
+        .map(|v| path(&v["path"]))
+        .collect();
+    let variable_names: HashSet<_> = wanted_variables
+        .iter()
+        .filter_map(HierarchyPath::name)
+        .collect();
+    let mut scopes = HashMap::new();
+    for scope in hierarchy.scopes() {
+        let path = scope.path();
+        if wanted_scopes.contains(&path) {
+            assert!(
+                scopes.insert(path.clone(), scope).is_none(),
+                "ambiguous scope {path}"
+            );
+        }
+    }
+    let mut variables = HashMap::new();
+    for variable in hierarchy
+        .variables()
+        .filter(|v| variable_names.contains(v.name()))
+    {
+        let path = variable.path();
+        if wanted_variables.contains(&path) {
+            assert!(
+                variables.insert(path.clone(), variable).is_none(),
+                "ambiguous variable {path}"
+            );
+        }
+    }
     for expected in list(&oracle["hierarchy"], "scopes") {
         let path = path(&expected["path"]);
-        let scope = hierarchy
-            .scope_path(&path)
-            .unwrap_or_else(|e| panic!("scope {path}: {e}"));
+        let scope = scopes
+            .get(&path)
+            .unwrap_or_else(|| panic!("missing scope {path}"));
         assert_eq!(scope.path(), path);
         assert_eq!(scope.name(), path.name().unwrap());
         assert_eq!(
             scope.parent().map(|p| p.path()),
             path.parent().filter(|p| !p.is_empty())
         );
-        assert_eq!(hierarchy.scope(&path.to_string()).unwrap().path(), path);
+        if check_lookups {
+            assert_eq!(hierarchy.scope_path(&path).unwrap().path(), path);
+            assert_eq!(hierarchy.scope(&path.to_string()).unwrap().path(), path);
+        }
         if let Some(kind) = expected.get("kind") {
             assert_eq!(scope.kind(), kind.as_str().unwrap(), "scope {path} kind");
         }
-        assert!(
-            hierarchy.scopes().any(|s| s.path() == path),
-            "scope {path} traversal"
-        );
+        if let Some(name) = expected.get("definition_name") {
+            assert_eq!(
+                json!(scope.definition_name()),
+                *name,
+                "scope {path} definition"
+            );
+        }
     }
     let mut signals = BTreeMap::new();
     for expected in list(&oracle["hierarchy"], "variables") {
         let path = path(&expected["path"]);
-        let variable = hierarchy
-            .variable_path(&path)
-            .unwrap_or_else(|e| panic!("variable {path}: {e}"));
+        let variable = variables
+            .get(&path)
+            .unwrap_or_else(|| panic!("missing variable {path}"));
         assert_eq!(variable.path(), path);
         assert_eq!(variable.name(), path.name().unwrap());
         assert_eq!(
             variable.parent().map(|p| p.path()),
             path.parent().filter(|p| !p.is_empty())
         );
-        assert_eq!(hierarchy.variable(&path.to_string()).unwrap().path(), path);
-        assert!(
-            hierarchy.variables().any(|v| v.path() == path),
-            "variable {path} traversal"
-        );
+        if check_lookups {
+            assert_eq!(hierarchy.variable_path(&path).unwrap().path(), path);
+            assert_eq!(hierarchy.variable(&path.to_string()).unwrap().path(), path);
+        }
         if let Some(kind) = expected.get("kind") {
             assert_eq!(variable.kind(), kind.as_str().unwrap(), "{path} kind");
         }
@@ -491,6 +562,9 @@ fn hierarchy(wave: &Waveform, oracle: &Json) -> BTreeMap<String, Signal> {
         if let Some(name) = expected.get("type_name") {
             assert_eq!(json!(variable.type_name()), *name, "{path} type name");
         }
+        if let Some(constant) = expected.get("is_constant") {
+            assert_eq!(json!(variable.is_constant()), *constant, "{path} constancy");
+        }
         if let Some(id) = expected.get("signal") {
             if id.is_null() {
                 assert!(variable.signal().is_none());
@@ -498,20 +572,24 @@ fn hierarchy(wave: &Waveform, oracle: &Json) -> BTreeMap<String, Signal> {
             }
             let id = id.as_str().unwrap();
             let signal = variable.signal().unwrap();
-            assert_eq!(hierarchy.signal_path(&path).unwrap(), signal);
-            assert_eq!(hierarchy.signal(&path.to_string()).unwrap(), signal);
+            if check_lookups {
+                assert_eq!(hierarchy.signal_path(&path).unwrap(), signal);
+                assert_eq!(hierarchy.signal(&path.to_string()).unwrap(), signal);
+            }
             assert_eq!(
                 *signals.entry(id.to_owned()).or_insert(signal),
                 signal,
                 "{path}: alias {id}"
             );
-            assert!(
-                hierarchy
-                    .aliases(signal)
-                    .unwrap()
-                    .any(|alias| alias.path() == path),
-                "{path}: aliases traversal"
-            );
+            if check_lookups {
+                assert!(
+                    hierarchy
+                        .aliases(signal)
+                        .unwrap()
+                        .any(|alias| alias.path() == path),
+                    "{path}: aliases traversal"
+                );
+            }
         }
     }
     assert_eq!(
@@ -649,7 +727,11 @@ fn trace(actual: &Trace, signal: Signal, window: &Json, context: &str) {
         }
         previous = Some(value);
     }
-    assert_eq!(observed, changes(window), "{context}: changes");
+    let expected = changes(window);
+    assert_eq!(observed.len(), expected.len(), "{context}: change count");
+    for (index, (actual, expected)) in observed.iter().zip(&expected).enumerate() {
+        assert_eq!(actual, expected, "{context}: change {index}");
+    }
 }
 
 fn sample_queries(wave: &mut Waveform, signal: Signal, expected: &Json, time: u64, context: &str) {
@@ -1071,21 +1153,11 @@ fn run_case(index: usize, bytes: bool) {
         if bytes { "bytes" } else { "file" }
     );
     eprintln!("checking {context}");
-    let result = open(fixture, bytes);
-    if fixture.oracle["open"]["result"] == "error" {
-        assert!(
-            matches!(result, Err(Error::Malformed { format: Format::Fst, ref backend, .. }) if backend == "fst-native"),
-            "{context}: expected Malformed FST opening error, got {}",
-            match result {
-                Ok(_) => "success".to_owned(),
-                Err(e) => e.to_string(),
-            }
-        );
+    let Some(mut wave) = checked_open(fixture, bytes, &context) else {
         return;
-    }
-    let mut wave = result.unwrap_or_else(|e| panic!("{context}: open: {e}"));
+    };
     metadata(&wave, &fixture.oracle["metadata"], bytes, fixture);
-    let signals = hierarchy(&wave, &fixture.oracle);
+    let signals = hierarchy(&wave, &fixture.oracle, true);
     let mut windows = 0;
     let mut samples = 0;
     let mut change_count = 0;
@@ -1139,6 +1211,165 @@ fn run_case(index: usize, bytes: bool) {
     eprintln!(
         "{context}: {} oracle signals, {samples} explicit samples, {windows} windows, {change_count} listed changes",
         signals.len()
+    );
+}
+
+fn discover_fst(provider: &Path) -> Vec<String> {
+    let mut names = Vec::new();
+    for entry in fs::read_dir(provider).expect("provider directory") {
+        let entry = entry.unwrap();
+        let directory = entry.path();
+        if !directory.is_dir() {
+            continue;
+        }
+        let sidecar = directory.join("fixture.json");
+        let declares_fst = sidecar.is_file() && {
+            let sidecar: Json = serde_json::from_slice(&fs::read(&sidecar).unwrap())
+                .unwrap_or_else(|e| panic!("{}: {e}", sidecar.display()));
+            sidecar["artifact"]["format"] == "fst"
+        };
+        // An orphaned artifact is a failing fixture, not an invisible exclusion.
+        if declares_fst || directory.join("waveform.fst").exists() {
+            names.push(entry.file_name().into_string().expect("UTF-8 fixture name"));
+        }
+    }
+    names.sort();
+    assert!(
+        !names.is_empty(),
+        "no FST fixtures in {}",
+        provider.display()
+    );
+    names
+}
+
+fn pool_queries(fixture: &Fixture, bytes: bool, context: &str) {
+    let Some(mut wave) = checked_open(fixture, bytes, context) else {
+        return;
+    };
+    metadata(&wave, &fixture.oracle["metadata"], bytes, fixture);
+    let signals = hierarchy(&wave, &fixture.oracle, false);
+    let mut samples = BTreeMap::<_, Vec<_>>::new();
+    let mut windows = BTreeMap::<_, Vec<_>>::new();
+    for (id, expected) in fixture.oracle["signals"].as_object().unwrap() {
+        let signal = signals[id];
+        for expected in list(expected, "samples") {
+            samples
+                .entry(tick(&expected["time"]))
+                .or_default()
+                .push((id, signal, expected));
+        }
+        for window in list(expected, "windows") {
+            windows
+                .entry((tick(&window["start"]), tick(&window["end"])))
+                .or_default()
+                .push((id, signal, window));
+        }
+    }
+    for (time, entries) in samples {
+        let handles: Vec<_> = entries.iter().map(|(_, signal, _)| *signal).collect();
+        let actual = wave.samples(&handles, Time::from_ticks(time)).unwrap();
+        assert_eq!(actual.len(), entries.len(), "{context}: sample count");
+        for (actual, (id, signal, expected)) in actual.iter().zip(entries) {
+            sample(
+                actual.as_ref(),
+                signal,
+                expected,
+                time,
+                &format!("{context} / {id}"),
+            );
+        }
+    }
+    for ((start, end), entries) in windows {
+        let handles: Vec<_> = entries.iter().map(|(_, signal, _)| *signal).collect();
+        let actual = wave
+            .traces(
+                &handles,
+                TimeRange::closed(Time::from_ticks(start), Time::from_ticks(end)),
+            )
+            .unwrap();
+        assert_eq!(actual.len(), entries.len(), "{context}: trace count");
+        for (actual, (id, signal, expected)) in actual.iter().zip(entries) {
+            trace(
+                actual,
+                signal,
+                expected,
+                &format!("{context} / {id} / [{start}..{end}]"),
+            );
+        }
+    }
+}
+
+fn panic_message(error: Box<dyn std::any::Any + Send>) -> String {
+    error
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| error.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+        .unwrap_or_else(|| "non-string panic".to_owned())
+}
+
+#[test]
+#[ignore = "requires ONDAS_FIXTURES; run just conformance"]
+fn full_fst_pool() {
+    let provider = provider();
+    let names = discover_fst(&provider);
+    eprintln!(
+        "FST pool: {} fixtures, {} file/bytes cases",
+        names.len(),
+        names.len() * 2
+    );
+    // Validate the whole selected catalog before opening any waveform. Loading
+    // drops artifact bytes after hashing; query inputs are held one case at a time.
+    let fixtures: Vec<_> = names
+        .iter()
+        .map(|name| {
+            std::panic::catch_unwind(|| load_fixture(&provider, name)).map_err(panic_message)
+        })
+        .collect();
+    let invalid: Vec<_> = names
+        .iter()
+        .zip(&fixtures)
+        .filter_map(|(name, result)| {
+            result
+                .as_ref()
+                .err()
+                .map(|error| format!("{name}: {error}"))
+        })
+        .collect();
+    assert!(
+        invalid.is_empty(),
+        "FST catalog validation failed before conformance:\n{}",
+        invalid.join("\n")
+    );
+    let mut failures = Vec::new();
+    let mut passed = 0;
+    for (name, fixture) in names.iter().zip(fixtures) {
+        let fixture = fixture.unwrap();
+        for bytes in [false, true] {
+            let context = format!("{name} / {}", if bytes { "bytes" } else { "file" });
+            eprintln!("checking {context}");
+            let result = std::panic::catch_unwind(|| pool_queries(&fixture, bytes, &context))
+                .map_err(panic_message);
+            match result {
+                Ok(()) => {
+                    passed += 1;
+                    eprintln!("PASS {context}");
+                }
+                Err(error) => {
+                    eprintln!("FAIL {context}: {error}");
+                    failures.push(format!("{context}: {error}"));
+                }
+            }
+        }
+    }
+    eprintln!(
+        "FST pool: {} fixtures, {passed} passed, {} failed",
+        names.len(),
+        failures.len()
+    );
+    assert!(
+        failures.is_empty(),
+        "FST pool failures:\n{}",
+        failures.join("\n")
     );
 }
 
@@ -1320,7 +1551,8 @@ fn foreign_handle_validation_bytes() {
 fn automatic_opening_uses_content_and_keeps_logical_names() {
     let fixture = &fixtures()[0];
     let file = ondas::open(&fixture.path).unwrap();
-    let memory = ondas::open_bytes("logical-name.vcd", fixture.bytes.clone()).unwrap();
+    let memory =
+        ondas::open_bytes("logical-name.vcd", fs::read(&fixture.path).unwrap().into()).unwrap();
     assert_eq!(memory.metadata().source_name(), "logical-name.vcd");
     let expected = fixture.oracle["signals"]["counter"]["samples"]
         .as_array()
@@ -1340,6 +1572,44 @@ fn automatic_opening_uses_content_and_keeps_logical_names() {
             "automatic opening",
         );
     }
+}
+
+#[test]
+fn discovery_uses_artifacts_not_fixture_names_or_a_whitelist() {
+    let root = std::env::temp_dir().join(format!(
+        "ondas-fst-discovery-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    for name in [
+        "anything",
+        "fst-not-selected",
+        "orphan",
+        "irrelevant/nested",
+    ] {
+        fs::create_dir_all(root.join(name)).unwrap();
+    }
+    for (name, format) in [
+        ("anything", "fst"),
+        ("fst-not-selected", "vcd"),
+        ("irrelevant/nested", "fst"),
+    ] {
+        fs::write(
+            root.join(name).join("fixture.json"),
+            json!({"artifact": {"format": format}}).to_string(),
+        )
+        .unwrap();
+    }
+    fs::write(root.join("orphan/waveform.fst"), []).unwrap();
+    fs::write(root.join("catalog.json"), "{}").unwrap();
+    assert_eq!(discover_fst(&root), ["anything", "orphan"]);
+    fs::remove_file(root.join("anything/fixture.json")).unwrap();
+    fs::remove_file(root.join("orphan/waveform.fst")).unwrap();
+    assert!(std::panic::catch_unwind(|| discover_fst(&root)).is_err());
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

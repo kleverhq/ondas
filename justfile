@@ -37,9 +37,9 @@ msrv: _inside
 test: _inside
     cargo test --locked --all-features
 
-# Run the selected real-FST oracle suite; requires the locked fixture provider.
+# Check every FST in the locked provider plus focused API regressions.
 conformance: _inside
-    cargo test --locked --test fst_conformance -- --ignored
+    cargo test --locked --test fst_conformance -- --ignored --nocapture
 
 # Test repository automation without Docker or external fixtures.
 tools-test: _inside

@@ -48,8 +48,8 @@ A newer upstream checkout is not interchangeable with that release.
   Unicode U+0000–U+00FF (Latin-1), preserving NULs and padding. UTF-8 is not inferred
   from byte contents. Bits retain all nine supported logic states.
 
-These constraints govern decoder selection. Passing selected fixtures does not
-establish complete FST coverage.
+These constraints govern decoder selection. Passing a corpus does not establish
+complete coverage of the FST format or unobserved portions of its artifacts.
 
 ## Normalization and Queries
 
@@ -65,15 +65,17 @@ candidate times, but it is not a replacement for decoded value changes.
 ## Verification and Measurement
 
 Run `./dev just conformance` from the repository root with the locked provider
-available. The explicit suite checks three positive fixtures (counter, complex
-Icarus values, and NVC shortstring) and four malformed fixtures in file and bytes
-modes. It exercises public metadata, hierarchy, aliases, values, samples, traces,
+available. The explicit suite discovers all FST fixtures in that provider and
+checks every listed oracle observation in file and bytes modes. Batched samples
+and windows keep full-pool runs practical; focused small fixtures also exercise
 selections, scans, candidate times, projections, and callback termination.
+Every case is reported, with failures aggregated rather than silently excluded.
 
 The [common conformance strategy](testing.md) separates real-reader evidence from
-self-contained query tests. These selected oracles do not claim full corpus,
-compression-variant, or first-tick-event coverage. Additional reader cases should
-add targeted fixtures rather than silently widen a claimed support matrix.
+self-contained query tests. Full-pool execution is distinct from every case
+passing, and sparse oracles do not establish exhaustive signal/time,
+compression-variant, or first-tick-event coverage. Provider additions are
+discovered automatically; no manual case-list update is required.
 
 A converted FST artifact retains conversion provenance in its
 [fixture sidecar](fixtures.md). Conversion does not by itself prove semantic

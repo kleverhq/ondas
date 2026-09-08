@@ -6,7 +6,9 @@
 
 - Independent `fst-native` reader for FST files and shared in-memory bytes.
 - Hierarchy lookup, aliases, bit projections, point/range queries, and reusable selections.
-- Self-contained API tests and an explicit, fixture-backed FST conformance suite.
+- Self-contained API tests and a public-contract coverage map.
+- FST conformance discovers every artifact in the locked provider, batches listed
+  observations in file/bytes modes, and reports all case failures.
 
 ### Changed
 

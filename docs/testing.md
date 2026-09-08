@@ -21,6 +21,8 @@ readers. Cover:
 Use property tests when an invariant is clearer than enumerated examples, such as
 parsing a displayed path back into the same exact components. Start with small,
 diagnostic cases rather than broad random inputs with unclear failure causes.
+The [API coverage map](api-coverage.md) connects public contract areas to named
+executable tests; a passing test count alone does not establish completeness.
 
 ## Logical Test Backend
 
@@ -99,9 +101,23 @@ Formatting, compilation, Clippy, and rustdoc alone do not prove runtime correctn
 `./dev just conformance` explicitly runs the ignored real-FST integration tests
 against the provider pinned in `fixtures.lock.toml`. Missing environment, provider,
 version, artifacts, or oracle data fails this requested suite. The default test
-run does not execute these external tests or claim their coverage. The suite is
-bounded to three positive and four malformed FST fixtures, each in file and bytes
-modes; it is not an exhaustive reader certification or a complete schema validator.
+run does not execute these external tests or claim their coverage. `full_fst_pool`
+discovers every FST in the provider rather than maintaining a fixture whitelist.
+It validates selected artifacts before opening them, then compares every listed
+sample and window in file and bytes modes. Equal-time samples and equal-bound
+windows are batched to avoid decoding large files once per signal or transition.
+Listed declarations are matched from one public hierarchy traversal rather than
+repeating linear lookups for thousands of aliases. Exact lookup and alias-iterator
+contracts are exercised by the focused cases. Artifact bytes are not cached for
+the whole pool.
+
+Small, named regressions additionally exercise query wrappers, projections,
+duplicate handles and early termination. The full-pool test reports every case
+and aggregates assertion/reader panics so one failure does not conceal later
+cases. Panic handling belongs only to the test runner, not the library. Any
+mismatch fails the suite; there is no expected-failure allowlist. Catalog errors
+abort before conformance. Corpus discovery is not exhaustive signal/time coverage,
+reader certification, or a claim of complete schema validation.
 
 Public API examples should compile as doctests. Use `no_run` for examples that
 need an external artifact; use runnable examples for self-contained behavior.

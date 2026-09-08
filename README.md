@@ -27,8 +27,10 @@ The CI recipe checks formatting, Clippy, compilation, API documentation,
 self-contained Rust tests/doctests, and repository-tool tests. Conformance is a
 separate explicit suite: it requires the provider pinned in `fixtures.lock.toml`
 and supplied through `ONDAS_FIXTURES` in the ignored root `.env`. Missing fixtures
-fail that suite rather than being skipped. It covers a selected seven-file FST
-corpus, not every provider artifact.
+fail that suite rather than being skipped. It discovers every FST in the provider
+and checks its listed oracle observations in file and bytes modes, alongside
+focused API regressions. Per-case results remain visible even when another case
+fails; sparse observations are not exhaustive coverage of each artifact.
 
 See the public API documentation for reader limitations: some malformed FSTs can
 trigger upstream panics, and first-tick event callbacks can include initialization.
