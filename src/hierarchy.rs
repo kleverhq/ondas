@@ -401,7 +401,9 @@ impl Hierarchy {
 
     /// Resolves an already parsed exact scope path.
     pub fn scope_path(&self, path: &HierarchyPath) -> std::result::Result<Scope<'_>, LookupError> {
-        let mut matches = self.scopes().filter(|scope| scope.path() == *path);
+        let mut matches = self
+            .scopes()
+            .filter(|scope| Some(scope.name()) == path.name() && scope.path() == *path);
         let first = matches.next();
         match (first, matches.count()) {
             (None, _) => Err(LookupError::NotFound { path: path.clone() }),
@@ -419,7 +421,9 @@ impl Hierarchy {
         path: &HierarchyPath,
     ) -> std::result::Result<Variable<'_>, LookupError> {
         // ponytail: linear lookup; index exact paths if hierarchy lookup becomes a bottleneck.
-        let mut matches = self.variables().filter(|variable| variable.path() == *path);
+        let mut matches = self
+            .variables()
+            .filter(|variable| Some(variable.name()) == path.name() && variable.path() == *path);
         let first = matches.next();
         match (first, matches.count()) {
             (None, _) => Err(LookupError::NotFound { path: path.clone() }),

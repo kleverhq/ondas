@@ -11,6 +11,7 @@
 ### Changed
 
 - Minimum supported Rust version is 1.88.0 to support `fst-reader` 0.17.0.
+- Hierarchy lookup avoids constructing paths for unrelated declaration names.
 
 ### Reader limitations
 
