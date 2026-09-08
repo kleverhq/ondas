@@ -37,9 +37,9 @@ msrv: _inside
 test: _inside
     cargo test --locked --all-features
 
-# Check every FST in the locked provider plus focused API regressions.
+# Check every FST/VCD in the locked provider plus focused API regressions.
 conformance: _inside
-    cargo test --locked --test fst_conformance -- --ignored --nocapture
+    cargo test --locked --test conformance -- --ignored --nocapture
 
 # Test repository automation without Docker or external fixtures.
 tools-test: _inside

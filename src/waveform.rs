@@ -9,13 +9,13 @@ use std::{
 use crate::{
     Error, Hierarchy, Result, Sample, ScanRef, Selection, Signal, Time, TimeRange, TimeSpan,
     Timescale, Trace,
-    backends::{Reader, fst},
+    backends::{Input, Reader, fst, vcd},
 };
 
 /// Opens a waveform file with an automatically selected available backend.
 ///
-/// FST uses `fst-native`. Content recognition takes precedence over the filename;
-/// a recognized extension is a fallback hint. A recognized format without a
+/// FST uses `fst-native`; VCD uses `vcd-native`. Content recognition takes
+/// precedence over the filename; a recognized extension is a fallback hint. A recognized format without a
 /// reader returns [`Error::NoBackend`]; unrecognized input returns
 /// [`Error::UnknownFormat`]. Each opened waveform uses one backend.
 ///
@@ -27,8 +27,8 @@ pub fn open(path: impl AsRef<Path>) -> Result<Waveform> {
 
 /// Opens a waveform file with only the named backend, without fallback.
 ///
-/// The available name is `fst-native`. Unknown names return
-/// [`Error::UnknownBackend`]; a recognized non-FST format returns
+/// Available names are `fst-native` and `vcd-native`. Unknown names return
+/// [`Error::UnknownBackend`]; a format unsupported by the selected backend returns
 /// [`Error::BackendDoesNotSupport`]. See [`open`] for detection and reader limits.
 pub fn open_with(path: impl AsRef<Path>, backend: &str) -> Result<Waveform> {
     open_file(path.as_ref(), Some(backend))
@@ -38,8 +38,8 @@ pub fn open_with(path: impl AsRef<Path>, backend: &str) -> Result<Waveform> {
 ///
 /// `name` is the logical [`Metadata::source_name`] and a format-detection hint.
 /// The input stays alive through the shared ownership of `bytes`. Detection,
-/// errors, and reader limitations are the same as [`open`]. FST supports both
-/// file and byte input; other readers need not support both input kinds.
+/// errors, and reader limitations are the same as [`open`]. Both native readers
+/// support file and byte input; other readers need not support both input kinds.
 pub fn open_bytes(name: impl Into<String>, bytes: Arc<[u8]>) -> Result<Waveform> {
     open_input(name.into(), Box::new(Cursor::new(bytes)), None)
 }
@@ -58,7 +58,7 @@ pub fn open_bytes_with(
 
 fn check_backend(backend: Option<&str>) -> Result<()> {
     if let Some(backend) = backend
-        && backend != "fst-native"
+        && !matches!(backend, "fst-native" | "vcd-native")
     {
         return Err(Error::UnknownBackend {
             backend: backend.into(),
@@ -76,24 +76,43 @@ fn open_file(path: &Path, backend: Option<&str>) -> Result<Waveform> {
     )
 }
 
-fn open_input(
-    name: String,
-    mut input: Box<dyn fst::Input>,
-    backend: Option<&str>,
-) -> Result<Waveform> {
+fn open_input(name: String, mut input: Box<dyn Input>, backend: Option<&str>) -> Result<Waveform> {
     check_backend(backend)?;
     let prefix = input.fill_buf()?;
+    let mut detected = if matches!(prefix.first(), Some(0 | 254)) {
+        Some(Format::Fst)
+    } else if prefix.starts_with(b"GHDLwave") {
+        Some(Format::Ghw)
+    } else {
+        None
+    };
+    if detected.is_none() {
+        if prefix.starts_with(b"\xef\xbb\xbf") {
+            input.consume(3);
+        }
+        loop {
+            let prefix = input.fill_buf()?;
+            if prefix.is_empty() {
+                break;
+            }
+            if let Some(&byte) = prefix.iter().find(|b| !b.is_ascii_whitespace()) {
+                if byte == b'$' {
+                    detected = Some(Format::Vcd);
+                }
+                break;
+            }
+            let length = prefix.len();
+            input.consume(length);
+        }
+    }
+    input.rewind()?;
     let extension = Path::new(&name)
         .extension()
         .and_then(|s| s.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    let format = if matches!(prefix.first(), Some(0 | 254)) {
-        Format::Fst
-    } else if prefix.starts_with(b"GHDLwave") {
-        Format::Ghw
-    } else if prefix.iter().copied().find(|b| !b.is_ascii_whitespace()) == Some(b'$') {
-        Format::Vcd
+    let format = if let Some(format) = detected {
+        format
     } else {
         match extension.as_str() {
             "fst" => Format::Fst,
@@ -104,18 +123,25 @@ fn open_input(
             _ => return Err(Error::UnknownFormat),
         }
     };
-    if format != Format::Fst {
-        return Err(match backend {
-            Some(backend) => Error::BackendDoesNotSupport {
+    let (reader, hierarchy, metadata) = match (format, backend) {
+        (Format::Fst, None | Some("fst-native")) => {
+            let (reader, hierarchy, metadata) = fst::Reader::open(input, name)?;
+            (Reader::Fst(Box::new(reader)), hierarchy, metadata)
+        }
+        (Format::Vcd, None | Some("vcd-native")) => {
+            let (reader, hierarchy, metadata) = vcd::Reader::open(input, name)?;
+            (Reader::Vcd(Box::new(reader)), hierarchy, metadata)
+        }
+        (_, Some(backend)) => {
+            return Err(Error::BackendDoesNotSupport {
                 backend: backend.into(),
                 format,
-            },
-            None => Error::NoBackend { format },
-        });
-    }
-    let (reader, hierarchy, metadata) = fst::Reader::open(input, name)?;
+            });
+        }
+        (_, None) => return Err(Error::NoBackend { format }),
+    };
     Ok(Waveform {
-        reader: Reader::Fst(Box::new(reader)),
+        reader,
         hierarchy,
         metadata,
     })
@@ -158,7 +184,10 @@ pub struct Waveform {
 impl Waveform {
     /// Returns the detected source format.
     pub fn format(&self) -> Format {
-        Format::Fst
+        match self.reader {
+            Reader::Vcd(_) => Format::Vcd,
+            _ => Format::Fst,
+        }
     }
 
     /// Returns the selected implementation's stable lower-kebab-case name.
@@ -168,6 +197,7 @@ impl Waveform {
     pub fn backend(&self) -> &str {
         match self.reader {
             Reader::Fst(_) => "fst-native",
+            Reader::Vcd(_) => "vcd-native",
             #[cfg(test)]
             Reader::Memory { .. } => "memory",
         }
@@ -354,10 +384,24 @@ mod tests {
             ("dump.FSDB", &b""[..], Format::Fsdb),
             ("dump.WLF", &b""[..], Format::Wlf),
         ] {
-            assert!(
-                matches!(open_bytes(name, bytes(content)), Err(Error::NoBackend { format: actual }) if actual == format),
-                "{name}"
-            );
+            let result = open_bytes(name, bytes(content));
+            if format == Format::Vcd {
+                assert!(
+                    matches!(
+                        result,
+                        Err(Error::Malformed {
+                            format: Format::Vcd,
+                            ..
+                        })
+                    ),
+                    "{name}"
+                );
+            } else {
+                assert!(
+                    matches!(result, Err(Error::NoBackend { format: actual }) if actual == format),
+                    "{name}"
+                );
+            }
             assert!(
                 matches!(open_bytes_with(name, bytes(content), "fst-native"), Err(Error::BackendDoesNotSupport { backend, format: actual }) if backend == "fst-native" && actual == format),
                 "{name}"
@@ -418,8 +462,9 @@ mod tests {
         ));
         assert!(matches!(
             open_bytes("dump.vcd", bytes(b"$timescale 1 ns $end")),
-            Err(Error::NoBackend {
-                format: Format::Vcd
+            Err(Error::Malformed {
+                format: Format::Vcd,
+                ..
             })
         ));
         assert!(matches!(

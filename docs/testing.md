@@ -98,11 +98,12 @@ The root `justfile` defines executable recipes; discover them with
 `just ci` includes them along with static checks and repository-tool tests.
 Formatting, compilation, Clippy, and rustdoc alone do not prove runtime correctness.
 
-`./dev just conformance` explicitly runs the ignored real-FST integration tests
+`./dev just conformance` explicitly runs the ignored real-FST/VCD integration tests
 against the provider pinned in `fixtures.lock.toml`. Missing environment, provider,
 version, artifacts, or oracle data fails this requested suite. The default test
-run does not execute these external tests or claim their coverage. `full_fst_pool`
-discovers every FST in the provider rather than maintaining a fixture whitelist.
+run does not execute these external tests or claim their coverage. `full_fst_pool` and
+`full_vcd_pool` discover every matching artifact rather than maintaining a fixture
+whitelist.
 It validates selected artifacts before opening them, then compares every listed
 sample and window in file and bytes modes. Equal-time samples and equal-bound
 windows are batched to avoid decoding large files once per signal or transition.

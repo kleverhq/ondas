@@ -35,15 +35,16 @@ The following tests are in [`src/query/tests.rs`](../src/query/tests.rs), throug
 
 ## Reader-specific evidence and limits
 
-[`tests/fst_conformance.rs`](../tests/fst_conformance.rs) contains the external
-FST observations. `full_fst_pool` discovers every FST and `pool_queries` batches
+[`tests/conformance.rs`](../tests/conformance.rs) contains external FST and VCD
+observations. `full_fst_pool` and `full_vcd_pool` discover every artifact of their
+format, and `pool_queries` batches
 all listed samples/windows, with per-case results and no failure allowlist.
 Listed declarations are matched from public traversal; focused cases additionally
 exercise exact lookup and alias iterators. Native kind normalization has regressions
 `real_parameter_kind_is_canonical` and `compound_scope_kinds_are_canonical` in
 [`src/backends/fst.rs`](../src/backends/fst.rs). Full-pool metadata assertions also
 check present-but-empty header text.
-Its `open` helper selects `fst-native` for file and bytes input;
+Its `open` helper explicitly selects the corresponding native reader for file and bytes input;
 `metadata`, `hierarchy`, `sample_queries`, `window_queries`, and `scan_queries`
 apply oracle assertions through the public API. `automatic_opening_uses_content_and_keeps_logical_names`
 checks automatic opening, `Waveform::format` / `backend`, and logical source names.
@@ -54,6 +55,14 @@ provider and are not executed by the library-unit command above.
 [`src/backends/fst.rs`](../src/backends/fst.rs) also has self-contained adaptation
 checks: `ranges_require_an_explicit_separated_bit_suffix` and
 `exact_timescales_do_not_wrap_or_use_floating_point`.
+
+[`tests/vcd_native.rs`](../tests/vcd_native.rs) runs without external inputs and
+checks successful opening, full-body rejection, exact large ticks/decimal scales,
+metadata extraction, contextual codes, literal array names, duplicate declarations,
+zero-width signals, real/string classification, Latin-1 escapes/literal bytes,
+dumpall-only state, strict blackout-boundary entering states, event checkpoints,
+alias projections, same-tick ordering, Break/replay and output ownership. Run it
+with `./dev cargo test --locked --test vcd_native`.
 
 Memory tests do not establish FST buffer reuse, resource bounds, malformed-input
 hardening, or vendor-reader behavior. Oracle assertions cover only supplied
