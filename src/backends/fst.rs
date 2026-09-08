@@ -61,8 +61,8 @@ impl Reader {
                     Time::from_ticks(header.end_time),
                 )
             }),
-            writer: (!header.version.is_empty()).then(|| header.version.clone()),
-            date: (!header.date.is_empty()).then(|| header.date.clone()),
+            writer: Some(header.version.clone()),
+            date: Some(header.date.clone()),
             comments: Vec::new(),
         };
         let mut scopes = Vec::<ScopeData>::new();
@@ -342,11 +342,20 @@ fn declared_name(name: String, encoding: Encoding) -> (String, Option<BitRange>)
 fn var_kind(kind: FstVarType) -> String {
     match kind {
         FstVarType::GenericString => "string".into(),
+        FstVarType::RealParameter => "real-parameter".into(),
         _ => format!("{kind:?}").to_ascii_lowercase(),
     }
 }
 
 fn scope_kind(kind: fst_reader::FstScopeType) -> String {
+    use fst_reader::FstScopeType::*;
+    match kind {
+        VhdlForGenerate => return "for-generate".into(),
+        VhdlIfGenerate => return "if-generate".into(),
+        // Preserve the format-specific code used by the independent oracle.
+        SvArray => return "fst:22".into(),
+        _ => {}
+    }
     let name = format!("{kind:?}");
     name.strip_prefix("Vhdl")
         .unwrap_or(&name)
@@ -385,6 +394,25 @@ fn timescale(exponent: i8) -> Option<Timescale> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compound_scope_kinds_are_canonical() {
+        use fst_reader::FstScopeType::*;
+        for (kind, expected) in [
+            (VhdlForGenerate, "for-generate"),
+            (VhdlIfGenerate, "if-generate"),
+            (SvArray, "fst:22"),
+            (VhdlArchitecture, "architecture"),
+            (Module, "module"),
+        ] {
+            assert_eq!(scope_kind(kind), expected);
+        }
+    }
+
+    #[test]
+    fn real_parameter_kind_is_canonical() {
+        assert_eq!(var_kind(FstVarType::RealParameter), "real-parameter");
+    }
 
     #[test]
     fn ranges_require_an_explicit_separated_bit_suffix() {
