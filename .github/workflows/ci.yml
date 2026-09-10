@@ -45,6 +45,7 @@ jobs:
           push: never
           env: GITHUB_TOKEN
           runCmd: |
+            set -euo pipefail
             export ONDAS_FIXTURES="$PWD/fixtures"
             just fixtures-install
             just ci
