@@ -1,8 +1,4 @@
-use std::{
-    collections::HashMap,
-    io::{BufRead, Seek},
-    ops::ControlFlow,
-};
+use std::{collections::HashMap, ops::ControlFlow};
 
 use fst_reader::{
     FstArrayType, FstFilter, FstHierarchyEntry, FstPackType, FstReader, FstSignalHandle,
@@ -15,8 +11,7 @@ use crate::{
     hierarchy::{EnumerationData, ScopeData, VariableData},
 };
 
-pub(crate) trait Input: BufRead + Seek + Send + Sync {}
-impl<T: BufRead + Seek + Send + Sync> Input for T {}
+use super::Input;
 
 pub(crate) struct Reader {
     inner: FstReader<Box<dyn Input>>,

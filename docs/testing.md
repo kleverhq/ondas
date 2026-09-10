@@ -1,128 +1,98 @@
 # Testing
 
-Tests establish the public contracts documented in Rust source. Shared waveform
-semantics are tested independently of file formats; reader adaptation is tested
-on real waveform artifacts. Fixture structure and oracle interpretation are
-owned by [the fixture contract](fixtures.md), not by individual test cases.
+Tests check the public contracts in Rustdoc. Memory-reader tests isolate shared
+semantics; real artifacts test adapters. [fixtures.md](fixtures.md) defines the
+catalog and oracle contract, and [api-coverage.md](api-coverage.md) maps contracts
+to executable tests. A passing test count alone does not establish coverage.
 
-## Self-Contained Semantics
+## Self-contained tests
 
-Unit tests do not require `ONDAS_FIXTURES`, vendor libraries, or external waveform
-readers. Cover:
+These tests need no `ONDAS_FIXTURES`, vendor libraries or external readers. Cover
+path parsing, escaping and round trips; hierarchy lookup, ambiguity and aliases;
+time bounds and entering state; packed and non-byte-aligned values; projection
+bounds and composition; same-tick ordering, redundant writes and events; selection
+order, duplicates, candidates and errors.
 
-- hierarchy path parsing, canonical formatting, escaping, and round trips;
-- in-memory hierarchy traversal, exact lookup, ambiguity, and aliases;
-- time bounds, empty ranges, entering states, and queries beyond recorded ticks;
-- packed and non-byte-aligned values, logic states, and projection boundaries;
-- composed projections and suppression of changes outside the observed slice;
-- history merging, same-tick ordering, redundant writes, and event multiplicity;
-- selection order and duplicates, candidate normalization, and error propagation.
+Use small diagnostic cases. Property tests suit invariants such as parsing a
+formatted path back to its exact components; broad random inputs need a clear
+failure interpretation.
 
-Use property tests when an invariant is clearer than enumerated examples, such as
-parsing a displayed path back into the same exact components. Start with small,
-diagnostic cases rather than broad random inputs with unclear failure causes.
-The [API coverage map](api-coverage.md) connects public contract areas to named
-executable tests; a passing test count alone does not establish completeness.
+The private memory reader models normalized waveforms, not VCD syntax or a vendor
+API. Exercise it through ordinary waveform and query objects. Cases include bits,
+reals, strings, events, aliases, delayed first values, wide values, whole signals
+and projections. Narrow counting or failing readers can check batching, resource
+reuse/release, borrowed lifetimes, early termination and partial failure. A
+configurable mock framework or simulated proprietary format is unnecessary.
 
-## Logical Test Backend
+## Reader conformance
 
-A private, test-only memory reader represents normalized metadata, hierarchy,
-and histories. It models a waveform, not VCD syntax or a vendor API. Exercise it
-through ordinary Ondas opening/query objects and public observations, rather
-than asserting against its private methods.
-
-Its cases include bits, real, string, events, aliases, a first value after tick
-zero, distinct changes within a tick, redundant persistent writes, wide values,
-and whole/projected signals. This isolates public semantics from reader quirks.
-
-Use narrow counting, failing, or callback test backends for specific questions:
-resource reuse and release, batching, shared base-signal preparation, borrowed
-lifetimes, early termination, or failure after partial observation. Do not build
-a configurable mock framework or simulate a whole proprietary binary format.
-
-## Real Reader Conformance
-
-One common runner applies the same backend-neutral oracle through the public API
-across this matrix:
+The common runner applies a backend-neutral oracle through the public API:
 
 ```text
 fixture × explicitly selected compatible backend × supported input mode
 ```
 
-Use real artifacts for adapter correctness. A tiny inline VCD is acceptable when
-its text makes a unit test clearer; it is not a general replacement for external
-fixtures. Exercise each reader implementation independently; sharing a decoder
-dependency does not establish coverage for another format. Proprietary readers
-are exercised against actual runtime libraries in an explicitly selected environment.
+Use real artifacts for adapter checks. Inline VCD works for small diagnostic
+cases but does not replace the external corpus. Test each reader independently,
+even when readers share a decoder. Proprietary readers need their actual runtime
+libraries in an explicitly selected environment.
 
-Select the backend explicitly when testing that adapter. Test automatic backend
-selection separately so priority changes cannot silently remove an implementation
-from coverage. Compare file and bytes inputs where the reader supports both.
+Select the reader explicitly so a priority change cannot remove it from coverage.
+Test automatic selection separately, and compare file/bytes modes where supported.
+Derive samples, traces, scans, entering states and projections from oracle windows
+instead of repeating histories in assertions. Check metadata, traversal, paths,
+identity, encodings, batches and selections. Candidate times may include extras,
+but must contain every required change time.
 
-Derive observations from fixture windows rather than restating the same history
-in many assertions. Exercise metadata, traversal, spellings, identity, encodings,
-samples, batches, selections, traces, scans, entering states, events, projections,
-and candidate timestamps. Check the public allowance for extra candidate times,
-not equality with an exact list of decoded changes.
+Ordinary tests cover selection order, duplicate inputs, early termination, invalid
+handles/slices, path errors and late callback failures. Sidecars are observations,
+not a test-command language. Reserve reader-specific cases for behavior the common
+oracle cannot express, such as runtime discovery or vendor error translation.
 
-Selection order, duplicate inputs, early termination, invalid handles, invalid
-slices, path errors, and late callback failures also need ordinary test cases;
-the sidecar is not an imperative test language. Reader-specific cases are limited
-to behavior the common observations cannot express, such as runtime discovery or
-mapping a particular vendor error.
+## Validation and failures
 
-## Fixture Validation and Failure
+Before conformance, validate the selected locked providers, sidecars, paths,
+sizes, hashes and oracle semantics once. Do not rehash artifacts per query.
+[fixtures.md](fixtures.md) defines the checks.
 
-Consume a materialized local catalog through `ONDAS_FIXTURES`. Validate selected
-locked providers, sidecars, artifact paths, sizes, hashes, and oracle semantics
-once before conformance assertions. Do not rehash a large artifact per query.
-Follow [fixtures.md](fixtures.md) for the authoritative validation rules.
+Missing configuration, required readers or selected fixtures must fail, as must
+invalid data and an empty required selection. Never turn them into skips or a
+successful zero-test run. A deliberately malformed waveform can still be a valid
+fixture with a negative oracle.
 
-An explicit suite fails on missing configuration, unavailable required readers,
-missing selected fixtures, invalid data, or an empty required selection. These
-conditions must not become skipped cases or a successful zero-test run.
+Catalog validation and conformance are separate results. An empty oracle is valid
+catalog data but supplies no semantic coverage. Tests do not download, generate,
+repair or publish fixtures. Public runs must work without private credentials or
+inaccessible artifacts; private providers use the same local contract.
 
-Catalog validation and semantic conformance are separate results. An empty oracle
-is valid catalog data but supplies no semantic assertions; do not report that as
-backend conformance coverage. A malformed waveform with an intentional negative
-oracle is a test input, not a malformed catalog.
+## Commands and coverage
 
-The runner does not download, generate, repair, or publish fixtures. Public and
-private providers share the same contract, but a public run must not depend on
-private credentials or inaccessible artifacts.
+Run `./dev just --list` for recipes. `./dev just test` runs self-contained Rust
+tests and doctests. `just check-local` adds static checks and repository-tool tests
+and is the fixture-free pre-commit gate. `just ci` also requires conformance.
+Formatting, Clippy, compilation and Rustdoc do not replace runtime tests.
 
-## Gates and Test Execution
+`./dev just conformance` runs the ignored FST/VCD integration tests against the
+locked provider. Missing environment, provider, version, artifacts or oracle data
+fails the suite. Default test runs leave these external tests ignored and do not
+claim their coverage.
 
-The root `justfile` defines executable recipes; discover them with
-`./dev just --list`. `./dev just test` runs self-contained Rust tests and doctests;
-`just ci` includes them along with static checks and repository-tool tests.
-Formatting, compilation, Clippy, and rustdoc alone do not prove runtime correctness.
+`full_fst_pool` and `full_vcd_pool` discover all matching artifacts without a
+whitelist. They validate inputs before opening and compare every listed sample
+and window in file/bytes modes. Equal-time samples and equal-bound windows are
+batched. One hierarchy traversal matches listed declarations; focused tests cover
+exact lookup and alias iterators. The runner does not cache the pool's artifact
+bytes.
 
-`./dev just conformance` explicitly runs the ignored real-FST integration tests
-against the provider pinned in `fixtures.lock.toml`. Missing environment, provider,
-version, artifacts, or oracle data fails this requested suite. The default test
-run does not execute these external tests or claim their coverage. `full_fst_pool`
-discovers every FST in the provider rather than maintaining a fixture whitelist.
-It validates selected artifacts before opening them, then compares every listed
-sample and window in file and bytes modes. Equal-time samples and equal-bound
-windows are batched to avoid decoding large files once per signal or transition.
-Listed declarations are matched from one public hierarchy traversal rather than
-repeating linear lookups for thousands of aliases. Exact lookup and alias-iterator
-contracts are exercised by the focused cases. Artifact bytes are not cached for
-the whole pool.
+Named regressions cover query wrappers, projections, duplicate handles and early
+termination. The full-pool runner reports every case and aggregates assertion and
+reader panics; any mismatch fails, with no expected-failure allowlist. Catalog
+errors abort before conformance. Panic interception belongs to tests, not the
+library. Corpus discovery does not certify every signal, tick, reader behavior
+or schema rule.
 
-Small, named regressions additionally exercise query wrappers, projections,
-duplicate handles and early termination. The full-pool test reports every case
-and aggregates assertion/reader panics so one failure does not conceal later
-cases. Panic handling belongs only to the test runner, not the library. Any
-mismatch fails the suite; there is no expected-failure allowlist. Catalog errors
-abort before conformance. Corpus discovery is not exhaustive signal/time coverage,
-reader certification, or a claim of complete schema validation.
-
-Public API examples should compile as doctests. Use `no_run` for examples that
-need an external artifact; use runnable examples for self-contained behavior.
-The direct documentation check is `./dev cargo test --doc --locked`.
-
-Public and private suites remain explicit and separate, following
-[automation policy](automation.md). Performance measurements are not correctness
-tests or timing-based CI gates; see [benchmarking](benchmarking.md).
+Public examples should be doctests: runnable for self-contained behavior,
+`no_run` when they need external artifacts. Check them directly with
+`./dev cargo test --doc --locked`. Public and private suites stay separate under
+[automation policy](automation.md). [Performance measurements](benchmarking.md)
+are neither correctness tests nor timing-based CI gates.

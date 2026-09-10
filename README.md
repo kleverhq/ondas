@@ -1,63 +1,40 @@
 # ondas
 
-Read-only Rust library for format-independent waveform analysis.
+> Under development. Expect changes to the code and API.
 
-Reads FST files and in-memory bytes through the independent `fst-native` backend,
-using the unmodified Rust `fst-reader` library. Other waveform formats have no
-reader in this release. Requires Rust 1.88 or newer.
+A read-only Rust library for waveform analysis. The goal is to support more
+waveform formats than any other library, including proprietary formats, through
+one API with consistent query semantics.
 
-## Public Documentation
+![Ondas architecture: backends open a Waveform with metadata and hierarchy; signal selections and backend observations feed the private query engine to produce public results.](docs/images/architecture.drawio.svg)
 
-The [API documentation on docs.rs](https://docs.rs/ondas) explains the public
-contracts and usage. Its source is rustdoc in `src/`.
+[API documentation](https://docs.rs/ondas) · [Library model](docs/model.md)
+
+
+## Backends
+
+| Backend | Format | Implementation | Documentation |
+|---|---|---|---|
+| `vcd-native` | VCD | Built-in Rust parser; no external parser dependency | [docs/vcd-native.md](docs/vcd-native.md) |
+| `fst-native` | FST | `fst-reader` 0.17.0 | [docs/fst.md](docs/fst.md) |
 
 ## Development
 
-Linux development uses the public devcontainer. The host requires Git, Docker,
-and the [Dev Container CLI](https://github.com/devcontainers/cli).
+Requires Linux, Git, Docker and the [Dev Container CLI](https://github.com/devcontainers/cli).
+Rust 1.88 or newer is required; the container supplies the toolchain.
 
 ```sh
 ./dev --install-hooks
+./dev just check-local
+# Configure ONDAS_FIXTURES in .env before installation/full CI.
+./dev just fixtures-install
 ./dev just ci
 ./dev just msrv
-./dev just conformance
 ```
 
-The CI recipe checks formatting, Clippy, compilation, API documentation,
-self-contained Rust tests/doctests, and repository-tool tests. Conformance is a
-separate explicit suite: it requires the provider pinned in `fixtures.lock.toml`
-and supplied through `ONDAS_FIXTURES` in the ignored root `.env`. Missing fixtures
-fail that suite rather than being skipped. It discovers every FST in the provider
-and checks its listed oracle observations in file and bytes modes, alongside
-focused API regressions. Per-case results remain visible even when another case
-fails; sparse observations are not exhaustive coverage of each artifact.
+`check-local` needs no external fixtures. `ci` includes conformance;
+`./dev just conformance` runs that suite on its own.
 
-See the public API documentation for reader limitations: some malformed FSTs can
-trigger upstream panics, and first-tick event callbacks can include initialization.
-FST character bytes are mapped as Latin-1 rather than guessed as UTF-8.
-
-Hook installation is explicit and per worktree. Start that worktree's container
-before committing on the host: the pre-commit hook runs the gate on staged changes
-through the existing container without starting or rebuilding it. Reinstall hooks
-after reviewing changes to `dev` or `tools/repo/git-hook`. Use
-`./dev just pre-commit` to check all tracked files manually.
-
-Generate local API documentation with `./dev just docs`, then open
-`target/doc/ondas/index.html`.
-
-Developer sources of truth:
-
-- [Library model](docs/model.md)
-- [Testing](docs/testing.md) and [fixture catalog/oracles](docs/fixtures.md)
-- [Benchmarking](docs/benchmarking.md)
-- [Environment and automation](docs/automation.md)
-- Format integration: [VCD](docs/vcd.md), [FST](docs/fst.md),
-  [GHW](docs/ghw.md), [FSDB](docs/fsdb.md), [WLF](docs/wlf.md)
-
-Agent guidance starts in `AGENTS.md`. Use ignored `tmp/` for local scratch and
-`docs/wip/yymmdd-slug/` for temporary work that needs committing; remove task
-directories before merge into `master`.
-
-## License
+[Development setup](docs/automation.md) · [Testing](docs/testing.md)
 
 Licensed under Apache License 2.0.

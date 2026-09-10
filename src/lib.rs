@@ -4,7 +4,9 @@
 Read-only, format-independent waveform analysis.
 
 The `fst-native` backend reads FST files and shared in-memory bytes using the
-Rust `fst-reader` library. Other formats have no reader in this release. File-based
+Rust `fst-reader` library. The independent `vcd-native` backend reads VCD directly,
+without converting to FST or storing full value histories. Other formats have no
+reader in this release. File-based
 examples use `no_run` because they need a waveform containing the named signals.
 The minimum supported Rust version is 1.88.
 
@@ -120,6 +122,33 @@ may already have called a visitor before a later error; owned queries return no
 partial result. Reader-specific limitations are described below.
 
 ## Reader support and limits
+
+`vcd-native` opens files and shared bytes with a full sequential validation pass,
+then replays selected signals for queries. It preserves aliases, exact ranges,
+nine-state bits, real signed zero, strings and ordinary repeated events. Source
+files must remain unchanged while open. Strings use reversible Latin-1 decoding,
+including escapes, NUL and padding. A real declaration with string records is
+classified as string storage before handles are returned.
+
+Persistent dump-block records are applied at their recorded tick. Event records
+inside `$dumpvars`, `$dumpall`, `$dumpoff` and `$dumpon` are snapshots, not emitted
+occurrences. Mixed checkpoint/event ticks do not establish physical multiplicity;
+resume records establish observed state, not the physical time of hidden changes.
+Unknown significant commands, incompatible aliases and malformed records fail
+opening; EVCD strength records and nonzero timezero are unsupported.
+
+```rust
+use ondas::{Encoding, Sample, Time};
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+let data = b"$var wire 1 ! ready $end $enddefinitions $end #5 1!";
+let mut wave = ondas::open_bytes_with("tiny.vcd", data.as_slice().into(), "vcd-native")?;
+let ready = wave.hierarchy().signal("ready")?;
+assert_eq!(ready.encoding(), Encoding::Bits { width: 1 });
+assert!(matches!(wave.sample(ready, Time::from_ticks(4))?, Sample::Missing { .. }));
+assert!(matches!(wave.sample(ready, Time::from_ticks(5))?, Sample::Value { .. }));
+# Ok(())
+# }
+```
 
 `fst-native` is a direct, unmodified adapter to `fst-reader` 0.17.0. It reads bits,
 reals, strings, and event callbacks, preserving aliases and explicit source ranges.

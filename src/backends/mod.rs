@@ -1,11 +1,19 @@
 pub(crate) mod fst;
+pub(crate) mod vcd;
 
-use std::ops::ControlFlow;
+use std::{
+    io::{BufRead, Seek},
+    ops::ControlFlow,
+};
+
+pub(crate) trait Input: BufRead + Seek + Send + Sync {}
+impl<T: BufRead + Seek + Send + Sync> Input for T {}
 
 use crate::{Result, Signal, Time, ValueRef};
 
 pub(crate) enum Reader {
     Fst(Box<fst::Reader>),
+    Vcd(Box<vcd::Reader>),
     #[cfg(test)]
     Memory {
         records: Vec<(usize, Time, crate::Value)>,
@@ -25,6 +33,7 @@ impl Reader {
         }
         match self {
             Self::Fst(reader) => reader.read(signals, end, visitor),
+            Self::Vcd(reader) => reader.read(signals, end, visitor),
             #[cfg(test)]
             Self::Memory {
                 records,

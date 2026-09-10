@@ -1,6 +1,6 @@
-//! Full-pool FST conformance plus focused public-API regressions.
+//! Full-pool native conformance plus focused FST public-API regressions.
 //! The independent oracle is sparse: only listed declarations and observations
-//! are assertions. Every discovered FST runs in file and bytes modes.
+//! are assertions. Every discovered FST/VCD runs in file and bytes modes.
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fs,
@@ -30,6 +30,25 @@ const CASES: [&str; 7] = [
 struct Fixture {
     path: PathBuf,
     oracle: Json,
+    format: Format,
+}
+
+impl Fixture {
+    fn backend(&self) -> &'static str {
+        match self.format {
+            Format::Fst => "fst-native",
+            Format::Vcd => "vcd-native",
+            _ => unreachable!(),
+        }
+    }
+
+    fn logical_name(&self) -> &'static str {
+        match self.format {
+            Format::Fst => "conformance.fst",
+            Format::Vcd => "conformance.vcd",
+            _ => unreachable!(),
+        }
+    }
 }
 
 fn tick(value: &Json) -> u64 {
@@ -304,12 +323,15 @@ fn load_fixture(provider: &Path, name: &str) -> Fixture {
     .expect("fixture JSON");
     assert_eq!(sidecar["schema"], 1, "{name}: sidecar schema");
     let artifact = &sidecar["artifact"];
-    assert_eq!(
-        artifact["file"], "waveform.fst",
-        "{name}: artifact filename"
-    );
-    assert_eq!(artifact["format"], "fst", "{name}: declared format");
-    let path = directory.join("waveform.fst").canonicalize().unwrap();
+    let extension = artifact["format"].as_str().unwrap();
+    let format = match extension {
+        "fst" => Format::Fst,
+        "vcd" => Format::Vcd,
+        _ => panic!("{name}: unexpected format {extension}"),
+    };
+    let filename = format!("waveform.{extension}");
+    assert_eq!(artifact["file"], filename, "{name}: artifact filename");
+    let path = directory.join(filename).canonicalize().unwrap();
     assert!(
         path.starts_with(&directory) && path.is_file(),
         "{name}: artifact containment/type"
@@ -368,7 +390,11 @@ fn load_fixture(provider: &Path, name: &str) -> Fixture {
     let oracle = sidecar["oracle"].clone();
     eprintln!("validating {PROVIDER}/{name}");
     validate_oracle(&oracle, oracle["open"]["result"] == "ok");
-    Fixture { path, oracle }
+    Fixture {
+        path,
+        oracle,
+        format,
+    }
 }
 
 fn fixtures() -> &'static [Fixture] {
@@ -385,12 +411,12 @@ fn fixtures() -> &'static [Fixture] {
 fn open(fixture: &Fixture, bytes: bool) -> ondas::Result<Waveform> {
     if bytes {
         ondas::open_bytes_with(
-            "conformance.fst",
+            fixture.logical_name(),
             fs::read(&fixture.path).unwrap().into(),
-            "fst-native",
+            fixture.backend(),
         )
     } else {
-        ondas::open_with(&fixture.path, "fst-native")
+        ondas::open_with(&fixture.path, fixture.backend())
     }
 }
 
@@ -398,8 +424,8 @@ fn checked_open(fixture: &Fixture, bytes: bool, context: &str) -> Option<Wavefor
     let result = open(fixture, bytes);
     if fixture.oracle["open"]["result"] == "error" {
         assert!(
-            matches!(result, Err(Error::Malformed { format: Format::Fst, ref backend, .. }) if backend == "fst-native"),
-            "{context}: expected Malformed FST opening error, got {}",
+            matches!(result, Err(Error::Malformed { format, ref backend, .. }) if format == fixture.format && backend == fixture.backend()),
+            "{context}: expected Malformed opening error, got {}",
             match result {
                 Ok(_) => "success".to_owned(),
                 Err(e) => e.to_string(),
@@ -412,13 +438,13 @@ fn checked_open(fixture: &Fixture, bytes: bool, context: &str) -> Option<Wavefor
 }
 
 fn metadata(wave: &Waveform, expected: &Json, bytes: bool, fixture: &Fixture) {
-    assert_eq!(wave.format(), Format::Fst);
-    assert_eq!(wave.backend(), "fst-native");
+    assert_eq!(wave.format(), fixture.format);
+    assert_eq!(wave.backend(), fixture.backend());
     let actual = wave.metadata();
     assert_eq!(
         actual.source_name(),
         if bytes {
-            "conformance.fst"
+            fixture.logical_name()
         } else {
             fixture.path.to_str().unwrap()
         }
@@ -1214,7 +1240,7 @@ fn run_case(index: usize, bytes: bool) {
     );
 }
 
-fn discover_fst(provider: &Path) -> Vec<String> {
+fn discover(provider: &Path, extension: &str) -> Vec<String> {
     let mut names = Vec::new();
     for entry in fs::read_dir(provider).expect("provider directory") {
         let entry = entry.unwrap();
@@ -1223,20 +1249,20 @@ fn discover_fst(provider: &Path) -> Vec<String> {
             continue;
         }
         let sidecar = directory.join("fixture.json");
-        let declares_fst = sidecar.is_file() && {
+        let declares_format = sidecar.is_file() && {
             let sidecar: Json = serde_json::from_slice(&fs::read(&sidecar).unwrap())
                 .unwrap_or_else(|e| panic!("{}: {e}", sidecar.display()));
-            sidecar["artifact"]["format"] == "fst"
+            sidecar["artifact"]["format"] == extension
         };
         // An orphaned artifact is a failing fixture, not an invisible exclusion.
-        if declares_fst || directory.join("waveform.fst").exists() {
+        if declares_format || directory.join(format!("waveform.{extension}")).exists() {
             names.push(entry.file_name().into_string().expect("UTF-8 fixture name"));
         }
     }
     names.sort();
     assert!(
         !names.is_empty(),
-        "no FST fixtures in {}",
+        "no {extension} fixtures in {}",
         provider.display()
     );
     names
@@ -1310,10 +1336,20 @@ fn panic_message(error: Box<dyn std::any::Any + Send>) -> String {
 #[test]
 #[ignore = "requires ONDAS_FIXTURES; run just conformance"]
 fn full_fst_pool() {
+    full_pool("fst");
+}
+
+#[test]
+#[ignore = "requires ONDAS_FIXTURES; run just conformance"]
+fn full_vcd_pool() {
+    full_pool("vcd");
+}
+
+fn full_pool(extension: &str) {
     let provider = provider();
-    let names = discover_fst(&provider);
+    let names = discover(&provider, extension);
     eprintln!(
-        "FST pool: {} fixtures, {} file/bytes cases",
+        "{extension} pool: {} fixtures, {} file/bytes cases",
         names.len(),
         names.len() * 2
     );
@@ -1337,7 +1373,7 @@ fn full_fst_pool() {
         .collect();
     assert!(
         invalid.is_empty(),
-        "FST catalog validation failed before conformance:\n{}",
+        "{extension} catalog validation failed before conformance:\n{}",
         invalid.join("\n")
     );
     let mut failures = Vec::new();
@@ -1362,13 +1398,13 @@ fn full_fst_pool() {
         }
     }
     eprintln!(
-        "FST pool: {} fixtures, {passed} passed, {} failed",
+        "{extension} pool: {} fixtures, {passed} passed, {} failed",
         names.len(),
         failures.len()
     );
     assert!(
         failures.is_empty(),
-        "FST pool failures:\n{}",
+        "{extension} pool failures:\n{}",
         failures.join("\n")
     );
 }
@@ -1605,10 +1641,11 @@ fn discovery_uses_artifacts_not_fixture_names_or_a_whitelist() {
     }
     fs::write(root.join("orphan/waveform.fst"), []).unwrap();
     fs::write(root.join("catalog.json"), "{}").unwrap();
-    assert_eq!(discover_fst(&root), ["anything", "orphan"]);
+    assert_eq!(discover(&root, "fst"), ["anything", "orphan"]);
+    assert_eq!(discover(&root, "vcd"), ["fst-not-selected"]);
     fs::remove_file(root.join("anything/fixture.json")).unwrap();
     fs::remove_file(root.join("orphan/waveform.fst")).unwrap();
-    assert!(std::panic::catch_unwind(|| discover_fst(&root)).is_err());
+    assert!(std::panic::catch_unwind(|| discover(&root, "fst")).is_err());
     fs::remove_dir_all(root).unwrap();
 }
 
