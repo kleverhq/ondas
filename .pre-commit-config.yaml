@@ -4,7 +4,7 @@ repos:
     hooks:
       - id: ondas-ci
         name: Ondas quality gate
-        entry: just ci
+        entry: just check-local
         language: system
         pass_filenames: false
         always_run: true

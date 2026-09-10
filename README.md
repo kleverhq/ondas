@@ -19,16 +19,19 @@ and the [Dev Container CLI](https://github.com/devcontainers/cli).
 
 ```sh
 ./dev --install-hooks
+./dev just check-local
+# Configure ONDAS_FIXTURES in .env before installation/full CI.
+./dev just fixtures-install
 ./dev just ci
 ./dev just msrv
-./dev just conformance
 ```
 
-The CI recipe checks formatting, Clippy, compilation, API documentation,
-self-contained Rust tests/doctests, and repository-tool tests. Conformance is a
-separate explicit suite: it requires the provider pinned in `fixtures.lock.toml`
+The CI recipe runs `check-local` (formatting, Clippy, compilation, API documentation,
+self-contained Rust tests/doctests, and repository-tool tests) and mandatory
+conformance. Pre-commit runs only `check-local`. Conformance requires the provider pinned in `fixtures.lock.toml`
 and supplied through `ONDAS_FIXTURES` in the ignored root `.env`. Missing fixtures
-fail that suite rather than being skipped. It discovers every FST and VCD in the provider
+fail that suite rather than being skipped. `fixtures-install` clones the locked
+GitHub tag and runs its checksum-verifying installer; CI never installs implicitly. It discovers every FST and VCD in the provider
 and checks its listed oracle observations in file and bytes modes, alongside
 focused API regressions. Per-case results remain visible even when another case
 fails; sparse observations are not exhaustive coverage of each artifact.

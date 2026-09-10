@@ -95,10 +95,11 @@ private credentials or inaccessible artifacts.
 
 The root `justfile` defines executable recipes; discover them with
 `./dev just --list`. `./dev just test` runs self-contained Rust tests and doctests;
-`just ci` includes them along with static checks and repository-tool tests.
+`just check-local` includes them along with static checks and repository-tool tests
+and is the fixture-free pre-commit gate. `just ci` additionally requires conformance.
 Formatting, compilation, Clippy, and rustdoc alone do not prove runtime correctness.
 
-`./dev just conformance` explicitly runs the ignored real-FST/VCD integration tests
+`./dev just conformance` (also required by `just ci`) runs the ignored real-FST/VCD integration tests
 against the provider pinned in `fixtures.lock.toml`. Missing environment, provider,
 version, artifacts, or oracle data fails this requested suite. The default test
 run does not execute these external tests or claim their coverage. `full_fst_pool` and

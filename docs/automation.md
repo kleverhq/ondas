@@ -93,7 +93,8 @@ Git directory, common directory, and exact `GIT_INDEX_FILE` into the container,
 clears inherited host Git environment, and calls the installed launcher's
 `--exec-only` mode. The container supplies Pre-commit, which isolates staged
 changes from unstaged edits before running `.pre-commit-config.yaml` checks.
-The configuration delegates to `just ci`; failure blocks the commit.
+The configuration delegates to fixture-free `just check-local`; failure blocks
+the commit. It never installs fixtures or runs conformance.
 
 Start the current worktree's container explicitly with `./dev true` or a normal
 `./dev just ...` command before `git commit`. Hook execution never starts,
@@ -176,8 +177,24 @@ never become an implicit side effect of a query or fixture test.
 
 Public GitHub Actions uses only the public devcontainer and the same `just ci`
 as a contributor. It neither reads local `.env` nor selects a private profile.
-Where a gate needs public fixtures, materialize or restore them before testing
-and provide the container-side `ONDAS_FIXTURES` explicitly. Missing required
+It runs on pushes to `main` and on pull requests, not other branch pushes.
+BuildKit's GitHub Actions layer cache reuses the public Dockerfile build; the
+runtime config retains the public container settings and uses that locally loaded
+image. No image registry publication credentials are needed.
+
+The fixture checkout/payload cache is keyed by OS and the complete lock-file hash.
+CI sets container-side `ONDAS_FIXTURES`, runs `just fixtures-install` even after a
+cache hit, then `just ci && just msrv`. The installer clones the exact `v<version>`
+tag from `kleverhq/ondas-fixtures`, checks checkout/catalog identity and invokes
+the provider installer without `--ignore-missing`. Existing payloads are size/hash
+verified; absent assets or corrupt downloads fail. No latest-tag fallback or
+cross-version cache restore is used. GitHub's read-only token supplies API access;
+fork PRs require no private secrets.
+
+Locally, install explicitly using the same target before running full CI. Neither
+`just ci` nor `just check-local` downloads fixtures implicitly. An existing checkout
+at another revision or with tracked edits is rejected, never reset: choose another
+fixture root or deliberately manage that checkout yourself. Missing required
 inputs are errors, not conditional skips.
 
 `rust-toolchain.toml` pins the development toolchain; `Cargo.toml`'s `rust-version`

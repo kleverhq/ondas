@@ -49,5 +49,12 @@ tools-test: _inside
 pre-commit: _inside
     pre-commit run --all-files
 
-# Run public static-quality, self-contained Rust, and repository-tool checks.
-ci: fmt-check lint check docs test tools-test
+# Install and verify the tagged public fixture provider from GitHub.
+fixtures-install: _inside
+    python3 -B tools/repo/install_fixtures.py
+
+# Run offline quality checks without external fixtures (also used by pre-commit).
+check-local: fmt-check lint check docs test tools-test
+
+# Run the full quality gate; fixtures must already be installed.
+ci: check-local conformance

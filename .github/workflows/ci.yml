@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 permissions:
@@ -12,7 +13,41 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build cached development image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: .devcontainer/Dockerfile
+          tags: ondas-dev:ci
+          load: true
+          cache-from: type=gha,scope=devcontainer
+          cache-to: type=gha,scope=devcontainer,mode=max
+      - name: Use the built image with the public container settings
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path('.devcontainer/devcontainer.json')
+          config = json.loads(path.read_text())
+          del config['build']
+          config['image'] = 'ondas-dev:ci'
+          Path('.devcontainer/ci.json').write_text(json.dumps(config))
+          PY
+      - name: Restore fixture provider
+        uses: actions/cache@v4
+        with:
+          path: fixtures
+          key: fixtures-${{ runner.os }}-${{ hashFiles('fixtures.lock.toml') }}
       - uses: devcontainers/ci@v0.3
         with:
-          configFile: .devcontainer/devcontainer.json
-          runCmd: just ci && just msrv
+          configFile: .devcontainer/ci.json
+          push: never
+          env: GITHUB_TOKEN
+          runCmd: |
+            export ONDAS_FIXTURES="$PWD/fixtures"
+            just fixtures-install
+            just ci
+            just msrv
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
