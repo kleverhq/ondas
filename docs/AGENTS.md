@@ -4,7 +4,7 @@
 
 - Public API contracts and examples belong in rustdoc under `../src/`, not in a Markdown API reference.
 - `model.md` owns the conceptual model; `testing.md` owns test strategy; `fixtures.md` and `oracle.schema.json` own the fixture contract; `benchmarking.md` owns measurement policy; `automation.md` owns maintainer workflow.
-- Backend internals belong in their own documents, starting with `vcd-native.md`. Other integration constraints remain in `fst.md`, `ghw.md`, `fsdb.md` and `wlf.md`. Keep user-visible reader selection and limitations in Rustdoc.
+- Backend internals belong in their own documents, including `vcd-native.md` and `fst-native.md`. Other integration constraints remain in `ghw.md`, `fsdb.md` and `wlf.md`. Keep user-visible reader selection and limitations in Rustdoc.
 - Available commands, dependencies, and toolchain versions come from `../justfile`, `../Cargo.toml`, `../rust-toolchain.toml`, and `../.devcontainer/`.
 
 ## Writing

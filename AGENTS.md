@@ -9,7 +9,7 @@ Ondas is a read-only Rust library for backend-independent waveform analysis.
 - Test strategy: `docs/testing.md`; fixture catalog and oracle contract: `docs/fixtures.md` and `docs/oracle.schema.json`; required provider versions: `fixtures.lock.toml`.
 - Performance methodology: `docs/benchmarking.md`.
 - Development environment, CI, tools, and release policy: `docs/automation.md`.
-- Backend architecture and limits: `docs/vcd-native.md`. Other format integration docs: `docs/fst.md`, `docs/ghw.md`, `docs/fsdb.md`, and `docs/wlf.md`.
+- Backend architecture and limits: `docs/vcd-native.md` and `docs/fst-native.md`. Other format integration docs: `docs/ghw.md`, `docs/fsdb.md`, and `docs/wlf.md`.
 - Executable commands and configuration: `justfile`, `dev`, `Cargo.toml`, `rust-toolchain.toml`, `.devcontainer/`, and `.github/workflows/`.
 - Host pre-commit dispatch and check selection: `tools/repo/git-hook` and `.pre-commit-config.yaml`.
 
