@@ -1,11 +1,20 @@
 # Changelog
 
-## Unreleased
+All notable changes to this project are documented here.
+
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+
+## [Unreleased]
 
 ### Added
 
 - Independent `fst-native` reader for FST files and shared in-memory bytes.
+  The unmodified upstream reader can panic on malformed input and include
+  initialization in first-tick event counts. Strings map bytes as Latin-1.
 - Independent `vcd-native` reader with full opening validation and batched replay.
+  Checkpoint event records do not count as occurrences; the reader does not
+  reconstruct hidden physical activity or support nonzero timezero and EVCD
+  strength records.
 - Self-contained VCD regressions.
 - Hierarchy lookup, aliases, bit projections, point/range queries, and reusable selections.
 - Self-contained API tests and a public-contract coverage map.
@@ -22,9 +31,4 @@
 
 - Preserve present-but-empty FST header text and canonical declaration kinds.
 
-### Reader limitations
-
-- The FST upstream reader is unmodified; some malformed inputs can panic.
-- VCD checkpoint event records are not occurrences; hidden physical activity is
-  not reconstructed. Nonzero timezero and EVCD strength records are unsupported.
-- FST first-tick events can include initialization. FST strings map bytes as Latin-1.
+[Unreleased]: https://github.com/kleverhq/ondas/compare/v0.1.0...HEAD
