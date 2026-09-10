@@ -2,7 +2,8 @@
 
 Ondas exposes waveform observations through a read-only, format-independent Rust
 API. [Rustdoc](https://docs.rs/ondas) defines the public contracts; this document
-explains the implementation boundaries.
+explains the implementation boundaries. The [architecture diagram](images/architecture.drawio.svg)
+shows the public entities and private read/query path.
 
 ## Scope
 
@@ -27,7 +28,7 @@ does not require a public backend enum, a generic waveform type or a plugin ABI.
 
 Readers remain independent even when they share a dependency: changing one
 format's reader must not require changes to another's. Native readers and
-third-party adapters can coexist. Reader choices belong in [VCD](vcd.md),
+third-party adapters can coexist. Reader choices belong in [vcd-native](vcd-native.md),
 [FST](fst.md), [GHW](ghw.md), [FSDB](fsdb.md) and [WLF](wlf.md), not in the common
 model.
 

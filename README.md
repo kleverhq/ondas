@@ -4,12 +4,19 @@
 
 A read-only Rust library for waveform analysis. The goal is to support more
 waveform formats than any other library, including proprietary formats, through
-one API with consistent query semantics. FST and VCD readers are available today.
+one API with consistent query semantics.
 
-- Exact hierarchy paths and aliases, with declaration metadata kept intact.
-- Samples, range queries and reusable signal selections in source ticks.
-- Separate persistent state and event counts, with explicit missing values.
-- Bit projections and streaming callbacks alongside owned query results.
+![Ondas architecture: backends open a Waveform with metadata and hierarchy; signal selections and backend observations feed the private query engine to produce public results.](docs/images/architecture.drawio.svg)
+
+[API documentation](https://docs.rs/ondas) · [Library model](docs/model.md)
+
+
+## Backends
+
+| Backend | Format | Implementation | Documentation |
+|---|---|---|---|
+| `vcd-native` | VCD | Built-in Rust parser; no external parser dependency | [docs/vcd-native.md](docs/vcd-native.md) |
+| `fst-native` | FST | `fst-reader` 0.17.0 | [docs/fst.md](docs/fst.md) |
 
 ## Development
 
@@ -28,7 +35,6 @@ Rust 1.88 or newer is required; the container supplies the toolchain.
 `check-local` needs no external fixtures. `ci` includes conformance;
 `./dev just conformance` runs that suite on its own.
 
-[API documentation](https://docs.rs/ondas) · [Development setup](docs/automation.md)
-· [Library model](docs/model.md) · [Testing](docs/testing.md)
+[Development setup](docs/automation.md) · [Testing](docs/testing.md)
 
 Licensed under Apache License 2.0.
