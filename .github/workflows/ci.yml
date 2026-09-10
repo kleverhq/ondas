@@ -25,6 +25,8 @@ jobs:
           cache-to: type=gha,scope=devcontainer,mode=max
       - name: Use the built image with the public container settings
         run: |
+          # The CLI's derived image must see the image loaded into host Docker.
+          docker buildx use default
           python3 - <<'PY'
           import json
           from pathlib import Path
