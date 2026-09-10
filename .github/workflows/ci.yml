@@ -34,7 +34,8 @@ jobs:
           config = json.loads(path.read_text())
           del config['build']
           config['image'] = 'ondas-dev:ci'
-          Path('.devcontainer/ci.json').write_text(json.dumps(config))
+          Path('.devcontainer/ci').mkdir()
+          Path('.devcontainer/ci/devcontainer.json').write_text(json.dumps(config))
           PY
       - name: Restore fixture provider
         uses: actions/cache@v4
@@ -43,7 +44,7 @@ jobs:
           key: fixtures-${{ runner.os }}-${{ hashFiles('fixtures.lock.toml') }}
       - uses: devcontainers/ci@v0.3
         with:
-          configFile: .devcontainer/ci.json
+          configFile: .devcontainer/ci/devcontainer.json
           push: never
           env: GITHUB_TOKEN
           runCmd: |
