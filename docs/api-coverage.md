@@ -1,15 +1,14 @@
-# Public API Test Map
+# Public API test map
 
-Rustdoc in [`src/`](../src/lib.rs) owns the contracts; [testing.md](testing.md)
-owns test strategy. This map points to executable observations, not an API
-reference or a claim that every branch is tested. Test names below are relative
-to the named file's test module.
+[Rustdoc](../src/lib.rs) defines contracts; [testing.md](testing.md) explains test
+strategy. This map identifies executable checks, not complete branch coverage.
+Test names are relative to the listed file's test module.
 
 ## Self-contained checks
 
 Run `./dev --exec-only cargo test --locked --lib` in a running development
 container. Shared queries use the private `Waveform::memory` helper and exercise
-public query results, independently of FST decoding.
+public query results without format decoding.
 
 | Public surface / contract area | Tests and observations |
 | --- | --- |
@@ -36,17 +35,17 @@ The following tests are in [`src/query/tests.rs`](../src/query/tests.rs), throug
 ## Reader-specific evidence and limits
 
 [`tests/conformance.rs`](../tests/conformance.rs) contains external FST and VCD
-observations. `full_fst_pool` and `full_vcd_pool` discover every artifact of their
-format, and `pool_queries` batches
-all listed samples/windows, with per-case results and no failure allowlist.
+observations. `full_fst_pool` and `full_vcd_pool` discover all artifacts of their
+format. `pool_queries` batches listed samples/windows and reports each case,
+without a failure allowlist.
 Listed declarations are matched from public traversal; focused cases additionally
 exercise exact lookup and alias iterators. Native kind normalization has regressions
 `real_parameter_kind_is_canonical` and `compound_scope_kinds_are_canonical` in
 [`src/backends/fst.rs`](../src/backends/fst.rs). Full-pool metadata assertions also
 check present-but-empty header text.
-Its `open` helper explicitly selects the corresponding native reader for file and bytes input;
-`metadata`, `hierarchy`, `sample_queries`, `window_queries`, and `scan_queries`
-apply oracle assertions through the public API. `automatic_opening_uses_content_and_keeps_logical_names`
+The `open` helper selects the native reader explicitly for file/bytes input.
+`metadata`, `hierarchy`, `sample_queries`, `window_queries` and `scan_queries`
+check the oracle through the public API. `automatic_opening_uses_content_and_keeps_logical_names`
 checks automatic opening, `Waveform::format` / `backend`, and logical source names.
 `counter_slice_projections_file` / `_bytes` and `foreign_handle_validation_file` /
 `_bytes` provide targeted reader-backed checks. These paths require the fixture
@@ -64,10 +63,10 @@ dumpall-only state, strict blackout-boundary entering states, event checkpoints,
 alias projections, same-tick ordering, Break/replay and output ownership. Run it
 with `./dev cargo test --locked --test vcd_native`.
 
-Memory tests do not establish FST buffer reuse, resource bounds, malformed-input
-hardening, or vendor-reader behavior. Oracle assertions cover only supplied
-observations; opening a file is not semantic coverage of its contents. Optional
-first-observation `changed_at` and extra candidate times remain allowed. FST's
-first-tick event limitation is documented in [crate rustdoc](../src/lib.rs), not
-imposed on genuine memory-backend events. Reserved error variants without an
-active reader path are not exercised by constructing synthetic enum values.
+Memory tests do not prove FST buffer reuse, resource bounds, malformed-input
+hardening or vendor behavior. Oracles cover supplied observations, not every
+content of an opened file. First-observation `changed_at` may be unknown, and
+candidate times may include extras. FST's first-tick event limitation in
+[crate rustdoc](../src/lib.rs) does not apply to genuine memory-reader events.
+Constructing reserved error variants would not exercise a reader path, so tests
+do not count that as coverage.

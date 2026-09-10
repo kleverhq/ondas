@@ -1,10 +1,10 @@
 # Benchmarking
 
-Ondas uses Criterion for manual investigation of public API performance.
-Criterion owns local results and baselines. Performance is not an automatic CI
-or release gate, and benchmarks do not duplicate functional conformance checks.
+Use Criterion to investigate public API performance and manage local results and
+baselines. Timings are not CI or release gates; benchmarks do not repeat
+conformance assertions.
 
-## Workload Organization
+## Workloads
 
 Use one Criterion target per measured format, such as `benches/fst.rs`. Share
 fixture lookup and operation implementations in `benches/support/`; keep concrete
@@ -16,20 +16,18 @@ benchmark case   = fixture + operation + parameters
 backend          = reader implementation
 ```
 
-Equivalent fixtures across formats are not required, and measurements from
-different format targets are not automatically comparable. Add a target or case
-to answer a concrete performance question, not to complete a parameter matrix.
+Add cases for concrete performance questions, not to fill a matrix. Formats need
+neither equivalent fixtures nor directly comparable results.
 
-Use the same fixture identity, provider-version lock, and materialized catalog
-as [tests](fixtures.md). Reuse catalog validation, including artifact integrity,
-before measurement, not inside timed iterations. Benchmark code neither fetches
-fixtures nor updates their metadata.
+Use the [test catalog and lock](fixtures.md). Validate fixtures and their hashes
+before timing, never inside iterations. Benchmarks neither fetch fixtures nor
+update metadata.
 
 Signal paths, selection sizes, ticks, ranges, and projections are Rust workload
 parameters. Do not introduce a benchmark manifest, recipe language, or
 performance expectations in fixture sidecars.
 
-## Controlled Comparisons
+## Comparisons
 
 Use an explicit backend for the principal cases. Compare readers within one
 Criterion group over the same artifact, operation, selection, time bounds, and
@@ -42,12 +40,11 @@ names distinguish cases inside a shared group. File and bytes inputs are modes
 of the same format target; register bytes cases only for readers that support
 them.
 
-Before comparing revisions, run relevant unit and conformance tests. Benchmark
-setup checks fixture availability, backend availability, signal resolution, and
-successful operations. It does not reimplement oracle assertions, compute result
-fingerprints, or infer correctness from matching timings.
+Run relevant unit and conformance tests before comparing revisions. Setup checks
+fixtures, readers, signal resolution and successful operations. It does not repeat
+oracle assertions, fingerprint results or infer correctness from equal timings.
 
-## Measurement Boundaries
+## Measurement boundaries
 
 Each case states what its timed region includes:
 
@@ -66,12 +63,11 @@ include path resolution or selection creation unless that is the operation under
 study. Use `black_box` on inputs and results; for callback scans, consume a minimal
 counter or equivalent observable output through `black_box`.
 
-Opening a fresh waveform is not a cold-disk benchmark: filesystem page cache may
-be warm. Reusing query preparation likewise measures that reuse, not an
-unprepared first query. Keep setup and destruction boundaries consistent between
-compared cases.
+A fresh waveform may use a warm filesystem cache; it is not a cold-disk test.
+Prepared queries measure reuse, not first-query cost. Compare cases with the same
+setup and destruction boundaries.
 
-## Local Baselines
+## Local baselines
 
 Use Criterion's normal baseline mechanism for an existing format target, for
 example from the repository root:
@@ -85,21 +81,19 @@ example from the repository root:
 ./dev cargo bench --bench fst -- scan
 ```
 
-Revision selection is a host Git operation. Preserve local Criterion results
-between runs; separate worktrees do not inherently share baselines. Baselines
-remain under ignored build output and are neither committed nor archived by the
-project. Changed fixtures or workload definitions invalidate an assumed
+Select revisions with host Git and preserve Criterion output between runs;
+worktrees do not share it automatically. Keep baselines in ignored build output,
+without committing or archiving them. Changed fixtures or workloads invalidate a
 like-for-like comparison.
 
-## Automation Boundary
+## Automation
 
 CI may compile benchmark targets with `cargo check --benches` and may perform a
 public-fixture smoke run. Smoke timings are not regression evidence. A proprietary
 target must not prevent unrelated public targets from compiling; explicitly
 requesting that target without its fixtures or runtime must fail clearly.
 
-Do not add a custom runner, result format, comparator, historical result store,
-threshold gate, dashboard, or mandatory cross-format dataset. Memory, allocation,
-and RSS profiling are separate investigations, not part of this benchmark
-contract. Use ignored `tmp/` for ad hoc notes and the tracked-WIP policy only when
-investigation context needs to travel with a branch.
+Keep Criterion's runner, results and comparisons. Custom history stores,
+thresholds, dashboards and mandatory cross-format datasets are outside this
+contract, as are memory, allocation and RSS profiling. Put notes in ignored `tmp/`;
+use tracked WIP only when the investigation must travel with a branch.

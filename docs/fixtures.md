@@ -1,11 +1,10 @@
 # Fixture catalog and oracle contract
 
-This document defines the local filesystem contract for waveform fixtures, provider
-versions, sidecars, and backend-neutral expected observations. The normative
-structural schema for the `oracle` value is [oracle.schema.json](oracle.schema.json)
-(JSON Schema Draft 2020-12); its additional semantic constraints are defined here.
-That schema does not describe the provider catalog or the whole sidecar envelope.
-See [Testing](testing.md) for test strategy.
+This contract defines fixture layout, provider versions, sidecars and expected
+observations. [oracle.schema.json](oracle.schema.json) defines the oracle's
+structure (JSON Schema Draft 2020-12); this document adds semantic constraints.
+The schema does not cover catalogs or sidecar envelopes. See [testing](testing.md)
+for how the runner uses them.
 
 ## Catalog root and identity
 
@@ -33,13 +32,11 @@ $ONDAS_FIXTURES/
         └── waveform.<format>
 ```
 
-There may be multiple providers and multiple fixtures per provider. Fixture
-identity is exactly `<provider>/<fixture-name>`. Both parts are directory names
-valid as a single filesystem path component. Fixture names are unique within a
-provider. The provider is an opaque, stable namespace; deriving it from a
-repository name, such as `kleverhq.ondas-fixtures`, is recommended for a
-repository-backed catalog. Source URLs are neither part of identity nor required
-by the runner.
+The root can hold multiple providers, each with multiple fixtures. Identity is
+exactly `<provider>/<fixture-name>`; both names are single path components, and
+fixture names are unique within a provider. Provider names are stable, opaque
+namespaces. A repository-derived name such as `kleverhq.ondas-fixtures` is
+recommended. Source URLs are not identity and are not required by the runner.
 
 Each fixture directory contains exactly one waveform artifact named
 `waveform.<format>` and one sidecar named `fixture.json`. Materialization sources,
@@ -106,10 +103,9 @@ name; no duplicate name field is required. A minimal envelope looks like this
 }
 ```
 
-Human-readable fields such as `description` are permitted outside the oracle.
-They carry no test semantics and must not contain executable materialization
-commands required by the runner. The oracle's prohibition on unknown fields does
-not define an equivalent closed schema for the envelope.
+Fields such as `description` are allowed outside the oracle, but have no test
+semantics and cannot supply materialization commands required by the runner.
+The oracle's closed schema does not make the envelope a closed schema.
 
 ### Artifact
 
@@ -177,14 +173,13 @@ valid. Tags aid selection but neither replace an oracle nor prove a property.
 | `malformed` | Intentionally damaged artifact; an oracle, when present, describes the error. |
 | `large` | Source artifact size at least 50 MiB (52,428,800 bytes). |
 
-Unknown or duplicate tags are validation errors. Adding a tag requires changing
-this whitelist; format and reader names are not tags. There is no tag query
-language, inheritance, profile system, or tag expression language in this contract.
+Unknown or duplicate tags fail validation. Add tags only by changing this list;
+format and reader names are not tags. The contract has no tag expressions,
+inheritance or profiles.
 
-Empty oracles and empty tags are valid. A catalog containing only empty oracles
-can pass catalog validation, but supplies no oracle semantic assertions and cannot
-establish semantic conformance. This distinction adds no nonempty-oracle
-requirement to the schema.
+Empty oracles and tags are valid. A catalog of empty oracles can pass validation
+but provides no semantic conformance evidence; the schema does not require
+nonempty oracles.
 
 ## Sparse oracle semantics
 
@@ -204,11 +199,10 @@ modes, exhaustive hierarchy counts, or global negative assertions about unlisted
 objects. Even observations that happen to cover a small waveform entirely remain
 a sparse oracle.
 
-The runner executes no commands from the oracle. Recipes, reader versions,
-container images, logs, source paths, and oracle-generation provenance belong
-outside the runtime sidecar. Artifact provenance remains in the envelope's
-`provenance` section. Format comes from `artifact.format`, never a duplicate
-oracle field. Performance-specific expectations are outside this contract.
+The runner executes no oracle commands. Keep recipes, reader versions, images,
+logs, source paths and oracle-generation provenance outside runtime sidecars.
+Artifact provenance belongs in the envelope's `provenance`; format comes only
+from `artifact.format`. Performance expectations are outside this contract.
 
 ### Common types and references
 
@@ -432,12 +426,11 @@ and the semantic constraints not captured by its structure:
 Unobtained data must not become `null` or `[]`: omit it, or fail oracle generation.
 Structural schema validation alone is insufficient.
 
-## Validation, discovery, and execution
+## Validation and execution
 
-### Validate once before conformance
+### Catalog checks
 
-Before fixture assertions, a runner validates the selected catalog once. For
-every locked provider, it must verify:
+Before conformance, validate each selected locked provider once:
 
 1. `$ONDAS_FIXTURES/<provider>` exists and is a directory.
 2. `catalog.json` exists and obeys the catalog metadata contract.
@@ -452,21 +445,17 @@ every locked provider, it must verify:
 11. Tags are unique whitelist members and the oracle satisfies structural and
     semantic validation.
 
-Any validation error aborts the fixture suite before conformance tests. Validation
-is separate from individual cases; do not rehash a large artifact for each sample
-or trace assertion.
+Any validation error aborts before conformance. Do not rehash artifacts for
+individual samples or traces.
 
 ### Discovery and selection
 
-Discover fixtures from immediate child directories of locked providers containing
-`fixture.json`. Selection may use provider, fixture name, declared format, tags,
-and backend compatibility. Selection must be explicit and deterministic; the exact
-command-line interface is not part of this contract.
+Discover immediate child directories containing `fixture.json`. Select by
+provider, fixture name, declared format, tags or backend compatibility. Selection
+must be explicit and deterministic; its CLI is outside this contract.
 
-A selected fixture that is absent or invalid is an error, not a skip. An explicitly
-requested backend-specific suite must fail if its library or required fixtures
-are unavailable. An explicit fixture request must not silently succeed with zero
-tests; an empty selection is an error when the suite requires at least one fixture.
+Missing or invalid selected fixtures, unavailable required readers, and empty
+selections in suites requiring fixtures must fail rather than skip.
 
 ### Conformance matrix
 
@@ -485,44 +474,29 @@ selections, traces, scans, entering values, events, bit projections, candidate
 timestamps, and expected errors. Permitted false-positive candidate timestamps
 are accepted, but all mandatory change times must be present.
 
-### Configuration errors versus negative fixtures
+### Configuration errors and negative fixtures
 
-Each of these is a fixture-run error:
+Missing `ONDAS_FIXTURES` or root, failed catalog checks, unavailable required
+readers and empty required selections are run errors, never skips or successful
+empty runs. A deliberately malformed waveform is different: its valid sidecar
+can specify the Ondas error that conformance should observe.
 
-- missing `ONDAS_FIXTURES` or a nonexistent root;
-- missing locked provider, invalid catalog metadata, mismatched provider identity,
-  or a version different from the lock;
-- missing selected fixture, invalid sidecar, missing artifact, or size/checksum
-  mismatch;
-- unavailable required backend;
-- no fixtures after selection when the suite requires at least one.
+## Public and private providers
 
-These errors must not be hidden as skips or an empty successful run. A deliberately
-malformed waveform is different: it can be a valid catalog artifact with a valid
-sidecar describing the expected Ondas error, which conformance then checks.
+Both use the same layout and sidecars. Locked public artifacts must be accessible
+to contributors and fork CI without private credentials. Keep private fixtures
+entirely in private providers, without public placeholders or sidecars for
+inaccessible data. `public-provider/basic-values` and
+`private-provider/basic-values` are different identities.
 
-## Public/private providers and the materialization boundary
+Once installed under `ONDAS_FIXTURES`, a private provider behaves like any other.
+Storage, authentication, generation and publication are external to the runner
+and independent of Ondas. Any external process or mounted filesystem can supply
+a provider that meets this contract, regardless of format or size.
 
-Public and private providers use the same local layout and sidecar contracts.
-Every locked public artifact must be available to ordinary contributors and fork
-CI without private credentials. A private fixture belongs entirely in a private
-provider: public catalogs must not contain placeholders or sidecars for
-inaccessible private artifacts. `public-provider/basic-values` and
-`private-provider/basic-values` are distinct identities.
-
-Private storage, authentication, and materialization are outside the runner. Once
-materialized under `ONDAS_FIXTURES`, a private provider behaves like any other.
-Provider source repositories and publication mechanisms are independent of Ondas.
-
-The runner consumes local data only. It must not run simulators, execute sidecar
-commands, download providers, authenticate to external storage, rebuild artifacts,
-update checksums, or publish catalogs. Any external process may materialize a
-provider whose resulting directory satisfies this contract, whether it contains
-a tiny text waveform, a public binary corpus, a locally generated dump, a private
-proprietary waveform, or a large artifact mounted from another filesystem.
-
-Self-contained tests, shared catalog validation and conformance logic, the provider
-lock contract, and an optional environment example belong on the Ondas side of
-this boundary. Materialized waveform fixtures do not belong in the repository.
-Delivery, storage, fixture generation, and performance methodology are outside
-this contract.
+The runner reads local data only. It cannot run simulators or sidecar commands,
+download or authenticate to storage, rebuild artifacts, update hashes or publish
+catalogs. Ondas owns self-contained tests, shared validation/conformance, the lock
+contract and an optional environment example, not materialized waveforms.
+Delivery, storage, generation and performance methodology remain outside this
+contract.

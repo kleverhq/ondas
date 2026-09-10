@@ -1,42 +1,32 @@
-# GHW Integration
+# GHW integration
 
-## Reader Boundary
+GHW is GHDL's binary waveform format. The planned adapter uses `wellen` to map
+declarations and histories to the [common model](model.md), without exposing the
+GHDL type system or a format-specific database API. Establish supported constructs
+and decoding limits with real files; recognizing a format does not prove language
+coverage.
 
-GHW is the GHDL waveform format in the Ondas model. Its open-source reader
-integration uses `wellen`. The adapter maps source declarations and histories
-into the [shared model](model.md); it does not expose a GHDL type system or a
-format-specific database API.
+## Mapping
 
-Treat artifacts as binary data. Use real GHW files to establish supported source
-constructs and record concrete decoding limitations here. Do not infer complete
-language coverage from recognition of the file format.
+Preserve available type names, enumeration labels/encodings, direction, constants
+and source ranges. Leave unknown information absent. A lack of transitions does
+not make a declaration constant.
 
-## Declaration and Value Mapping
+Declaration indices and normalized query-bit positions differ. Keep distinct
+logic states instead of collapsing them to binary. Enumeration metadata belongs
+to declarations, not a separate runtime-value variant.
 
-Keep declaration type names, enumeration labels and encodings, direction,
-constant properties, and source ranges where the reader provides them. Unknown
-information remains absent rather than guessed. A constant declaration is not
-defined by a history with no transitions.
+A declaration without a queryable history differs from a history with an
+unsupported encoding. Preserve its hierarchy information without inventing values
+or failing unrelated lookups.
 
-Preserve the distinction between declaration indices and normalized query-bit
-positions. Represent supported multi-state logic without collapsing distinct
-states to binary zero or one. Enumeration metadata describes declarations; it
-does not introduce a separate public runtime-value variant.
+## Verification
 
-Declarations that cannot supply queryable histories and histories with unsupported
-value encodings are different cases. Preserve available hierarchy information
-and use the corresponding public contracts instead of failing unrelated lookups
-or synthesizing values.
+Use real GHW fixtures with the [common conformance suite](testing.md). Check
+ranges, types/enumerations, constants/generics, logic states, unsupported encodings
+and reader error translation. Sparse observations do not establish complete
+hierarchy coverage.
 
-## Verification and Measurement
-
-Run the common [conformance suite](testing.md) on real GHW fixtures, emphasizing
-source ranges, type and enumeration metadata, constants/generics, logic states,
-and the boundary of unsupported encodings. Apply only assertions supported by
-artifact evidence; sparse oracles do not claim exhaustive hierarchy coverage.
-
-Use explicit `wellen` selection and exercise each input mode that the integration
-supports. Check both observation correctness and reader failure translation.
-GHW performance workloads belong in their own format target under the
-[benchmarking contract](benchmarking.md); they need not duplicate a VCD/FST
-fixture set.
+Select `wellen` explicitly and test each supported input mode. GHW performance
+cases belong in their own target under the [benchmarking policy](benchmarking.md);
+they need not reproduce a VCD/FST fixture set.

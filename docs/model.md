@@ -1,124 +1,100 @@
-# Library Model
+# Library model
 
-Ondas presents the common observable part of waveform data through a read-only,
-format-independent Rust API. The public types and their detailed contracts live
-in [rustdoc](https://docs.rs/ondas); this document owns the conceptual boundaries
-used to implement them.
+Ondas exposes waveform observations through a read-only, format-independent Rust
+API. [Rustdoc](https://docs.rs/ondas) defines the public contracts; this document
+explains the implementation boundaries.
 
 ## Scope
 
-The model covers source metadata, hierarchy declarations, queryable value
-histories, static bit projections, point observations, range observations, and
-repeated queries over a selected signal set.
+The model covers metadata, hierarchy, value histories, static bit projections,
+point and range observations, and repeated queries over selected signals.
+Writing, conversion, live ingestion, transactions, assertions, coverage, design
+connectivity and asynchronous queries are outside its scope. A waveform is not a
+complete HDL design database.
 
-Writing or converting waveforms, live ingestion, transactions, assertions,
-coverage, design connectivity, and asynchronous queries are outside this model.
-A waveform database is not a complete HDL design database.
+## Formats and readers
 
-## Formats and Implementations
+A format is a source representation; a backend is a reader implementation. One
+reader can support several formats, and one format can have several readers.
+Opening binds the waveform to one backend. Automatic selection uses deterministic
+priority among compiled, available readers for the recognized format. Explicit
+selection never falls back to another reader. Cargo features add implementations
+rather than selecting mutually exclusive modes.
 
-A format identifies the source representation. A backend identifies the reader
-implementation. These are separate dimensions: a reader can support several
-formats, and a format can have several readers.
+Backend names are stable lower-kebab-case strings. Concrete types, vendor
+handles, callbacks, indices and reader-specific errors stay private. Selection
+does not require a public backend enum, a generic waveform type or a plugin ABI.
 
-Opening binds a waveform to one backend. Automatic selection considers the
-recognized format and compiled, runtime-available readers in deterministic
-priority order. Explicit selection exercises only the named reader, without
-fallback. Cargo features add implementations rather than selecting mutually
-exclusive modes.
+Readers remain independent even when they share a dependency: changing one
+format's reader must not require changes to another's. Native readers and
+third-party adapters can coexist. Reader choices belong in [VCD](vcd.md),
+[FST](fst.md), [GHW](ghw.md), [FSDB](fsdb.md) and [WLF](wlf.md), not in the common
+model.
 
-Backend identities are stable lower-kebab-case strings. Concrete backend types,
-vendor handles, callbacks, indices, and library-specific errors stay private.
-Neither a public backend enum nor a generic waveform parameter is needed to let
-callers select a reader. Backend selection is not a public plugin ABI.
+## Identity and ownership
 
-Backend integrations are independent. Sharing an underlying reader library does
-not couple formats: replacing or adding a reader for one format must not require
-changing readers for another. A native implementation and a third-party adapter
-can coexist behind the same public contracts.
+A hierarchy is immutable and cloneable; scopes and variables borrow it. A
+variable is a declaration, while a signal identifies a history. Aliases can
+share a history without losing their separate declaration metadata. Some
+declarations have no queryable history.
 
-Concrete reader choices and integration constraints belong in the format documents:
-[VCD](vcd.md), [FST](fst.md), [GHW](ghw.md), [FSDB](fsdb.md), and [WLF](wlf.md).
-The common model does not prescribe a reader library for any format.
+A signal handle identifies a whole history or a static bit projection, not a
+path or raw reader index. Validation includes waveform identity so a foreign
+handle cannot accidentally select a local signal.
 
-## Identity and Ownership
+Hierarchy paths contain exact components. Escaping affects display, not identity.
+Brackets, dots and whitespace inside source names are not traversal syntax.
+Public hierarchy contracts define lookup spelling and slice-selector precedence.
 
-A hierarchy is immutable and cloneable. Scopes and variables are borrowed views
-of that hierarchy. A variable is a declaration; a signal is a queryable history.
-Several alias declarations can name the same history, while a declaration can
-also have no queryable history.
+## Time and observations
 
-A signal handle identifies a whole history or a static bit projection of it. It
-is not a declaration path or a raw backend index. Handle validation must retain
-waveform identity, so an index from another waveform cannot accidentally select a
-local signal. Aliases share whole-signal identity without losing their separate
-declaration metadata.
+Time uses absolute source ticks and an exact integer timescale factor/unit.
+Reader-local time indices and timestamp tables stay private. The model has no
+separate delta-cycle coordinate.
 
-Hierarchy paths are sequences of exact components. String escaping is a
-presentation concern, not identity. Source-language brackets, dots, or whitespace
-inside names must not be reinterpreted as traversal structure. Lookup syntax and
-slice-selector precedence belong to the public hierarchy contracts.
+Persistent values establish state; events have multiplicity but no persistent
+state. Point and range queries answer different questions about changes within
+one tick. Entering state is separate from changes in the range: never invent a
+`start - 1` timestamp. Missing state, empty history and query failure are distinct.
 
-## Time and Observations
+A bit projection reports changes to its observed value, not activity in discarded
+bits. Declaration ranges retain HDL indices and direction; projections use
+normalized value positions. Sharing base-signal reads must not change projection
+identity or semantics.
 
-Time is expressed in absolute source ticks. Exact timescales retain an integer
-factor and unit rather than floating-point seconds. Backend-local time indices
-and global timestamp tables do not become public API.
+## Queries and storage
 
-Persistent values and event occurrences are different kinds of observation.
-Persistent histories establish state; events have multiplicity but no persistent
-state. A point observation and a range history answer different questions about
-changes within the same tick. Separate delta-cycle identifiers are not part of
-the model.
+A waveform owns source access and query state. A selection holds ordered signal
+handles and reusable reader preparation. One-shot and prepared queries have the
+same meaning; only their cost differs.
 
-Entering state is represented separately from changes in a queried range. The
-implementation must not invent a timestamp such as `start - 1`. Missing state,
-an empty history, and a query failure are distinct outcomes.
+Owned observations can outlive queries. Callback views borrow reader buffers;
+copying a view produces owned data, and a borrow cannot outlive its owner or
+callback. Packed bits are an implementation choice, not a public string-storage
+contract.
 
-Bit projections describe observed values, not merely activity in the underlying
-storage. A change to a discarded bit must not become a projected value change.
-Declaration ranges retain HDL indices and direction; projections use normalized
-value positions. Shared loading of several projections is an optimization, not
-a change to their public identities or observation semantics.
+Candidate timestamps form a conservative activity index, not a decoded history.
+Public query contracts define their ordering and allowances, along with event
+multiplicity, range bounds and callback termination.
 
-## Queries and Storage
+## Adapter responsibilities
 
-A waveform owns source access and query state. A selection holds an ordered set
-of signal handles together with reusable backend preparation. One-shot and
-selection queries have the same meaning; preparation only changes cost.
+Shared code owns path identity, projections, selection ordering and normalized
+observations. Adapters decode sources, manage resources, convert metadata and
+translate reader failures. Test pure conversions locally and adapters against
+real artifacts.
 
-Owned observations serve simple callers and long-term storage. Borrowed views
-allow callback-based processing without copying every backend buffer. Copying a
-view creates an owned value; borrowed data must never outlive its owner or
-callback lifetime. Packed bit representations remain an implementation choice,
-not a string-based public storage contract.
-
-Candidate timestamps provide an activity index rather than decoded value
-history. Their conservative nature permits cheaper queries without changing the
-meaning of samples or traces. Exact ordering, multiplicity, range bounds, and
-callback termination rules are specified on the public query types and methods.
-
-## Adaptation Boundary
-
-Shared library code owns path identity, projection semantics, selection ordering,
-and normalized observations. Reader adaptation owns source decoding, resource
-lifetime, metadata conversion, and translation of reader failures into Ondas
-errors. Pure conversions can be tested locally; actual adapters require real
-artifacts.
-
-Preserve metadata when it is known, and represent absence or unsupported value
-classes explicitly. Do not invent declaration ranges, convert missing values to
-zero, or hide read failures behind empty results. Unknown vendor declaration
-kinds use namespaced strings instead of forcing a closed cross-language enum.
+Keep known metadata and represent absent or unsupported information explicitly.
+Do not invent ranges, replace missing values with zero or turn failures into empty
+results. Unknown vendor declaration kinds use namespaced strings rather than a
+closed cross-language enum.
 
 Errors distinguish lookup mistakes, invalid handles, unsupported encodings,
-unrecognized or malformed sources, unavailable readers, and operational reader
-failures. These categories let callers choose different recovery actions.
-Partial callback observation is distinct from an owned result returned only on
-success.
+unrecognized or malformed sources, unavailable readers and operational failures.
+A callback may observe partial results before failure; owned queries return a
+result only on success.
 
-Keep internal boundaries proportional to concrete readers and tests. Do not add
-strategy flags, capability APIs, format downcasts, expression languages, or a
-backend framework for hypothetical extensions. Correctness is exercised through
-the public API using the approach in [testing](testing.md); performance decisions
-use [controlled measurements](benchmarking.md).
+Add internal abstractions only for existing readers or tests. Hypothetical
+strategy flags, capability APIs, downcasts, expression languages and backend
+frameworks do not belong here. See [testing](testing.md) for correctness checks
+and [benchmarking](benchmarking.md) for performance comparisons.

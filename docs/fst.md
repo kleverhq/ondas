@@ -1,88 +1,65 @@
-# FST Integration
+# FST reader
 
-## Reader Boundary
+`fst-native` reads binary FST through
+[fst-reader](https://github.com/ekiwi/fst-reader), without Wellen. The dependency
+decodes and decompresses; Ondas maps metadata, handles and values to its query
+contracts. The adapter is in `src/backends/fst.rs`, with shared queries in
+`src/query/engine.rs` (repository-relative paths). Reader state, indices and
+buffers stay private. Other format readers remain independent, and another FST
+reader can coexist under the [common model](model.md).
 
-FST is a binary waveform format. `fst-native` names the direct Rust integration
-with [fst-reader](https://github.com/ekiwi/fst-reader), without Wellen. Native does
-not mean rewriting the decoder: Ondas owns public metadata, handles, values, and
-query semantics; the dependency owns binary decoding and decompression. Reader
-adaptation lives in `src/backends/fst.rs`; shared observation logic lives in
-`src/query/engine.rs` (paths relative to the repository root).
+## Decoder constraints
 
-This integration is independent of readers for other formats and can coexist
-with another FST implementation. Reader indices, state, and buffers remain
-private; see the [shared model](model.md). Treat artifacts as binary data and
-inspect them with a suitable reader or fixture tooling.
+The unmodified published `fst-reader` 0.17.0 is BSD-3-Clause, uses Rust compression
+libraries and accepts buffered, seekable file/bytes input. Its release source is
+[`92b3b821`](https://github.com/ekiwi/fst-reader/tree/92b3b821e88b8058a72a7cd04607a327b8397152),
+not an interchangeable newer checkout. Let-chains require Rust 1.88. Keep the MSRV
+in `Cargo.toml` and check dependency updates on it even if upstream omits its MSRV.
 
-## Decoder Constraints
+Opening and traversal do not prove hierarchy completeness. The adapter rejects
+scope-stack underflow, unclosed scopes and conflicting repeated scope metadata;
+it merges compatible repeated scopes.
 
-Dependency selection includes the decoder's behavior, not just its API shape.
-The published `fst-reader` 0.17.0 is BSD-3-Clause, uses Rust compression libraries,
-and accepts buffered, seekable input suitable for files and in-memory bytes.
-Its release source is pinned by commit
-[`92b3b821`](https://github.com/ekiwi/fst-reader/tree/92b3b821e88b8058a72a7cd04607a327b8397152).
-A newer upstream checkout is not interchangeable with that release.
+Malformed files, including wrong header-section lengths, can panic in debug and
+release builds. Ondas neither patches the dependency nor intercepts its panics.
+Reported failures become Ondas errors; Rustdoc documents the panic limitation.
+This is not a hardened parser for untrusted files. Treat FST as binary data and
+inspect it with a reader or fixture tools.
 
-- Version 0.17.0 uses let-chains and requires Rust 1.88. The package MSRV is
-  recorded in `Cargo.toml`; test dependency updates on that compiler even when
-  upstream does not declare its own MSRV.
-- Successful decoder opening and hierarchy traversal do not prove hierarchy
-  completeness. The adapter rejects scope-stack underflow, unclosed scopes, and
-  conflicting repeated scope metadata. Compatible repeated scopes are merged.
-- Version 0.17.0 can panic on malformed input, including a wrong header section
-  length, in both debug and release builds. The dependency is used without patches
-  or panic interception. Ordinary reported failures become Ondas errors; the
-  public rustdoc explicitly documents upstream panic behavior. Do not present this
-  integration as a hardened parser for untrusted files.
-- Time filtering chooses relevant sections but can emit observations before the
-  requested lower bound. Shared query code derives entering state and applies
-  Ondas range bounds. Each query traverses selected histories from the beginning
-  through its end, retaining only the previous value per selection entry. Selection
-  reuse preserves validated handles and grouping, not a full-history cache.
-- Frame snapshots and value changes use the same callback shape. The adapter
-  preserves event callbacks, including any initialization exposed at the first
-  recorded tick. Exact occurrence counts at that tick are a documented reader
-  limitation. Do not guess from payload characters or drop all first-tick records.
-- Digital values and character strings both arrive as byte slices and are
-  distinguished using declaration metadata. Character bytes map reversibly to
-  Unicode U+0000–U+00FF (Latin-1), preserving NULs and padding. UTF-8 is not inferred
-  from byte contents. Bits retain all nine supported logic states.
+Queries traverse selected histories from the beginning through the requested end
+and retain the previous value per selection entry. Decoder time filtering can
+emit earlier observations; shared code derives entering state and applies range
+bounds. Reusing a selection preserves handles and grouping, not cached histories.
 
-These constraints govern decoder selection. Passing a corpus does not establish
-complete coverage of the FST format or unobserved portions of its artifacts.
+Frame snapshots and changes share a callback shape. Ondas preserves event
+callbacks, including initialization at the first recorded tick. Exact event counts
+there are a reader limitation: neither payload guessing nor dropping all first-tick
+records resolves it.
 
-## Normalization and Queries
+Declaration metadata distinguishes digital values from character byte slices.
+Bits preserve nine logic states. Character bytes map to U+0000 through U+00FF
+(Latin-1), including NULs and padding; the reader does not infer UTF-8.
 
-Preserve declarations and alias relationships independently of reader-local
-history handles. Map timestamps to absolute ticks without exposing a reader time
-table. Keep declaration ranges distinct from normalized value-bit positions.
+## Normalization and checks
 
-Reader caching and shared preparation for several projections are internal
-optimizations. They must not change selection order, duplicate results, or the
-observed history of a slice. A cheap activity index may provide conservative
-candidate times, but it is not a replacement for decoded value changes.
+Keep declarations and aliases separate from reader history handles. Time uses
+absolute ticks, not reader tables. Declaration ranges differ from normalized bit
+positions. Caching or shared projection preparation must not alter selection
+order, duplicates or slice histories. Conservative activity candidates do not
+replace decoded changes.
 
-## Verification and Measurement
+`./dev just conformance` discovers every FST in the locked provider and checks all
+listed observations in file/bytes modes. Samples and windows are batched; focused
+cases cover selections, scans, candidates, projections and termination. The runner
+reports each case and aggregates failures rather than excluding them. Provider
+additions need no manual case-list update.
 
-Run `./dev just conformance` from the repository root with the locked provider
-available. The explicit suite discovers all FST fixtures in that provider and
-checks every listed oracle observation in file and bytes modes. Batched samples
-and windows keep full-pool runs practical; focused small fixtures also exercise
-selections, scans, candidate times, projections, and callback termination.
-Every case is reported, with failures aggregated rather than silently excluded.
+See [testing](testing.md) for memory-reader versus adapter evidence. Running the
+pool is not the same as passing it, and sparse oracles do not cover every signal,
+tick, compression variant or first-tick event behavior.
 
-The [common conformance strategy](testing.md) separates real-reader evidence from
-self-contained query tests. Full-pool execution is distinct from every case
-passing, and sparse oracles do not establish exhaustive signal/time,
-compression-variant, or first-tick-event coverage. Provider additions are
-discovered automatically; no manual case-list update is required.
-
-A converted FST artifact retains conversion provenance in its
-[fixture sidecar](fixtures.md). Conversion does not by itself prove semantic
-equivalence with the source artifact; publish only observations actually
-established for the resulting waveform.
-
-FST benchmarks use a format-specific target and explicit backend selection.
-Compare alternative FST readers on the same artifact and workload, with shared
-[measurement boundaries](benchmarking.md), rather than comparing unrelated
-VCD and FST datasets.
+Converted artifacts retain [provenance](fixtures.md). Conversion alone does not
+prove equivalence with the source: publish only observations established for the
+result. FST benchmarks use their own format target and explicit reader selection.
+Compare the same artifact and workload under common
+[measurement boundaries](benchmarking.md), not unrelated FST/VCD datasets.

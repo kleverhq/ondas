@@ -1,45 +1,37 @@
-# WLF Integration
+# WLF integration
 
-## Reader Boundary
+WLF is the Questa/ModelSim waveform format. A reader may use a vendor library or
+an independent implementation. Format, reader, SDK version and runtime settings
+are separate choices; `vendor-wlf` is an example name, not a reserved backend.
 
-WLF is the Questa/ModelSim waveform format in the Ondas model. A reader may use a
-vendor library or an independent implementation. Format identity is distinct
-from the selected reader, its SDK version, and its runtime configuration. The
-illustrative name `vendor-wlf` does not reserve an actual backend identifier.
-
-The adapter exposes only the common read-only [waveform model](model.md), not a
-vendor database API. Source handles, callbacks, buffer layout, and native errors
-stay private. Record concrete reader support and limitations here from verified
-integration evidence rather than assuming every stored object maps to an Ondas
+Expose the read-only [common model](model.md), not a vendor database API. Handles,
+callbacks, buffer layouts and native errors stay private. Record support and
+limits from verified integration evidence; not every stored object is an Ondas
 signal.
 
-## Adaptation Constraints
+## Mapping and resources
 
-Preserve hierarchy declarations separately from queryable histories, including
-aliases, source ranges, constants, type metadata, and unsupported value classes.
-Map source time into absolute ticks. Reader-specific scheduling information does
-not introduce a public delta-cycle coordinate.
+Keep declarations separate from histories, preserving aliases, ranges, constants,
+type metadata and unsupported classes. Map time to absolute ticks without adding
+a public delta-cycle coordinate.
 
-Establish input-mode, resource-lifetime, thread, and reentrancy constraints against
-the chosen reader. Do not assume bytes input works because a file reader exists.
-Release resources on failed opening, early callback termination, and late query
-failure as well as on ordinary completion. Missing libraries or licenses are
-availability errors, not evidence that the waveform is malformed.
+Verify input modes, lifetimes, threading and reentrancy against the chosen reader.
+File support does not imply bytes support. Release resources after failed opening,
+early termination and late query errors as well as normal completion. Missing
+libraries or licenses are availability errors, not malformed waveforms.
 
-## Environment, Tests, and Benchmarks
+## Environment and verification
 
-Use an explicit ignored local devcontainer profile for vendor installations,
-network settings, and licenses, following [automation](automation.md). Public
-source and images must not embed private paths, SDK files, or license topology.
-Separate SDK-dependent build output when testing different versions. Prefer a
-build/documentation boundary that leaves runtime discovery until opening.
+Use an ignored local profile for vendor installations, network settings and
+licenses under [automation policy](automation.md). Keep private paths, SDK files
+and license topology out of public source/images. Separate SDK-dependent outputs
+across versions; prefer runtime discovery at opening over build-time discovery.
 
-Validate the real adapter through the common [conformance strategy](testing.md)
-and external [fixture providers](fixtures.md). Retain artifact provenance and
-assert only supported observations. Do not approximate the vendor API with a
-large mock or place inaccessible private artifacts behind public sidecars.
+Test the actual adapter through [conformance](testing.md) and external
+[providers](fixtures.md). Preserve provenance and assert only established
+observations. A large vendor mock is not a substitute, and public sidecars must
+not refer to inaccessible private artifacts.
 
-Explicit WLF suites fail on missing runtime or fixtures instead of skipping.
-They remain separate from the reproducible public CI gate. WLF performance cases
-belong to their own format target; reader comparisons use the same artifact,
-parameters, and [measurement boundaries](benchmarking.md).
+Explicit WLF suites fail on missing runtimes or fixtures and remain separate from
+public CI. Performance cases use a WLF target; compare readers on the same
+artifact, parameters and [measurement boundaries](benchmarking.md).
