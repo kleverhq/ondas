@@ -46,6 +46,10 @@ conformance: _inside
 conformance-fsdb: _inside
     cargo test --locked --features fsdb-lib --test conformance fsdb_ -- --ignored --nocapture
 
+# Verify actual downstream linking, independent of Cargo's runtime environment.
+fsdb-consumer: _inside
+    python3 tools/repo/check_fsdb_consumer.py
+
 # Validate the optional backend; VERDI_HOME must select an installed SDK.
 ci-fsdb: _inside
     cargo clippy --locked --all-targets --features fsdb-lib -- -D warnings
@@ -53,6 +57,8 @@ ci-fsdb: _inside
     cargo +{{msrv}} check --locked --lib --features fsdb-lib
     RUSTDOCFLAGS="-D warnings" cargo doc --locked --lib --features fsdb-lib --no-deps
     just conformance-fsdb
+    just fsdb-consumer
+    RUSTUP_TOOLCHAIN={{msrv}} just fsdb-consumer
 
 # Test repository automation without Docker or external fixtures.
 tools-test: _inside

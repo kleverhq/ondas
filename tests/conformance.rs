@@ -288,6 +288,21 @@ fn provider() -> PathBuf {
         .expect("required public fixture provider is absent; run just fixtures-install")
 }
 
+fn provider_directory(path: &Path) -> Option<PathBuf> {
+    match fs::symlink_metadata(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        result => {
+            result.unwrap();
+            assert!(
+                path.is_dir(),
+                "invalid provider directory: {}",
+                path.display()
+            );
+        }
+    }
+    Some(path.canonicalize().unwrap())
+}
+
 fn checked_provider(name: &str, lock_text: &str) -> Option<PathBuf> {
     let lock: toml::Value = toml::from_str(lock_text).expect("fixture lock TOML");
     let provider_version = lock["providers"][name]
@@ -298,11 +313,7 @@ fn checked_provider(name: &str, lock_text: &str) -> Option<PathBuf> {
         std::env::var_os("ONDAS_FIXTURES")
             .expect("ONDAS_FIXTURES is required; run just conformance"),
     );
-    let provider = root.join(name);
-    match fs::metadata(&provider) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
-        result => assert!(result.unwrap().is_dir(), "not a provider directory"),
-    }
+    let provider = provider_directory(&root.join(name))?;
     let catalog: Json =
         serde_json::from_slice(&fs::read(provider.join("catalog.json")).expect("provider catalog"))
             .unwrap();
@@ -313,14 +324,14 @@ fn checked_provider(name: &str, lock_text: &str) -> Option<PathBuf> {
         Some(provider_version),
         "provider version mismatch"
     );
-    Some(provider.canonicalize().unwrap())
+    Some(provider)
 }
 
 fn load_fixture(provider: &Path, name: &str) -> Fixture {
     load_available_fixture(provider, name, true).unwrap()
 }
 
-fn load_available_fixture(provider: &Path, name: &str, required: bool) -> Option<Fixture> {
+fn fixture_sidecar(provider: &Path, name: &str) -> (PathBuf, Json) {
     let directory = provider
         .join(name)
         .canonicalize()
@@ -329,20 +340,25 @@ fn load_available_fixture(provider: &Path, name: &str, required: bool) -> Option
         directory.starts_with(provider),
         "{name}: fixture escapes provider"
     );
+    let sidecar_path = directory
+        .join("fixture.json")
+        .canonicalize()
+        .expect("fixture sidecar path");
+    assert!(
+        sidecar_path.starts_with(&directory) && sidecar_path.is_file(),
+        "{name}: sidecar containment/type"
+    );
     let sidecar: Json = serde_json::from_slice(
-        &fs::read(directory.join("fixture.json"))
-            .unwrap_or_else(|e| panic!("{name}: sidecar: {e}")),
+        &fs::read(sidecar_path).unwrap_or_else(|e| panic!("{name}: sidecar: {e}")),
     )
     .expect("fixture JSON");
     assert_eq!(sidecar["schema"], 1, "{name}: sidecar schema");
     let artifact = &sidecar["artifact"];
     let extension = artifact["format"].as_str().unwrap();
-    let format = match extension {
-        "fst" => Format::Fst,
-        "vcd" => Format::Vcd,
-        "fsdb" if cfg!(feature = "fsdb-lib") => Format::Fsdb,
-        _ => panic!("{name}: unexpected format {extension}"),
-    };
+    assert!(
+        matches!(extension, "fst" | "vcd" | "fsdb" | "ghw" | "wlf"),
+        "{name}: invalid artifact format"
+    );
     let filename = format!("waveform.{extension}");
     assert_eq!(artifact["file"], filename, "{name}: artifact filename");
     let provenance = &sidecar["provenance"];
@@ -385,10 +401,11 @@ fn load_available_fixture(provider: &Path, name: &str, required: bool) -> Option
             "{name}: unknown/duplicate tag {tag}"
         );
     }
-    let oracle = sidecar["oracle"].clone();
-    eprintln!("validating {name}");
-    validate_oracle(&oracle, oracle["open"]["result"] == "ok");
-    let size = artifact["size"].as_u64().expect("artifact size");
+    let oracle = &sidecar["oracle"];
+    if !oracle.as_object().expect("oracle object").is_empty() {
+        validate_oracle(oracle, oracle["open"]["result"] == "ok");
+    }
+    artifact["size"].as_u64().expect("artifact size");
     let hash = artifact["sha256"].as_str().expect("artifact SHA256");
     assert!(
         hash.len() == 64
@@ -396,7 +413,24 @@ fn load_available_fixture(provider: &Path, name: &str, required: bool) -> Option
                 .bytes()
                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
     );
-    let path = directory.join(filename);
+    (directory, sidecar)
+}
+
+fn load_available_fixture(provider: &Path, name: &str, required: bool) -> Option<Fixture> {
+    let (directory, sidecar) = fixture_sidecar(provider, name);
+    let artifact = &sidecar["artifact"];
+    let format = match artifact["format"].as_str().unwrap() {
+        "fst" => Format::Fst,
+        "vcd" => Format::Vcd,
+        "fsdb" if cfg!(feature = "fsdb-lib") => Format::Fsdb,
+        other => panic!("{name}: unexpected selected format {other}"),
+    };
+    let oracle = sidecar["oracle"].clone();
+    eprintln!("validating {name}");
+    validate_oracle(&oracle, oracle["open"]["result"] == "ok");
+    let size = artifact["size"].as_u64().unwrap();
+    let hash = artifact["sha256"].as_str().unwrap();
+    let path = directory.join(artifact["file"].as_str().unwrap());
     match fs::symlink_metadata(&path) {
         Ok(_) => (),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound && !required => {
@@ -1278,10 +1312,15 @@ fn discover(provider: &Path, extension: &str) -> Vec<String> {
             continue;
         }
         let sidecar = directory.join("fixture.json");
-        let declares_format = sidecar.is_file() && {
-            let sidecar: Json = serde_json::from_slice(&fs::read(&sidecar).unwrap())
-                .unwrap_or_else(|e| panic!("{}: {e}", sidecar.display()));
-            sidecar["artifact"]["format"] == extension
+        let declares_format = match fs::symlink_metadata(&sidecar) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+            Err(e) => panic!("{}: {e}", sidecar.display()),
+            Ok(_) => {
+                let name = entry.file_name();
+                let (_, sidecar) =
+                    fixture_sidecar(provider, name.to_str().expect("UTF-8 fixture name"));
+                sidecar["artifact"]["format"] == extension
+            }
         };
         // An orphaned artifact is a failing fixture, not an invisible exclusion.
         if declares_format || directory.join(format!("waveform.{extension}")).exists() {
@@ -1450,15 +1489,10 @@ fn private_fsdb_pool() {
     };
     let name = "kleverhq.ondas-fixtures-private";
     let root = PathBuf::from(std::env::var_os("ONDAS_FIXTURES").expect("ONDAS_FIXTURES"));
-    match fs::metadata(root.join(name)) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound && !required => {
-            eprintln!("SKIP {name}: optional provider absent (0 selected)");
-            return;
-        }
-        result => assert!(
-            result.unwrap().is_dir(),
-            "private provider directory required"
-        ),
+    if provider_directory(&root.join(name)).is_none() {
+        assert!(!required, "private provider directory required");
+        eprintln!("SKIP {name}: optional provider absent (0 selected)");
+        return;
     }
     let lock = fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures.private.lock.toml"),
@@ -1902,7 +1936,8 @@ fn discovery_uses_artifacts_not_fixture_names_or_a_whitelist() {
     ] {
         fs::write(
             root.join(name).join("fixture.json"),
-            json!({"artifact": {"format": format}}).to_string(),
+            json!({"schema": 1, "artifact": {"format": format, "file": format!("waveform.{format}"),
+                "size": 0, "sha256": "0".repeat(64)}, "provenance": {"kind": "authored"}, "oracle": {}}).to_string(),
         )
         .unwrap();
     }
@@ -1913,6 +1948,15 @@ fn discovery_uses_artifacts_not_fixture_names_or_a_whitelist() {
     fs::remove_file(root.join("anything/fixture.json")).unwrap();
     fs::remove_file(root.join("orphan/waveform.fst")).unwrap();
     assert!(discover(&root, "fst").is_empty());
+    fs::write(root.join("anything/fixture.json"), "{}").unwrap();
+    assert!(std::panic::catch_unwind(|| discover(&root, "vcd")).is_err());
+    fs::remove_file(root.join("anything/fixture.json")).unwrap();
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink("/not/an/ondas/sidecar", root.join("anything/fixture.json"))
+            .unwrap();
+        assert!(std::panic::catch_unwind(|| discover(&root, "vcd")).is_err());
+    }
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -1922,8 +1966,20 @@ fn empty_pool_obeys_requirement() {
         .join("tmp")
         .join(format!("empty-pool-{}", std::process::id()));
     fs::create_dir_all(&root).unwrap();
+    assert_eq!(
+        provider_directory(&root),
+        Some(root.canonicalize().unwrap())
+    );
+    assert_eq!(provider_directory(&root.join("absent")), None);
     run_pool(&root, "fsdb", false);
     assert!(std::panic::catch_unwind(|| run_pool(&root, "fsdb", true)).is_err());
+    #[cfg(unix)]
+    {
+        let broken = root.join("broken");
+        std::os::unix::fs::symlink("/not/an/ondas/provider", &broken).unwrap();
+        assert!(std::panic::catch_unwind(|| provider_directory(&broken)).is_err());
+        fs::remove_file(broken).unwrap();
+    }
     fs::remove_dir(root).unwrap();
 }
 

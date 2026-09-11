@@ -73,8 +73,9 @@ tests and doctests. `just check-local` adds static checks and repository-tool te
 and is the fixture-free pre-commit gate. `just ci` also requires conformance.
 Formatting, Clippy, compilation and Rustdoc do not replace runtime tests.
 
-`./dev just conformance` runs the ignored FST/VCD integration tests against the
-locked provider. Missing environment, provider, version, artifacts or oracle data
+`./dev just conformance` runs the ignored FST/VCD integration tests and
+feature-disabled FSDB routing against the locked provider. The routing check also
+requires its public FSDB artifact. Missing environment, provider, version, artifacts or oracle data
 fails the suite. Default test runs leave these external tests ignored and do not
 claim their coverage.
 
@@ -88,7 +89,8 @@ absent, and reports passed, failed and skipped cases separately.
 `./dev just ci-fsdb` adds vendor-enabled static, unit, documentation and MSRV
 checks. Focused FSDB regressions cover path/bytes routing, reentrant callbacks,
 independent opens, cross-thread use/drop, panic cleanup, repeated selections,
-slices and missing/corrupt payload policy. Test a separate downstream executable
+slices and missing/corrupt payload policy. The vendor gate also runs
+`just fsdb-consumer` on development Rust and MSRV: a separate executable launches
 outside Cargo's runtime environment to verify native dependency propagation.
 The value classes asserted by supplied oracle observations, not merely successful
 opens, determine adapter coverage. Request missing cases from the fixture producer;

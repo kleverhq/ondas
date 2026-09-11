@@ -33,7 +33,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - FST content detection includes the header length to avoid mistaking FSDB for FST.
 - Minimum supported Rust version is 1.88.0 to support `fst-reader` 0.17.0.
 - Hierarchy lookup avoids constructing paths for unrelated declaration names.
-- Fixture provider pin is 4.1.2; FST and VCD share oracle checks.
+- Fixture provider pin is 4.1.3; FST and VCD share oracle checks.
 
 ### Fixed
 

@@ -3,7 +3,6 @@
 #include <cstdio>
 #include <cstring>
 #include <exception>
-#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -118,7 +117,7 @@ void encoding(Declaration &d, const fsdbTreeCBDataVar &v) {
 struct ondas_fsdb {
     ffrObject *file = nullptr;
     ffrTimeBasedVCTrvsHdl cursor = nullptr;
-    bool loaded = false, advance = false, eof = false;
+    bool loaded = false, advance = false;
     std::vector<Declaration> declarations;
     std::unordered_map<uint64_t, size_t> variables;
     std::vector<uint8_t> buffer;
@@ -131,7 +130,7 @@ struct ondas_fsdb {
         if (cursor) { try { cursor->ffrFree(); } catch (...) {} cursor = nullptr; }
         if (loaded) { try { file->ffrUnloadSignals(); } catch (...) {} loaded = false; }
         if (file) { try { file->ffrResetSignalList(); } catch (...) {} }
-        advance = eof = false;
+        advance = false;
     }
     ~ondas_fsdb() noexcept {
         end();
@@ -284,20 +283,23 @@ extern "C" int ondas_fsdb_next(ondas_fsdb *reader, ondas_fsdb_value *out, char *
     try {
         auto *cursor = reader->cursor;
         require(cursor != nullptr, "no active FSDB traversal");
-        while (!reader->eof) {
-            if (reader->advance && cursor->ffrGotoNextVC() != FSDB_RC_SUCCESS) { reader->eof = true; return 0; }
+        while (true) {
+            if (reader->advance && cursor->ffrGotoNextVC() != FSDB_RC_SUCCESS) return 0;
             fsdbTag64 time{};
             // A newly created chronological cursor may be empty.
-            if (cursor->ffrGetXTag(&time) != FSDB_RC_SUCCESS) { reader->eof = true; return 0; }
+            if (cursor->ffrGetXTag(&time) != FSDB_RC_SUCCESS) return 0;
             reader->advance = true;
-            if (ticks(time) > reader->end_tick) { reader->eof = true; return 0; }
+            const auto tick = ticks(time);
+            if (tick > reader->end_tick) return 0;
             fsdbVarIdcode id = 0;
             success(cursor->ffrGetVarIdcode(&id), "read FSDB value identity");
             const auto &d = reader->declarations.at(reader->variables.at(id));
-            *out = {}; out->tick = ticks(time); out->id = id; out->encoding = d.data.encoding;
+            *out = {}; out->tick = tick; out->id = id; out->encoding = d.data.encoding;
+            const auto size = cursor->ffrGetByteCount();
             byte_T *raw = nullptr;
             success(cursor->ffrGetVC(&raw), "read FSDB value");
-            const auto size = cursor->ffrGetByteCount();
+            // Consume borrowed storage immediately: no more SDK calls until
+            // it is converted here or copied by Rust under the same lock.
             require(size != UINT32_MAX && (raw != nullptr || size == 0), "invalid FSDB value buffer");
             if (out->encoding == OFS_EVENT) {
                 require(size == 1 && raw != nullptr, "invalid FSDB event storage");
@@ -330,6 +332,5 @@ extern "C" int ondas_fsdb_next(ondas_fsdb *reader, ondas_fsdb_value *out, char *
             } else throw std::runtime_error("unsupported FSDB value class");
             return 1;
         }
-        return 0;
     } OFS_CATCH(error, cap)
 }
