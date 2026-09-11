@@ -483,6 +483,8 @@ can specify the Ondas error that conformance should observe.
 
 ## Public and private providers
 
+The private provider is `kleverhq.ondas-fixtures-private`. It is not used by public CI.
+
 Both use the same layout and sidecars. Locked public artifacts must be accessible
 to contributors and fork CI without private credentials. Keep private fixtures
 entirely in private providers, without public placeholders or sidecars for
