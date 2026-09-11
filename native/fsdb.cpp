@@ -52,7 +52,8 @@ std::string scope_kind(unsigned type) {
 }
 std::string var_kind(unsigned type) {
     switch (type) {
-    case FSDB_VT_VCD_EVENT: case FSDB_VT_EVENT_VARIABLE: return "event";
+    case FSDB_VT_VCD_EVENT: return "event";
+    case FSDB_VT_EVENT_VARIABLE: return "event-variable";
     case FSDB_VT_VCD_INTEGER: return "integer";
     case FSDB_VT_VCD_PARAMETER: return "parameter";
     case FSDB_VT_VCD_REAL: return "real";
@@ -92,9 +93,10 @@ void encoding(Declaration &d, const fsdbTreeCBDataVar &v) {
     d.dt = v.dtidcode;
     d.bytes_per_bit = v.bytes_per_bit;
     out.encoding = OFS_UNSUPPORTED;
-    if (v.type == FSDB_VT_VCD_EVENT || v.type == FSDB_VT_EVENT_VARIABLE || d.dt == FSDB_DT_SV_EVENT) {
+    if (v.type == FSDB_VT_EVENT_VARIABLE) return; // Transaction data is not an HDL event.
+    if (v.type == FSDB_VT_VCD_EVENT) {
         out.encoding = OFS_EVENT;
-    } else if (v.type == FSDB_VT_STRING || d.dt == FSDB_DT_SV_STRING || d.dt == FSDB_DT_VHDL_STRING) {
+    } else if (v.type == FSDB_VT_STRING || d.dt == FSDB_DT_SV_STRING) {
         out.encoding = OFS_STRING;
     } else if (v.type == FSDB_VT_VCD_REAL || d.dt == FSDB_DT_SV_REAL ||
                d.dt == FSDB_DT_SV_SHORT_REAL || d.dt == FSDB_DT_VHDL_REAL) {
@@ -122,7 +124,7 @@ struct ondas_fsdb {
     std::vector<uint8_t> buffer;
     std::string path, scale, writer, date;
     bool has_writer = false, has_date = false;
-    uint64_t first = 0, last = 0;
+    uint64_t first = 0, last = 0, end_tick = 0;
     std::exception_ptr tree_error;
     void end() noexcept {
         // No exceptions may escape cleanup, including during Rust unwinding.
@@ -259,12 +261,18 @@ extern "C" void ondas_fsdb_declaration(ondas_fsdb *reader, size_t index, ondas_f
     out->definition = d.definition.empty() ? nullptr : d.definition.c_str();
 }
 extern "C" void ondas_fsdb_end(ondas_fsdb *reader) { reader->end(); }
-extern "C" int ondas_fsdb_begin(ondas_fsdb *reader, const uint64_t *ids, size_t count, char *error, size_t cap) {
+extern "C" int ondas_fsdb_begin(ondas_fsdb *reader, const uint64_t *ids, size_t count, uint64_t end, char *error, size_t cap) {
     try {
         reader->end();
         require(count > 0 && count <= UINT32_MAX, "invalid selected signal count");
+        reader->end_tick = end;
         std::vector<fsdbVarIdcode> selected(ids, ids + count);
-        for (auto id : selected) success(reader->file->ffrAddToSignalList(id), "select FSDB signal");
+        for (auto id : selected) {
+            const auto &d = reader->declarations.at(reader->variables.at(id));
+            require(d.data.encoding != OFS_EVENT || !reader->file->ffrHasDumpOffRange(),
+                    "FSDB event queries with dump-off ranges are unsupported");
+            success(reader->file->ffrAddToSignalList(id), "select FSDB signal");
+        }
         reader->loaded = true;
         success(reader->file->ffrLoadSignals(), "load selected FSDB signals");
         reader->cursor = reader->file->ffrCreateTimeBasedVCTrvsHdl(uint32_t(count), selected.data());
@@ -276,46 +284,52 @@ extern "C" int ondas_fsdb_next(ondas_fsdb *reader, ondas_fsdb_value *out, char *
     try {
         auto *cursor = reader->cursor;
         require(cursor != nullptr, "no active FSDB traversal");
-        if (reader->eof) return 0;
-        if (reader->advance && cursor->ffrGotoNextVC() != FSDB_RC_SUCCESS) { reader->eof = true; return 0; }
-        fsdbTag64 time{};
-        // A newly created chronological cursor may be empty.
-        if (cursor->ffrGetXTag(&time) != FSDB_RC_SUCCESS) { reader->eof = true; return 0; }
-        reader->advance = true;
-        fsdbVarIdcode id = 0;
-        success(cursor->ffrGetVarIdcode(&id), "read FSDB value identity");
-        const auto &d = reader->declarations.at(reader->variables.at(id));
-        *out = {}; out->tick = ticks(time); out->id = id; out->encoding = d.data.encoding;
-        if (out->encoding == OFS_EVENT) return 1;
-        byte_T *raw = nullptr;
-        success(cursor->ffrGetVC(&raw), "read FSDB value");
-        const auto size = cursor->ffrGetByteCount();
-        require(size != UINT32_MAX && (raw != nullptr || size == 0), "invalid FSDB value buffer");
-        if (out->encoding == OFS_BITS) {
-            require(size == d.data.width, "FSDB vector width mismatch");
-            const char *alphabet = "01xz";
-            size_t states = 4;
-            if (d.dt == FSDB_DT_VHDL_BOOLEAN || d.dt == FSDB_DT_VHDL_BIT || d.dt == FSDB_DT_VHDL_BIT_VECTOR) {
-                alphabet = "01"; states = 2;
-            } else if (d.dt >= FSDB_DT_VHDL_STD_ULOGIC && d.dt <= FSDB_DT_VHDL_SIGNED) {
-                alphabet = "ux01zwlh-"; states = 9;
-            }
-            reader->buffer.resize(size);
-            for (size_t i = 0; i < size; ++i) {
-                require(raw[i] < states, "unknown FSDB logic state");
-                reader->buffer[i] = alphabet[raw[i]];
-            }
-            out->data = reader->buffer.data(); out->len = size;
-        } else if (out->encoding == OFS_REAL) {
-            if (size == sizeof(float) && d.bytes_per_bit == FSDB_BYTES_PER_BIT_4B) {
-                float value; std::memcpy(&value, raw, sizeof value); out->real = value;
-            } else {
-                require(size == sizeof(double) && d.bytes_per_bit == FSDB_BYTES_PER_BIT_8B, "invalid FSDB real storage");
-                std::memcpy(&out->real, raw, sizeof out->real);
-            }
-        } else if (out->encoding == OFS_STRING) {
-            out->data = raw; out->len = size;
-        } else throw std::runtime_error("unsupported FSDB value class");
-        return 1;
+        while (!reader->eof) {
+            if (reader->advance && cursor->ffrGotoNextVC() != FSDB_RC_SUCCESS) { reader->eof = true; return 0; }
+            fsdbTag64 time{};
+            // A newly created chronological cursor may be empty.
+            if (cursor->ffrGetXTag(&time) != FSDB_RC_SUCCESS) { reader->eof = true; return 0; }
+            reader->advance = true;
+            if (ticks(time) > reader->end_tick) { reader->eof = true; return 0; }
+            fsdbVarIdcode id = 0;
+            success(cursor->ffrGetVarIdcode(&id), "read FSDB value identity");
+            const auto &d = reader->declarations.at(reader->variables.at(id));
+            *out = {}; out->tick = ticks(time); out->id = id; out->encoding = d.data.encoding;
+            byte_T *raw = nullptr;
+            success(cursor->ffrGetVC(&raw), "read FSDB value");
+            const auto size = cursor->ffrGetByteCount();
+            require(size != UINT32_MAX && (raw != nullptr || size == 0), "invalid FSDB value buffer");
+            if (out->encoding == OFS_EVENT) {
+                require(size == 1 && raw != nullptr, "invalid FSDB event storage");
+                if (raw[0] == FSDB_BT_VCD_NC) continue; // No-change initialization, not a trigger.
+                require(raw[0] == FSDB_BT_VCD_1, "unsupported FSDB event record");
+            } else if (out->encoding == OFS_BITS) {
+                require(size == d.data.width, "FSDB vector width mismatch");
+                const char *alphabet = "01xz";
+                size_t states = 4;
+                if (d.dt == FSDB_DT_VHDL_BOOLEAN || d.dt == FSDB_DT_VHDL_BIT || d.dt == FSDB_DT_VHDL_BIT_VECTOR) {
+                    alphabet = "01"; states = 2;
+                } else if (d.dt >= FSDB_DT_VHDL_STD_ULOGIC && d.dt <= FSDB_DT_VHDL_SIGNED) {
+                    alphabet = "ux01zwlh-"; states = 9;
+                }
+                reader->buffer.resize(size);
+                for (size_t i = 0; i < size; ++i) {
+                    require(raw[i] < states, "unknown FSDB logic state");
+                    reader->buffer[i] = alphabet[raw[i]];
+                }
+                out->data = reader->buffer.data(); out->len = size;
+            } else if (out->encoding == OFS_REAL) {
+                require((size == 4 && d.bytes_per_bit == FSDB_BYTES_PER_BIT_4B) ||
+                        (size == 8 && d.bytes_per_bit == FSDB_BYTES_PER_BIT_8B), "invalid FSDB real storage");
+                out->data = raw; out->len = size;
+            } else if (out->encoding == OFS_STRING) {
+                // For strings GetByteCount describes the SDK index, not the text.
+                // GetVC supplies a NUL-terminated byte string owned by the cursor.
+                require(raw != nullptr, "null FSDB string");
+                out->data = raw; out->len = std::strlen(reinterpret_cast<const char *>(raw));
+            } else throw std::runtime_error("unsupported FSDB value class");
+            return 1;
+        }
+        return 0;
     } OFS_CATCH(error, cap)
 }

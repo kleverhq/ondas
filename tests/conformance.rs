@@ -1315,7 +1315,10 @@ fn pool_queries(fixture: &Fixture, bytes: bool, context: &str) {
                 .push((id, signal, window));
         }
     }
-    for (time, entries) in samples {
+    for (time, mut entries) in samples {
+        if fixture.format == Format::Fsdb {
+            entries.extend_from_within(..);
+        }
         let handles: Vec<_> = entries.iter().map(|(_, signal, _)| *signal).collect();
         let actual = wave.samples(&handles, Time::from_ticks(time)).unwrap();
         assert_eq!(actual.len(), entries.len(), "{context}: sample count");
@@ -1329,8 +1332,45 @@ fn pool_queries(fixture: &Fixture, bytes: bool, context: &str) {
             );
         }
     }
-    for ((start, end), entries) in windows {
+    for ((start, end), mut entries) in windows {
+        if fixture.format == Format::Fsdb {
+            entries.extend_from_within(..);
+        }
         let handles: Vec<_> = entries.iter().map(|(_, signal, _)| *signal).collect();
+        let range = TimeRange::closed(Time::from_ticks(start), Time::from_ticks(end));
+        if fixture.format == Format::Fsdb {
+            // Candidate-time and duplicate-selection assertions are derived from
+            // supplied complete windows, without extending the oracle schema.
+            let required: BTreeSet<_> = entries
+                .iter()
+                .flat_map(|(_, _, window)| changes(window))
+                .map(|(time, _)| Time::from_ticks(time))
+                .collect();
+            let mut candidates = Vec::new();
+            let result = wave
+                .scan_candidate_times(&handles, range, |time| {
+                    candidates.push(time);
+                    ControlFlow::<()>::Continue(())
+                })
+                .unwrap();
+            assert_eq!(result, ControlFlow::Continue(()));
+            assert!(candidates.windows(2).all(|w| w[0] < w[1]));
+            assert!(candidates.iter().all(|time| !range.is_empty()
+                && *time >= range.start()
+                && *time <= Time::from_ticks(end)));
+            assert!(
+                required.is_subset(&candidates.into_iter().collect()),
+                "{context}: missing oracle candidate ticks"
+            );
+            if handles.iter().any(|s| {
+                matches!(
+                    s.encoding(),
+                    Encoding::Real | Encoding::String | Encoding::Event
+                )
+            }) {
+                scan_queries(&mut wave, &handles, range, context);
+            }
+        }
         let actual = wave
             .traces(
                 &handles,

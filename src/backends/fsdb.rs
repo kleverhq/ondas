@@ -55,7 +55,6 @@ struct Record {
     tick: u64,
     id: u64,
     encoding: u32,
-    real: f64,
     data: *const u8,
     len: usize,
 }
@@ -80,6 +79,7 @@ unsafe extern "C" {
         reader: *mut c_void,
         ids: *const u64,
         count: usize,
+        end: u64,
         error: *mut c_char,
         cap: usize,
     ) -> c_int;
@@ -367,6 +367,7 @@ impl Reader {
                     traversal.0.0.as_ptr(),
                     ids.as_ptr(),
                     ids.len(),
+                    end.ticks(),
                     error.as_mut_ptr(),
                     error.len(),
                 )
@@ -421,7 +422,7 @@ impl Reader {
                         .filter(|v| v.width() == width)
                         .ok_or_else(|| backend_error("invalid FSDB bits"))?,
                 ),
-                (Encoding::Real, 2) => ValueRef::Real(record.real),
+                (Encoding::Real, 2) => ValueRef::Real(real(&data)?),
                 (Encoding::String, 3) => {
                     text.clear();
                     text.extend(data.iter().copied().map(char::from));
@@ -436,6 +437,14 @@ impl Reader {
             }
         }
         Ok(ControlFlow::Continue(()))
+    }
+}
+
+fn real(bytes: &[u8]) -> Result<f64> {
+    match bytes.len() {
+        4 => Ok(f32::from_ne_bytes(bytes.try_into().unwrap()) as f64),
+        8 => Ok(f64::from_ne_bytes(bytes.try_into().unwrap())),
+        _ => Err(backend_error("invalid FSDB real size")),
     }
 }
 
@@ -472,6 +481,23 @@ fn timescale(text: &str) -> Option<Timescale> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn real_storage_preserves_binary_values() {
+        for value in [0.0_f32, -0.0, -3.25, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(
+                real(&value.to_ne_bytes()).unwrap().to_bits(),
+                (value as f64).to_bits()
+            );
+        }
+        assert!(real(&f32::NAN.to_ne_bytes()).unwrap().is_nan());
+        for bits in [0_u64, 1 << 63, 0x7ff0000000000000, 0x7ff8000000000001] {
+            assert_eq!(real(&bits.to_ne_bytes()).unwrap().to_bits(), bits);
+        }
+        for invalid in [0, 1, 3, 5, 9] {
+            assert!(real(&vec![0; invalid]).is_err());
+        }
+    }
+
     #[test]
     fn exact_scale_and_declared_ranges() {
         let scale = timescale("100fs").unwrap();

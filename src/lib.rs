@@ -196,7 +196,10 @@ removing those libraries can prevent the entire executable from starting, even
 for VCD/FST operations. Runtime SDK absence is not handled gracefully.
 
 Known digital storage preserves bits and source logic states; real storage maps
-to `f64`, strings use reversible Latin-1, and event records remain occurrences.
+to `f64`, NUL-terminated string bytes use reversible Latin-1, and normal HDL event
+records remain occurrences. Embedded-NUL string data and transaction events are
+not supported. No-change event initialization markers are not triggers; unknown
+event records and event queries on SDK-reported dump-off files return errors.
 Unsupported SDK data types retain their declarations with [`Encoding::Unsupported`].
 Integer ticks and scale factors remain exact; floating timestamp formats are
 rejected rather than rounded. Only recorded activity is observable: callbacks do

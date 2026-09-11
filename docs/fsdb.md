@@ -70,14 +70,20 @@ the common model.
 
 ## Values, time and traversal
 
-The C++ boundary normalizes SDK storage into the existing Bits, Real, String and
-Event representations. Digital vectors preserve every bit and `x/z`; recognized
-VHDL logic storage preserves all nine states. Float/double storage is copied
-without alignment assumptions, with shortreal promoted to `f64`. String bytes
-map reversibly to Unicode U+0000–U+00FF rather than guessing UTF-8. Event records
-are occurrences, not persistent bit values. Reader callbacks alone must not be
-interpreted as proof of physical event multiplicity during initialization or
-periods where dumping was disabled.
+The private boundary normalizes SDK storage into the existing Bits, Real, String
+and Event representations. Digital vectors preserve every bit and `x/z`;
+recognized VHDL logic storage preserves all nine states. Rust decodes copied
+host-order binary32/binary64 bytes without alignment assumptions, promoting
+binary32 to `f64`. Source language type names do not determine storage precision.
+
+SDK strings are NUL-terminated bytes, not fixed-size index data. Bytes before the
+terminator map reversibly to Unicode U+0000–U+00FF rather than guessing UTF-8; this
+representation does not support embedded NUL. Only normal HDL events become
+occurrences. No-change initialization markers are ignored, unknown event records
+fail, and transaction event variables remain unsupported. Event queries on files
+with SDK-reported dump-off ranges are rejected. These are recorded-data semantics,
+not a guarantee of physical event multiplicity during initialization or disabled
+dumping.
 
 Times remain unsigned absolute integer ticks. Floating timestamp formats are
 rejected, not rounded. Scale factors are parsed as exact positive integers and
@@ -85,7 +91,8 @@ units, without floating-point conversion. Metadata bounds come from the file,
 not from selected histories.
 
 Queries select and load base identities, create the SDK chronological cursor and
-walk from the beginning through the inclusive end. The shared query engine owns
+walk from the beginning through the inclusive end. The native cursor checks that
+bound before decoding a record, so excluded values do not fail a prefix query. The shared query engine owns
 entering-state, deduplication, projection and sample/trace semantics. The adapter
 does not sort, deduplicate or cache complete histories. Equal-tick cross-signal
 order is not a public guarantee. Vendor loading may allocate substantial memory
