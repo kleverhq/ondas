@@ -190,7 +190,7 @@ and runs real FSDB conformance. Supply a complete read-only SDK mount and
 `VERDI_HOME` through the ignored local profile. Keep the private provider's version
 in ignored `fixtures.private.lock.toml`; `ONDAS_REQUIRE_PRIVATE_FIXTURES=1` makes
 that corpus mandatory for a strict run. Neither vendor nor public tests implicitly
-download data. The public installer remains public-only. See [FSDB](fsdb.md) for
+download data. The public installer remains public-only. See [fsdb-lib](fsdb-lib.md) for
 the source-build deployment contract and [fixtures](fixtures.md) for absence
 versus corruption handling.
 
