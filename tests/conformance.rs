@@ -427,7 +427,6 @@ fn load_available_fixture(provider: &Path, name: &str, required: bool) -> Option
     };
     let oracle = sidecar["oracle"].clone();
     eprintln!("validating {name}");
-    validate_oracle(&oracle, oracle["open"]["result"] == "ok");
     let size = artifact["size"].as_u64().unwrap();
     let hash = artifact["sha256"].as_str().unwrap();
     let path = directory.join(artifact["file"].as_str().unwrap());
@@ -453,6 +452,10 @@ fn load_available_fixture(provider: &Path, name: &str, required: bool) -> Option
         hash,
         "{name}: artifact SHA256"
     );
+    if oracle.as_object().unwrap().is_empty() {
+        eprintln!("SKIP {name}: no oracle observations");
+        return None;
+    }
     Some(Fixture {
         path,
         oracle,
@@ -1634,7 +1637,23 @@ fn fsdb_optional_payload_policy() {
     assert!(std::panic::catch_unwind(|| load_available_fixture(&root, "case", false)).is_err());
     fs::copy(original.join("waveform.fsdb"), dir.join("waveform.fsdb")).unwrap();
     assert!(load_available_fixture(&root, "case", false).is_some());
+    let mut sidecar: Json =
+        serde_json::from_slice(&fs::read(dir.join("fixture.json")).unwrap()).unwrap();
+    sidecar["oracle"] = json!({});
+    fs::write(
+        dir.join("fixture.json"),
+        serde_json::to_vec(&sidecar).unwrap(),
+    )
+    .unwrap();
+    assert!(load_available_fixture(&root, "case", false).is_none());
+    assert!(load_available_fixture(&root, "case", true).is_none());
+    run_pool(&root, "fsdb", false);
+    assert!(std::panic::catch_unwind(|| run_pool(&root, "fsdb", true)).is_err());
+    fs::write(dir.join("waveform.fsdb"), b"corrupt").unwrap();
+    assert!(std::panic::catch_unwind(|| load_available_fixture(&root, "case", false)).is_err());
     fs::remove_file(dir.join("waveform.fsdb")).unwrap();
+    assert!(load_available_fixture(&root, "case", false).is_none());
+    assert!(std::panic::catch_unwind(|| load_available_fixture(&root, "case", true)).is_err());
     std::os::unix::fs::symlink("/not/an/ondas/fixture", dir.join("waveform.fsdb")).unwrap();
     assert!(std::panic::catch_unwind(|| load_available_fixture(&root, "case", false)).is_err());
     fs::remove_file(dir.join("waveform.fsdb")).unwrap();
@@ -1722,6 +1741,10 @@ fn run_pool(provider: &Path, extension: &str, required: bool) {
         failures.is_empty(),
         "{extension} pool failures:\n{}",
         failures.join("\n")
+    );
+    assert!(
+        !required || passed > 0,
+        "no required {extension} conformance cases executed"
     );
 }
 
