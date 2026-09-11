@@ -1304,11 +1304,15 @@ fn run_case(index: usize, bytes: bool) {
 }
 
 fn discover(provider: &Path, extension: &str) -> Vec<String> {
+    let provider = provider.canonicalize().expect("provider directory");
     let mut names = Vec::new();
-    for entry in fs::read_dir(provider).expect("provider directory") {
+    for entry in fs::read_dir(&provider).expect("provider directory") {
         let entry = entry.unwrap();
         let directory = entry.path();
-        if !directory.is_dir() {
+        if !fs::metadata(&directory)
+            .expect("provider entry metadata")
+            .is_dir()
+        {
             continue;
         }
         let sidecar = directory.join("fixture.json");
@@ -1318,12 +1322,18 @@ fn discover(provider: &Path, extension: &str) -> Vec<String> {
             Ok(_) => {
                 let name = entry.file_name();
                 let (_, sidecar) =
-                    fixture_sidecar(provider, name.to_str().expect("UTF-8 fixture name"));
+                    fixture_sidecar(&provider, name.to_str().expect("UTF-8 fixture name"));
                 sidecar["artifact"]["format"] == extension
             }
         };
-        // An orphaned artifact is a failing fixture, not an invisible exclusion.
-        if declares_format || directory.join(format!("waveform.{extension}")).exists() {
+        // An orphaned artifact (including a broken link) must not disappear.
+        let artifact_present =
+            match fs::symlink_metadata(directory.join(format!("waveform.{extension}"))) {
+                Ok(_) => true,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+                Err(e) => panic!("artifact metadata: {e}"),
+            };
+        if declares_format || artifact_present {
             names.push(entry.file_name().into_string().expect("UTF-8 fixture name"));
         }
     }
@@ -1956,6 +1966,13 @@ fn discovery_uses_artifacts_not_fixture_names_or_a_whitelist() {
         std::os::unix::fs::symlink("/not/an/ondas/sidecar", root.join("anything/fixture.json"))
             .unwrap();
         assert!(std::panic::catch_unwind(|| discover(&root, "vcd")).is_err());
+        fs::remove_file(root.join("anything/fixture.json")).unwrap();
+        std::os::unix::fs::symlink("/not/an/ondas/directory", root.join("broken-dir")).unwrap();
+        assert!(std::panic::catch_unwind(|| discover(&root, "vcd")).is_err());
+        fs::remove_file(root.join("broken-dir")).unwrap();
+        std::os::unix::fs::symlink("/not/an/ondas/payload", root.join("orphan/waveform.fst"))
+            .unwrap();
+        assert_eq!(discover(&root, "fst"), ["orphan"]);
     }
     fs::remove_dir_all(root).unwrap();
 }
