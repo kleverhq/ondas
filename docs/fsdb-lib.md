@@ -1,7 +1,7 @@
 # FSDB Lib backend
 
 `fsdb-lib` is Ondas's optional FSDB backend. It reads binary FSDB through the
-Synopsys FSDB Reader SDK from a recent Verdi release (2025+). A private C++ shim
+Synopsys FSDB Reader SDK from Verdi (2021+). A private C++ shim
 calls the SDK; the Rust adapter maps declarations, SDK identities and value records into
 the common model. It accepts files, not bytes or streams, and does not convert
 FSDB to another format.
@@ -18,7 +18,8 @@ in the filesystem where Cargo runs. The build requires a C++11 compiler, binutil
 `readelf`, zlib development files and the corresponding C++ runtime. It uses
 `share/FsdbReader` headers and the SDK's `linux64` library directory (`LINUX64` is
 also recognized). Missing inputs fail a feature-enabled build; feature-disabled
-builds neither discover nor link the SDK.
+builds neither discover nor link the SDK. Older SDKs can reject files written in
+newer FSDB format versions; use a newer Reader for those files.
 
 Only Ondas's own Rust adapter, C++ shim, private C ABI header and dependency-link
 anchors are distributed. SDK headers, libraries, manuals and fixtures are not

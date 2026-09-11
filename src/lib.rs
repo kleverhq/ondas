@@ -174,9 +174,10 @@ index. These are cost characteristics, not different observation semantics.
 ## Optional FSDB Reader
 
 Enable the additive Cargo feature `fsdb-lib` and set `VERDI_HOME` to a local Verdi
-installation when building. Use a recent Verdi release (2025+). The supported
+installation when building. Use Verdi 2021 or newer. The supported
 target is Linux x86_64 GNU. Building requires a C++11 compiler, binutils and zlib
-development files. No SDK discovery occurs without the feature.
+development files. Older SDKs can reject newer FSDB format versions; use a newer
+Reader for those files. No SDK discovery occurs without the feature.
 
 ```no_run
 # #[cfg(feature = "fsdb-lib")]
