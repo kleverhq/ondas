@@ -77,8 +77,9 @@ delivery-archive checksums, materialization commands, or individual fixture list
 Those belong to delivery, not test semantics.
 
 A public fixture run uses the repository lock by default. A controlled environment
-may select a different lock with the same structure; private-lock selection and
-composition mechanisms are outside this contract. Extra provider directories under
+may select a different lock with the same structure. The FSDB runner uses ignored
+repository-root `fixtures.private.lock.toml` for the private provider; this does
+not extend the public lock schema. Extra provider directories under
 `ONDAS_FIXTURES` are allowed. A run validates and uses the providers in its selected
 lock, not every provider present on disk.
 
@@ -437,7 +438,8 @@ Before conformance, validate each selected locked provider once:
 3. Its provider identity matches both its directory and lock entry.
 4. Its version exactly matches the locked version.
 5. Each discovered fixture has a valid schema-1 sidecar.
-6. Each sidecar references exactly one existing artifact, which is a regular file.
+6. Each sidecar references exactly one regular artifact. Optional private payload
+   absence may skip that fixture as described below; required absence fails.
 7. Artifact byte size and SHA-256 match the sidecar.
 8. Paths stay inside the fixture directory.
 9. Fixture names are unique within the provider.
@@ -454,8 +456,10 @@ Discover immediate child directories containing `fixture.json`. Select by
 provider, fixture name, declared format, tags or backend compatibility. Selection
 must be explicit and deterministic; its CLI is outside this contract.
 
-Missing or invalid selected fixtures, unavailable required readers, and empty
-selections in suites requiring fixtures must fail rather than skip.
+Missing required fixtures, invalid installed data, unavailable required readers,
+and empty required selections must fail rather than skip. Optional private
+absence is the explicit exception below; it does not relax validation of data
+that is present.
 
 ### Conformance matrix
 
@@ -491,7 +495,20 @@ entirely in private providers, without public placeholders or sidecars for
 inaccessible data. `public-provider/basic-values` and
 `private-provider/basic-values` are different identities.
 
-Once installed under `ONDAS_FIXTURES`, a private provider behaves like any other.
+For `fsdb-lib` conformance, the public provider is required. The private provider
+is optional by default: if absent, report an explicit provider skip; if installed,
+validate its catalog against ignored `fixtures.private.lock.toml` and check each
+available FSDB. That lock uses the same `[providers]` table, with the installed
+private provider's exact version. Do not commit it. An absent optional payload is
+skipped only after validating its sidecar and oracle. Broken links, unsafe paths,
+invalid catalogs/oracles, hash or size mismatches and semantic failures are errors.
+
+Set `ONDAS_REQUIRE_PRIVATE_FIXTURES=1` to require the private provider and every
+selected FSDB payload. Unset or `0` retains optional absence behavior; other values
+are configuration errors. A zero-private-case skip does not establish private
+conformance. Discovery still uses the provider's installed sidecars, not a
+hardcoded list; catalog schema 1 does not enumerate uninstalled sidecar directories.
+
 Storage, authentication, generation and publication are external to the runner
 and independent of Ondas. Any external process or mounted filesystem can supply
 a provider that meets this contract, regardless of format or size.

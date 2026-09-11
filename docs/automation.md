@@ -179,12 +179,20 @@ Build docs with warnings denied. `package.metadata.docs.rs` selects features and
 targets; `just docs` reproduces that build. docs.rs builds after crates.io
 publication, so no separate site or publishing job is needed.
 
-Prefer public all-features builds without SDK installations and report absent
-runtimes when opening a source. `cargo doc` still builds dependencies and executes
-build scripts. If needed, a small `DOCS_RS`/`cfg(docsrs)` path can bypass discovery
-while preserving the API; do not create a fake reader. If a dependency cannot
-support this, document an explicit open-source feature set. Successful docs do
-not establish private linking, licensing or runtime compatibility.
+Public checks and docs.rs use the default nonvendor feature set. Optional backend
+features are additive, but `--all-features` includes SDK-dependent builds and is
+not a public CI requirement. `cargo doc` still executes build scripts; do not
+substitute a fake reader or silently bypass SDK discovery for documentation.
+Successful docs do not establish native linking or runtime compatibility.
+
+`just ci-fsdb` explicitly enables `fsdb-lib`, checks development Rust and MSRV,
+and runs real FSDB conformance. Supply a complete read-only SDK mount and
+`VERDI_HOME` through the ignored local profile. Keep the private provider's version
+in ignored `fixtures.private.lock.toml`; `ONDAS_REQUIRE_PRIVATE_FIXTURES=1` makes
+that corpus mandatory for a strict run. Neither vendor nor public tests implicitly
+download data. The public installer remains public-only. See [FSDB](fsdb.md) for
+the source-build deployment contract and [fixtures](fixtures.md) for absence
+versus corruption handling.
 
 A release consists of a crates.io package, `vX.Y.Z` tag and GitHub Release, without
 a binary matrix, release assets or Pages site. Preparation updates the package

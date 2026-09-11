@@ -5,4 +5,5 @@ target
 tmp
 **/__pycache__
 fixtures
+fixtures.private.lock.toml
 tools.local

@@ -55,9 +55,10 @@ Before conformance, validate the selected locked providers, sidecars, paths,
 sizes, hashes and oracle semantics once. Do not rehash artifacts per query.
 [fixtures.md](fixtures.md) defines the checks.
 
-Missing configuration, required readers or selected fixtures must fail, as must
-invalid data and an empty required selection. Never turn them into skips or a
-successful zero-test run. A deliberately malformed waveform can still be a valid
+Missing configuration, required readers or required selected fixtures must fail,
+as must invalid data and an empty required selection. Optional private provider
+or payload absence is reported explicitly as a skip; corruption is never a skip.
+Do not describe skipped inputs as conformance coverage. A deliberately malformed waveform can still be a valid
 fixture with a negative oracle.
 
 Catalog validation and conformance are separate results. An empty oracle is valid
@@ -76,6 +77,22 @@ Formatting, Clippy, compilation and Rustdoc do not replace runtime tests.
 locked provider. Missing environment, provider, version, artifacts or oracle data
 fails the suite. Default test runs leave these external tests ignored and do not
 claim their coverage.
+
+`./dev just conformance-fsdb` enables `fsdb-lib` and checks public FSDBs in file
+mode, plus available private FSDBs. The private version is pinned separately in
+ignored `fixtures.private.lock.toml`; set `ONDAS_REQUIRE_PRIVATE_FIXTURES=1` to
+require that provider and every selected payload. Missing public inputs always
+fail. The runner validates installed metadata even when an optional payload is
+absent, and reports passed, failed and skipped cases separately.
+
+`./dev just ci-fsdb` adds vendor-enabled static, unit, documentation and MSRV
+checks. Focused FSDB regressions cover path/bytes routing, reentrant callbacks,
+independent opens, cross-thread use/drop, panic cleanup, repeated selections,
+slices and missing/corrupt payload policy. Test a separate downstream executable
+outside Cargo's runtime environment to verify native dependency propagation.
+The value classes asserted by supplied oracle observations, not merely successful
+opens, determine adapter coverage. Request missing cases from the fixture producer;
+never turn the new adapter's output into expected observations.
 
 `full_fst_pool` and `full_vcd_pool` discover all matching artifacts without a
 whitelist. They validate inputs before opening and compare every listed sample
