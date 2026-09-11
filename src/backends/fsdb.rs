@@ -142,8 +142,8 @@ pub(crate) fn probe(path: &Path) -> Result<bool> {
 
 struct Handle(NonNull<c_void>);
 // SAFETY: ffrOpenNonSharedObj creates an independently owned reader and is the
-// SDK's documented multi-thread open API (Reader 2025+ pp.104-105). No thread-
-// local arguments/callback data are retained: callbacks point into the C++ heap
+// SDK's documented multi-thread open API (FSDB Reader guide, ffrOpenNonSharedObj).
+// No thread-local arguments/callback data are retained: callbacks point into the C++ heap
 // owner. All calls, including destruction, are serialized by SDK. No SDK pointer
 // escapes the adapter. Shared access cannot mutate without this lock, and reads
 // additionally require &mut Reader. Rust visitors run after unlocking.

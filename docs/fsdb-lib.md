@@ -1,8 +1,8 @@
 # FSDB Lib backend
 
 `fsdb-lib` is Ondas's optional FSDB backend. It reads binary FSDB through the
-Synopsys FSDB Reader SDK shipped with Verdi 2025+. A private C++ shim calls the
-SDK; the Rust adapter maps declarations, SDK identities and value records into
+Synopsys FSDB Reader SDK from a recent Verdi release (2025+). A private C++ shim
+calls the SDK; the Rust adapter maps declarations, SDK identities and value records into
 the common model. It accepts files, not bytes or streams, and does not convert
 FSDB to another format.
 
@@ -169,8 +169,7 @@ Transaction, assertion and object-database semantics are outside the common mode
 
 SDK types and pointers remain behind the private C ABI. Each waveform owns its
 non-shared Reader; mutable query access owns its cursor exclusively. The Reader
-guide recommends this open API for multithreaded applications (Verdi FSDB Reader
-2025+, `ffrOpenNonSharedObj`, pages 104–105).
+guide recommends `ffrOpenNonSharedObj` for multithreaded applications.
 
 All SDK operations, including open and destruction, are serialized within this
 adapter. The Rust owner can move across threads. This lock does not coordinate
