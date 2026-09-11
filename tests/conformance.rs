@@ -284,7 +284,8 @@ fn validate_oracle(oracle: &Json, positive: bool) {
 }
 
 fn provider() -> PathBuf {
-    checked_provider(PROVIDER, include_str!("../fixtures.lock.toml")).unwrap()
+    checked_provider(PROVIDER, include_str!("../fixtures.lock.toml"))
+        .expect("required public fixture provider is absent; run just fixtures-install")
 }
 
 fn checked_provider(name: &str, lock_text: &str) -> Option<PathBuf> {
@@ -1288,11 +1289,6 @@ fn discover(provider: &Path, extension: &str) -> Vec<String> {
         }
     }
     names.sort();
-    assert!(
-        !names.is_empty(),
-        "no {extension} fixtures in {}",
-        provider.display()
-    );
     names
 }
 
@@ -1564,6 +1560,15 @@ fn full_pool(extension: &str) {
 
 fn run_pool(provider: &Path, extension: &str, required: bool) {
     let names = discover(provider, extension);
+    assert!(
+        !required || !names.is_empty(),
+        "no required {extension} fixtures in {}",
+        provider.display()
+    );
+    if names.is_empty() {
+        eprintln!("SKIP optional {extension} provider: no fixtures selected");
+        return;
+    }
     eprintln!("{extension} pool: {} fixtures", names.len());
     // Validate the whole selected catalog before opening any waveform. Loading
     // drops artifact bytes after hashing; query inputs are held one case at a time.
@@ -1867,8 +1872,19 @@ fn discovery_uses_artifacts_not_fixture_names_or_a_whitelist() {
     assert_eq!(discover(&root, "vcd"), ["fst-not-selected"]);
     fs::remove_file(root.join("anything/fixture.json")).unwrap();
     fs::remove_file(root.join("orphan/waveform.fst")).unwrap();
-    assert!(std::panic::catch_unwind(|| discover(&root, "fst")).is_err());
+    assert!(discover(&root, "fst").is_empty());
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn empty_pool_obeys_requirement() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tmp")
+        .join(format!("empty-pool-{}", std::process::id()));
+    fs::create_dir_all(&root).unwrap();
+    run_pool(&root, "fsdb", false);
+    assert!(std::panic::catch_unwind(|| run_pool(&root, "fsdb", true)).is_err());
+    fs::remove_dir(root).unwrap();
 }
 
 #[test]
