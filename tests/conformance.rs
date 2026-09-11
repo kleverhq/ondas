@@ -1333,7 +1333,12 @@ fn discover(provider: &Path, extension: &str) -> Vec<String> {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
                 Err(e) => panic!("artifact metadata: {e}"),
             };
-        if declares_format || artifact_present {
+        assert!(
+            !artifact_present || declares_format,
+            "{}: orphan or format-mismatched waveform.{extension}",
+            directory.display()
+        );
+        if declares_format {
             names.push(entry.file_name().into_string().expect("UTF-8 fixture name"));
         }
     }
@@ -1951,10 +1956,18 @@ fn discovery_uses_artifacts_not_fixture_names_or_a_whitelist() {
         )
         .unwrap();
     }
-    fs::write(root.join("orphan/waveform.fst"), []).unwrap();
     fs::write(root.join("catalog.json"), "{}").unwrap();
-    assert_eq!(discover(&root, "fst"), ["anything", "orphan"]);
+    assert_eq!(discover(&root, "fst"), ["anything"]);
     assert_eq!(discover(&root, "vcd"), ["fst-not-selected"]);
+    fs::write(root.join("orphan/waveform.fst"), []).unwrap();
+    assert!(std::panic::catch_unwind(|| discover(&root, "fst")).is_err());
+    fs::copy(
+        root.join("fst-not-selected/fixture.json"),
+        root.join("orphan/fixture.json"),
+    )
+    .unwrap();
+    assert!(std::panic::catch_unwind(|| discover(&root, "fst")).is_err());
+    fs::remove_file(root.join("orphan/fixture.json")).unwrap();
     fs::remove_file(root.join("anything/fixture.json")).unwrap();
     fs::remove_file(root.join("orphan/waveform.fst")).unwrap();
     assert!(discover(&root, "fst").is_empty());
@@ -1972,7 +1985,7 @@ fn discovery_uses_artifacts_not_fixture_names_or_a_whitelist() {
         fs::remove_file(root.join("broken-dir")).unwrap();
         std::os::unix::fs::symlink("/not/an/ondas/payload", root.join("orphan/waveform.fst"))
             .unwrap();
-        assert_eq!(discover(&root, "fst"), ["orphan"]);
+        assert!(std::panic::catch_unwind(|| discover(&root, "fst")).is_err());
     }
     fs::remove_dir_all(root).unwrap();
 }
