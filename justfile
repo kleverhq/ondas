@@ -19,27 +19,46 @@ fmt-check: _inside
 
 # Run Clippy on the library and test targets.
 lint: _inside
-    cargo clippy --locked --all-targets --all-features -- -D warnings
+    cargo clippy --locked --all-targets -- -D warnings
 
 # Compile the library and test targets on the pinned development toolchain.
 check: _inside
-    cargo check --locked --all-targets --all-features
+    cargo check --locked --all-targets
 
 # Generate the docs.rs-equivalent API documentation.
 docs: _inside
-    RUSTDOCFLAGS="-D warnings" cargo doc --locked --lib --all-features --no-deps
+    RUSTDOCFLAGS="-D warnings" cargo doc --locked --lib --no-deps
 
 # Check the public library on the Cargo.toml rust-version.
 msrv: _inside
-    cargo +{{msrv}} check --locked --lib --all-features
+    cargo +{{msrv}} check --locked --lib
 
 # Run self-contained Rust tests and public documentation examples.
 test: _inside
-    cargo test --locked --all-features
+    cargo test --locked
 
 # Check every FST/VCD in the locked provider plus focused API regressions.
 conformance: _inside
     cargo test --locked --test conformance -- --ignored --nocapture
+
+# Check every public FSDB and available private FSDB, plus focused regressions.
+# Set ONDAS_REQUIRE_PRIVATE_FIXTURES=1 to require the complete private selection.
+conformance-fsdb: _inside
+    cargo test --locked --features fsdb-lib --test conformance fsdb_ -- --ignored --nocapture
+
+# Verify actual downstream linking, independent of Cargo's runtime environment.
+fsdb-consumer: _inside
+    python3 tools/repo/check_fsdb_consumer.py
+
+# Validate the optional backend; VERDI_HOME must select an installed SDK.
+ci-fsdb: _inside
+    cargo clippy --locked --all-targets --features fsdb-lib -- -D warnings
+    cargo test --locked --features fsdb-lib
+    cargo +{{msrv}} check --locked --lib --features fsdb-lib
+    RUSTDOCFLAGS="-D warnings" cargo doc --locked --lib --features fsdb-lib --no-deps
+    just conformance-fsdb
+    just fsdb-consumer
+    RUSTUP_TOOLCHAIN={{msrv}} just fsdb-consumer
 
 # Test repository automation without Docker or external fixtures.
 tools-test: _inside

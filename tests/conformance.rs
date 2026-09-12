@@ -38,6 +38,7 @@ impl Fixture {
         match self.format {
             Format::Fst => "fst-native",
             Format::Vcd => "vcd-native",
+            Format::Fsdb => "fsdb-lib",
             _ => unreachable!(),
         }
     }
@@ -46,6 +47,7 @@ impl Fixture {
         match self.format {
             Format::Fst => "conformance.fst",
             Format::Vcd => "conformance.vcd",
+            Format::Fsdb => "conformance.fsdb",
             _ => unreachable!(),
         }
     }
@@ -282,9 +284,28 @@ fn validate_oracle(oracle: &Json, positive: bool) {
 }
 
 fn provider() -> PathBuf {
-    let lock: toml::Value =
-        toml::from_str(include_str!("../fixtures.lock.toml")).expect("fixture lock TOML");
-    let provider_version = lock["providers"][PROVIDER]
+    checked_provider(PROVIDER, include_str!("../fixtures.lock.toml"))
+        .expect("required public fixture provider is absent; run just fixtures-install")
+}
+
+fn provider_directory(path: &Path) -> Option<PathBuf> {
+    match fs::symlink_metadata(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        result => {
+            result.unwrap();
+            assert!(
+                path.is_dir(),
+                "invalid provider directory: {}",
+                path.display()
+            );
+        }
+    }
+    Some(path.canonicalize().unwrap())
+}
+
+fn checked_provider(name: &str, lock_text: &str) -> Option<PathBuf> {
+    let lock: toml::Value = toml::from_str(lock_text).expect("fixture lock TOML");
+    let provider_version = lock["providers"][name]
         .as_str()
         .expect("selected provider version must be a string");
     assert!(!provider_version.is_empty(), "empty provider version");
@@ -292,22 +313,25 @@ fn provider() -> PathBuf {
         std::env::var_os("ONDAS_FIXTURES")
             .expect("ONDAS_FIXTURES is required; run just conformance"),
     );
-    let provider = root.join(PROVIDER);
-    assert!(provider.is_dir(), "missing provider {}", provider.display());
+    let provider = provider_directory(&root.join(name))?;
     let catalog: Json =
         serde_json::from_slice(&fs::read(provider.join("catalog.json")).expect("provider catalog"))
             .unwrap();
     assert_eq!(catalog["schema"], 1, "catalog schema");
-    assert_eq!(catalog["provider"], PROVIDER, "provider identity");
+    assert_eq!(catalog["provider"], name, "provider identity");
     assert_eq!(
         catalog["version"].as_str(),
         Some(provider_version),
         "provider version mismatch"
     );
-    provider.canonicalize().unwrap()
+    Some(provider)
 }
 
 fn load_fixture(provider: &Path, name: &str) -> Fixture {
+    load_available_fixture(provider, name, true).unwrap()
+}
+
+fn fixture_sidecar(provider: &Path, name: &str) -> (PathBuf, Json) {
     let directory = provider
         .join(name)
         .canonicalize()
@@ -316,37 +340,27 @@ fn load_fixture(provider: &Path, name: &str) -> Fixture {
         directory.starts_with(provider),
         "{name}: fixture escapes provider"
     );
+    let sidecar_path = directory
+        .join("fixture.json")
+        .canonicalize()
+        .expect("fixture sidecar path");
+    assert!(
+        sidecar_path.starts_with(&directory) && sidecar_path.is_file(),
+        "{name}: sidecar containment/type"
+    );
     let sidecar: Json = serde_json::from_slice(
-        &fs::read(directory.join("fixture.json"))
-            .unwrap_or_else(|e| panic!("{name}: sidecar: {e}")),
+        &fs::read(sidecar_path).unwrap_or_else(|e| panic!("{name}: sidecar: {e}")),
     )
     .expect("fixture JSON");
     assert_eq!(sidecar["schema"], 1, "{name}: sidecar schema");
     let artifact = &sidecar["artifact"];
     let extension = artifact["format"].as_str().unwrap();
-    let format = match extension {
-        "fst" => Format::Fst,
-        "vcd" => Format::Vcd,
-        _ => panic!("{name}: unexpected format {extension}"),
-    };
+    assert!(
+        matches!(extension, "fst" | "vcd" | "fsdb" | "ghw" | "wlf"),
+        "{name}: invalid artifact format"
+    );
     let filename = format!("waveform.{extension}");
     assert_eq!(artifact["file"], filename, "{name}: artifact filename");
-    let path = directory.join(filename).canonicalize().unwrap();
-    assert!(
-        path.starts_with(&directory) && path.is_file(),
-        "{name}: artifact containment/type"
-    );
-    let bytes = fs::read(&path).unwrap();
-    assert_eq!(
-        Some(bytes.len() as u64),
-        artifact["size"].as_u64(),
-        "{name}: artifact size"
-    );
-    assert_eq!(
-        format!("{:x}", Sha256::digest(&bytes)),
-        artifact["sha256"].as_str().unwrap(),
-        "{name}: artifact SHA256"
-    );
     let provenance = &sidecar["provenance"];
     match provenance["kind"].as_str().unwrap() {
         "authored" => (),
@@ -387,14 +401,66 @@ fn load_fixture(provider: &Path, name: &str) -> Fixture {
             "{name}: unknown/duplicate tag {tag}"
         );
     }
+    let oracle = &sidecar["oracle"];
+    if !oracle.as_object().expect("oracle object").is_empty() {
+        validate_oracle(oracle, oracle["open"]["result"] == "ok");
+    }
+    artifact["size"].as_u64().expect("artifact size");
+    let hash = artifact["sha256"].as_str().expect("artifact SHA256");
+    assert!(
+        hash.len() == 64
+            && hash
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    );
+    (directory, sidecar)
+}
+
+fn load_available_fixture(provider: &Path, name: &str, required: bool) -> Option<Fixture> {
+    let (directory, sidecar) = fixture_sidecar(provider, name);
+    let artifact = &sidecar["artifact"];
+    let format = match artifact["format"].as_str().unwrap() {
+        "fst" => Format::Fst,
+        "vcd" => Format::Vcd,
+        "fsdb" if cfg!(feature = "fsdb-lib") => Format::Fsdb,
+        other => panic!("{name}: unexpected selected format {other}"),
+    };
     let oracle = sidecar["oracle"].clone();
-    eprintln!("validating {PROVIDER}/{name}");
-    validate_oracle(&oracle, oracle["open"]["result"] == "ok");
-    Fixture {
+    eprintln!("validating {name}");
+    let size = artifact["size"].as_u64().unwrap();
+    let hash = artifact["sha256"].as_str().unwrap();
+    let path = directory.join(artifact["file"].as_str().unwrap());
+    match fs::symlink_metadata(&path) {
+        Ok(_) => (),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && !required => {
+            eprintln!("SKIP {name}: optional payload absent");
+            return None;
+        }
+        Err(e) => panic!("{name}: required artifact: {e}"),
+    }
+    let path = path
+        .canonicalize()
+        .expect("artifact must resolve inside fixture");
+    assert!(
+        path.starts_with(&directory) && path.is_file(),
+        "{name}: artifact containment/type"
+    );
+    let bytes = fs::read(&path).unwrap();
+    assert_eq!(bytes.len() as u64, size, "{name}: artifact size");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(&bytes)),
+        hash,
+        "{name}: artifact SHA256"
+    );
+    if oracle.as_object().unwrap().is_empty() {
+        eprintln!("SKIP {name}: no oracle observations");
+        return None;
+    }
+    Some(Fixture {
         path,
         oracle,
         format,
-    }
+    })
 }
 
 fn fixtures() -> &'static [Fixture] {
@@ -1241,30 +1307,45 @@ fn run_case(index: usize, bytes: bool) {
 }
 
 fn discover(provider: &Path, extension: &str) -> Vec<String> {
+    let provider = provider.canonicalize().expect("provider directory");
     let mut names = Vec::new();
-    for entry in fs::read_dir(provider).expect("provider directory") {
+    for entry in fs::read_dir(&provider).expect("provider directory") {
         let entry = entry.unwrap();
         let directory = entry.path();
-        if !directory.is_dir() {
+        if !fs::metadata(&directory)
+            .expect("provider entry metadata")
+            .is_dir()
+        {
             continue;
         }
         let sidecar = directory.join("fixture.json");
-        let declares_format = sidecar.is_file() && {
-            let sidecar: Json = serde_json::from_slice(&fs::read(&sidecar).unwrap())
-                .unwrap_or_else(|e| panic!("{}: {e}", sidecar.display()));
-            sidecar["artifact"]["format"] == extension
+        let declares_format = match fs::symlink_metadata(&sidecar) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+            Err(e) => panic!("{}: {e}", sidecar.display()),
+            Ok(_) => {
+                let name = entry.file_name();
+                let (_, sidecar) =
+                    fixture_sidecar(&provider, name.to_str().expect("UTF-8 fixture name"));
+                sidecar["artifact"]["format"] == extension
+            }
         };
-        // An orphaned artifact is a failing fixture, not an invisible exclusion.
-        if declares_format || directory.join(format!("waveform.{extension}")).exists() {
+        // An orphaned artifact (including a broken link) must not disappear.
+        let artifact_present =
+            match fs::symlink_metadata(directory.join(format!("waveform.{extension}"))) {
+                Ok(_) => true,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+                Err(e) => panic!("artifact metadata: {e}"),
+            };
+        assert!(
+            !artifact_present || declares_format,
+            "{}: orphan or format-mismatched waveform.{extension}",
+            directory.display()
+        );
+        if declares_format {
             names.push(entry.file_name().into_string().expect("UTF-8 fixture name"));
         }
     }
     names.sort();
-    assert!(
-        !names.is_empty(),
-        "no {extension} fixtures in {}",
-        provider.display()
-    );
     names
 }
 
@@ -1291,7 +1372,10 @@ fn pool_queries(fixture: &Fixture, bytes: bool, context: &str) {
                 .push((id, signal, window));
         }
     }
-    for (time, entries) in samples {
+    for (time, mut entries) in samples {
+        if fixture.format == Format::Fsdb {
+            entries.extend_from_within(..);
+        }
         let handles: Vec<_> = entries.iter().map(|(_, signal, _)| *signal).collect();
         let actual = wave.samples(&handles, Time::from_ticks(time)).unwrap();
         assert_eq!(actual.len(), entries.len(), "{context}: sample count");
@@ -1305,8 +1389,45 @@ fn pool_queries(fixture: &Fixture, bytes: bool, context: &str) {
             );
         }
     }
-    for ((start, end), entries) in windows {
+    for ((start, end), mut entries) in windows {
+        if fixture.format == Format::Fsdb {
+            entries.extend_from_within(..);
+        }
         let handles: Vec<_> = entries.iter().map(|(_, signal, _)| *signal).collect();
+        let range = TimeRange::closed(Time::from_ticks(start), Time::from_ticks(end));
+        if fixture.format == Format::Fsdb {
+            // Candidate-time and duplicate-selection assertions are derived from
+            // supplied complete windows, without extending the oracle schema.
+            let required: BTreeSet<_> = entries
+                .iter()
+                .flat_map(|(_, _, window)| changes(window))
+                .map(|(time, _)| Time::from_ticks(time))
+                .collect();
+            let mut candidates = Vec::new();
+            let result = wave
+                .scan_candidate_times(&handles, range, |time| {
+                    candidates.push(time);
+                    ControlFlow::<()>::Continue(())
+                })
+                .unwrap();
+            assert_eq!(result, ControlFlow::Continue(()));
+            assert!(candidates.windows(2).all(|w| w[0] < w[1]));
+            assert!(candidates.iter().all(|time| !range.is_empty()
+                && *time >= range.start()
+                && *time <= Time::from_ticks(end)));
+            assert!(
+                required.is_subset(&candidates.into_iter().collect()),
+                "{context}: missing oracle candidate ticks"
+            );
+            if handles.iter().any(|s| {
+                matches!(
+                    s.encoding(),
+                    Encoding::Real | Encoding::String | Encoding::Event
+                )
+            }) {
+                scan_queries(&mut wave, &handles, range, context);
+            }
+        }
         let actual = wave
             .traces(
                 &handles,
@@ -1345,20 +1466,225 @@ fn full_vcd_pool() {
     full_pool("vcd");
 }
 
-fn full_pool(extension: &str) {
-    let provider = provider();
-    let names = discover(&provider, extension);
-    eprintln!(
-        "{extension} pool: {} fixtures, {} file/bytes cases",
-        names.len(),
-        names.len() * 2
+#[cfg(not(feature = "fsdb-lib"))]
+#[test]
+#[ignore = "requires public ONDAS_FIXTURES; run just conformance"]
+fn fsdb_disabled_routing() {
+    let path = provider().join("fsdb0005-compare-xz/waveform.fsdb");
+    assert!(matches!(
+        ondas::open(&path),
+        Err(Error::NoBackend {
+            format: Format::Fsdb
+        })
+    ));
+    assert!(matches!(
+        ondas::open_bytes("dump.FSDB", fs::read(&path).unwrap().into()),
+        Err(Error::NoBackend {
+            format: Format::Fsdb
+        })
+    ));
+    assert!(matches!(
+        ondas::open_with(&path, "fsdb-lib"),
+        Err(Error::UnknownBackend { .. })
+    ));
+}
+
+#[cfg(feature = "fsdb-lib")]
+#[test]
+#[ignore = "requires Verdi and ONDAS_FIXTURES; run just conformance-fsdb"]
+fn full_fsdb_pool() {
+    full_pool("fsdb");
+}
+
+#[cfg(feature = "fsdb-lib")]
+#[test]
+#[ignore = "requires Verdi and ONDAS_FIXTURES; run just conformance-fsdb"]
+fn private_fsdb_pool() {
+    let required = match std::env::var("ONDAS_REQUIRE_PRIVATE_FIXTURES").as_deref() {
+        Ok("1") => true,
+        Ok("0") | Err(std::env::VarError::NotPresent) => false,
+        _ => panic!("ONDAS_REQUIRE_PRIVATE_FIXTURES must be 0 or 1"),
+    };
+    let name = "kleverhq.ondas-fixtures-private";
+    let root = PathBuf::from(std::env::var_os("ONDAS_FIXTURES").expect("ONDAS_FIXTURES"));
+    if provider_directory(&root.join(name)).is_none() {
+        assert!(!required, "private provider directory required");
+        eprintln!("SKIP {name}: optional provider absent (0 selected)");
+        return;
+    }
+    let lock = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures.private.lock.toml"),
+    )
+    .expect("installed private provider requires ignored fixtures.private.lock.toml");
+    let provider = checked_provider(name, &lock).expect("private provider disappeared");
+    run_pool(&provider, "fsdb", required);
+}
+
+#[cfg(feature = "fsdb-lib")]
+#[test]
+#[ignore = "requires Verdi and ONDAS_FIXTURES; run just conformance-fsdb"]
+fn fsdb_queries_routing_and_lifecycle() {
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt, sync::Arc};
+    let fixture = load_fixture(&provider(), "fsdb0005-compare-xz");
+    let mut wave = ondas::open(&fixture.path).unwrap();
+    let signals = hierarchy(&wave, &fixture.oracle, true);
+    let handles: Vec<_> = signals.values().take(3).copied().collect();
+    assert!(!handles.is_empty());
+    let first = handles[0];
+    let mut selected = handles.clone();
+    selected.push(first);
+    if let Some(width) = first.width() {
+        selected.push(first.slice((width - 1).min(2), 0).unwrap());
+    }
+    scan_queries(&mut wave, &selected, TimeRange::all(), "FSDB selection");
+    scan_queries(
+        &mut wave,
+        &selected,
+        TimeRange::closed(Time::from_ticks(1), Time::from_ticks(10)),
+        "FSDB window",
     );
+    let stop = wave
+        .scan(&handles, TimeRange::all(), |_| {
+            // Reentrant vendor open/read/drop must not deadlock or invalidate the outer cursor.
+            pool_queries(&fixture, false, "FSDB reentrant");
+            ControlFlow::Break(7)
+        })
+        .unwrap();
+    assert_eq!(stop, ControlFlow::Break(7));
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = wave.scan(&handles, TimeRange::all(), |_| -> ControlFlow<()> {
+            panic!("visitor panic");
+        });
+    }));
+    assert!(panic.is_err());
+    scan_queries(&mut wave, &handles, TimeRange::all(), "FSDB after panic");
+    std::thread::spawn(move || {
+        scan_queries(
+            &mut wave,
+            &handles,
+            TimeRange::all(),
+            "FSDB moved to another thread",
+        );
+        // Read-only shared access and final drop on another thread are supported.
+        let shared = Arc::new(wave);
+        let other = Arc::clone(&shared);
+        std::thread::spawn(move || assert_eq!(other.backend(), "fsdb-lib"))
+            .join()
+            .unwrap();
+    })
+    .join()
+    .unwrap();
+    std::thread::scope(|scope| {
+        for _ in 0..2 {
+            let fixture = &fixture;
+            scope.spawn(move || {
+                for _ in 0..2 {
+                    pool_queries(fixture, false, "FSDB independent open");
+                }
+            });
+        }
+    });
+    let bytes: Arc<[u8]> = fs::read(&fixture.path).unwrap().into();
+    for result in [
+        ondas::open_bytes("dump.FSDB", bytes.clone()),
+        ondas::open_bytes_with("unknown", bytes, "fsdb-lib"),
+    ] {
+        assert!(matches!(
+            result,
+            Err(Error::UnsupportedInput {
+                input: ondas::InputKind::Bytes,
+                ..
+            })
+        ));
+    }
+    let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tmp")
+        .join(format!("fsdb-routing-{}", std::process::id()));
+    fs::create_dir(&directory).unwrap();
+    // Copy supplied bytes, never manufacture waveform data or oracle values.
+    let odd = directory.join(OsString::from_vec(b"wave with space-\xff.vcd".to_vec()));
+    fs::copy(&fixture.path, &odd).unwrap();
+    let opened = ondas::open(&odd).unwrap();
+    assert_eq!(opened.format(), Format::Fsdb);
+    assert_eq!(opened.metadata().source_name(), odd.to_string_lossy());
+    drop(opened);
+    assert!(matches!(
+        ondas::open_with(&odd, "vcd-native"),
+        Err(Error::BackendDoesNotSupport {
+            format: Format::Fsdb,
+            ..
+        })
+    ));
+    fs::remove_file(&odd).unwrap();
+    fs::remove_dir(directory).unwrap();
+}
+
+#[cfg(feature = "fsdb-lib")]
+#[test]
+#[ignore = "requires ONDAS_FIXTURES; run just conformance-fsdb"]
+fn fsdb_optional_payload_policy() {
+    let original = provider().join("fsdb0005-compare-xz");
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tmp")
+        .join(format!("fsdb-policy-{}", std::process::id()));
+    let dir = root.join("case");
+    fs::create_dir_all(&dir).unwrap();
+    fs::copy(original.join("fixture.json"), dir.join("fixture.json")).unwrap();
+    let root = root.canonicalize().unwrap();
+    assert!(load_available_fixture(&root, "case", false).is_none());
+    assert!(std::panic::catch_unwind(|| load_available_fixture(&root, "case", true)).is_err());
+    fs::write(dir.join("waveform.fsdb"), b"corrupt").unwrap();
+    assert!(std::panic::catch_unwind(|| load_available_fixture(&root, "case", false)).is_err());
+    fs::copy(original.join("waveform.fsdb"), dir.join("waveform.fsdb")).unwrap();
+    assert!(load_available_fixture(&root, "case", false).is_some());
+    let mut sidecar: Json =
+        serde_json::from_slice(&fs::read(dir.join("fixture.json")).unwrap()).unwrap();
+    sidecar["oracle"] = json!({});
+    fs::write(
+        dir.join("fixture.json"),
+        serde_json::to_vec(&sidecar).unwrap(),
+    )
+    .unwrap();
+    assert!(load_available_fixture(&root, "case", false).is_none());
+    assert!(load_available_fixture(&root, "case", true).is_none());
+    run_pool(&root, "fsdb", false);
+    assert!(std::panic::catch_unwind(|| run_pool(&root, "fsdb", true)).is_err());
+    fs::write(dir.join("waveform.fsdb"), b"corrupt").unwrap();
+    assert!(std::panic::catch_unwind(|| load_available_fixture(&root, "case", false)).is_err());
+    fs::remove_file(dir.join("waveform.fsdb")).unwrap();
+    assert!(load_available_fixture(&root, "case", false).is_none());
+    assert!(std::panic::catch_unwind(|| load_available_fixture(&root, "case", true)).is_err());
+    std::os::unix::fs::symlink("/not/an/ondas/fixture", dir.join("waveform.fsdb")).unwrap();
+    assert!(std::panic::catch_unwind(|| load_available_fixture(&root, "case", false)).is_err());
+    fs::remove_file(dir.join("waveform.fsdb")).unwrap();
+    fs::write(dir.join("fixture.json"), b"{}").unwrap();
+    assert!(std::panic::catch_unwind(|| load_available_fixture(&root, "case", false)).is_err());
+    fs::remove_dir_all(root).unwrap();
+}
+
+fn full_pool(extension: &str) {
+    run_pool(&provider(), extension, true);
+}
+
+fn run_pool(provider: &Path, extension: &str, required: bool) {
+    let names = discover(provider, extension);
+    assert!(
+        !required || !names.is_empty(),
+        "no required {extension} fixtures in {}",
+        provider.display()
+    );
+    if names.is_empty() {
+        eprintln!("SKIP optional {extension} provider: no fixtures selected");
+        return;
+    }
+    eprintln!("{extension} pool: {} fixtures", names.len());
     // Validate the whole selected catalog before opening any waveform. Loading
     // drops artifact bytes after hashing; query inputs are held one case at a time.
     let fixtures: Vec<_> = names
         .iter()
         .map(|name| {
-            std::panic::catch_unwind(|| load_fixture(&provider, name)).map_err(panic_message)
+            std::panic::catch_unwind(|| load_available_fixture(provider, name, required))
+                .map_err(panic_message)
         })
         .collect();
     let invalid: Vec<_> = names
@@ -1378,9 +1704,18 @@ fn full_pool(extension: &str) {
     );
     let mut failures = Vec::new();
     let mut passed = 0;
+    let mut skipped = 0;
     for (name, fixture) in names.iter().zip(fixtures) {
-        let fixture = fixture.unwrap();
-        for bytes in [false, true] {
+        let Some(fixture) = fixture.unwrap() else {
+            skipped += 1;
+            continue;
+        };
+        let modes: &[bool] = if fixture.format == Format::Fsdb {
+            &[false]
+        } else {
+            &[false, true]
+        };
+        for &bytes in modes {
             let context = format!("{name} / {}", if bytes { "bytes" } else { "file" });
             eprintln!("checking {context}");
             let result = std::panic::catch_unwind(|| pool_queries(&fixture, bytes, &context))
@@ -1398,7 +1733,7 @@ fn full_pool(extension: &str) {
         }
     }
     eprintln!(
-        "{extension} pool: {} fixtures, {passed} passed, {} failed",
+        "{extension} pool: {} fixtures, {passed} passed, {} failed, {skipped} skipped",
         names.len(),
         failures.len()
     );
@@ -1406,6 +1741,10 @@ fn full_pool(extension: &str) {
         failures.is_empty(),
         "{extension} pool failures:\n{}",
         failures.join("\n")
+    );
+    assert!(
+        !required || passed > 0,
+        "no required {extension} conformance cases executed"
     );
 }
 
@@ -1635,18 +1974,66 @@ fn discovery_uses_artifacts_not_fixture_names_or_a_whitelist() {
     ] {
         fs::write(
             root.join(name).join("fixture.json"),
-            json!({"artifact": {"format": format}}).to_string(),
+            json!({"schema": 1, "artifact": {"format": format, "file": format!("waveform.{format}"),
+                "size": 0, "sha256": "0".repeat(64)}, "provenance": {"kind": "authored"}, "oracle": {}}).to_string(),
         )
         .unwrap();
     }
-    fs::write(root.join("orphan/waveform.fst"), []).unwrap();
     fs::write(root.join("catalog.json"), "{}").unwrap();
-    assert_eq!(discover(&root, "fst"), ["anything", "orphan"]);
+    assert_eq!(discover(&root, "fst"), ["anything"]);
     assert_eq!(discover(&root, "vcd"), ["fst-not-selected"]);
+    fs::write(root.join("orphan/waveform.fst"), []).unwrap();
+    assert!(std::panic::catch_unwind(|| discover(&root, "fst")).is_err());
+    fs::copy(
+        root.join("fst-not-selected/fixture.json"),
+        root.join("orphan/fixture.json"),
+    )
+    .unwrap();
+    assert!(std::panic::catch_unwind(|| discover(&root, "fst")).is_err());
+    fs::remove_file(root.join("orphan/fixture.json")).unwrap();
     fs::remove_file(root.join("anything/fixture.json")).unwrap();
     fs::remove_file(root.join("orphan/waveform.fst")).unwrap();
-    assert!(std::panic::catch_unwind(|| discover(&root, "fst")).is_err());
+    assert!(discover(&root, "fst").is_empty());
+    fs::write(root.join("anything/fixture.json"), "{}").unwrap();
+    assert!(std::panic::catch_unwind(|| discover(&root, "vcd")).is_err());
+    fs::remove_file(root.join("anything/fixture.json")).unwrap();
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink("/not/an/ondas/sidecar", root.join("anything/fixture.json"))
+            .unwrap();
+        assert!(std::panic::catch_unwind(|| discover(&root, "vcd")).is_err());
+        fs::remove_file(root.join("anything/fixture.json")).unwrap();
+        std::os::unix::fs::symlink("/not/an/ondas/directory", root.join("broken-dir")).unwrap();
+        assert!(std::panic::catch_unwind(|| discover(&root, "vcd")).is_err());
+        fs::remove_file(root.join("broken-dir")).unwrap();
+        std::os::unix::fs::symlink("/not/an/ondas/payload", root.join("orphan/waveform.fst"))
+            .unwrap();
+        assert!(std::panic::catch_unwind(|| discover(&root, "fst")).is_err());
+    }
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn empty_pool_obeys_requirement() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tmp")
+        .join(format!("empty-pool-{}", std::process::id()));
+    fs::create_dir_all(&root).unwrap();
+    assert_eq!(
+        provider_directory(&root),
+        Some(root.canonicalize().unwrap())
+    );
+    assert_eq!(provider_directory(&root.join("absent")), None);
+    run_pool(&root, "fsdb", false);
+    assert!(std::panic::catch_unwind(|| run_pool(&root, "fsdb", true)).is_err());
+    #[cfg(unix)]
+    {
+        let broken = root.join("broken");
+        std::os::unix::fs::symlink("/not/an/ondas/provider", &broken).unwrap();
+        assert!(std::panic::catch_unwind(|| provider_directory(&broken)).is_err());
+        fs::remove_file(broken).unwrap();
+    }
+    fs::remove_dir(root).unwrap();
 }
 
 #[test]

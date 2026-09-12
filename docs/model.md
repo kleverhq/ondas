@@ -29,7 +29,7 @@ does not require a public backend enum, a generic waveform type or a plugin ABI.
 Readers remain independent even when they share a dependency: changing one
 format's reader must not require changes to another's. Native readers and
 third-party adapters can coexist. Reader choices belong in [vcd-native](vcd-native.md),
-[fst-native](fst-native.md), [GHW](ghw.md), [FSDB](fsdb.md) and [WLF](wlf.md), not in the common
+[fst-native](fst-native.md), [GHW](ghw.md), [fsdb-lib](fsdb-lib.md) and [WLF](wlf.md), not in the common
 model.
 
 ## Identity and ownership

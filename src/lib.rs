@@ -5,7 +5,8 @@ Read-only, format-independent waveform analysis.
 
 The `fst-native` backend reads FST files and shared in-memory bytes using the
 Rust `fst-reader` library. The independent `vcd-native` backend reads VCD directly,
-without converting to FST or storing full value histories. Other formats have no
+without converting to FST or storing full value histories. The optional `fsdb-lib`
+feature adds an FSDB Reader SDK backend of the same name. Other formats have no
 reader in this release. File-based
 examples use `no_run` because they need a waveform containing the named signals.
 The minimum supported Rust version is 1.88.
@@ -170,6 +171,49 @@ output. The decoder also owns its input/decompression buffers, so this is not a
 fixed bound on total memory use. Candidate-time scans decode values rather than using a separate activity
 index. These are cost characteristics, not different observation semantics.
 
+## Optional FSDB Reader
+
+Enable the additive Cargo feature `fsdb-lib` and set `VERDI_HOME` to a local Verdi
+installation when building. Use Verdi 2021 or newer. The supported
+target is Linux x86_64 GNU. Building requires a C++11 compiler, binutils and zlib
+development files. Older SDKs can reject newer FSDB format versions; use a newer
+Reader for those files. No SDK discovery occurs without the feature.
+
+```no_run
+# #[cfg(feature = "fsdb-lib")]
+# fn example() -> Result<(), Box<dyn std::error::Error>> {
+let mut wave = ondas::open_with("dump.fsdb", "fsdb-lib")?;
+let signal = wave.hierarchy().signal("tb.ready")?;
+let sample = wave.sample(signal, ondas::Time::from_ticks(10))?;
+# Ok(())
+# }
+```
+
+This backend opens files only. Explicit byte input returns [`Error::UnsupportedInput`];
+there is no hidden temporary file or conversion. A disabled `fsdb-lib` name returns
+[`Error::UnknownBackend`]. Input files and the linked SDK installation must remain
+unchanged and available. Binaries retain the build-time SDK library paths;
+removing those libraries can prevent the entire executable from starting, even
+for VCD/FST operations. Runtime SDK absence is not handled gracefully.
+
+Known digital storage preserves bits and source logic states; real storage maps
+to `f64`, NUL-terminated string bytes use reversible Latin-1, and normal HDL event
+records remain occurrences. Embedded-NUL string data and transaction events are
+not supported. No-change event initialization markers are not triggers; unknown
+event records and event queries on SDK-reported dump-off files return errors.
+Unsupported SDK data types retain their declarations with [`Encoding::Unsupported`].
+Integer ticks and scale factors remain exact; floating timestamp formats are
+rejected rather than rounded. Only recorded activity is observable: callbacks do
+not prove physical event counts during initialization or disabled dumping.
+
+Independent Reader objects and serialized SDK calls preserve `Waveform: Send + Sync`.
+The lock is released before Rust visitors, permitting queries on another waveform
+inside a callback. Queries load selected histories and traverse from their
+beginning; vendor loading has its own memory cost. SDK diagnostics may appear on
+stdout/stderr. C++ exceptions become backend errors, but native crashes or aborts
+are not contained. SDK permissions and runtime dependencies remain the caller's
+responsibility; no vendor files are distributed with Ondas.
+
 ## Model boundaries
 
 The API does not model writing or conversion, live ingestion, transactions,
@@ -179,7 +223,7 @@ is no public backend trait or plugin ABI, global timestamp table, strategy
 selection, query capability flags, or format-specific downcasting.
 "#]
 #![warn(missing_docs)]
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 mod backends;
 mod error;

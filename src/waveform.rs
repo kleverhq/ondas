@@ -14,7 +14,8 @@ use crate::{
 
 /// Opens a waveform file with an automatically selected available backend.
 ///
-/// FST uses `fst-native`; VCD uses `vcd-native`. Content recognition takes
+/// FST uses `fst-native`; VCD uses `vcd-native`. FSDB uses `fsdb-lib` when the
+/// optional feature of the same name is enabled. Content recognition takes
 /// precedence over the filename; a recognized extension is a fallback hint. A recognized format without a
 /// reader returns [`Error::NoBackend`]; unrecognized input returns
 /// [`Error::UnknownFormat`]. Each opened waveform uses one backend.
@@ -27,7 +28,8 @@ pub fn open(path: impl AsRef<Path>) -> Result<Waveform> {
 
 /// Opens a waveform file with only the named backend, without fallback.
 ///
-/// Available names are `fst-native` and `vcd-native`. Unknown names return
+/// Available names are `fst-native`, `vcd-native`, and feature-enabled `fsdb-lib`.
+/// A disabled optional backend is an unknown name. Unknown names return
 /// [`Error::UnknownBackend`]; a format unsupported by the selected backend returns
 /// [`Error::BackendDoesNotSupport`]. See [`open`] for detection and reader limits.
 pub fn open_with(path: impl AsRef<Path>, backend: &str) -> Result<Waveform> {
@@ -39,26 +41,35 @@ pub fn open_with(path: impl AsRef<Path>, backend: &str) -> Result<Waveform> {
 /// `name` is the logical [`Metadata::source_name`] and a format-detection hint.
 /// The input stays alive through the shared ownership of `bytes`. Detection,
 /// errors, and reader limitations are the same as [`open`]. Both native readers
-/// support file and byte input; other readers need not support both input kinds.
+/// support file and byte input. `fsdb-lib` is file-only: FSDB selected by the
+/// filename hint returns [`Error::UnsupportedInput`] when that feature is enabled.
+/// The SDK's content probe is only available for file paths.
 pub fn open_bytes(name: impl Into<String>, bytes: Arc<[u8]>) -> Result<Waveform> {
-    open_input(name.into(), Box::new(Cursor::new(bytes)), None)
+    open_input(name.into(), Box::new(Cursor::new(bytes)), None, None)
 }
 
 /// Opens shared in-memory bytes with only the named backend, without fallback.
 ///
 /// Combines [`open_bytes`]' input ownership with [`open_with`]'s explicit reader
-/// selection and error categories.
+/// selection and error categories. Selecting enabled `fsdb-lib` always returns
+/// [`Error::UnsupportedInput`] without materializing a temporary file.
 pub fn open_bytes_with(
     name: impl Into<String>,
     bytes: Arc<[u8]>,
     backend: &str,
 ) -> Result<Waveform> {
-    open_input(name.into(), Box::new(Cursor::new(bytes)), Some(backend))
+    open_input(
+        name.into(),
+        Box::new(Cursor::new(bytes)),
+        Some(backend),
+        None,
+    )
 }
 
 fn check_backend(backend: Option<&str>) -> Result<()> {
     if let Some(backend) = backend
         && !matches!(backend, "fst-native" | "vcd-native")
+        && !(cfg!(feature = "fsdb-lib") && backend == "fsdb-lib")
     {
         return Err(Error::UnknownBackend {
             backend: backend.into(),
@@ -73,19 +84,35 @@ fn open_file(path: &Path, backend: Option<&str>) -> Result<Waveform> {
         path.to_string_lossy().into_owned(),
         Box::new(BufReader::new(File::open(path)?)),
         backend,
+        Some(path),
     )
 }
 
-fn open_input(name: String, mut input: Box<dyn Input>, backend: Option<&str>) -> Result<Waveform> {
+fn open_input(
+    name: String,
+    mut input: Box<dyn Input>,
+    backend: Option<&str>,
+    _path: Option<&Path>,
+) -> Result<Waveform> {
     check_backend(backend)?;
+    #[cfg(feature = "fsdb-lib")]
+    if backend == Some("fsdb-lib") && _path.is_none() {
+        return Err(Error::UnsupportedInput {
+            backend: "fsdb-lib".into(),
+            input: crate::InputKind::Bytes,
+        });
+    }
     let prefix = input.fill_buf()?;
-    let mut detected = if matches!(prefix.first(), Some(0 | 254)) {
-        Some(Format::Fst)
-    } else if prefix.starts_with(b"GHDLwave") {
-        Some(Format::Ghw)
-    } else {
-        None
-    };
+    // The uncompressed FST header section is 329 bytes (fst-reader 0.17).
+    // Its first zero byte alone also matches FSDB and is not a signature.
+    let mut detected =
+        if prefix.starts_with(&[0, 0, 0, 0, 0, 0, 0, 1, 73]) || prefix.first() == Some(&254) {
+            Some(Format::Fst)
+        } else if prefix.starts_with(b"GHDLwave") {
+            Some(Format::Ghw)
+        } else {
+            None
+        };
     if detected.is_none() {
         if prefix.starts_with(b"\xef\xbb\xbf") {
             input.consume(3);
@@ -106,6 +133,13 @@ fn open_input(name: String, mut input: Box<dyn Input>, backend: Option<&str>) ->
         }
     }
     input.rewind()?;
+    #[cfg(feature = "fsdb-lib")]
+    if detected.is_none()
+        && let Some(path) = _path
+        && crate::backends::fsdb::probe(path)?
+    {
+        detected = Some(Format::Fsdb);
+    }
     let extension = Path::new(&name)
         .extension()
         .and_then(|s| s.to_str())
@@ -131,6 +165,15 @@ fn open_input(name: String, mut input: Box<dyn Input>, backend: Option<&str>) ->
         (Format::Vcd, None | Some("vcd-native")) => {
             let (reader, hierarchy, metadata) = vcd::Reader::open(input, name)?;
             (Reader::Vcd(Box::new(reader)), hierarchy, metadata)
+        }
+        #[cfg(feature = "fsdb-lib")]
+        (Format::Fsdb, None | Some("fsdb-lib")) => {
+            let path = _path.ok_or_else(|| Error::UnsupportedInput {
+                backend: "fsdb-lib".into(),
+                input: crate::InputKind::Bytes,
+            })?;
+            let (reader, hierarchy, metadata) = crate::backends::fsdb::Reader::open(path, name)?;
+            (Reader::Fsdb(Box::new(reader)), hierarchy, metadata)
         }
         (_, Some(backend)) => {
             return Err(Error::BackendDoesNotSupport {
@@ -186,7 +229,11 @@ impl Waveform {
     pub fn format(&self) -> Format {
         match self.reader {
             Reader::Vcd(_) => Format::Vcd,
-            _ => Format::Fst,
+            Reader::Fst(_) => Format::Fst,
+            #[cfg(feature = "fsdb-lib")]
+            Reader::Fsdb(_) => Format::Fsdb,
+            #[cfg(test)]
+            Reader::Memory { .. } => Format::Fst,
         }
     }
 
@@ -198,6 +245,8 @@ impl Waveform {
         match self.reader {
             Reader::Fst(_) => "fst-native",
             Reader::Vcd(_) => "vcd-native",
+            #[cfg(feature = "fsdb-lib")]
+            Reader::Fsdb(_) => "fsdb-lib",
             #[cfg(test)]
             Reader::Memory { .. } => "memory",
         }
@@ -396,6 +445,14 @@ mod tests {
                     ),
                     "{name}"
                 );
+            } else if cfg!(feature = "fsdb-lib") && format == Format::Fsdb {
+                assert!(matches!(
+                    result,
+                    Err(Error::UnsupportedInput {
+                        input: crate::InputKind::Bytes,
+                        ..
+                    })
+                ));
             } else {
                 assert!(
                     matches!(result, Err(Error::NoBackend { format: actual }) if actual == format),

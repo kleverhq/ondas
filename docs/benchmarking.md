@@ -91,7 +91,10 @@ like-for-like comparison.
 CI may compile benchmark targets with `cargo check --benches` and may perform a
 public-fixture smoke run. Smoke timings are not regression evidence. A proprietary
 target must not prevent unrelated public targets from compiling; explicitly
-requesting that target without its fixtures or runtime must fail clearly.
+requesting that target without its required fixtures or runtime must fail clearly.
+Optional private payload absence follows [fixture policy](fixtures.md): omit those
+cases before registration and report the omission, rather than timing an empty
+operation. Installed but invalid inputs always fail.
 
 Keep Criterion's runner, results and comparisons. Custom history stores,
 thresholds, dashboards and mandatory cross-format datasets are outside this

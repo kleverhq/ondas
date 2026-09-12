@@ -17,6 +17,7 @@ one API with consistent query semantics.
 |---|---|---|---|
 | `vcd-native` | VCD | Built-in Rust parser; no external parser dependency | [docs/vcd-native.md](docs/vcd-native.md) |
 | `fst-native` | FST | `fst-reader` 0.17.0 | [docs/fst-native.md](docs/fst-native.md) |
+| `fsdb-lib` | FSDB | Optional `fsdb-lib` feature; local Verdi FSDB Reader SDK, file-only | [docs/fsdb-lib.md](docs/fsdb-lib.md) |
 
 ## Development
 
