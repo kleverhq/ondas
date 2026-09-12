@@ -69,76 +69,38 @@ A fresh waveform may use a warm filesystem cache; it is not a cold-disk test.
 Prepared queries measure reuse, not first-query cost. Compare cases with the same
 setup and destruction boundaries.
 
-## VCD workloads
+## VCD workload design
 
-`benches/vcd.rs` uses `vcd-native` with file input and three fixed fixtures from
-`kleverhq.ondas-fixtures`. All prepared queries exclude opening, signal lookup
-and selection creation, and include owned result destruction.
+Combine real recordings with compact diagnostic fixtures. Real recordings show
+whether a cost matters in practical analysis; controlled activity isolates a
+cause that total file size or a mixed workload can hide. The
+[VCD backend model](vcd-native.md) explains the parsing and replay constraints.
+Choose comparisons along these independent dimensions:
 
-### Swerv
+- **History traversed versus window width.** Equal-width windows at different
+  positions distinguish output volume from the work needed to establish entering
+  state. Early termination should be tested with both short and long prefixes:
+  finding few changes does not necessarily require reading little history.
+- **Shared work versus repeated queries.** Sampling several signals at one time
+  tests batching; sampling at several times tests reuse across queries. Neither
+  substitutes for the other. Distinguish unique base signals from projections
+  and repeated selection entries when varying selection size.
+- **Encoded size versus logical width.** Compact text can represent wide values.
+  Whole-vector, slice and narrow-control queries over the same activity reveal
+  width-dependent processing without changing the amount of source data. An
+  unchanged slice of an active vector distinguishes processing cost from the
+  number of emitted changes.
+- **Traversal versus result production.** Callback scans, owned histories and
+  activity timestamps ask for different amounts of output. Comparing equivalent
+  selections and intervals reveals whether requesting less output avoids work
+  or merely discards its result.
 
-`vcd0071-swerv1` measures fresh open, prepared samples
-at ticks 1000 and 13000, prepared clock scans over equal-width early and late
-windows, and scan versus owned trace over ticks 12000 through 13000. The latter
-pair uses the same prepared one-signal selection and includes result destruction.
-
-A four-signal comparison measures individual one-shot samples versus a single
-one-shot batch at tick 13000. Both include selection creation and result
-destruction, but exclude opening and signal lookup. Exact paths and inclusive
-ranges are encoded in the benchmark IDs and Rust workload parameters.
-
-Two additional prepared snapshots at tick 13000 use a fixed set of 64 unique
-whole signals under `TOP.tb_top`, and `WriteData` with overlapping slices and a
-repeated slice. The wide set uses explicit paths and checks handle uniqueness
-before timing; it does not depend on hierarchy iteration order. Both exclude
-selection creation and include owned result destruction, like the one-signal
-prepared sample rather than the one-shot batch comparison.
-
-First-change scans use the same clock and end tick 13000, starting at ticks 1
-and 12000. They ignore entering state (`Initial`) and stop on the first `Change`.
-Preflight requires a change to be found. Late-window prefix replay remains part
-of the measurement even when the callback stops traversal early. The late case
-shares its interval with the full scan. A candidate-times scan also uses that
-late interval and consumes only a timestamp count; it measures the current
-value-decoding path rather than assuming an activity index.
-
-Prepared sample series execute 8 or 32 snapshots of the same clock in ascending
-time, 32 ticks apart and ending at tick 13000 (starts 12776 and 12008). The existing
-single prepared sample at tick 13000 is the one-query reference. Each iteration
-measures the complete series, including per-query result destruction, without
-retaining all snapshots. Timestamp construction and selection creation are
-outside timing. Criterion reports total latency and snapshots per second. These
-slow cases use a separate group with 10 samples; the other Swerv groups retain
-their normal settings.
-
-### Compact wide vector
-
-`vcd0096-wide-compact-toggle` is 56,480 bytes but declares a 4096-bit vector with
-compact payloads and activity through tick 4096. It measures fresh open and
-prepared snapshots at tick 4096 of `top.wide`, its `[0:0]` slice and `top.control`.
-This separates width-dependent value processing from parsing the same file.
-
-Scans over ticks 2048 through 4096 compare the active whole vector with its
-unchanging `[4095:1]` slice. A candidate-times scan uses the same whole vector and
-range. All scans consume only counts. Sparse oracle windows verify representative
-observations; they do not certify the entire timed interval. No full expanded
-history is retained by these workloads.
-
-### Large SCR1 recording
-
-`vcd0097-scr1-max-ahb-coremark` is 960,716,337 bytes. It measures fresh open,
-prepared `TOP.clk` snapshots at ticks 62444 and 6244000, and equal-width clock
-scans over `62400..62444` and `6244000..6244044`. A prepared four-signal snapshot
-at tick 6244000 selects the clock, timer, ALU result and instruction address;
-exact paths are fixed in Rust. Unlike the Swerv one-shot batch comparison, this
-batch excludes selection creation. The provider includes independent oracle
-coverage for the late window on all four selected signals.
-
-The SCR1 group uses 10 samples because late operations parse almost a gigabyte
-per iteration. A complete run takes minutes; filter by fixture ID to restrict
-timing. Fixture validation and query preflight still run for filtered-out cases.
-Use the fixture provider rather than an unvalidated arbitrary input path, and
-keep owned trace ranges bounded unless full-history materialization is the question.
+Keep each comparison focused rather than multiplying every dimension into a
+matrix. Bound owned-history ranges unless full materialization is the question,
+and choose sample counts appropriate to slow workloads rather than shortening
+away the expensive operation. Sparse oracle coverage establishes correctness only
+for its declared observations, not for every interval used in timing. Concrete
+fixtures, paths, bounds and measurement settings belong in `benches/vcd.rs`.
 
 ## Local baselines
 
