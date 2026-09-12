@@ -25,8 +25,13 @@ serde_json = "1"
 thiserror = "2"
 
 [dev-dependencies]
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 sha2 = "0.10"
 toml = "0.9"
+
+[[bench]]
+name = "vcd"
+harness = false
 
 [package.metadata.docs.rs]
 all-features = false
