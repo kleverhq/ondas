@@ -14,9 +14,11 @@ use ondas::{
     Trace, ValueRef, Waveform,
 };
 use serde_json::{Value as Json, json};
-use sha2::{Digest, Sha256};
-
-const PROVIDER: &str = "kleverhq.ondas-fixtures";
+#[path = "support/fixtures.rs"]
+mod fixture_catalog;
+#[cfg(feature = "fsdb-lib")]
+use fixture_catalog::{PROVIDER, checked_provider};
+use fixture_catalog::{provider, provider_directory};
 const CASES: [&str; 7] = [
     "fst0041-counter",
     "fst0035-tb-complex-types-icarus-fst-waves",
@@ -283,50 +285,6 @@ fn validate_oracle(oracle: &Json, positive: bool) {
     }
 }
 
-fn provider() -> PathBuf {
-    checked_provider(PROVIDER, include_str!("../fixtures.lock.toml"))
-        .expect("required public fixture provider is absent; run just fixtures-install")
-}
-
-fn provider_directory(path: &Path) -> Option<PathBuf> {
-    match fs::symlink_metadata(path) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
-        result => {
-            result.unwrap();
-            assert!(
-                path.is_dir(),
-                "invalid provider directory: {}",
-                path.display()
-            );
-        }
-    }
-    Some(path.canonicalize().unwrap())
-}
-
-fn checked_provider(name: &str, lock_text: &str) -> Option<PathBuf> {
-    let lock: toml::Value = toml::from_str(lock_text).expect("fixture lock TOML");
-    let provider_version = lock["providers"][name]
-        .as_str()
-        .expect("selected provider version must be a string");
-    assert!(!provider_version.is_empty(), "empty provider version");
-    let root = PathBuf::from(
-        std::env::var_os("ONDAS_FIXTURES")
-            .expect("ONDAS_FIXTURES is required; run just conformance"),
-    );
-    let provider = provider_directory(&root.join(name))?;
-    let catalog: Json =
-        serde_json::from_slice(&fs::read(provider.join("catalog.json")).expect("provider catalog"))
-            .unwrap();
-    assert_eq!(catalog["schema"], 1, "catalog schema");
-    assert_eq!(catalog["provider"], name, "provider identity");
-    assert_eq!(
-        catalog["version"].as_str(),
-        Some(provider_version),
-        "provider version mismatch"
-    );
-    Some(provider)
-}
-
 fn load_fixture(provider: &Path, name: &str) -> Fixture {
     load_available_fixture(provider, name, true).unwrap()
 }
@@ -427,8 +385,6 @@ fn load_available_fixture(provider: &Path, name: &str, required: bool) -> Option
     };
     let oracle = sidecar["oracle"].clone();
     eprintln!("validating {name}");
-    let size = artifact["size"].as_u64().unwrap();
-    let hash = artifact["sha256"].as_str().unwrap();
     let path = directory.join(artifact["file"].as_str().unwrap());
     match fs::symlink_metadata(&path) {
         Ok(_) => (),
@@ -445,13 +401,7 @@ fn load_available_fixture(provider: &Path, name: &str, required: bool) -> Option
         path.starts_with(&directory) && path.is_file(),
         "{name}: artifact containment/type"
     );
-    let bytes = fs::read(&path).unwrap();
-    assert_eq!(bytes.len() as u64, size, "{name}: artifact size");
-    assert_eq!(
-        format!("{:x}", Sha256::digest(&bytes)),
-        hash,
-        "{name}: artifact SHA256"
-    );
+    fixture_catalog::check_artifact(&path, artifact, name);
     if oracle.as_object().unwrap().is_empty() {
         eprintln!("SKIP {name}: no oracle observations");
         return None;
@@ -1947,6 +1897,52 @@ fn automatic_opening_uses_content_and_keeps_logical_names() {
             "automatic opening",
         );
     }
+}
+
+#[test]
+fn fixture_artifact_checks_reject_corruption_and_escape() {
+    use sha2::{Digest, Sha256};
+
+    let root = std::env::temp_dir().join(format!(
+        "ondas-fixture-checks-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let directory = root.join("case");
+    fs::create_dir_all(&directory).unwrap();
+    let root = root.canonicalize().unwrap();
+    let path = directory.join("waveform.vcd");
+    let sidecar_path = directory.join("fixture.json");
+    let bytes = b"wave";
+    let mut sidecar = json!({
+        "schema": 1,
+        "artifact": {
+            "file": "waveform.vcd", "format": "vcd", "size": bytes.len(),
+            "sha256": format!("{:x}", Sha256::digest(bytes))
+        }
+    });
+    fs::write(&path, bytes).unwrap();
+    fs::write(&sidecar_path, sidecar.to_string()).unwrap();
+    assert_eq!(
+        fixture_catalog::load_artifact(&root, "case").0,
+        path.canonicalize().unwrap()
+    );
+
+    fs::write(&path, b"bad!").unwrap();
+    assert!(std::panic::catch_unwind(|| fixture_catalog::load_artifact(&root, "case")).is_err());
+    fs::write(&path, bytes).unwrap();
+    sidecar["artifact"]["size"] = json!(bytes.len() + 1);
+    fs::write(&sidecar_path, sidecar.to_string()).unwrap();
+    assert!(std::panic::catch_unwind(|| fixture_catalog::load_artifact(&root, "case")).is_err());
+    sidecar["artifact"]["size"] = json!(bytes.len());
+    sidecar["artifact"]["file"] = json!("../waveform.vcd");
+    fs::write(&sidecar_path, sidecar.to_string()).unwrap();
+    assert!(std::panic::catch_unwind(|| fixture_catalog::load_artifact(&root, "case")).is_err());
+    assert!(std::panic::catch_unwind(|| fixture_catalog::load_artifact(&root, "..")).is_err());
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
