@@ -129,7 +129,24 @@ A few file/bytes pairs cover opening and prepared queries. Bytes are loaded into
 shared owned storage before timing; opening includes cloning that shared handle
 but not reading the file into memory. Both modes include waveform destruction in
 open measurements and reuse their selections in prepared-query measurements.
-Concrete fixtures, paths, bounds and sample counts remain in `benches/fst.rs`.
+
+The controlled workloads in `benches/fst/hotpaths.rs` separate selected activity
+from full-design overhead. Three recordings retain identical sparse and constant
+probe histories while varying either unselected handle count or global time-table
+density. Quiet windows and first-change scans expose work performed even when
+few or no changes are returned. Constant-value samples immediately around real
+SCR1 section boundaries isolate section setup from selected transitions.
+
+A compact 4096-bit recording pairs a toggling low bit with an equivalent scalar.
+Whole-vector, low-bit and stable high-slice queries distinguish base-width work
+from projection work and output volume. Repeated low-bit selection entries share
+a base read while retaining separate results. Candidate-time and owned-trace
+cases use the same windows as their scan counterparts. Fixture conformance checks
+the independent histories; benchmark preflight checks ensure that the intended
+active and quiet cases remain distinct.
+
+Concrete fixtures, paths, bounds and sample counts remain in `benches/fst.rs`
+and `benches/fst/hotpaths.rs`.
 
 ## Local baselines
 
@@ -145,6 +162,9 @@ example from the repository root:
 ./dev cargo bench --locked --bench vcd -- scan
 # Capture an FST baseline with the same Criterion mechanism:
 ./dev cargo bench --locked --bench fst -- --save-baseline fst-initial
+# Focus on controlled topology or width-sensitive workloads:
+./dev cargo bench --locked --bench fst -- topology
+./dev cargo bench --locked --bench fst -- wide-compact-toggle
 ```
 
 Select revisions with host Git and preserve Criterion output between runs;

@@ -5,6 +5,8 @@ use ondas::{ScanRef, Selection, Time, TimeRange};
 
 #[path = "../tests/support/fixtures.rs"]
 mod fixtures;
+#[path = "fst/hotpaths.rs"]
+mod hotpaths;
 
 const BACKEND: &str = "fst-native";
 const SCR1_SIGNALS: [&str; 4] = [
@@ -347,5 +349,13 @@ fn picorv32(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, scr1, chipyard, picorv32);
+criterion_group!(
+    benches,
+    scr1,
+    chipyard,
+    picorv32,
+    hotpaths::topology,
+    hotpaths::wide,
+    hotpaths::boundaries
+);
 criterion_main!(benches);
