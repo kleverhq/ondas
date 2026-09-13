@@ -102,6 +102,35 @@ away the expensive operation. Sparse oracle coverage establishes correctness onl
 for its declared observations, not for every interval used in timing. Concrete
 fixtures, paths, bounds and measurement settings belong in `benches/vcd.rs`.
 
+## FST workload design
+
+`benches/fst.rs` measures the public API with the explicit `fst-native` reader,
+not the decoder dependency in isolation. Real recordings cover a compact design
+with every unique history selected, a medium recording with focused queries, and
+a larger recording with a small selection. They distinguish total artifact size
+from selected activity without requiring a cross-format comparison.
+
+The [FST backend model](fst-native.md) explains why section seeking does not
+imply direct lookup at the requested start tick. Equal-width early and late
+windows expose replay from zero; individual and batched samples expose shared
+traversal; sample series measure repeated queries without a history cache.
+Early-stop cases measure the public callback boundary, including any chain or
+frame decompression that precedes that callback. Do not interpret them as the
+cost of decoding only one change.
+
+Compare scans, candidate times and owned traces on the same narrow window.
+Whole-vector and slice traces isolate projection and result-production costs;
+repeated, overlapping projections distinguish selection entries from unique base
+reads. Full scans use a callback counter; full owned histories are limited to the
+compact recording. Hierarchy and selection cases operate on an already opened
+waveform and do not include decoding values.
+
+A few file/bytes pairs cover opening and prepared queries. Bytes are loaded into
+shared owned storage before timing; opening includes cloning that shared handle
+but not reading the file into memory. Both modes include waveform destruction in
+open measurements and reuse their selections in prepared-query measurements.
+Concrete fixtures, paths, bounds and sample counts remain in `benches/fst.rs`.
+
 ## Local baselines
 
 Use Criterion's normal baseline mechanism for an existing format target, for
@@ -114,6 +143,8 @@ example from the repository root:
 ./dev cargo bench --locked --bench vcd -- --baseline old
 # Restrict the workload when investigating a specific operation:
 ./dev cargo bench --locked --bench vcd -- scan
+# Capture an FST baseline with the same Criterion mechanism:
+./dev cargo bench --locked --bench fst -- --save-baseline fst-initial
 ```
 
 Select revisions with host Git and preserve Criterion output between runs;
@@ -126,7 +157,8 @@ drift; a Criterion regression label alone does not establish a code regression.
 
 The existing `just check` compiles benchmark targets with `cargo check --all-targets`.
 For a local fixture-backed smoke run, use
-`./dev cargo bench --locked --bench vcd -- --test`. Smoke timings are not
+`./dev cargo bench --locked --bench vcd -- --test` or
+`./dev cargo bench --locked --bench fst -- --test`. Smoke timings are not
 regression evidence. A proprietary
 target must not prevent unrelated public targets from compiling; explicitly
 requesting that target without its required fixtures or runtime must fail clearly.
