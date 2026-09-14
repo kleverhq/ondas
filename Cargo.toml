@@ -37,6 +37,11 @@ harness = false
 name = "fst"
 harness = false
 
+[[bench]]
+name = "fsdb"
+harness = false
+required-features = ["fsdb-lib"]
+
 [package.metadata.docs.rs]
 all-features = false
 default-target = "x86_64-unknown-linux-gnu"

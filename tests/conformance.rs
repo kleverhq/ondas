@@ -17,7 +17,7 @@ use serde_json::{Value as Json, json};
 #[path = "support/fixtures.rs"]
 mod fixture_catalog;
 #[cfg(feature = "fsdb-lib")]
-use fixture_catalog::{PROVIDER, checked_provider};
+use fixture_catalog::checked_provider;
 use fixture_catalog::{provider, provider_directory};
 const CASES: [&str; 7] = [
     "fst0041-counter",
