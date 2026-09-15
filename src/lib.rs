@@ -63,45 +63,144 @@ looks up an exact variable path, then considers one trailing `[msb:lsb]` slice.
 For unambiguous slicing, use [`Hierarchy::signal_path`] followed by
 [`Signal::slice`]. Slice indices are normalized value positions, not HDL indices.
 
-## Reuse a selection and retain borrowed values
+## Export normalized changes by selection slot
 
 Selection order and duplicates are preserved. A selection mutably borrows its
-waveform; query through it until that borrow ends. Callback views cannot escape
-the callback, so use [`ValueRef::to_owned`] to retain a value. Views obtained from
-owned results instead live as long as the corresponding owner borrow permits.
+waveform; query through it until that borrow ends. Indexed callbacks distinguish
+aliases and projections without collecting a trace. This example emits borrowed
+records immediately and stops after four changes; its assertion buffer is bounded
+by that limit, not input history. Same-tick changes across slots need not have a
+particular order.
 
-```no_run
+```rust
 use std::ops::ControlFlow;
-use ondas::{ScanRef, Time, TimeRange};
+use ondas::{Sample, ScanRef, Time, TimeRange, ValueRef};
 
-# fn main() -> Result<(), Box<dyn std::error::Error>> {
-let mut wave = ondas::open_with("dump.fst", "fst-native")?;
-let hierarchy = wave.hierarchy().clone();
-let data = hierarchy.signal("tb.dut.data")?;
-let low = data.slice(7, 0)?;
-let mut selected = wave.select(&[data, low, low])?;
-for ticks in [10, 20, 30] {
-    let samples = selected.samples(Time::from_ticks(ticks))?;
-    assert_eq!(samples.len(), 3);
+fn render(value: ValueRef<'_>) -> String {
+    match value {
+        ValueRef::Bits(bits) => format!("bits:{bits}"),
+        ValueRef::Real(real) => format!("real:{:016x}", real.to_bits()),
+        ValueRef::String(text) => format!("string:{text:?}"),
+        ValueRef::Event { occurrences } => format!("events:{occurrences}"),
+        _ => format!("{value:?}"),
+    }
 }
 
-let mut retained = Vec::new();
-let outcome = selected.scan(TimeRange::all(), |record| {
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+let input = b"$var wire 4 ! data $end $var wire 4 ! alias $end
+    $enddefinitions $end #0 b0000 ! #2 b1111 ! b0000 !
+    #5 b1001 ! #8 b0110 !";
+let mut wave = ondas::open_bytes_with("export.vcd", input.as_slice().into(), "vcd-native")?;
+let hierarchy = wave.hierarchy().clone();
+let declaration = hierarchy.variable("data")?;
+assert_eq!(declaration.signedness(), None); // Do not invent missing interpretation.
+assert_eq!(declaration.logic_domain(), None);
+let data = hierarchy.signal("data")?;
+let alias = hierarchy.signal("alias")?;
+let high = data.slice(3, 2)?;
+let low = data.slice(1, 0)?;
+assert_eq!(data, alias); // Distinct declarations can share a history.
+
+// No candidate traversal is needed for an ordinary point or batch request.
+assert!(matches!(wave.sample(data, Time::from_ticks(5))?, Sample::Value { .. }));
+let batch = wave.samples(&[data, low], Time::from_ticks(5))?;
+assert_eq!(batch.len(), 2);
+
+let mut selection = wave.select(&[data, alias, high, low])?;
+let mut entering_slots = Vec::new();
+let mut exported = Vec::new(); // Small bounded test sink; a real sink can write directly.
+let outcome = selection.scan_each(TimeRange::from(Time::from_ticks(1)), |slot, record| {
     match record {
-        ScanRef::Initial { value, .. } | ScanRef::Change { value, .. } => {
-            retained.push(value.to_owned());
+        ScanRef::Initial { .. } => entering_slots.push(slot),
+        ScanRef::Change { time, value, .. } => {
+            let text = render(value); // Borrowed value is consumed only here.
+            println!("{slot}\t{}\t{text}", time.ticks());
+            exported.push((slot, time.ticks(), text));
+            if exported.len() == 4 {
+                return ControlFlow::Break(4);
+            }
         }
         _ => {} // Public result enums are non-exhaustive.
     }
-    ControlFlow::<()>::Continue(())
+    ControlFlow::Continue(())
 })?;
-assert!(matches!(outcome, ControlFlow::Continue(())));
-for value in &retained {
-    println!("{:?}", value.as_ref()); // Borrows owned storage, not a callback buffer.
-}
+assert_eq!(outcome, ControlFlow::Break(4));
+assert_eq!(entering_slots, [0, 1, 2, 3]);
+exported.sort();
+assert_eq!(exported, vec![
+    (0, 5, "bits:1001".into()), (1, 5, "bits:1001".into()),
+    (2, 5, "bits:10".into()), (3, 5, "bits:01".into()),
+]); // The excursion at tick 2 disappears; tick 8 is not delivered after Break.
 # Ok(())
 # }
 ```
+
+## Sample conditionally at activity ticks
+
+Drivers determine candidate times, independently of the readable control and
+payload entries. Conditions and output policy are ordinary Rust. Here the caller
+requires a strict `0 → 1` activity transition and a high control value; missing
+or other logic states do not pass. It chooses previous/current observation times
+and copies only accepted payloads, never collecting candidates. A sequential
+reader may still decode selected payload while advancing.
+
+```rust
+use std::ops::ControlFlow;
+use ondas::{Logic, SampleRef, Time, TimeRange, ValueRef};
+
+fn scalar(sample: SampleRef<'_>) -> Option<Logic> {
+    match sample {
+        SampleRef::Value { value: ValueRef::Bits(bits), .. } if bits.width() == 1 => bits.bit(0),
+        _ => None,
+    }
+}
+
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+let input = b"$var wire 1 c activity $end $var wire 1 e control $end
+    $var wire 4 d payload $end $enddefinitions $end
+    #0 0c 0e b0011 d #1 1c #2 1e 0c #3 b1001 d 1c
+    #4 0c 0e #5 1c b1111 d #6 1e 0c #7 b0110 d 1c";
+let mut wave = ondas::open_bytes_with("conditional.vcd", input.as_slice().into(), "vcd-native")?;
+let signals = ["activity", "control", "payload"].map(|name| wave.hierarchy().signal(name).unwrap());
+let mut selection = wave.select(&signals)?;
+let mut accepted = Vec::new();
+let _ = selection.query(TimeRange::all(), &[0], |context| {
+    let time = context.time();
+    let Some(previous) = time.ticks().checked_sub(1).map(Time::from_ticks) else {
+        return Ok(ControlFlow::<()>::Continue(())); // No predecessor at tick zero.
+    };
+    let mut before = None;
+    let _ = context.visit_samples(previous, &[0], |_, sample| {
+        before = scalar(sample);
+        Ok(ControlFlow::<()>::Continue(()))
+    })?;
+    let mut now = [None; 2];
+    let _ = context.visit_samples(time, &[0, 1], |slot, sample| {
+        now[slot] = scalar(sample);
+        Ok(ControlFlow::<()>::Continue(()))
+    })?;
+    if before == Some(Logic::Zero) && now == [Some(Logic::One), Some(Logic::One)] {
+        let _ = context.visit_samples(time, &[2], |_, sample| {
+            if let SampleRef::Value { value, .. } = sample {
+                accepted.push((time, value.to_owned())); // Explicit caller ownership.
+            } // This caller skips missing payload.
+            Ok(ControlFlow::<()>::Continue(()))
+        })?;
+    }
+    Ok(ControlFlow::<()>::Continue(()))
+})?;
+drop(wave);
+let output = accepted.iter().map(|(time, value)| {
+    let ValueRef::Bits(bits) = value.as_ref() else { panic!("expected bit payload") };
+    (time.ticks(), bits.to_string()) // Borrows retained storage, not callback storage.
+}).collect::<Vec<_>>();
+assert_eq!(output, [(3, "1001".into()), (7, "0110".into())]);
+# Ok(())
+# }
+```
+
+Callback views cannot escape their callback. Use [`ValueRef::to_owned`] only when
+retention is needed; owned samples and batch results already retain their values.
 
 ## Time, observations, and failures
 
@@ -177,7 +276,7 @@ callbacks; do not infer exact physical event counts at that initial tick.
 
 Selections reuse validated handles and base-signal grouping, not complete value
 histories. Each query traverses selected histories from the beginning through its
-end to establish state reliably. Scans retain only the previous value per selected
+end to establish state reliably. Scans retain entering and pending final values per selected
 entry and stop reader callbacks on `Break`; owned traces additionally retain their
 output. The decoder also owns its input/decompression buffers, so this is not a
 fixed bound on total memory use. Candidate-time scans decode values rather than using a separate activity
