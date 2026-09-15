@@ -1,4 +1,6 @@
-use ondas::{Encoding, Error, Format, HierarchyPath, Sample, Time, TimeRange, Value, ValueRef};
+use ondas::{
+    Encoding, Error, Format, HierarchyPath, Sample, ScanRef, Time, TimeRange, Value, ValueRef,
+};
 use std::ops::ControlFlow;
 
 fn source(declarations: &str, body: &[u8]) -> Vec<u8> {
@@ -127,6 +129,84 @@ fn replay_after_break_eof_and_batched_projections() {
     );
     drop(wave);
     assert_eq!(bits(traces[0].changes()[1].value()), "1001");
+}
+
+#[test]
+fn indexed_scan_identifies_alias_projection_and_event_slots() {
+    let mut wave = open(
+        "$var wire 4 ! bus [3:0] $end $var wire 4 ! alias [3:0] $end $var event 1 e event $end",
+        b"#0 b0000 ! #2 b1011 ! 1e 1e #4",
+    );
+    let bus = wave.hierarchy().signal("top.bus").unwrap();
+    let alias = wave.hierarchy().signal("top.alias").unwrap();
+    let event = wave.hierarchy().signal("top.event").unwrap();
+    let high = bus.slice(3, 2).unwrap();
+    let selected = [
+        bus,
+        alias,
+        high,
+        high,
+        bus.slice(2, 1).unwrap(),
+        event,
+        event,
+    ];
+    let range = TimeRange::closed(Time::from_ticks(1), Time::from_ticks(2));
+    let mut selection = wave.select(&selected).unwrap();
+    let mut records = Vec::new();
+    let _ = selection
+        .scan_each(range, |index, record| {
+            assert!(index < selected.len());
+            let (signal, time, value) = match record {
+                ScanRef::Initial { signal, value, .. } => (signal, None, value),
+                ScanRef::Change {
+                    signal,
+                    time,
+                    value,
+                } => (signal, Some(time), value),
+                _ => panic!("unexpected scan variant"),
+            };
+            assert_eq!(signal, selected[index]);
+            records.push((index, time, value.to_owned()));
+            ControlFlow::<()>::Continue(())
+        })
+        .unwrap();
+    assert_eq!(
+        records
+            .iter()
+            .filter(|r| r.1.is_none())
+            .map(|r| r.0)
+            .collect::<Vec<_>>(),
+        [0, 1, 2, 3, 4]
+    );
+    for (index, expected) in ["1011", "1011", "10", "10", "01"].into_iter().enumerate() {
+        let changes = records
+            .iter()
+            .filter(|r| r.0 == index && r.1.is_some())
+            .collect::<Vec<_>>();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(bits(changes[0].2.as_ref()), expected);
+    }
+    for index in [5, 6] {
+        let changes = records.iter().filter(|r| r.0 == index).collect::<Vec<_>>();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].1, Some(Time::from_ticks(2)));
+        assert!(matches!(
+            changes[0].2.as_ref(),
+            ValueRef::Event { occurrences: 2 }
+        ));
+    }
+    let traces = selection.traces(range).unwrap();
+    for (index, trace) in traces.iter().enumerate() {
+        assert_eq!(
+            trace.changes().len(),
+            records
+                .iter()
+                .filter(|r| r.0 == index && r.1.is_some())
+                .count()
+        );
+    }
+    drop(wave);
+    assert_eq!(bits(records[0].2.as_ref()), "0000");
 }
 
 #[test]

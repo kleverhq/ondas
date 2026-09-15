@@ -706,6 +706,53 @@ fn real_and_string_excursions_do_not_change_retained_state() {
 }
 
 #[test]
+fn indexed_and_plain_scans_share_empty_break_and_error_behavior() {
+    for indexed in [false, true] {
+        for empty in [false, true] {
+            for stop in [false, true] {
+                let mut wave = Waveform::memory(
+                    vec![Encoding::Bits { width: 1 }],
+                    vec![(0, 0, bits("0")), (0, 1, bits("1")), (0, 1, bits("0"))],
+                    Some(2),
+                );
+                let signal = wave.hierarchy().signals().next().unwrap();
+                let signals = if empty { vec![] } else { vec![signal] };
+                let mut selection = wave.select(&signals).unwrap();
+                let mut observed = Vec::new();
+                let mut visit = |index, record: ScanRef<'_>| {
+                    assert_eq!(index, 0);
+                    let ScanRef::Change { time, value, .. } = record else {
+                        panic!("unexpected initial")
+                    };
+                    observed.push((time.ticks(), text(value)));
+                    if stop {
+                        ControlFlow::Break(17)
+                    } else {
+                        ControlFlow::Continue(())
+                    }
+                };
+                let result = if indexed {
+                    selection.scan_each(TimeRange::all(), &mut visit)
+                } else {
+                    selection.scan(TimeRange::all(), |record| visit(0, record))
+                };
+                if empty {
+                    assert!(matches!(result, Ok(ControlFlow::Continue(()))));
+                    assert!(observed.is_empty());
+                } else {
+                    assert_eq!(observed, [(0, "0".to_owned())]);
+                    if stop {
+                        assert_eq!(result.unwrap(), ControlFlow::Break(17));
+                    } else {
+                        assert!(result.is_err());
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn incomplete_first_tick_is_not_published_on_error() {
     let mut wave = Waveform::memory(
         vec![Encoding::Bits { width: 1 }],

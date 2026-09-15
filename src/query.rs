@@ -122,6 +122,9 @@ impl Selection<'_> {
 
     /// Visits entering states, then time-ordered changes, in inclusive `range`.
     ///
+    /// For input-position indices that distinguish repeated entries, use
+    /// [`Self::scan_each`]. This convenience form uses the same execution path.
+    ///
     /// # Entering state
     ///
     /// For each selection entry with a known persistent state strictly before

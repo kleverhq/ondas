@@ -177,7 +177,35 @@ impl<'w> Selection<'w> {
         Ok(ControlFlow::Continue(()))
     }
 
-    pub(super) fn scan_each<B>(
+    /// Visits normalized records with their input selection-entry index.
+    ///
+    /// This is the indexed form of [`Self::scan`], with identical range,
+    /// complete-tick, event-count, stopping and error semantics. Every index is
+    /// in `0..self.signals().len()` and identifies an input position, not a
+    /// backend offset or global signal ID. Aliases and repeated whole signals
+    /// or slices each receive their own slot's records, including unchanged
+    /// event counts; internal base-history deduplication is not observable.
+    ///
+    /// Initial states appear first in selection order (entries without one are
+    /// omitted). Changes follow in nondecreasing time order, with no additional
+    /// cross-entry ordering promise within a tick. An empty selection invokes
+    /// no callbacks. Records borrow storage only for the callback; use
+    /// [`ValueRef::to_owned`] to retain values. `Break` stops delivery immediately
+    /// and is returned unchanged; a read error preserves prior callbacks but
+    /// does not publish the unfinished tick. No complete history is collected.
+    ///
+    /// ```no_run
+    /// # use ondas::{Result, Selection, TimeRange};
+    /// # use std::ops::ControlFlow;
+    /// # fn example(selection: &mut Selection<'_>) -> Result<()> {
+    /// let _ = selection.scan_each(TimeRange::all(), |index, record| {
+    ///     println!("slot {index}: {record:?}");
+    ///     ControlFlow::<()>::Continue(())
+    /// })?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn scan_each<B>(
         &mut self,
         range: TimeRange,
         mut visitor: impl for<'v> FnMut(usize, ScanRef<'v>) -> ControlFlow<B>,
