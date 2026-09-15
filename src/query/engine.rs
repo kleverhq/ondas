@@ -60,9 +60,9 @@ fn initials<B>(
     ControlFlow::Continue(())
 }
 
-fn flush_tick<B>(
+fn scan_tick<B>(
     signals: &[Signal],
-    slots: &mut [Slot],
+    slots: &[Slot],
     time: Time,
     range: TimeRange,
     emitted_initials: &mut bool,
@@ -73,8 +73,11 @@ fn flush_tick<B>(
         initials(signals, slots, visitor)?;
     }
     for (index, (&signal, slot)) in signals.iter().zip(slots).enumerate() {
-        if let Some(value) = slot.pending.take()
-            && update(&mut slot.state, value.as_ref(), time)
+        if let Some(value) = &slot.pending
+            && !slot
+                .state
+                .as_ref()
+                .is_some_and(|state| state.value.as_ref().same_value(value.as_ref()))
             && time >= range.start()
         {
             visitor(
@@ -86,7 +89,7 @@ fn flush_tick<B>(
                 },
             )?;
         }
-        let events = std::mem::take(&mut slot.events);
+        let events = slot.events;
         if time >= range.start() && events > 0 {
             visitor(
                 index,
@@ -101,6 +104,26 @@ fn flush_tick<B>(
         }
     }
     ControlFlow::Continue(())
+}
+
+// Visit a finished tick before committing it, so both entering and final states
+// remain available to the same owner. Only selected, bounded state is retained.
+fn complete_tick<B>(
+    signals: &[Signal],
+    slots: &mut [Slot],
+    time: Time,
+    visitor: &mut impl FnMut(Time, &[Signal], &[Slot]) -> Result<ControlFlow<B>>,
+) -> Result<ControlFlow<B>> {
+    if let ControlFlow::Break(value) = visitor(time, signals, slots)? {
+        return Ok(ControlFlow::Break(value));
+    }
+    for slot in slots {
+        if let Some(value) = slot.pending.take() {
+            update(&mut slot.state, value.as_ref(), time);
+        }
+        slot.events = 0;
+    }
+    Ok(ControlFlow::Continue(()))
 }
 
 impl<'w> Selection<'w> {
@@ -221,6 +244,34 @@ impl<'w> Selection<'w> {
             .map(|_| Slot::default())
             .collect::<Vec<_>>();
         let mut emitted_initials = false;
+        if let ControlFlow::Break(value) =
+            self.read_ticks(end, &mut slots, |time, signals, slots| {
+                Ok(scan_tick(
+                    signals,
+                    slots,
+                    time,
+                    range,
+                    &mut emitted_initials,
+                    &mut visitor,
+                ))
+            })?
+        {
+            return Ok(ControlFlow::Break(value));
+        }
+        if !emitted_initials {
+            return Ok(initials(&self.signals, &slots, &mut visitor));
+        }
+        Ok(ControlFlow::Continue(()))
+    }
+
+    // Every operation supplies its bounded slots and receives only completed
+    // ticks. Reader dispatch, input ownership and one-prefix traversal stay here.
+    fn read_ticks<B>(
+        &mut self,
+        end: Time,
+        slots: &mut [Slot],
+        mut visitor: impl FnMut(Time, &[Signal], &[Slot]) -> Result<ControlFlow<B>>,
+    ) -> Result<ControlFlow<B>> {
         let mut pending_time = None;
         let backend = self.waveform.backend().to_owned();
         // One entering/final value and event count per slot, never intra-tick writes.
@@ -231,15 +282,10 @@ impl<'w> Selection<'w> {
                 if let Some(previous) = pending_time
                     && previous != time
                 {
-                    flush_tick(
-                        &self.signals,
-                        &mut slots,
-                        previous,
-                        range,
-                        &mut emitted_initials,
-                        &mut visitor,
-                    )
-                    .map_break(Ok)?;
+                    match complete_tick(&self.signals, slots, previous, &mut visitor) {
+                        Ok(ControlFlow::Continue(())) => (),
+                        outcome => return ControlFlow::Break(outcome),
+                    }
                 }
                 pending_time = Some(time);
                 for &index in &self.groups[&base] {
@@ -259,25 +305,98 @@ impl<'w> Selection<'w> {
                 }
                 ControlFlow::Continue(())
             })?;
-        if let ControlFlow::Break(value) = result {
-            return value.map(ControlFlow::Break);
+        if let ControlFlow::Break(outcome) = result {
+            return outcome;
         }
         // Only successful EOF completes the final pending tick.
-        if let Some(time) = pending_time
-            && let ControlFlow::Break(value) = flush_tick(
-                &self.signals,
-                &mut slots,
-                time,
-                range,
-                &mut emitted_initials,
-                &mut visitor,
-            )
-        {
-            return Ok(ControlFlow::Break(value));
-        }
-        if !emitted_initials {
-            return Ok(initials(&self.signals, &slots, &mut visitor));
+        if let Some(time) = pending_time {
+            return complete_tick(&self.signals, slots, time, &mut visitor);
         }
         Ok(ControlFlow::Continue(()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn completed_tick_callback_reads_before_and_final_state_and_can_fail() {
+        for fail in [false, true] {
+            let mut wave = Waveform::memory(
+                vec![Encoding::Real, Encoding::Event],
+                vec![
+                    (0, 0, Value::Real(1.0)),
+                    (0, 0, Value::Real(2.0)),
+                    (1, 0, Value::Event { occurrences: 1 }),
+                    (1, 0, Value::Event { occurrences: 1 }),
+                    (0, 3, Value::Real(3.0)),
+                ],
+                None,
+            );
+            let signals = wave.hierarchy().signals().collect::<Vec<_>>();
+            let mut selection = wave.select(&signals).unwrap();
+            let mut slots = [Slot::default(), Slot::default()];
+            let mut ticks = Vec::new();
+            let result =
+                selection.read_ticks(Time::from_ticks(3), &mut slots, |time, entries, slots| {
+                    assert_eq!(entries, signals);
+                    ticks.push(time.ticks());
+                    if time == Time::ZERO {
+                        assert!(slots[0].state.is_none());
+                        assert!(matches!(slots[0].pending, Some(Value::Real(2.0))));
+                        assert_eq!(slots[1].events, 2);
+                    } else {
+                        assert!(matches!(
+                            slots[0].state.as_ref().unwrap().value,
+                            Value::Real(2.0)
+                        ));
+                        assert!(matches!(slots[0].pending, Some(Value::Real(3.0))));
+                        assert_eq!(slots[1].events, 0);
+                        if fail {
+                            return Err(Error::Backend {
+                                backend: "memory".into(),
+                                operation: "tick visitor",
+                                message: "injected consumer failure".into(),
+                            });
+                        }
+                    }
+                    Ok(ControlFlow::<()>::Continue(()))
+                });
+            assert_eq!(ticks, [0, 3]);
+            if fail {
+                assert!(matches!(
+                    result,
+                    Err(Error::Backend {
+                        operation: "tick visitor",
+                        ..
+                    })
+                ));
+                assert!(matches!(
+                    slots[0].state.as_ref().unwrap().value,
+                    Value::Real(2.0)
+                ));
+            } else {
+                assert_eq!(result.unwrap(), ControlFlow::Continue(()));
+                assert!(matches!(
+                    slots[0].state.as_ref().unwrap().value,
+                    Value::Real(3.0)
+                ));
+            }
+            let mut fresh = [Slot::default(), Slot::default()];
+            let _ = selection
+                .read_ticks(Time::from_ticks(3), &mut fresh, |_, _, _| {
+                    Ok(ControlFlow::<()>::Continue(()))
+                })
+                .unwrap();
+            assert!(matches!(
+                fresh[0].state.as_ref().unwrap().value,
+                Value::Real(3.0)
+            ));
+            assert_eq!(
+                fresh[0].state.as_ref().unwrap().changed_at,
+                Some(Time::from_ticks(3))
+            );
+        }
     }
 }

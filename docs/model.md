@@ -87,8 +87,12 @@ multiplicity, range bounds and callback termination.
 
 Shared code owns path identity, projections, selection ordering and normalized
 observations. Adapters decode sources, manage resources, convert metadata and
-translate reader failures. Test pure conversions locally and adapters against
-real artifacts.
+translate reader failures. The shared sequential traversal keeps an entering
+state, a pending final value and an event count per selected entry, visiting a
+completed tick before committing that state. It traverses the prefix once, not
+once per operand. This additional state excludes input, decoder/index and SDK
+residency, and variable-sized values contribute their own size. Test pure
+conversions locally and adapters against real artifacts.
 
 Keep known metadata and represent absent or unsupported information explicitly.
 Do not invent ranges, replace missing values with zero or turn failures into empty
