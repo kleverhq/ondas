@@ -193,6 +193,11 @@ reference observations have been supplied. Every nonempty oracle requires
 version. **Unknown fields are forbidden throughout a nonempty oracle**, apart from
 the arbitrary local signal IDs used as keys of `signals`.
 
+Version 1 retains its ordered-observation and value-equality semantics. It is not
+a serialization of current normalized query output. The runner derives current
+expectations as described in [Normalized expectations](#normalized-expectations)
+without rewriting installed sidecars or silently upgrading their schema.
+
 An omitted field makes no assertion. A permitted `null` asserts absence, except
 for the special unknown-timestamp meaning of `changed_at` below. An empty hierarchy
 list does not assert that no other items exist. There are no `full` or `complete`
@@ -299,8 +304,9 @@ A value has exactly one key, and its variant must match the signal encoding:
 | `{"event":true}` | One event occurrence. |
 
 Finite reals, infinities, and signed zero compare bitwise. **Any NaN equals any
-NaN** for oracle comparison; payload and signaling bit are not checked. Readers
-must not introduce intermediate decimal rounding.
+NaN** for version-1 oracle comparison; payload, sign and signaling bit are not
+checked. This does not redefine the library's exact reader-supplied representation
+identity. Readers must not introduce intermediate decimal rounding.
 
 ### Samples and `changed_at`
 
@@ -321,7 +327,7 @@ established, not an unconditional requirement that every backend compute it.
 |---|---|
 | Omitted | Do not check the returned timestamp. |
 | `null` | Exact establishment time is unknown to the oracle. Do not constrain the returned timestamp beyond public invariants. |
-| Concrete tick | A known timestamp returned by the backend must equal this tick. An unknown timestamp allowed by the public contract is accepted. |
+| Concrete tick | Under version-1 observation semantics, a known returned establishment timestamp equals this tick; an allowed unknown timestamp is accepted. This raw timestamp is not automatically a normalized net-change timestamp. |
 
 A concrete sample `changed_at` must be `<= time`. The same unknown-timestamp rules
 apply to window initial states, but a concrete `initial.changed_at` must be
@@ -357,12 +363,56 @@ omit changes within a declared successful window.
 - If no initial state is known at window start, retain the first record that
   establishes the previously unknown state.
 
-The runner derives samples, traces, scans, entering values, and bit projections
-from windows. For a slice, check changes of the **projected value**, not every
-activity of the base signal. Candidate timestamps must form a strictly increasing
-set containing every required change time; additional candidates are permitted.
-Early termination, selection order, and repeats are runner checks, not imperative
-JSON commands.
+These rules describe version-1 evidence, not a requirement to expose intermediate
+writes through the current API. Candidate timestamps must form a strictly
+increasing set containing every required normalized change time; additional
+candidates are permitted. Early termination, selection indices and repeats are
+runner checks, not imperative JSON commands.
+
+### Normalized expectations
+
+The independent test-side derivation groups each complete window's records by
+tick. A persistent slot uses the final value and emits it only when it differs
+from the entering value, or first establishes a state. HDL unknown is a value,
+not missing history. Unit event records become one positive observed count per
+tick; absent ticks have zero events. Aggregation neither restores events omitted
+by a producer nor establishes ordering within a tick. Project each source value
+before deriving slice changes so activity in discarded bits and net-equal slice
+excursions do not create changes.
+
+Version-1 NaN equivalence is a limit on expected-value evidence. The comparison
+ignores additional actual NaN-payload transitions that this evidence cannot
+resolve. Independently, actual output must still have at most one record per
+slot/tick and must not repeat an exactly identical persistent representation.
+Signed zeros, non-NaN real patterns, strings and all nine logic states retain their
+justified exact assertions. Stronger NaN-payload identity is tested with explicitly
+authored local histories, not inferred from legacy sidecars.
+
+A raw `changed_at` may describe a write or intermediate excursion removed by
+normalization. Isolated samples continue to assert values, presence and counts,
+but cannot alone establish a normalized timestamp. Complete covering windows can
+prove a new net-change time after a known entering state; net-equal excursions
+preserve an already proven time. Earlier covering windows can establish a window's
+entering timestamp and carry that proof through later complete windows, but never
+across an uncovered interval. First establishment without known entering state
+and initial states without prior coverage do not supply an exact time. A
+NaN-to-NaN observation cannot prove representation equality; while holding NaN,
+omitted payload-only writes can also prevent an exact timestamp inference. A
+definite transition from a non-NaN value into NaN proves that tick, not necessarily
+the establishment time at later ticks. Public timestamp bounds remain checked
+when an exact time is unavailable. A proven timestamp is compared whenever the
+reader returns a known timestamp, retaining the public allowance for unknown time.
+
+The runner checks points at raw observation ticks and their neighbors even when
+an excursion disappears from normalized traces. Preflight validation compares
+version-1 ordered histories and typed value, missing-state and event-count
+evidence before deciding whether an optional payload is installed. Overlapping
+evidence must agree; it is not a set of alternative accepted answers. Derived counts and timestamps
+are ephemeral expectations, not new version-1 serialized fields. The validator
+still accepts `{"event":true}` as a unit value and rejects aggregate values in
+version-1 windows. New serialized assertions would require an explicit version.
+Version 1 also supplies no signedness or logic-domain fields; do not infer them
+from names or observed bits. Independent declaration tests cover those contracts.
 
 Overlapping windows and samples of a signal must agree. `time_span` does not forbid
 queries before or after the recorded range: after EOF, a persistent sample retains

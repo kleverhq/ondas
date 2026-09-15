@@ -42,7 +42,12 @@ Test automatic selection separately, and compare file/bytes modes where supporte
 Derive samples, traces, scans, entering states and projections from oracle windows
 instead of repeating histories in assertions. Check metadata, traversal, paths,
 identity, encodings, batches and selections. Candidate times may include extras,
-but must contain every required change time.
+but must contain every required change time. The test-only normalized-oracle
+module derives final tick states and event counts independently of production
+code while preserving [version-1 evidence limits](fixtures.md#normalized-expectations).
+Do not assert raw change times as normalized times, infer NaN payload identity,
+or overwrite installed sidecars to make a comparison pass. Indexed scan checks
+retain input-slot identity even when aliases or projections share histories.
 
 Ordinary tests cover selection order, duplicate inputs, early termination, invalid
 handles/slices, path errors and late callback failures. Sidecars are observations,

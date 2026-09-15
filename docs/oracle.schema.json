@@ -1,6 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Ondas sparse oracle schema 1",
+  "description": "Version-1 ordered-observation evidence, not serialized normalized query output. See fixtures.md for independent normalized expectation derivation and evidence limits.",
   "oneOf": [
     {"type": "object", "maxProperties": 0},
     {"$ref": "#/$defs/oracle"}

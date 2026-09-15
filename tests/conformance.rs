@@ -16,9 +16,12 @@ use ondas::{
 use serde_json::{Value as Json, json};
 #[path = "support/fixtures.rs"]
 mod fixture_catalog;
+#[path = "support/normalized_oracle.rs"]
+mod normalized_oracle;
 #[cfg(feature = "fsdb-lib")]
 use fixture_catalog::checked_provider;
 use fixture_catalog::{provider, provider_directory};
+use normalized_oracle::{changes, legacy_value as normalized};
 const CASES: [&str; 7] = [
     "fst0041-counter",
     "fst0035-tb-complex-types-icarus-fst-waves",
@@ -89,31 +92,17 @@ fn path(value: &Json) -> HierarchyPath {
     )
 }
 
-// Normalize only equality, never numeric text or string contents. NaN payloads
-// are deliberately unconstrained; signed zero and all other reals stay bitwise.
-fn normalized(value: &Json) -> Json {
-    if let Some(bits) = value.get("real_bits") {
-        let bits = u64::from_str_radix(bits.as_str().unwrap(), 16).unwrap();
-        if f64::from_bits(bits).is_nan() {
-            return json!({"real_bits": "7ff8000000000000"});
-        }
-    }
-    value.clone()
-}
-
 fn value_json(value: ValueRef<'_>) -> Json {
     match value {
         ValueRef::Bits(bits) => json!({"bits": bits.to_string()}),
-        ValueRef::Real(real) => {
-            normalized(&json!({"real_bits": format!("{:016x}", real.to_bits())}))
-        }
+        ValueRef::Real(real) => json!({"real_bits": format!("{:016x}", real.to_bits())}),
         ValueRef::String(text) => json!({"string": text}),
         ValueRef::Event { occurrences } => {
-            assert_eq!(
-                occurrences, 1,
-                "legacy unit event expectation requires one occurrence"
+            assert!(
+                occurrences > 0,
+                "scan/trace event aggregate must be positive"
             );
-            json!({"event": true})
+            json!({"occurrences": occurrences.to_string()})
         }
         _ => panic!("unexpected public value {value:?}"),
     }
@@ -288,6 +277,7 @@ fn validate_oracle(oracle: &Json, positive: bool) {
                 assert!(initial.is_null() && list(window, "changes").is_empty());
             }
         }
+        normalized_oracle::validate_overlaps(signal);
     }
 }
 
@@ -710,7 +700,7 @@ fn sample(actual: SampleRef<'_>, signal: Signal, expected: &Json, time: u64, con
             ..
         } => {
             assert_eq!(
-                value_json(value),
+                normalized(&value_json(value)),
                 normalized(&expected["value"]),
                 "{context}: value at {time}"
             );
@@ -720,22 +710,7 @@ fn sample(actual: SampleRef<'_>, signal: Signal, expected: &Json, time: u64, con
     }
 }
 
-// Oracle windows are finite complete lists. Only redundant persistent writes
-// may disappear; intermediate same-tick values and every event remain ordered.
-fn changes(window: &Json) -> Vec<(u64, Json)> {
-    let mut previous = window["initial"].get("value").map(normalized);
-    let mut result = Vec::new();
-    for change in list(window, "changes") {
-        let value = normalized(&change["value"]);
-        if value.get("event").is_some() || previous.as_ref() != Some(&value) {
-            result.push((tick(&change["time"]), value.clone()));
-        }
-        previous = Some(value);
-    }
-    result
-}
-
-fn trace(actual: &Trace, signal: Signal, window: &Json, context: &str) {
+fn trace(actual: &Trace, signal: Signal, window: &Json, windows: &[Json], context: &str) {
     let (start, end) = (tick(&window["start"]), tick(&window["end"]));
     assert_eq!(actual.signal(), signal, "{context}: trace handle");
     assert_eq!(
@@ -746,31 +721,46 @@ fn trace(actual: &Trace, signal: Signal, window: &Json, context: &str) {
         None => assert!(window["initial"].is_null(), "{context}: missing initial"),
         Some(initial) => {
             assert_eq!(
-                value_json(initial.value()),
+                normalized(&value_json(initial.value())),
                 normalized(&window["initial"]["value"]),
                 "{context}: initial value"
             );
             changed_at(
                 initial.changed_at(),
-                &window["initial"],
+                &normalized_oracle::sample_assertions(
+                    &window["initial"],
+                    windows,
+                    start.checked_sub(1).expect("initial before tick zero"),
+                ),
                 start,
                 true,
                 context,
             );
         }
     }
-    let mut previous = actual.initial().map(|i| value_json(i.value()));
+    let mut previous_exact = actual.initial().map(|i| value_json(i.value()));
+    let mut previous = previous_exact.as_ref().map(normalized);
     let mut observed = Vec::new();
-    let mut previous_time = start;
+    let mut previous_time = None;
     for change in actual.changes() {
         let time = change.time().ticks();
         assert!(
-            previous_time <= time && time <= end,
+            start <= time && time <= end && previous_time.is_none_or(|previous| previous < time),
             "{context}: change outside closed range/order: {time}"
         );
-        previous_time = time;
-        let value = value_json(change.value());
-        if value.get("event").is_some() || previous.as_ref() != Some(&value) {
+        previous_time = Some(time);
+        let exact = value_json(change.value());
+        if exact.get("occurrences").is_none() {
+            assert_ne!(
+                previous_exact.as_ref(),
+                Some(&exact),
+                "{context}: redundant exact persistent output"
+            );
+        }
+        previous_exact = Some(exact.clone());
+        let value = normalized(&exact);
+        // Extra NaN-payload changes cannot be compared to v1's NaN quotient.
+        if value.get("occurrences").is_some() || previous.as_ref() != Some(&value) {
             observed.push((time, value.clone()));
         }
         previous = Some(value);
@@ -935,6 +925,38 @@ fn scan_queries(wave: &mut Waveform, handles: &[Signal], range: TimeRange, conte
         handles.len(),
         "{context}: sample callback selection order"
     );
+    let mut indexed = vec![Vec::new(); handles.len()];
+    let mut initial_indices = Vec::new();
+    let _ = selected
+        .scan_each(range, |index, record| {
+            assert!(index < handles.len(), "{context}: invalid selection index");
+            let (signal, initial, time, value) = row(record);
+            assert_eq!(signal, handles[index], "{context}: indexed signal");
+            if initial {
+                initial_indices.push(index);
+            }
+            indexed[index].push((initial, time, value_json(value.as_ref())));
+            ControlFlow::<()>::Continue(())
+        })
+        .unwrap();
+    assert!(
+        initial_indices.windows(2).all(|pair| pair[0] < pair[1]),
+        "{context}: indexed initial order"
+    );
+    for (index, trace) in single_traces.iter().enumerate() {
+        let expected = trace
+            .initial()
+            .map(|initial| (true, initial.changed_at(), value_json(initial.value())))
+            .into_iter()
+            .chain(
+                trace
+                    .changes()
+                    .iter()
+                    .map(|change| (false, Some(change.time()), value_json(change.value()))),
+            )
+            .collect::<Vec<_>>();
+        assert_eq!(indexed[index], expected, "{context}: slot {index} records");
+    }
     let selected_traces = selected.traces(range).unwrap();
     assert_eq!(selected_traces.len(), traces.len());
     let mut rows = Vec::new();
@@ -1153,7 +1175,13 @@ fn scan_queries(wave: &mut Waveform, handles: &[Signal], range: TimeRange, conte
     );
 }
 
-fn window_queries(wave: &mut Waveform, signal: Signal, window: &Json, context: &str) {
+fn window_queries(
+    wave: &mut Waveform,
+    signal: Signal,
+    window: &Json,
+    windows: &[Json],
+    context: &str,
+) {
     let (start, end) = (tick(&window["start"]), tick(&window["end"]));
     let range = TimeRange::closed(Time::from_ticks(start), Time::from_ticks(end));
     trace(
@@ -1162,33 +1190,29 @@ fn window_queries(wave: &mut Waveform, signal: Signal, window: &Json, context: &
             .unwrap_or_else(|e| panic!("{context}: trace: {e}")),
         signal,
         window,
+        windows,
         context,
     );
     scan_queries(wave, &[signal, signal], range, context);
     if start > end {
         return;
     }
-    let changes = changes(window);
     let mut times = BTreeSet::from([start, end]);
-    for (time, _) in &changes {
-        times.insert(*time);
-        if *time > start {
+    // Retain checks at raw excursion ticks even when their net change disappears.
+    for change in list(window, "changes") {
+        let time = tick(&change["time"]);
+        times.insert(time);
+        if time > start {
             times.insert(time - 1);
         }
-        if *time < end {
+        if time < end {
             times.insert(time + 1);
         }
     }
     for time in times {
-        let expected = if signal.encoding() == Encoding::Event {
-            json!({"occurrences": changes.iter().filter(|c| c.0 == time).count().to_string()})
-        } else if let Some((changed, value)) = changes.iter().rev().find(|c| c.0 <= time) {
-            json!({"value": value, "changed_at": changed.to_string()})
-        } else if !window["initial"].is_null() {
-            window["initial"].clone()
-        } else {
-            json!({"missing": true})
-        };
+        let expected =
+            normalized_oracle::sample(window, time, signal.encoding() == Encoding::Event);
+        let expected = normalized_oracle::sample_assertions(&expected, windows, time);
         sample_queries(wave, signal, &expected, time, context);
     }
 }
@@ -1212,12 +1236,17 @@ fn run_case(index: usize, bytes: bool) {
     let mut groups: BTreeMap<(u64, u64), Vec<Signal>> = BTreeMap::new();
     for (id, expected) in fixture.oracle["signals"].as_object().unwrap() {
         let signal = signals[id];
-        for expected in list(expected, "samples") {
+        for point in list(expected, "samples") {
+            let point = normalized_oracle::sample_assertions(
+                point,
+                list(expected, "windows"),
+                tick(&point["time"]),
+            );
             sample_queries(
                 &mut wave,
                 signal,
-                expected,
-                tick(&expected["time"]),
+                &point,
+                tick(&point["time"]),
                 &format!("{context} / {id}"),
             );
             samples += 1;
@@ -1227,6 +1256,7 @@ fn run_case(index: usize, bytes: bool) {
                 &mut wave,
                 signal,
                 window,
+                list(expected, "windows"),
                 &format!(
                     "{context} / {id} / window {index} [{}..{}]",
                     window["start"], window["end"]
@@ -1336,10 +1366,15 @@ fn pool_queries(fixture: &Fixture, bytes: bool, context: &str) {
         let actual = wave.samples(&handles, Time::from_ticks(time)).unwrap();
         assert_eq!(actual.len(), entries.len(), "{context}: sample count");
         for (actual, (id, signal, expected)) in actual.iter().zip(entries) {
+            let expected = normalized_oracle::sample_assertions(
+                expected,
+                list(&fixture.oracle["signals"][id], "windows"),
+                time,
+            );
             sample(
                 actual.as_ref(),
                 signal,
-                expected,
+                &expected,
                 time,
                 &format!("{context} / {id}"),
             );
@@ -1396,6 +1431,7 @@ fn pool_queries(fixture: &Fixture, bytes: bool, context: &str) {
                 actual,
                 signal,
                 expected,
+                list(&fixture.oracle["signals"][id], "windows"),
                 &format!("{context} / {id} / [{start}..{end}]"),
             );
         }
@@ -1797,8 +1833,8 @@ fn counter_slices(bytes: bool) {
                 .map(|v| v.path())
                 .collect::<Vec<_>>()
         );
-        for original in list(&fixture.oracle["signals"]["counter"], "windows") {
-            let mut projected = original.clone();
+        let mut projected_windows = list(&fixture.oracle["signals"]["counter"], "windows").to_vec();
+        for projected in &mut projected_windows {
             let project = |value: &mut Json| {
                 let bits = value["bits"].as_str().unwrap();
                 *value = json!({"bits": &bits[4 - msb as usize - 1..4 - lsb as usize]});
@@ -1814,10 +1850,13 @@ fn counter_slices(bytes: bool) {
             for change in projected["changes"].as_array_mut().unwrap() {
                 project(&mut change["value"]);
             }
+        }
+        for projected in &projected_windows {
             window_queries(
                 &mut wave,
                 sliced,
-                &projected,
+                projected,
+                &projected_windows,
                 &format!("counter slice [{msb}:{lsb}], bytes={bytes}"),
             );
         }
@@ -1943,6 +1982,11 @@ fn automatic_opening_uses_content_and_keeps_logical_names() {
         .iter()
         .find(|sample| sample["time"] == "801")
         .unwrap();
+    let expected = normalized_oracle::sample_assertions(
+        expected,
+        list(&fixture.oracle["signals"]["counter"], "windows"),
+        801,
+    );
     for mut wave in [file, memory] {
         assert_eq!(wave.format(), Format::Fst);
         assert_eq!(wave.backend(), "fst-native");
@@ -1950,7 +1994,7 @@ fn automatic_opening_uses_content_and_keeps_logical_names() {
         sample(
             wave.sample(signal, Time::from_ticks(801)).unwrap().as_ref(),
             signal,
-            expected,
+            &expected,
             801,
             "automatic opening",
         );
@@ -2000,6 +2044,39 @@ fn fixture_artifact_checks_reject_corruption_and_escape() {
     fs::write(&sidecar_path, sidecar.to_string()).unwrap();
     assert!(std::panic::catch_unwind(|| fixture_catalog::load_artifact(&root, "case")).is_err());
     assert!(std::panic::catch_unwind(|| fixture_catalog::load_artifact(&root, "..")).is_err());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn optional_missing_payload_still_validates_overlapping_evidence() {
+    let root = std::env::temp_dir().join(format!(
+        "ondas-overlap-check-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(root.join("case")).unwrap();
+    let root = root.canonicalize().unwrap();
+    let mut sidecar = json!({
+        "schema":1,"artifact":{"file":"waveform.vcd","format":"vcd","size":0,"sha256":"0".repeat(64)},
+        "provenance":{"kind":"authored"},"oracle":{
+            "schema":1,"open":{"result":"ok"},"metadata":{},
+            "hierarchy":{"variables":[{"path":["x"],"signal":"x"}]},
+            "signals":{"x":{"encoding":{"kind":"bits","width":1},
+                "samples":[{"time":"1","value":{"bits":"1"}}],
+                "windows":[{"start":"0","end":"2","initial":null,"changes":[{"time":"0","value":{"bits":"0"}}]}]
+            }}
+        }
+    });
+    let path = root.join("case/fixture.json");
+    fs::write(&path, sidecar.to_string()).unwrap();
+    assert!(std::panic::catch_unwind(|| load_available_fixture(&root, "case", false)).is_err());
+    sidecar["oracle"]["signals"]["x"]["samples"][0]["value"]["bits"] = json!("0");
+    fs::write(&path, sidecar.to_string()).unwrap();
+    assert!(load_available_fixture(&root, "case", false).is_none());
+    assert!(std::panic::catch_unwind(|| load_available_fixture(&root, "case", true)).is_err());
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -2091,6 +2168,32 @@ fn empty_pool_obeys_requirement() {
 }
 
 #[test]
+fn version_one_validation_does_not_accept_aggregate_value_assertions() {
+    validate_value(&json!({"event": true}), &json!({"kind": "event"}));
+    assert!(
+        std::panic::catch_unwind(|| {
+            validate_value(&json!({"occurrences": "2"}), &json!({"kind": "event"}));
+        })
+        .is_err()
+    );
+    let proven = json!({"changed_at": "2"});
+    assert!(
+        std::panic::catch_unwind(|| changed_at(
+            Some(Time::from_ticks(3)),
+            &proven,
+            4,
+            false,
+            "proven normalized time"
+        ))
+        .is_err()
+    );
+    assert_ne!(
+        value_json(ValueRef::Real(f64::from_bits(0x7ff8_0000_0000_0001))),
+        value_json(ValueRef::Real(f64::from_bits(0x7ff8_0000_0000_0002)))
+    );
+}
+
+#[test]
 fn oracle_comparison_rules() {
     assert_eq!(
         normalized(&json!({"real_bits": "7ff0000000000001"})),
@@ -2106,14 +2209,10 @@ fn oracle_comparison_rules() {
     ]});
     assert_eq!(
         changes(&window),
-        vec![
-            (0, json!({"bits": "0"})),
-            (0, json!({"bits": "1"})),
-            (4, json!({"bits": "0"}))
-        ]
+        vec![(0, json!({"bits": "1"})), (4, json!({"bits": "0"}))]
     );
     let events = json!({"initial": null, "changes": [{"time": "0", "value": {"event": true}}, {"time": "0", "value": {"event": true}}]});
-    assert_eq!(changes(&events).len(), 2);
+    assert_eq!(changes(&events), [(0, json!({"occurrences": "2"}))]);
     assert_ne!(
         normalized(&json!({"string": "röd "})),
         normalized(&json!({"string": "röd"}))
