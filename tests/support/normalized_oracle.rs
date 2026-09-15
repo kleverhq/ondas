@@ -63,45 +63,95 @@ pub fn changes(window: &Json) -> Vec<(u64, Json)> {
     result
 }
 
-/// Point state and only those normalized change times a complete window proves.
-pub fn sample(window: &Json, time: u64, event: bool) -> Json {
-    sample_with_initial(window, time, event, None)
+/// Prepared independent evidence for repeated point reads in one complete window.
+/// Test-side snapshots avoid re-deriving an entire history at every candidate.
+pub struct WindowEvidence {
+    start: u64,
+    end: u64,
+    event: bool,
+    initial: Json,
+    ticks: Vec<(u64, Json)>,
 }
 
-fn sample_with_initial(window: &Json, time: u64, event: bool, initial_time: Option<u64>) -> Json {
-    assert!(tick(&window["start"]) <= time && time <= tick(&window["end"]));
-    let ticks = final_ticks(window);
-    if event {
-        return ticks
+impl WindowEvidence {
+    pub fn new(window: &Json, windows: &[Json], event: bool) -> Self {
+        let start = tick(&window["start"]);
+        let end = tick(&window["end"]);
+        // An empty window has no entering-state assertion at all.
+        let initial_time = if event || start > end {
+            None
+        } else {
+            start.checked_sub(1).and_then(|before| {
+                let initial = if window["initial"].is_null() {
+                    json!({"missing": true})
+                } else {
+                    window["initial"].clone()
+                };
+                // Recursive coverage starts strictly earlier: no cycles or gaps.
+                sample_assertions(&initial, windows, before)
+                    .get("changed_at")
+                    .map(tick)
+            })
+        };
+        let snapshot = |state: Option<&Json>, changed_at: Option<u64>| {
+            let Some(value) = state else {
+                return json!({"missing": true});
+            };
+            let mut result = json!({"value": value});
+            if let Some(time) = changed_at {
+                result["changed_at"] = json!(time.to_string());
+            }
+            result
+        };
+        let mut state = window["initial"].get("value").map(legacy_value);
+        // Raw initial timestamps are not normalized timestamp evidence.
+        let mut changed_at = initial_time;
+        let initial = snapshot(state.as_ref(), changed_at);
+        let ticks = final_ticks(window)
             .into_iter()
-            .find(|(tick, _)| *tick == time)
-            .map_or_else(|| json!({"occurrences": "0"}), |(_, value)| value);
-    }
-    let mut state = window["initial"].get("value").map(legacy_value);
-    // An initial's raw timestamp need not be the last normalized net change.
-    let mut changed_at = initial_time;
-    let mut last_recorded_tick = None;
-    for (tick, value) in ticks.into_iter().take_while(|(tick, _)| *tick <= time) {
-        if state.as_ref().is_some_and(is_nan) && is_nan(&value) {
-            changed_at = None; // Equal legacy NaNs do not establish representation identity.
-        } else if state.as_ref() != Some(&value) {
-            changed_at = state.as_ref().map(|_| tick);
+            .map(|(time, value)| {
+                if event {
+                    return (time, value);
+                }
+                if state.as_ref().is_some_and(is_nan) && is_nan(&value) {
+                    changed_at = None;
+                } else if state.as_ref() != Some(&value) {
+                    changed_at = state.as_ref().map(|_| time);
+                }
+                state = Some(value);
+                (time, snapshot(state.as_ref(), changed_at))
+            })
+            .collect();
+        Self {
+            start,
+            end,
+            event,
+            initial,
+            ticks,
         }
-        state = Some(value);
-        last_recorded_tick = Some(tick);
     }
-    let Some(state) = state else {
-        return json!({"missing": true});
-    };
-    if is_nan(&state) && last_recorded_tick != Some(time) {
-        // Payload-only writes may have been omitted as redundant by the v1 oracle.
-        changed_at = None;
+
+    pub fn sample(&self, time: u64) -> Json {
+        assert!(self.start <= time && time <= self.end);
+        let end = self.ticks.partition_point(|(tick, _)| *tick <= time);
+        let latest = end.checked_sub(1).map(|index| &self.ticks[index]);
+        if self.event {
+            return latest
+                .filter(|(tick, _)| *tick == time)
+                .map_or_else(|| json!({"occurrences":"0"}), |(_, value)| value.clone());
+        }
+        let mut result = latest.map_or(&self.initial, |(_, value)| value).clone();
+        if is_nan(&result["value"]) && latest.is_none_or(|(tick, _)| *tick != time) {
+            // v1 may omit payload-only writes between recorded NaN observations.
+            result.as_object_mut().unwrap().remove("changed_at");
+        }
+        result
     }
-    let mut result = json!({"value": state});
-    if let Some(time) = changed_at {
-        result["changed_at"] = json!(time.to_string());
-    }
-    result
+}
+
+/// Point state and only those normalized change times this window proves.
+pub fn sample(window: &Json, time: u64, event: bool) -> Json {
+    WindowEvidence::new(window, &[], event).sample(time)
 }
 
 /// Keep a sparse point/initial assertion, replacing its raw timestamp only when
@@ -116,23 +166,7 @@ pub fn sample_assertions(expected: &Json, windows: &[Json], time: u64) -> Json {
     let mut proven = None;
     for window in windows {
         if tick(&window["start"]) <= time && time <= tick(&window["end"]) {
-            let initial_time = if event {
-                None
-            } else {
-                tick(&window["start"]).checked_sub(1).and_then(|before| {
-                    let initial = if window["initial"].is_null() {
-                        json!({"missing": true})
-                    } else {
-                        window["initial"].clone()
-                    };
-                    // Every recursive window starts strictly earlier: no cycle or
-                    // inference across a gap in complete coverage is possible.
-                    sample_assertions(&initial, windows, before)
-                        .get("changed_at")
-                        .map(tick)
-                })
-            };
-            let derived = sample_with_initial(window, time, event, initial_time);
+            let derived = WindowEvidence::new(window, windows, event).sample(time);
             for key in ["value", "missing", "occurrences"] {
                 assert_eq!(
                     legacy_value(&expected[key]),
@@ -269,6 +303,45 @@ pub fn validate_overlaps(signal: &Json) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preparing_an_empty_window_does_not_assert_its_null_initial_is_missing() {
+        let earlier = json!({"start":"0","end":"1","initial":null,"changes":[{"time":"0","value":{"bits":"1"}}]});
+        let empty = json!({"start":"2","end":"1","initial":null,"changes":[]});
+        let windows = [earlier, empty];
+        let evidence = WindowEvidence::new(&windows[1], &windows, false);
+        assert!(std::panic::catch_unwind(|| evidence.sample(2)).is_err());
+    }
+
+    #[test]
+    fn prepared_evidence_keeps_repeated_out_of_order_reads_independent() {
+        let window = json!({"start":"1","end":"8","initial":{"value":{"real_bits":"0000000000000000"}},"changes":[
+            {"time":"1","value":{"real_bits":"7ff8000000000001"}},
+            {"time":"3","value":{"real_bits":"7ff8000000000001"}},
+            {"time":"5","value":{"real_bits":"8000000000000000"}},
+            {"time":"6","value":{"real_bits":"7ff8000000000002"}}
+        ]});
+        let evidence = WindowEvidence::new(&window, &[], false);
+        for (time, changed_at) in [
+            (7, None),
+            (6, Some("6")),
+            (4, None),
+            (1, Some("1")),
+            (6, Some("6")),
+        ] {
+            let actual = evidence.sample(time);
+            assert_eq!(actual["value"], json!({"real_bits":"7ff8000000000000"}));
+            assert_eq!(actual.get("changed_at").and_then(Json::as_str), changed_at);
+        }
+        let events = json!({"start":"1","end":"4","initial":null,"changes":[
+            {"time":"1","value":{"event":true}}, {"time":"1","value":{"event":true}},
+            {"time":"3","value":{"event":true}}, {"time":"3","value":{"event":true}}
+        ]});
+        let evidence = WindowEvidence::new(&events, &[], true);
+        for (time, count) in [(3, "2"), (2, "0"), (1, "2"), (4, "0"), (3, "2")] {
+            assert_eq!(evidence.sample(time), json!({"occurrences":count}));
+        }
+    }
 
     #[test]
     fn excursions_and_raw_timestamps_are_not_net_changes() {

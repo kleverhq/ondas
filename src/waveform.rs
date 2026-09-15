@@ -416,6 +416,9 @@ impl Metadata {
 }
 
 #[cfg(test)]
+mod semantics_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

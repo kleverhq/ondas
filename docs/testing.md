@@ -23,6 +23,10 @@ reals, strings, events, aliases, delayed first values, wide values, whole signal
 and projections. Narrow counting or failing readers can check batching, resource
 reuse/release, borrowed lifetimes, early termination and partial failure. A
 configurable mock framework or simulated proprietary format is unnecessary.
+`src/waveform/semantics_tests.rs` keeps raw observations separate from explicitly
+authored final-state histories, applying the same reference to ordinary facade
+operations and cross-signal permutations. Its expected projections use string
+positions, not production slicing or normalization.
 
 ## Reader conformance
 
@@ -48,6 +52,8 @@ code while preserving [version-1 evidence limits](fixtures.md#normalized-expecta
 Do not assert raw change times as normalized times, infer NaN payload identity,
 or overwrite installed sidecars to make a comparison pass. Indexed scan checks
 retain input-slot identity even when aliases or projections share histories.
+Composed-query checks use a driver subset and compare all readable entries at
+current/preceding ticks covered by the oracle, in each advertised input mode.
 
 Ordinary tests cover selection order, duplicate inputs, early termination, invalid
 handles/slices, path errors and late callback failures. Sidecars are observations,

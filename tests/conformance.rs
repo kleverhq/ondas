@@ -1426,6 +1426,62 @@ fn pool_queries(fixture: &Fixture, bytes: bool, context: &str) {
             )
             .unwrap();
         assert_eq!(actual.len(), entries.len(), "{context}: trace count");
+        // One driver, independently readable entries: compare composed reads to
+        // oracle evidence, not to samples produced by the same implementation.
+        let mut selection = wave.select(&handles).unwrap();
+        let indices = (0..handles.len()).collect::<Vec<_>>();
+        let evidence = entries
+            .iter()
+            .map(|(id, signal, window)| {
+                normalized_oracle::WindowEvidence::new(
+                    window,
+                    list(&fixture.oracle["signals"][*id], "windows"),
+                    signal.encoding() == Encoding::Event,
+                )
+            })
+            .collect::<Vec<_>>();
+        let required = changes(entries[0].2)
+            .into_iter()
+            .map(|(time, _)| time)
+            .collect::<BTreeSet<_>>();
+        let mut seen = BTreeSet::new();
+        let mut previous = None;
+        let _ = selection
+            .query(range, &[0], |query| {
+                let tick = query.time().ticks();
+                assert!(
+                    previous.is_none_or(|before| before < tick),
+                    "{context}: query candidate order"
+                );
+                previous = Some(tick);
+                seen.insert(tick);
+                for time in
+                    std::iter::once(tick).chain(tick.checked_sub(1).filter(|time| *time >= start))
+                {
+                    let _ = query.visit_samples(
+                        Time::from_ticks(time),
+                        &indices,
+                        |index, actual| {
+                            let (id, signal, _) = entries[index];
+                            let expected = evidence[index].sample(time);
+                            sample(
+                                actual,
+                                signal,
+                                &expected,
+                                time,
+                                &format!("{context} / {id} / composed slot {index}"),
+                            );
+                            Ok(ControlFlow::<()>::Continue(()))
+                        },
+                    )?;
+                }
+                Ok(ControlFlow::<()>::Continue(()))
+            })
+            .unwrap();
+        assert!(
+            required.is_subset(&seen),
+            "{context}: missing normalized driver candidates"
+        );
         for (actual, (id, signal, expected)) in actual.iter().zip(entries) {
             trace(
                 actual,
