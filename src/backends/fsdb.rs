@@ -428,7 +428,7 @@ impl Reader {
                     text.extend(data.iter().copied().map(char::from));
                     ValueRef::String(&text)
                 }
-                (Encoding::Event, 4) => ValueRef::Event,
+                (Encoding::Event, 4) => ValueRef::Event { occurrences: 1 },
                 _ => return Err(backend_error("FSDB value disagrees with declaration")),
             };
             if let ControlFlow::Break(value) = visitor(index, Time::from_ticks(record.tick), value)

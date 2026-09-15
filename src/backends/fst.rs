@@ -284,7 +284,7 @@ impl Reader {
                 .ok_or_else(|| Stop::Error(malformed("unknown value handle")))?;
             let string;
             let value = match (self.encodings[index], raw) {
-                (Encoding::Event, _) => ValueRef::Event,
+                (Encoding::Event, _) => ValueRef::Event { occurrences: 1 },
                 (Encoding::Real, FstSignalValue::Real(value)) => ValueRef::Real(value),
                 (Encoding::Bits { width }, FstSignalValue::String(bytes)) => {
                     let bits = BitsRef::from_ascii(bytes)

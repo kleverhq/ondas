@@ -11,8 +11,8 @@ fn waveform() -> Waveform {
         vec![
             (0, 10, bits("00000000")),
             (0, 20, bits("00000001")),
-            (1, 20, Value::Event),
-            (1, 20, Value::Event),
+            (1, 20, Value::Event { occurrences: 1 }),
+            (1, 20, Value::Event { occurrences: 1 }),
             (0, 30, bits("10100001")),
             (0, 30, bits("11110001")),
             (0, 40, bits("11110001")),
@@ -24,7 +24,7 @@ fn waveform() -> Waveform {
 fn text(value: ValueRef<'_>) -> String {
     match value {
         ValueRef::Bits(bits) => bits.to_string(),
-        ValueRef::Event => "event".into(),
+        ValueRef::Event { .. } => "event".into(),
         _ => panic!("unexpected value"),
     }
 }
@@ -199,7 +199,7 @@ fn scan_emits_initials_first_and_keeps_duplicate_entries() {
         [(sigs[0], None), (sigs[0], None)]
     );
     assert!(records.iter().skip(2).all(|r| r.1.is_some()));
-    assert_eq!(records.iter().filter(|r| r.2 == "event").count(), 2);
+    assert_eq!(records.iter().filter(|r| r.2 == "event").count(), 1);
     assert_eq!(
         records
             .iter()
@@ -215,7 +215,7 @@ fn scan_emits_initials_first_and_keeps_duplicate_entries() {
     );
     assert_eq!(traces[0].changes().len(), 3);
     assert_eq!(traces[2].changes().len(), 3);
-    assert_eq!(traces[1].changes().len(), 2);
+    assert_eq!(traces[1].changes().len(), 1);
     let mut times = Vec::new();
     let _ = selection
         .scan_candidate_times(
@@ -242,7 +242,7 @@ fn multiple_initials_follow_selection_order_not_history_order() {
             (0, 1, bits("0")),
             (1, 2, bits("1")),
             (0, 3, bits("1")),
-            (2, 5, Value::Event),
+            (2, 5, Value::Event { occurrences: 1 }),
             (1, 5, bits("0")),
         ],
         None,
@@ -826,10 +826,133 @@ fn invalid_and_unsupported_signals_fail_before_queries() {
 }
 
 #[test]
+fn event_aggregates_preserve_counts_boundaries_and_duplicates() {
+    let mut wave = Waveform::memory(
+        vec![Encoding::Event],
+        vec![
+            (0, 2, Value::Event { occurrences: 1 }),
+            (0, 5, Value::Event { occurrences: 1 }),
+            (0, 5, Value::Event { occurrences: 1 }),
+        ],
+        None,
+    );
+    let signal = wave.hierarchy().signals().next().unwrap();
+    let mut selection = wave.select(&[signal, signal]).unwrap();
+    for (tick, expected) in [(0, 0), (2, 1), (3, 0), (5, 2), (6, 0), (u64::MAX, 0)] {
+        for sample in selection.samples(Time::from_ticks(tick)).unwrap() {
+            assert!(matches!(sample, Sample::Event { occurrences, .. } if occurrences == expected));
+        }
+        for trace in selection
+            .traces(TimeRange::point(Time::from_ticks(tick)))
+            .unwrap()
+        {
+            assert!(trace.initial().is_none());
+            assert_eq!(trace.changes().len(), usize::from(expected > 0));
+            if expected > 0 {
+                assert!(
+                    matches!(trace.changes()[0].value(), ValueRef::Event { occurrences } if occurrences == expected)
+                );
+            }
+        }
+    }
+    let range = TimeRange::closed(Time::from_ticks(2), Time::from_ticks(5));
+    let mut observed = Vec::new();
+    let _ = selection
+        .scan(range, |record| {
+            let ScanRef::Change {
+                time,
+                value: ValueRef::Event { occurrences },
+                ..
+            } = record
+            else {
+                panic!("expected event aggregate")
+            };
+            observed.push((time.ticks(), occurrences));
+            ControlFlow::<()>::Continue(())
+        })
+        .unwrap();
+    assert_eq!(observed, [(2, 1), (2, 1), (5, 2), (5, 2)]);
+    let mut candidates = Vec::new();
+    let _ = selection
+        .scan_candidate_times(range, |time| {
+            candidates.push(time.ticks());
+            ControlFlow::<()>::Continue(())
+        })
+        .unwrap();
+    assert_eq!(candidates, [2, 5]);
+    let traces = selection.traces(range).unwrap();
+    drop(wave);
+    for trace in traces {
+        assert!(matches!(
+            trace.changes()[1].value(),
+            ValueRef::Event { occurrences: 2 }
+        ));
+    }
+}
+
+#[test]
+fn event_count_overflow_is_an_error_not_a_partial_tick() {
+    for overflow in [false, true] {
+        let mut records = vec![(
+            0,
+            0,
+            Value::Event {
+                occurrences: u64::MAX,
+            },
+        )];
+        if overflow {
+            records.push((0, 0, Value::Event { occurrences: 1 }));
+        }
+        let mut wave = Waveform::memory(vec![Encoding::Event], records, None);
+        let signal = wave.hierarchy().signals().next().unwrap();
+        let result = wave.sample(signal, Time::ZERO);
+        if overflow {
+            assert!(matches!(
+                result,
+                Err(Error::Backend {
+                    operation: "count events",
+                    ..
+                })
+            ));
+            assert!(
+                wave.scan(
+                    &[signal, signal],
+                    TimeRange::all(),
+                    |_| -> ControlFlow<()> { panic!("overflowed tick must not be published") }
+                )
+                .is_err()
+            );
+            assert!(wave.trace(signal, TimeRange::all()).is_err());
+        } else {
+            assert!(matches!(
+                result,
+                Ok(Sample::Event {
+                    occurrences: u64::MAX,
+                    ..
+                })
+            ));
+            let traces = wave.traces(&[signal, signal], TimeRange::all()).unwrap();
+            for trace in traces {
+                assert_eq!(trace.changes().len(), 1);
+                assert!(matches!(
+                    trace.changes()[0].value(),
+                    ValueRef::Event {
+                        occurrences: u64::MAX
+                    }
+                ));
+            }
+        }
+    }
+}
+
+#[test]
 fn genuine_tick_zero_events_and_borrowed_sample_breaks_survive() {
     let mut wave = Waveform::memory(
         vec![Encoding::Event],
-        vec![(0, 0, Value::Event), (0, 0, Value::Event)],
+        vec![
+            (0, 0, Value::Event { occurrences: 1 }),
+            (0, 0, Value::Event { occurrences: 1 }),
+        ],
         None,
     );
     let sig = wave.hierarchy().signals().next().unwrap();
@@ -842,7 +965,7 @@ fn genuine_tick_zero_events_and_borrowed_sample_breaks_survive() {
             .unwrap()
             .changes()
             .len(),
-        2
+        1
     );
     let mut calls = 0;
     let result = wave

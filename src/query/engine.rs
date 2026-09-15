@@ -87,17 +87,17 @@ fn flush_tick<B>(
             )?;
         }
         let events = std::mem::take(&mut slot.events);
-        if time >= range.start() {
-            for _ in 0..events {
-                visitor(
-                    index,
-                    ScanRef::Change {
-                        signal,
-                        time,
-                        value: ValueRef::Event,
+        if time >= range.start() && events > 0 {
+            visitor(
+                index,
+                ScanRef::Change {
+                    signal,
+                    time,
+                    value: ValueRef::Event {
+                        occurrences: events,
                     },
-                )?;
-            }
+                },
+            )?;
         }
     }
     ControlFlow::Continue(())
@@ -146,9 +146,8 @@ impl<'w> Selection<'w> {
                     });
                 }
                 ScanRef::Change { time, value, .. } => {
-                    if matches!(value, ValueRef::Event) {
-                        // The normalizer already checked this slot's per-tick count.
-                        events[index] += 1;
+                    if let ValueRef::Event { occurrences } = value {
+                        events[index] = occurrences;
                     } else {
                         update(&mut states[index], value, time);
                     }
@@ -217,8 +216,8 @@ impl<'w> Selection<'w> {
                 pending_time = Some(time);
                 for &index in &self.groups[&base] {
                     let slot = &mut slots[index];
-                    if matches!(value, ValueRef::Event) {
-                        let Some(count) = slot.events.checked_add(1) else {
+                    if let ValueRef::Event { occurrences } = value {
+                        let Some(count) = slot.events.checked_add(occurrences) else {
                             return ControlFlow::Break(Err(Error::Backend {
                                 backend: backend.clone(),
                                 operation: "count events",

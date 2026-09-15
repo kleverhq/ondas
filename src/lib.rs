@@ -108,7 +108,9 @@ for value in &retained {
 [`Time`] is an absolute source tick, not a backend time-table index. Ranges are
 closed; reversed bounded ranges are empty, not errors. Delta cycles are not
 modeled. Point samples report the final persistent state at a tick; event samples
-count occurrences at exactly that tick, including zero. [`Sample::Missing`] means
+count reader-observed occurrences at exactly that tick, including zero. Scans and
+traces carry one positive event aggregate per selection entry and tick; aggregation
+does not recover omitted events or expose intra-tick ordering. [`Sample::Missing`] means
 no persistent state is known at or before the sampled time.
 
 [`Selection::scan`] separates state strictly before the range from actual changes

@@ -141,9 +141,12 @@ impl Selection<'_> {
     /// entering state, the final value establishes one, including HDL unknown.
     /// Samples, scans and traces use these same final tick states.
     ///
-    /// Each [`ValueRef::Event`] change is one occurrence, subject to the FST
+    /// Each [`ValueRef::Event`] change aggregates a positive `occurrences` count
+    /// for one entry and tick, subject to the FST
     /// [first-tick initialization limitation](crate#reader-support-and-limits).
-    /// Occurrences never coalesce or deduplicate, even with identical time and value. Slices emit
+    /// Counts preserve reader observations, not ordering within the tick or
+    /// events omitted by the producer. Overflow returns an error, never wraps.
+    /// Repeated selection entries each receive the same count. Slices emit
     /// only changes of their projected values, not unrelated base-bit activity.
     /// Duplicate selection entries retain their observations. An empty range
     /// invokes no visitor, including for initials.
@@ -340,13 +343,13 @@ pub enum ScanRef<'a> {
         /// For a slice this describes the projected value, not unrelated base activity.
         changed_at: Option<Time>,
     },
-    /// A value change or event occurrence within the range.
+    /// A value change or per-tick event aggregate within the range.
     Change {
         /// The signal that changed or produced the event.
         signal: Signal,
         /// The change or occurrence time.
         time: Time,
-        /// The new value, or [`ValueRef::Event`] for one occurrence.
+        /// The new persistent value, or a positive [`ValueRef::Event`] count.
         value: ValueRef<'a>,
     },
 }
@@ -360,10 +363,10 @@ pub struct Initial {
     changed_at: Option<Time>,
 }
 
-/// An owned value change or event occurrence within a trace range.
+/// An owned value change or per-tick event aggregate within a trace range.
 ///
-/// Each event record represents one occurrence, even if its time and value match
-/// another record. Persistent changes contain only the final recorded state of
+/// Each event record carries a positive count for one tick. Persistent changes
+/// contain only the final recorded state of
 /// a tick when it differs from the entering state, or first establishes a state.
 pub struct Change {
     time: Time,
@@ -408,7 +411,7 @@ impl Change {
         self.time
     }
 
-    /// Returns the new value, or [`ValueRef::Event`] for an occurrence.
+    /// Returns the new persistent value, or a positive [`ValueRef::Event`] count.
     pub fn value(&self) -> ValueRef<'_> {
         self.value.as_ref()
     }
@@ -436,7 +439,8 @@ impl Trace {
     ///
     /// Times are nondecreasing. Each persistent signal has at most one net
     /// change per tick, representing its final recorded state. Redundant persistent
-    /// writes may be omitted; event occurrences are never coalesced.
+    /// writes are omitted; event occurrences are aggregated into one positive
+    /// count per tick, without carrying state between ticks.
     pub fn changes(&self) -> &[Change] {
         &self.changes
     }

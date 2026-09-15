@@ -11,8 +11,8 @@ use std::fmt;
 /// Bit-vector signedness is a declaration interpretation, not a separate value
 /// variant. Persistent histories expose final recorded states at source ticks,
 /// with at most one net change per selection entry and tick. Intermediate
-/// same-tick excursions are not exposed. Each event occurrence
-/// remains observable even when multiple occurrences share a tick.
+/// same-tick excursions are not exposed. Events carry observed per-tick counts,
+/// not persistent state or an ordering of individual occurrences.
 ///
 /// Persistent-value identity compares all logic states distinctly, strings by
 /// exact contents, and reals by their binary64 bit patterns. Signed zeros and
@@ -37,8 +37,15 @@ pub enum ValueRef<'a> {
         /// The string payload.
         &'a str,
     ),
-    /// A single event occurrence.
-    Event,
+    /// An aggregate of event observations at one tick.
+    ///
+    /// Scan and trace records have positive counts. Counts reflect reader
+    /// observations, including [reader limitations](crate#reader-support-and-limits),
+    /// not events omitted by the producer.
+    Event {
+        /// The number of observed occurrences at this tick.
+        occurrences: u64,
+    },
 }
 
 /// An owned waveform value suitable for long-term storage.
@@ -64,8 +71,11 @@ pub enum Value {
         /// The string payload.
         Box<str>,
     ),
-    /// A single event occurrence.
-    Event,
+    /// An aggregate of event observations at one tick; see [`ValueRef::Event`].
+    Event {
+        /// The number of observed occurrences at this tick.
+        occurrences: u64,
+    },
 }
 
 impl ValueRef<'_> {
@@ -74,7 +84,9 @@ impl ValueRef<'_> {
             (Self::Bits(left), ValueRef::Bits(right)) => left.iter_msb().eq(right.iter_msb()),
             (Self::Real(left), ValueRef::Real(right)) => left.to_bits() == right.to_bits(),
             (Self::String(left), ValueRef::String(right)) => left == right,
-            (Self::Event, ValueRef::Event) => true,
+            (Self::Event { occurrences: left }, ValueRef::Event { occurrences: right }) => {
+                left == right
+            }
             _ => false,
         }
     }
@@ -85,7 +97,7 @@ impl ValueRef<'_> {
             Self::Bits(bits) => Value::Bits(bits.to_owned()),
             Self::Real(real) => Value::Real(real),
             Self::String(string) => Value::String(string.into()),
-            Self::Event => Value::Event,
+            Self::Event { occurrences } => Value::Event { occurrences },
         }
     }
 }
@@ -102,7 +114,9 @@ impl Value {
             Self::Bits(bits) => ValueRef::Bits(bits.as_ref()),
             Self::Real(real) => ValueRef::Real(*real),
             Self::String(string) => ValueRef::String(string),
-            Self::Event => ValueRef::Event,
+            Self::Event { occurrences } => ValueRef::Event {
+                occurrences: *occurrences,
+            },
         }
     }
 }
@@ -344,10 +358,12 @@ mod tests {
         let real = ValueRef::Real(3.5).to_owned();
         assert!(matches!(real.as_ref(), ValueRef::Real(3.5)));
         assert!(real.same_value(&real.as_ref().to_owned()));
-        assert!(ValueRef::Event.to_owned().same_value(&Value::Event));
-        assert!(matches!(Value::Event.as_ref(), ValueRef::Event));
+        let event = ValueRef::Event { occurrences: 7 }.to_owned();
+        assert!(matches!(event.as_ref(), ValueRef::Event { occurrences: 7 }));
+        assert!(event.same_value(&event.as_ref().to_owned()));
+        assert!(!event.same_value(&Value::Event { occurrences: 1 }));
         assert!(!real.same_value(&text));
-        assert!(!Value::Event.same_value(&real));
+        assert!(!event.same_value(&real));
     }
 
     #[test]

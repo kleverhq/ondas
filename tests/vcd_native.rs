@@ -130,6 +130,35 @@ fn replay_after_break_eof_and_batched_projections() {
 }
 
 #[test]
+fn event_aliases_share_observed_counts_without_multiplication() {
+    let mut wave = open(
+        "$var event 1 ! trigger $end $var event 1 ! alias $end",
+        b"#0 1! 1! #3 1! #5",
+    );
+    let event = wave.hierarchy().signal("top.trigger").unwrap();
+    let alias = wave.hierarchy().signal("top.alias").unwrap();
+    assert_eq!(event, alias);
+    let traces = wave
+        .traces(&[event, alias, event], TimeRange::all())
+        .unwrap();
+    for trace in traces {
+        assert!(trace.initial().is_none());
+        assert_eq!(trace.changes().len(), 2);
+        assert!(matches!(
+            trace.changes()[0].value(),
+            ValueRef::Event { occurrences: 2 }
+        ));
+        assert!(matches!(
+            trace.changes()[1].value(),
+            ValueRef::Event { occurrences: 1 }
+        ));
+    }
+    for sample in wave.samples(&[event, alias], Time::from_ticks(5)).unwrap() {
+        assert!(matches!(sample, Sample::Event { occurrences: 0, .. }));
+    }
+}
+
+#[test]
 fn exact_large_times_and_decimal_timescale() {
     let input = b"$timescale 0.5 ns $end $var wire 1 ! x $end $enddefinitions $end #9007199254740993.0 1! #18446744073709551615";
     let mut wave =

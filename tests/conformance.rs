@@ -108,7 +108,13 @@ fn value_json(value: ValueRef<'_>) -> Json {
             normalized(&json!({"real_bits": format!("{:016x}", real.to_bits())}))
         }
         ValueRef::String(text) => json!({"string": text}),
-        ValueRef::Event => json!({"event": true}),
+        ValueRef::Event { occurrences } => {
+            assert_eq!(
+                occurrences, 1,
+                "legacy unit event expectation requires one occurrence"
+            );
+            json!({"event": true})
+        }
         _ => panic!("unexpected public value {value:?}"),
     }
 }
