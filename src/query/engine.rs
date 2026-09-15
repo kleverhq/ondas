@@ -395,6 +395,22 @@ impl<'w> Selection<'w> {
     /// # Ok(())
     /// # }
     /// ```
+    ///
+    /// A borrowed record cannot escape its callback:
+    ///
+    /// ```compile_fail,E0521
+    /// use ondas::{Result, Selection, TimeRange};
+    /// use std::ops::ControlFlow;
+    /// fn escape(selection: &mut Selection<'_>) -> Result<()> {
+    ///     let mut saved = None;
+    ///     selection.scan_each(TimeRange::all(), |_, record| {
+    ///         saved = Some(record);
+    ///         ControlFlow::<()>::Continue(())
+    ///     })?;
+    ///     println!("{saved:?}");
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn scan_each<B>(
         &mut self,
         range: TimeRange,
@@ -441,6 +457,8 @@ impl<'w> Selection<'w> {
     ) -> Result<ControlFlow<B>> {
         let mut pending_time = None;
         let backend = self.waveform.backend().to_owned();
+        #[cfg(test)]
+        let probe = streaming_tests::probe(&self.waveform.reader);
         // One entering/final value and event count per slot, never intra-tick writes.
         let result = self
             .waveform
@@ -470,6 +488,8 @@ impl<'w> Selection<'w> {
                         slot.pending = Some(project(value, self.signals[index]).to_owned());
                     }
                 }
+                #[cfg(test)]
+                streaming_tests::observe_pending(&probe, slots);
                 ControlFlow::Continue(())
             })?;
         if let ControlFlow::Break(outcome) = result {
@@ -482,6 +502,9 @@ impl<'w> Selection<'w> {
         Ok(ControlFlow::Continue(()))
     }
 }
+
+#[cfg(test)]
+mod streaming_tests;
 
 #[cfg(test)]
 mod tests {

@@ -233,7 +233,7 @@ impl Waveform {
             #[cfg(feature = "fsdb-lib")]
             Reader::Fsdb(_) => Format::Fsdb,
             #[cfg(test)]
-            Reader::Memory { .. } => Format::Fst,
+            Reader::Memory { .. } | Reader::Generated(_) => Format::Fst,
         }
     }
 
@@ -249,6 +249,8 @@ impl Waveform {
             Reader::Fsdb(_) => "fsdb-lib",
             #[cfg(test)]
             Reader::Memory { .. } => "memory",
+            #[cfg(test)]
+            Reader::Generated(_) => "generated",
         }
     }
 

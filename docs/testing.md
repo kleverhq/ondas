@@ -28,6 +28,20 @@ authored final-state histories, applying the same reference to ordinary facade
 operations and cross-signal permutations. Its expected projections use string
 positions, not production slicing or normalization.
 
+The generated reader retains no history. Logical counters observe actual pending
+slot values after each raw record, read starts, requested bases and resource
+leases. Fixed-width runs and an early-stop advance budget check bounded state and
+lazy delivery without timing or RSS assertions. Repeated adjacent-tick reads must
+not advance or restart the reader. These counters exclude caller-owned results
+and reader/SDK residency; they are not a public metrics API.
+
+Caller payload visits and copies are counted separately from sequential fallback
+decoding and state copies. An unselected failing channel need not be validated by
+the narrow reader; this does not promise deferred decoding for selected fallback
+payload. Source failures are injected during advancement; selective read failures
+use the reference path's fallible visitor. Both preserve completed observations,
+release read resources and permit fresh queries.
+
 ## Reader conformance
 
 The common runner applies a backend-neutral oracle through the public API:
