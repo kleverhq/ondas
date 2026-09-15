@@ -305,6 +305,8 @@ impl Reader {
                             range,
                             is_constant: d.is_constant != 0,
                             type_name: None,
+                            signedness: None,
+                            logic_domain: None,
                             enumeration: None,
                             signal: Some(index),
                         });

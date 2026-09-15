@@ -240,6 +240,8 @@ impl Reader {
                             direction: Direction::Implicit,
                             range,
                             type_name: None,
+                            signedness: None,
+                            logic_domain: None,
                             enumeration: None,
                             signal: Some(index),
                         });

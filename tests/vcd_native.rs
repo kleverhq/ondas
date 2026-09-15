@@ -130,6 +130,23 @@ fn replay_after_break_eof_and_batched_projections() {
 }
 
 #[test]
+fn missing_interpretation_does_not_prevent_queries() {
+    let mut wave = open(
+        "$var wire 1 ! unsigned_bit $end $var real 1 r real $end",
+        b"#0 1! r2 r",
+    );
+    for variable in wave.hierarchy().variables() {
+        assert_eq!(variable.signedness(), None);
+        assert_eq!(variable.logic_domain(), None);
+    }
+    let signal = wave.hierarchy().signal("top.unsigned_bit").unwrap();
+    assert_eq!(
+        bits(value(wave.sample(signal, Time::ZERO).unwrap()).as_ref()),
+        "1"
+    );
+}
+
+#[test]
 fn event_aliases_share_observed_counts_without_multiplication() {
     let mut wave = open(
         "$var event 1 ! trigger $end $var event 1 ! alias $end",

@@ -37,7 +37,9 @@ model.
 A hierarchy is immutable and cloneable; scopes and variables borrow it. A
 variable is a declaration, while a signal identifies a history. Aliases can
 share a history without losing their separate declaration metadata. Some
-declarations have no queryable history.
+declarations have no queryable history. Known signedness and logic domain belong
+to each declaration, not the shared signal or stored bits. Unavailable or
+inapplicable interpretation remains absent; observed values do not establish it.
 
 A signal handle identifies a whole history or a static bit projection, not a
 path or raw reader index. Validation includes waveform identity so a foreign

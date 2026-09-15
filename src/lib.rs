@@ -157,6 +157,10 @@ assert!(matches!(wave.sample(ready, Time::from_ticks(5))?, Sample::Value { .. })
 reals, strings, and event callbacks, preserving aliases and explicit source ranges.
 FST string bytes map reversibly to Unicode U+0000–U+00FF (Latin-1), including NULs
 and padding; the adapter does not guess whether a byte sequence is UTF-8.
+Explicit FST SystemVerilog types can supply [`Variable::logic_domain`]; explicit
+VHDL type attributes can additionally supply [`Variable::signedness`]. Legacy
+storage kinds and type-name text are not used to guess interpretation. The
+current VCD and FSDB adapters leave both fields unavailable.
 
 The underlying reader can panic on some malformed inputs. Those panics are not
 intercepted; do not treat this release as a hardened parser for untrusted files.
@@ -240,7 +244,7 @@ pub use error::{Error, InputKind, LookupError, PathError, PathFormatError, Slice
 /// Types describing waveform hierarchy and queryable signals.
 pub use hierarchy::{
     BitRange, Direction, Encoding, Enumeration, EnumerationVariant, Hierarchy, HierarchyPath, Item,
-    Packing, Scope, Signal, Variable,
+    LogicDomain, Packing, Scope, Signal, Signedness, Variable,
 };
 /// Owned and borrowed waveform query results.
 pub use query::{Change, Initial, Sample, SampleRef, ScanRef, Selection, Trace};

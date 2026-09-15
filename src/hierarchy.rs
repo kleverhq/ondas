@@ -206,6 +206,8 @@ pub(crate) struct VariableData {
     pub(crate) range: Option<BitRange>,
     pub(crate) is_constant: bool,
     pub(crate) type_name: Option<String>,
+    pub(crate) signedness: Option<Signedness>,
+    pub(crate) logic_domain: Option<LogicDomain>,
     pub(crate) enumeration: Option<EnumerationData>,
     pub(crate) signal: Option<usize>,
 }
@@ -575,6 +577,25 @@ impl<'h> Variable<'h> {
         self.data().type_name.as_deref()
     }
 
+    /// Returns known signed or unsigned interpretation of this declaration.
+    ///
+    /// `None` means unavailable or not applicable (for example, a real, string
+    /// or event), not unsigned. This metadata is independent of shared
+    /// [`Signal`] identity and is never inferred from observed values or names.
+    /// Reading it does not load value histories.
+    pub fn signedness(&self) -> Option<Signedness> {
+        self.data().signedness
+    }
+
+    /// Returns the declaration's known logic domain, not the states observed so far.
+    ///
+    /// `None` means unavailable or not applicable. An observed `0`/`1` value
+    /// does not establish a two-state domain. Aliases may have different metadata
+    /// while sharing a [`Signal`]. Reading it does not load value histories.
+    pub fn logic_domain(&self) -> Option<LogicDomain> {
+        self.data().logic_domain
+    }
+
     /// Returns enumeration metadata for the declaration when available.
     pub fn enumeration(&self) -> Option<Enumeration<'h>> {
         self.data()
@@ -582,6 +603,28 @@ impl<'h> Variable<'h> {
             .as_ref()
             .map(|data| Enumeration { data })
     }
+}
+
+/// Known signedness of a variable declaration, independent of stored bit values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Signedness {
+    /// A signed interpretation.
+    Signed,
+    /// An unsigned interpretation.
+    Unsigned,
+}
+
+/// Known logic domain of a variable declaration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum LogicDomain {
+    /// Logic zero and one.
+    TwoState,
+    /// Logic zero, one, unknown and high impedance.
+    FourState,
+    /// The full nine-state domain represented by [`Logic`](crate::Logic).
+    NineState,
 }
 
 /// Direction metadata for a variable declaration.

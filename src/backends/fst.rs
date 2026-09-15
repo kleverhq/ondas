@@ -2,16 +2,59 @@ use std::{collections::HashMap, ops::ControlFlow};
 
 use fst_reader::{
     FstArrayType, FstFilter, FstHierarchyEntry, FstPackType, FstReader, FstSignalHandle,
-    FstSignalValue, FstVarDirection, FstVarType, FstVhdlVarType, ReadSignalsError, ReaderError,
+    FstSignalValue, FstVarDirection, FstVarType, FstVhdlDataType, FstVhdlVarType, ReadSignalsError,
+    ReaderError,
 };
 
 use crate::{
-    BitRange, BitsRef, Direction, Encoding, Error, Format, Hierarchy, Metadata, Packing, Result,
-    Signal, Time, TimeSpan, TimeUnit, Timescale, ValueRef,
+    BitRange, BitsRef, Direction, Encoding, Error, Format, Hierarchy, LogicDomain, Metadata,
+    Packing, Result, Signal, Signedness, Time, TimeSpan, TimeUnit, Timescale, ValueRef,
     hierarchy::{EnumerationData, ScopeData, VariableData},
 };
 
 use super::Input;
+
+// Only explicit declaration types supply interpretation; legacy storage kinds
+// and type-name strings cannot establish source signedness or logic domain.
+fn interpretation(
+    kind: FstVarType,
+    encoding: Encoding,
+    vhdl: Option<FstVhdlDataType>,
+) -> (Option<Signedness>, Option<LogicDomain>) {
+    if !matches!(encoding, Encoding::Bits { .. }) {
+        return (None, None);
+    }
+    match vhdl {
+        Some(FstVhdlDataType::Signed) => (Some(Signedness::Signed), Some(LogicDomain::NineState)),
+        Some(FstVhdlDataType::Unsigned) => {
+            (Some(Signedness::Unsigned), Some(LogicDomain::NineState))
+        }
+        Some(
+            FstVhdlDataType::ULogic
+            | FstVhdlDataType::ULogicVector
+            | FstVhdlDataType::Logic
+            | FstVhdlDataType::LogicVector,
+        ) => (None, Some(LogicDomain::NineState)),
+        // FST supplemental datatype 3 is VHDL bit_vector (named Vector by fst-reader).
+        Some(FstVhdlDataType::Boolean | FstVhdlDataType::Bit | FstVhdlDataType::Vector) => {
+            (None, Some(LogicDomain::TwoState))
+        }
+        Some(_) => (None, None),
+        None => {
+            // IEEE 1800-2017 6.11: domains are fixed, but signedness can be overridden.
+            let domain = match kind {
+                FstVarType::Bit
+                | FstVarType::Int
+                | FstVarType::ShortInt
+                | FstVarType::LongInt
+                | FstVarType::Byte => Some(LogicDomain::TwoState),
+                FstVarType::Logic => Some(LogicDomain::FourState),
+                _ => None,
+            };
+            (None, domain)
+        }
+    }
+}
 
 pub(crate) struct Reader {
     inner: FstReader<Box<dyn Input>>,
@@ -166,8 +209,11 @@ impl Reader {
                             index
                         };
                         let (name, range) = declared_name(name, encoding);
-                        let (type_name, vhdl_kind) =
-                            pending_vhdl.take().unwrap_or((None, FstVhdlVarType::None));
+                        let (type_name, vhdl_kind, vhdl_type) =
+                            pending_vhdl
+                                .take()
+                                .unwrap_or((None, FstVhdlVarType::None, None));
+                        let (signedness, logic_domain) = interpretation(tpe, encoding, vhdl_type);
                         let is_constant =
                             matches!(tpe, FstVarType::Parameter | FstVarType::RealParameter)
                                 || vhdl_kind == FstVhdlVarType::Constant;
@@ -187,6 +233,8 @@ impl Reader {
                             range,
                             is_constant,
                             type_name,
+                            signedness,
+                            logic_domain,
                             enumeration,
                             signal: Some(index),
                         });
@@ -196,10 +244,13 @@ impl Reader {
                     FstHierarchyEntry::VhdlVarInfo {
                         type_name,
                         var_type,
-                        ..
+                        data_type,
                     } => {
-                        pending_vhdl =
-                            Some(((!type_name.is_empty()).then_some(type_name), var_type));
+                        pending_vhdl = Some((
+                            (!type_name.is_empty()).then_some(type_name),
+                            var_type,
+                            Some(data_type),
+                        ));
                     }
                     FstHierarchyEntry::EnumTable {
                         name,
@@ -389,6 +440,74 @@ fn timescale(exponent: i8) -> Option<Timescale> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn interpretation_requires_explicit_type_evidence() {
+        let bits = Encoding::Bits { width: 8 };
+        for (kind, domain) in [
+            (FstVarType::Bit, Some(LogicDomain::TwoState)),
+            (FstVarType::Int, Some(LogicDomain::TwoState)),
+            (FstVarType::ShortInt, Some(LogicDomain::TwoState)),
+            (FstVarType::LongInt, Some(LogicDomain::TwoState)),
+            (FstVarType::Byte, Some(LogicDomain::TwoState)),
+            (FstVarType::Logic, Some(LogicDomain::FourState)),
+            (FstVarType::Wire, None),
+            (FstVarType::Reg, None),
+            (FstVarType::Integer, None),
+            (FstVarType::Enum, None),
+        ] {
+            assert_eq!(interpretation(kind, bits, None), (None, domain));
+            assert_eq!(
+                interpretation(kind, bits, Some(FstVhdlDataType::None)),
+                (None, None)
+            );
+        }
+        for (data_type, signedness, domain) in [
+            (
+                FstVhdlDataType::Signed,
+                Some(Signedness::Signed),
+                Some(LogicDomain::NineState),
+            ),
+            (
+                FstVhdlDataType::Unsigned,
+                Some(Signedness::Unsigned),
+                Some(LogicDomain::NineState),
+            ),
+            (FstVhdlDataType::ULogic, None, Some(LogicDomain::NineState)),
+            (
+                FstVhdlDataType::ULogicVector,
+                None,
+                Some(LogicDomain::NineState),
+            ),
+            (FstVhdlDataType::Logic, None, Some(LogicDomain::NineState)),
+            (
+                FstVhdlDataType::LogicVector,
+                None,
+                Some(LogicDomain::NineState),
+            ),
+            (FstVhdlDataType::Boolean, None, Some(LogicDomain::TwoState)),
+            (FstVhdlDataType::Bit, None, Some(LogicDomain::TwoState)),
+            (FstVhdlDataType::Vector, None, Some(LogicDomain::TwoState)),
+            (FstVhdlDataType::Integer, None, None),
+            (FstVhdlDataType::Real, None, None),
+        ] {
+            assert_eq!(
+                interpretation(FstVarType::Reg, bits, Some(data_type)),
+                (signedness, domain)
+            );
+            for encoding in [
+                Encoding::Real,
+                Encoding::String,
+                Encoding::Event,
+                Encoding::Unsupported,
+            ] {
+                assert_eq!(
+                    interpretation(FstVarType::Reg, encoding, Some(data_type)),
+                    (None, None)
+                );
+            }
+        }
+    }
 
     #[test]
     fn compound_scope_kinds_are_canonical() {
