@@ -134,11 +134,12 @@ impl Selection<'_> {
     ///
     /// Changes and event occurrences inside the closed range follow in
     /// nondecreasing time. Different signals have no defined order within one
-    /// tick. Multiple changes to the same signal within one tick preserve their
-    /// order and distinct intermediate values; only redundant writes identical
-    /// to the preceding known persistent state may be omitted. Without an
-    /// initial state, the first record establishing a previously unknown state
-    /// is retained. Point sampling instead uses that tick's final state.
+    /// tick. Each persistent selection entry emits at most one net change per
+    /// tick: its final recorded value, compared with its entering state using
+    /// [`ValueRef`] representation identity. A same-tick excursion returning to
+    /// that state disappears and does not advance `changed_at`. Without a known
+    /// entering state, the final value establishes one, including HDL unknown.
+    /// Samples, scans and traces use these same final tick states.
     ///
     /// Each [`ValueRef::Event`] change is one occurrence, subject to the FST
     /// [first-tick initialization limitation](crate#reader-support-and-limits).
@@ -156,7 +157,10 @@ impl Selection<'_> {
     ///
     /// This operation has partial-observation semantics: a late backend failure
     /// returns [`Error`](crate::Error) after earlier visitor calls may have run.
-    /// It does not roll those observations back. Owned [`Self::samples`] and
+    /// It does not roll those observations back. Only completed ticks are
+    /// published; a failure discards the unfinished pending tick. A sequential
+    /// reader may need one record of the next tick to complete the preceding
+    /// tick before calling the visitor. Owned [`Self::samples`] and
     /// [`Self::traces`] instead return no partial result on error.
     pub fn scan<B>(
         &mut self,
@@ -205,7 +209,8 @@ impl Selection<'_> {
 /// sampled tick. `changed_at`, when known, is the tick that established the
 /// observed state and is no later than the sampled time. For a slice, it is the
 /// last projected-value change, not activity in other base bits; an unreliable
-/// timestamp is `None`.
+/// timestamp is `None`. Same-tick excursions returning to the entering value
+/// do not advance this timestamp.
 ///
 /// [`Self::Missing`] means no persistent value is known at or before that time,
 /// not a read error or an HDL unknown logic value. Events have no persistent
@@ -358,8 +363,8 @@ pub struct Initial {
 /// An owned value change or event occurrence within a trace range.
 ///
 /// Each event record represents one occurrence, even if its time and value match
-/// another record. Distinct intermediate persistent values within a tick remain
-/// separate changes in their original same-signal order.
+/// another record. Persistent changes contain only the final recorded state of
+/// a tick when it differs from the entering state, or first establishes a state.
 pub struct Change {
     time: Time,
     value: Value,
@@ -429,8 +434,8 @@ impl Trace {
 
     /// Returns the changes and event occurrences within the closed range.
     ///
-    /// Times are nondecreasing. Same-signal changes within a tick retain their
-    /// order and distinct intermediate values. Redundant identical persistent
+    /// Times are nondecreasing. Each persistent signal has at most one net
+    /// change per tick, representing its final recorded state. Redundant persistent
     /// writes may be omitted; event occurrences are never coalesced.
     pub fn changes(&self) -> &[Change] {
         &self.changes

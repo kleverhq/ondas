@@ -145,7 +145,7 @@ fn slices_have_independent_changes_and_entering_states() {
             .iter()
             .map(|c| (c.time().ticks(), text(c.value())))
             .collect::<Vec<_>>(),
-        [(30, "1010".into()), (30, "1111".into())]
+        [(30, "1111".into())]
     );
     let Sample::Value {
         value, changed_at, ..
@@ -206,15 +206,15 @@ fn scan_emits_initials_first_and_keeps_duplicate_entries() {
             .filter(|r| r.1 == Some(30))
             .map(|r| r.2.as_str())
             .collect::<Vec<_>>(),
-        ["10100001", "10100001", "11110001", "11110001"]
+        ["11110001", "11110001"]
     );
     let traces = selection.traces(TimeRange::all()).unwrap();
     assert_eq!(
         traces.iter().map(Trace::signal).collect::<Vec<_>>(),
         selected
     );
-    assert_eq!(traces[0].changes().len(), 4);
-    assert_eq!(traces[2].changes().len(), 4);
+    assert_eq!(traces[0].changes().len(), 3);
+    assert_eq!(traces[2].changes().len(), 3);
     assert_eq!(traces[1].changes().len(), 2);
     let mut times = Vec::new();
     let _ = selection
@@ -336,7 +336,7 @@ fn composed_projections_cohere_at_inclusive_boundaries() {
         (
             TimeRange::point(Time::from_ticks(5)),
             Some("000"),
-            vec![(5, "101"), (5, "010")],
+            vec![(5, "010")],
         ),
         (TimeRange::point(Time::from_ticks(6)), Some("010"), vec![]),
         (
@@ -613,8 +613,8 @@ fn empty_ranges_and_selections_do_not_visit_or_read() {
 fn breaks_stop_the_reader_and_late_errors_preserve_prior_callbacks() {
     let mut wave = Waveform::memory(
         vec![Encoding::Bits { width: 1 }],
-        vec![(0, 0, bits("0")), (0, 1, bits("1"))],
-        Some(1),
+        vec![(0, 0, bits("0")), (0, 1, bits("1")), (0, 1, bits("0"))],
+        Some(2),
     );
     let sig = wave.hierarchy().signals().next().unwrap();
     let mut calls = 0;
@@ -659,6 +659,154 @@ fn breaks_stop_the_reader_and_late_errors_preserve_prior_callbacks() {
         ControlFlow::Break(7)
     );
     assert_eq!(times, [Time::ZERO]);
+}
+
+#[test]
+fn real_and_string_excursions_do_not_change_retained_state() {
+    let nan = Value::Real(f64::from_bits(0x7ff8_0000_0000_0001));
+    let string = Value::String("held\0é".into());
+    for (encoding, entering, excursion) in [
+        (
+            Encoding::Real,
+            nan,
+            Value::Real(f64::from_bits(0x7ff8_0000_0000_0002)),
+        ),
+        (Encoding::String, string, Value::String("other".into())),
+    ] {
+        let mut wave = Waveform::memory(
+            vec![encoding],
+            vec![
+                (0, 0, entering.clone()),
+                (0, 4, excursion),
+                (0, 4, entering.clone()),
+            ],
+            None,
+        );
+        let signal = wave.hierarchy().signals().next().unwrap();
+        let Sample::Value {
+            value, changed_at, ..
+        } = wave.sample(signal, Time::from_ticks(4)).unwrap()
+        else {
+            panic!("expected state")
+        };
+        assert!(value.same_value(&entering));
+        assert_eq!(changed_at, None);
+        let trace = wave
+            .trace(signal, TimeRange::point(Time::from_ticks(4)))
+            .unwrap();
+        assert!(trace.changes().is_empty());
+        assert!(
+            trace
+                .initial()
+                .unwrap()
+                .value()
+                .same_value(entering.as_ref())
+        );
+    }
+}
+
+#[test]
+fn incomplete_first_tick_is_not_published_on_error() {
+    let mut wave = Waveform::memory(
+        vec![Encoding::Bits { width: 1 }],
+        vec![(0, 0, bits("0")), (0, 0, bits("1"))],
+        Some(1),
+    );
+    let signal = wave.hierarchy().signals().next().unwrap();
+    assert!(
+        wave.scan(&[signal], TimeRange::all(), |_| -> ControlFlow<()> {
+            panic!("unfinished tick must not be published")
+        })
+        .is_err()
+    );
+}
+
+#[test]
+fn final_tick_excursions_preserve_projected_change_times() {
+    for swap_signals in [false, true] {
+        let mut records = vec![
+            (0, 2, bits("00")),
+            (1, 2, bits("x")), // First establishment, not missing.
+            (0, 3, bits("01")),
+            (0, 5, bits("11")),
+            (1, 5, bits("0")),
+            (0, 5, bits("01")), // Whole-value excursion disappears.
+            (1, 5, bits("x")),
+            (0, 7, bits("11")),
+            (0, 7, bits("00")), // High-bit excursion, low bit changes.
+        ];
+        if swap_signals {
+            records.sort_by_key(|(signal, tick, _)| (*tick, 1 - signal));
+        }
+        let mut wave = Waveform::memory(
+            vec![Encoding::Bits { width: 2 }, Encoding::Bits { width: 1 }],
+            records,
+            None,
+        );
+        let signals = wave.hierarchy().signals().collect::<Vec<_>>();
+        let high = signals[0].slice(1, 1).unwrap();
+        let selected = [signals[0], high, high, signals[1]];
+        let mut selection = wave.select(&selected).unwrap();
+        assert!(
+            selection
+                .samples(Time::from_ticks(1))
+                .unwrap()
+                .iter()
+                .all(|sample| matches!(sample, Sample::Missing { .. }))
+        );
+        for (tick, values, times) in [
+            (5, ["01", "0", "0", "x"], [Some(3), None, None, None]),
+            (7, ["00", "0", "0", "x"], [Some(7), None, None, None]),
+            (u64::MAX, ["00", "0", "0", "x"], [Some(7), None, None, None]),
+        ] {
+            for ((sample, expected), changed) in selection
+                .samples(Time::from_ticks(tick))
+                .unwrap()
+                .iter()
+                .zip(values)
+                .zip(times)
+            {
+                let SampleRef::Value {
+                    value, changed_at, ..
+                } = sample.as_ref()
+                else {
+                    panic!("expected state")
+                };
+                assert_eq!(text(value), expected);
+                assert_eq!(changed_at, changed.map(Time::from_ticks));
+            }
+        }
+        let traces = selection.traces(TimeRange::all()).unwrap();
+        for (trace, expected) in traces.iter().zip([
+            vec![(2, "00"), (3, "01"), (7, "00")],
+            vec![(2, "0")],
+            vec![(2, "0")],
+            vec![(2, "x")],
+        ]) {
+            assert_eq!(
+                trace
+                    .changes()
+                    .iter()
+                    .map(|c| (c.time().ticks(), text(c.value())))
+                    .collect::<Vec<_>>(),
+                expected
+                    .iter()
+                    .map(|(t, v)| (*t, (*v).to_owned()))
+                    .collect::<Vec<_>>()
+            );
+        }
+        for range in [
+            TimeRange::point(Time::from_ticks(5)),
+            TimeRange::point(Time::from_ticks(6)),
+        ] {
+            let traces = selection.traces(range).unwrap();
+            assert!(traces.iter().all(|trace| trace.changes().is_empty()));
+            assert_eq!(
+                traces[0].initial().unwrap().changed_at(),
+                Some(Time::from_ticks(3))
+            );
+        }
+    }
 }
 
 #[test]

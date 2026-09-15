@@ -3,8 +3,8 @@
 /// This is not a backend-local time index. [`Timescale`] describes the duration
 /// of a tick when known; the API exposes no global timestamp table. Delta cycles
 /// are not modeled separately. A point sample uses the final state after all
-/// changes to that signal at the tick. Traces and scans preserve distinct
-/// same-signal changes within a tick; order across different signals is unspecified.
+/// changes to that signal at the tick. Traces and scans expose the same final
+/// tick states, not intermediate writes. Order across different signals is unspecified.
 /// Recorded metadata bounds do not restrict query times.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Time(u64);

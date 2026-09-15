@@ -54,8 +54,11 @@ Reader-local time indices and timestamp tables stay private. The model has no
 separate delta-cycle coordinate.
 
 Persistent values establish state; events have multiplicity but no persistent
-state. Point and range queries answer different questions about changes within
-one tick. Entering state is separate from changes in the range: never invent a
+state. Point and range queries use final recorded states at each source tick.
+A persistent slot has at most one net change per tick; an excursion returning to
+its entering representation does not advance its change time. First establishment
+is observable even when the recorded value is HDL unknown. Entering state is
+separate from changes in the range: never invent a
 `start - 1` timestamp. Missing state, empty history and query failure are distinct.
 
 A bit projection reports changes to its observed value, not activity in discarded

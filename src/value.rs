@@ -9,9 +9,9 @@ use std::fmt;
 /// valid for that borrow; not every view is callback-only.
 ///
 /// Bit-vector signedness is a declaration interpretation, not a separate value
-/// variant. Persistent histories describe observed value changes: redundant writes
-/// identical to the previous known state may be omitted, but distinct intermediate
-/// values in one tick remain observable in traces and scans. Each event occurrence
+/// variant. Persistent histories expose final recorded states at source ticks,
+/// with at most one net change per selection entry and tick. Intermediate
+/// same-tick excursions are not exposed. Each event occurrence
 /// remains observable even when multiple occurrences share a tick.
 ///
 /// Persistent-value identity compares all logic states distinctly, strings by

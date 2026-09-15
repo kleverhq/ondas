@@ -114,8 +114,8 @@ fn replay_after_break_eof_and_batched_projections() {
     let slice = signal.slice(1, 0).unwrap();
     let range = TimeRange::closed(Time::ZERO, Time::from_ticks(20));
     let traces = wave.traces(&[signal, slice, signal], range).unwrap();
-    assert_eq!(traces[0].changes().len(), 4);
-    assert_eq!(bits(traces[1].changes()[2].value()), "10");
+    assert_eq!(traces[0].changes().len(), 2);
+    assert_eq!(bits(traces[1].changes()[1].value()), "01");
     assert_eq!(
         wave.scan(&[signal], range, |_| ControlFlow::Break(7))
             .unwrap(),
@@ -126,7 +126,7 @@ fn replay_after_break_eof_and_batched_projections() {
         "0000"
     );
     drop(wave);
-    assert_eq!(bits(traces[0].changes()[3].value()), "1001");
+    assert_eq!(bits(traces[0].changes()[1].value()), "1001");
 }
 
 #[test]
