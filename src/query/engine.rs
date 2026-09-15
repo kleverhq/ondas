@@ -7,7 +7,7 @@ struct State {
 }
 
 #[derive(Default)]
-struct Slot {
+pub(super) struct Slot {
     state: Option<State>,
     pending: Option<Value>,
     events: u64,
@@ -26,6 +26,93 @@ fn update(state: &mut Option<State>, value: ValueRef<'_>, time: Time) -> bool {
         changed_at,
     });
     true
+}
+
+fn validate_indices(len: usize, indices: &[usize]) -> Result<()> {
+    if let Some(&index) = indices.iter().find(|&&index| index >= len) {
+        return Err(Error::InvalidSelectionIndex { index, len });
+    }
+    Ok(())
+}
+
+impl QueryContext<'_> {
+    /// Returns the current completed candidate tick.
+    pub fn time(&self) -> Time {
+        self.time
+    }
+
+    /// Visits requested samples in subset order, including repeated indices.
+    ///
+    /// Indices refer to the original selection, not the driver subset. The
+    /// entire subset and sampling time are validated before any callback.
+    /// Empty subsets produce no callbacks. Invalid indices return
+    /// [`Error::InvalidSelectionIndex`]; times other than the current tick or its
+    /// checked predecessor return [`Error::InvalidQueryTime`].
+    ///
+    /// Persistent values and change times follow [`Selection::samples`]; events
+    /// are exact-tick counts, including zero. A visitor borrows each sample only
+    /// during its callback. Its `Break` stops this subset visit and is returned
+    /// unchanged; the caller decides whether to stop the outer query. Errors
+    /// propagate unchanged, without rolling back earlier successful callbacks.
+    pub fn visit_samples<B>(
+        &self,
+        time: Time,
+        indices: &[usize],
+        mut visitor: impl for<'v> FnMut(usize, SampleRef<'v>) -> Result<ControlFlow<B>>,
+    ) -> Result<ControlFlow<B>> {
+        let current = time == self.time;
+        if !current && self.time.ticks().checked_sub(1).map(Time::from_ticks) != Some(time) {
+            return Err(Error::InvalidQueryTime {
+                requested: time,
+                current: self.time,
+            });
+        }
+        validate_indices(self.signals.len(), indices)?;
+        for &index in indices {
+            let signal = self.signals[index];
+            let slot = &self.slots[index];
+            let sample = if signal.encoding() == Encoding::Event {
+                let occurrences = if current {
+                    slot.events
+                } else if self.previous_tick == Some(time) {
+                    self.previous_events[index]
+                } else {
+                    0
+                };
+                SampleRef::Event {
+                    signal,
+                    occurrences,
+                }
+            } else {
+                let state = slot.state.as_ref();
+                let value = if current {
+                    slot.pending.as_ref().or(state.map(|state| &state.value))
+                } else {
+                    state.map(|state| &state.value)
+                };
+                if let Some(value) = value {
+                    let changed_at = state.and_then(|state| {
+                        if current && !state.value.as_ref().same_value(value.as_ref()) {
+                            Some(self.time)
+                        } else {
+                            state.changed_at
+                        }
+                    });
+                    SampleRef::Value {
+                        signal,
+                        value: value.as_ref(),
+                        changed_at,
+                    }
+                } else {
+                    SampleRef::Missing { signal }
+                }
+            };
+            if let ControlFlow::Break(value) = visitor(index, sample)? {
+                return Ok(ControlFlow::Break(value));
+            }
+        }
+        Ok(ControlFlow::Continue(()))
+    }
 }
 
 fn project(value: ValueRef<'_>, signal: Signal) -> ValueRef<'_> {
@@ -146,6 +233,86 @@ impl<'w> Selection<'w> {
             signals: signals.to_vec(),
             bases,
             groups,
+        })
+    }
+
+    /// Advances candidate times and permits selective reads through one owner.
+    ///
+    /// `drivers` contains input selection indices, independently of all readable
+    /// entries. Candidate ticks are increasing and unique in the inclusive
+    /// range. Conservative extras are permitted, including identical writes or
+    /// changes hidden by a projection; callers must confirm their conditions.
+    /// Empty drivers or an empty range produce no callbacks. Driver indices are
+    /// validated before reading; invalid indices return [`Error::InvalidSelectionIndex`].
+    ///
+    /// Each context exposes only its completed tick and the checked predecessor,
+    /// including a predecessor before the range start. No unfinished tick is
+    /// published. Only requested samples are delivered to read visitors; a
+    /// sequential fallback may decode records for all selected histories and
+    /// traverse the prefix once to establish entering state. It never replays
+    /// per operand or collects all candidates. Additional query state is bounded
+    /// by selection and value sizes, excluding input, reader/index and SDK residency.
+    ///
+    /// Callback `Break` stops delivery immediately and is returned unchanged.
+    /// Callback/read errors propagate without rolling back earlier observations.
+    /// The reader may decode one next-tick record to complete a tick before
+    /// invoking the callback. Fresh queries are valid after completion, stop or
+    /// error, under the reader's documented malformed-input limitations.
+    ///
+    /// ```no_run
+    /// # use ondas::{Result, Selection, TimeRange};
+    /// # use std::ops::ControlFlow;
+    /// # fn example(selection: &mut Selection<'_>) -> Result<()> {
+    /// let _ = selection.query(TimeRange::all(), &[0], |context| {
+    ///     context.visit_samples(context.time(), &[0], |index, sample| {
+    ///         println!("slot {index}: {sample:?}");
+    ///         Ok(ControlFlow::<()>::Continue(()))
+    ///     })
+    /// })?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn query<B>(
+        &mut self,
+        range: TimeRange,
+        drivers: &[usize],
+        mut visitor: impl FnMut(&QueryContext<'_>) -> Result<ControlFlow<B>>,
+    ) -> Result<ControlFlow<B>> {
+        validate_indices(self.signals.len(), drivers)?;
+        let end = range
+            .end()
+            .or_else(|| self.waveform.metadata().time_span().map(|span| span.last()))
+            .unwrap_or(Time::from_ticks(u64::MAX));
+        if drivers.is_empty() || range.is_empty() || range.start() > end {
+            return Ok(ControlFlow::Continue(()));
+        }
+        let mut slots = (0..self.signals.len())
+            .map(|_| Slot::default())
+            .collect::<Vec<_>>();
+        let mut previous_events = vec![0; self.signals.len()];
+        let mut previous_tick = None;
+        self.read_ticks(end, &mut slots, |time, signals, slots| {
+            if time >= range.start()
+                && drivers
+                    .iter()
+                    .any(|&index| slots[index].pending.is_some() || slots[index].events > 0)
+            {
+                let context = QueryContext {
+                    time,
+                    signals,
+                    slots,
+                    previous_tick,
+                    previous_events: &previous_events,
+                };
+                if let ControlFlow::Break(value) = visitor(&context)? {
+                    return Ok(ControlFlow::Break(value));
+                }
+            }
+            for (previous, slot) in previous_events.iter_mut().zip(slots) {
+                *previous = slot.events;
+            }
+            previous_tick = Some(time);
+            Ok(ControlFlow::Continue(()))
         })
     }
 

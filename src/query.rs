@@ -27,6 +27,60 @@ pub struct Selection<'w> {
     groups: HashMap<usize, Vec<usize>>,
 }
 
+/// Selective reads at one completed candidate tick of [`Selection::query`].
+///
+/// Only the current tick and its checked predecessor are readable; the latter
+/// may precede the query range. At tick zero no predecessor exists. Reads may be
+/// repeated in any order and return final, never provisional, states. Ordinary
+/// conditions and event/edge interpretation remain caller code.
+///
+/// The context is not an eager caller snapshot or an arbitrary-history handle.
+/// A sequential reader may decode records while advancing, but only requested
+/// samples are delivered. Borrowed samples are valid only for their visitor;
+/// copy a [`ValueRef`] to retain its contents.
+///
+/// A context cannot escape its candidate callback:
+///
+/// ```compile_fail,E0521
+/// use ondas::{Result, Selection, TimeRange};
+/// use std::ops::ControlFlow;
+/// fn escape(selection: &mut Selection<'_>) -> Result<()> {
+///     let mut saved = None;
+///     selection.query(TimeRange::all(), &[0], |context| {
+///         saved = Some(context);
+///         Ok(ControlFlow::<()>::Continue(()))
+///     })?;
+///     println!("{:?}", saved.unwrap().time());
+///     Ok(())
+/// }
+/// ```
+///
+/// A sample cannot escape even into its surrounding candidate callback:
+///
+/// ```compile_fail,E0521
+/// use ondas::{Result, Selection, TimeRange};
+/// use std::ops::ControlFlow;
+/// fn escape(selection: &mut Selection<'_>) -> Result<()> {
+///     selection.query(TimeRange::all(), &[0], |context| {
+///         let mut saved = None;
+///         context.visit_samples(context.time(), &[0], |_, sample| {
+///             saved = Some(sample);
+///             Ok(ControlFlow::<()>::Continue(()))
+///         })?;
+///         println!("{:?}", saved.unwrap());
+///         Ok(ControlFlow::<()>::Continue(()))
+///     })?;
+///     Ok(())
+/// }
+/// ```
+pub struct QueryContext<'a> {
+    time: Time,
+    signals: &'a [Signal],
+    slots: &'a [engine::Slot],
+    previous_tick: Option<Time>,
+    previous_events: &'a [u64],
+}
+
 impl Selection<'_> {
     /// Returns the selected signals in input order, including duplicates.
     pub fn signals(&self) -> &[Signal] {

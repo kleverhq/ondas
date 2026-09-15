@@ -1476,6 +1476,58 @@ fn private_fsdb_pool() {
     run_pool(&provider, "fsdb", required);
 }
 
+// A bounded execution smoke test, not an independent expected-value oracle.
+fn callback_query_reader_smoke(fixture: &Fixture, bytes: bool) {
+    let mut wave = open(fixture, bytes).unwrap();
+    let signal = wave
+        .hierarchy()
+        .signals()
+        .find(|signal| matches!(signal.encoding(), Encoding::Bits { .. }))
+        .unwrap();
+    let mut selection = wave.select(&[signal, signal]).unwrap();
+    let mut rows = Vec::new();
+    let mut candidates = 0;
+    let _ = selection
+        .query(TimeRange::all(), &[0], |ctx| {
+            for time in std::iter::once(ctx.time())
+                .chain(ctx.time().ticks().checked_sub(1).map(Time::from_ticks))
+            {
+                let _ = ctx.visit_samples(time, &[1, 0], |index, sample| {
+                    rows.push((time, index, format!("{sample:?}")));
+                    Ok(ControlFlow::<()>::Continue(()))
+                })?;
+            }
+            candidates += 1;
+            Ok(if candidates == 3 {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            })
+        })
+        .unwrap();
+    assert!(candidates > 0);
+    for (time, index, actual) in rows {
+        let expected = selection.samples(time).unwrap();
+        assert_eq!(actual, format!("{:?}", expected[index].as_ref()));
+    }
+}
+
+#[test]
+#[ignore = "requires ONDAS_FIXTURES; run just conformance"]
+fn callback_query_fst_reader() {
+    let fixture = load_fixture(&provider(), "fst0041-counter");
+    for bytes in [false, true] {
+        callback_query_reader_smoke(&fixture, bytes);
+    }
+}
+
+#[cfg(feature = "fsdb-lib")]
+#[test]
+#[ignore = "requires Verdi and ONDAS_FIXTURES; run just conformance-fsdb"]
+fn callback_query_fsdb_reader() {
+    callback_query_reader_smoke(&load_fixture(&provider(), "fsdb0005-compare-xz"), false);
+}
+
 #[cfg(feature = "fsdb-lib")]
 #[test]
 #[ignore = "requires Verdi and ONDAS_FIXTURES; run just conformance-fsdb"]

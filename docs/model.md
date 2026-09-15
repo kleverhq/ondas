@@ -72,7 +72,11 @@ identity or semantics.
 
 A waveform owns source access and query state. A selection holds ordered signal
 handles and reusable reader preparation. One-shot and prepared queries have the
-same meaning; only their cost differs.
+same meaning; only their cost differs. A composed query separates drivers that
+advance candidate time from entries the caller can read. One context owns access
+to the completed candidate tick and its predecessor; conditions and output policy
+remain caller code. Non-driver updates between candidates still contribute to
+sampled state. Exact-tick event counts do not persist across gaps.
 
 Owned observations can outlive queries. Callback views borrow reader buffers;
 copying a view produces owned data, and a borrow cannot outlive its owner or

@@ -118,11 +118,17 @@ inside it. [`Selection::scan_candidate_times`] provides a strictly increasing
 superset of change times, without initial states or event multiplicity. See those
 methods for ordering, projection, and early-stop contracts.
 
+[`Selection::query`] composes candidate advancement and selective reads through
+one [`QueryContext`]. Driver indices are separate from readable entries; the
+context supports its completed tick and the preceding tick, not arbitrary history.
+Conditions and output policy remain ordinary caller code, without a candidate list
+or reborrowing the waveform from a callback.
+
 [`PathError`], [`PathFormatError`], [`LookupError`], and [`SliceError`] distinguish
 path and metadata resolution from opening and query [`Error`]s. File and backend
 failures reported by the reader become errors, not empty-result sentinels. Scans
-may already have called a visitor before a later error; owned queries return no
-partial result. Reader-specific limitations are described below.
+and callback queries may already have called a visitor before a later error;
+owned samples and traces return no partial collection. Reader-specific limitations are described below.
 
 ## Reader support and limits
 
@@ -247,7 +253,7 @@ pub use hierarchy::{
     LogicDomain, Packing, Scope, Signal, Signedness, Variable,
 };
 /// Owned and borrowed waveform query results.
-pub use query::{Change, Initial, Sample, SampleRef, ScanRef, Selection, Trace};
+pub use query::{Change, Initial, QueryContext, Sample, SampleRef, ScanRef, Selection, Trace};
 /// Time values, ranges, spans, units, and scales.
 pub use time::{Time, TimeRange, TimeSpan, TimeUnit, Timescale};
 /// Owned and borrowed waveform signal values.

@@ -706,6 +706,213 @@ fn real_and_string_excursions_do_not_change_retained_state() {
 }
 
 #[test]
+fn query_reads_nondrivers_between_distant_candidates() {
+    let mut wave = Waveform::memory(
+        vec![
+            Encoding::Bits { width: 1 },
+            Encoding::Bits { width: 2 },
+            Encoding::Event,
+            Encoding::Real,
+        ],
+        vec![
+            (0, 0, bits("0")),
+            (1, 0, bits("00")),
+            (0, 100, bits("1")),
+            (1, 150, bits("10")),
+            (2, 150, Value::Event { occurrences: 3 }),
+            (1, 199, bits("11")),
+            (2, 199, Value::Event { occurrences: 2 }),
+            (0, 200, bits("0")),
+            (1, 200, bits("10")),
+        ],
+        None,
+    );
+    let base = wave.hierarchy().signals().collect::<Vec<_>>();
+    let selected = [
+        base[0],
+        base[1],
+        base[1].slice(1, 1).unwrap(),
+        base[1].slice(0, 0).unwrap(),
+        base[2],
+        base[2],
+        base[3],
+    ];
+    let mut selection = wave.select(&selected).unwrap();
+    let mut candidates = Vec::new();
+    let _ = selection.query(TimeRange::closed(Time::from_ticks(100), Time::from_ticks(200)), &[0], |ctx| {
+        candidates.push(ctx.time().ticks());
+        if ctx.time().ticks() == 200 {
+            for tick in [199, 200, 199] {
+                let _ = ctx.visit_samples(Time::from_ticks(tick), &[1, 2, 3, 4, 5, 6], |index, sample| {
+                    if index <= 3 {
+                        let SampleRef::Value { value, changed_at, .. } = sample else { panic!("expected persistent value") };
+                        let (expected, changed) = match index {
+                            1 => (if tick == 199 { "11" } else { "10" }, tick),
+                            2 => ("1", 150),
+                            3 => (if tick == 199 { "1" } else { "0" }, tick),
+                            _ => unreachable!(),
+                        };
+                        assert_eq!(text(value), expected);
+                        assert_eq!(changed_at, Some(Time::from_ticks(changed)));
+                    } else if index <= 5 {
+                        assert!(matches!(sample, SampleRef::Event { occurrences, .. } if occurrences == if tick == 199 { 2 } else { 0 }));
+                    } else { assert!(matches!(sample, SampleRef::Missing { .. })); }
+                    Ok(ControlFlow::<()>::Continue(()))
+                })?;
+            }
+        }
+        Ok(ControlFlow::<()>::Continue(()))
+    }).unwrap();
+    assert_eq!(candidates, [100, 200]);
+    let mut events = Vec::new();
+    let _ = selection
+        .query(TimeRange::from(Time::from_ticks(101)), &[4, 5], |ctx| {
+            let t = ctx.time();
+            let _ = ctx.visit_samples(
+                Time::from_ticks(t.ticks().checked_sub(1).unwrap()),
+                &[4],
+                |_, sample| {
+                    assert!(matches!(sample, SampleRef::Event { occurrences: 0, .. }));
+                    Ok(ControlFlow::<()>::Continue(()))
+                },
+            )?;
+            ctx.visit_samples(t, &[4], |_, sample| {
+                let SampleRef::Event { occurrences, .. } = sample else {
+                    panic!("expected event")
+                };
+                events.push((t.ticks(), occurrences));
+                Ok(ControlFlow::<()>::Continue(()))
+            })
+        })
+        .unwrap();
+    assert_eq!(events, [(150, 3), (199, 2)]);
+}
+
+#[test]
+fn query_samples_match_normalized_points_for_all_value_classes() {
+    let nan = Value::Real(f64::from_bits(0x7ff8_0000_0000_0001));
+    let mut wave = Waveform::memory(
+        vec![
+            Encoding::Real,
+            Encoding::String,
+            Encoding::Bits { width: 1 },
+            Encoding::Event,
+        ],
+        vec![
+            (0, 0, nan.clone()),
+            (1, 0, Value::String("A".into())),
+            (2, 0, bits("x")),
+            (3, 0, Value::Event { occurrences: 2 }),
+            (0, 3, Value::Real(f64::from_bits(0x7ff8_0000_0000_0002))),
+            (1, 3, Value::String("B".into())),
+            (2, 3, bits("1")),
+            (0, 3, nan),
+            (1, 3, Value::String("A".into())),
+            (2, 3, bits("x")),
+            (3, 3, Value::Event { occurrences: 1 }),
+            (0, 5, Value::Real(-0.0)),
+            (1, 5, Value::String("é\0😀".into())),
+            (2, 5, bits("1")),
+            (0, 6, Value::Real(0.0)),
+        ],
+        None,
+    );
+    let signals = wave.hierarchy().signals().collect::<Vec<_>>();
+    let mut selection = wave.select(&signals).unwrap();
+    let expected = [0, 2, 3, 4, 5, 6]
+        .into_iter()
+        .map(|tick| {
+            (
+                Time::from_ticks(tick),
+                selection.samples(Time::from_ticks(tick)).unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut candidates = Vec::new();
+    let _ = selection
+        .query(TimeRange::all(), &[0, 1, 2, 3], |ctx| {
+            candidates.push(ctx.time().ticks());
+            for time in std::iter::once(ctx.time())
+                .chain(ctx.time().ticks().checked_sub(1).map(Time::from_ticks))
+            {
+                let reference = &expected.iter().find(|(tick, _)| *tick == time).unwrap().1;
+                let _ = ctx.visit_samples(time, &[0, 1, 2, 3], |index, sample| {
+                    match (sample, reference[index].as_ref()) {
+                        (
+                            SampleRef::Value {
+                                signal,
+                                value,
+                                changed_at,
+                            },
+                            SampleRef::Value {
+                                signal: expected_signal,
+                                value: expected_value,
+                                changed_at: expected_time,
+                            },
+                        ) => {
+                            assert_eq!(signal, expected_signal);
+                            assert!(value.same_value(expected_value));
+                            assert_eq!(changed_at, expected_time);
+                        }
+                        (
+                            SampleRef::Event { occurrences, .. },
+                            SampleRef::Event {
+                                occurrences: expected,
+                                ..
+                            },
+                        ) => assert_eq!(occurrences, expected),
+                        _ => panic!("sample class mismatch"),
+                    }
+                    Ok(ControlFlow::<()>::Continue(()))
+                })?;
+            }
+            Ok(ControlFlow::<()>::Continue(()))
+        })
+        .unwrap();
+    assert_eq!(candidates, [0, 3, 5, 6]);
+}
+
+#[test]
+fn query_never_publishes_incomplete_ticks_and_empty_drivers_do_not_read() {
+    for fail_after in [0, 1, 2] {
+        let mut wave = Waveform::memory(
+            vec![Encoding::Real],
+            vec![
+                (0, 0, Value::Real(0.0)),
+                (0, 1, Value::Real(1.0)),
+                (0, 1, Value::Real(2.0)),
+            ],
+            Some(fail_after),
+        );
+        let signal = wave.hierarchy().signals().next().unwrap();
+        let mut selection = wave.select(&[signal]).unwrap();
+        let mut ticks = Vec::new();
+        let result = selection.query(TimeRange::all(), &[0], |ctx| {
+            ticks.push(ctx.time().ticks());
+            Ok(ControlFlow::<()>::Continue(()))
+        });
+        assert!(result.is_err());
+        assert_eq!(ticks, if fail_after == 2 { vec![0] } else { vec![] });
+        assert_eq!(
+            selection
+                .query(TimeRange::all(), &[], |_| -> Result<ControlFlow<()>> {
+                    panic!("empty drivers")
+                })
+                .unwrap(),
+            ControlFlow::Continue(())
+        );
+        if fail_after == 2 {
+            assert_eq!(
+                selection
+                    .query(TimeRange::all(), &[0], |_| Ok(ControlFlow::Break(7)))
+                    .unwrap(),
+                ControlFlow::Break(7)
+            );
+        }
+    }
+}
+
+#[test]
 fn indexed_and_plain_scans_share_empty_break_and_error_behavior() {
     for indexed in [false, true] {
         for empty in [false, true] {
