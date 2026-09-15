@@ -63,6 +63,69 @@ fn samples_hold_final_tick_state_and_count_every_event() {
 }
 
 #[test]
+fn real_histories_retain_exact_representations() {
+    let first_nan = 0x7ff8_0000_0000_0001;
+    let second_nan = 0x7ff8_0000_0000_0002;
+    let observations = [
+        (1, first_nan, None),
+        (2, first_nan, None),
+        (3, second_nan, Some(3)),
+        (4, second_nan, Some(3)),
+        (5, 0.0f64.to_bits(), Some(5)),
+        (6, (-0.0f64).to_bits(), Some(6)),
+    ];
+    let mut wave = Waveform::memory(
+        vec![Encoding::Real],
+        observations
+            .iter()
+            .map(|&(tick, bits, _)| (0, tick, Value::Real(f64::from_bits(bits))))
+            .collect(),
+        None,
+    );
+    let signal = wave.hierarchy().signals().next().unwrap();
+    for (tick, expected, changed) in observations {
+        let Sample::Value {
+            value: Value::Real(real),
+            changed_at,
+            ..
+        } = wave.sample(signal, Time::from_ticks(tick)).unwrap()
+        else {
+            panic!("expected real sample")
+        };
+        assert_eq!(real.to_bits(), expected);
+        assert_eq!(changed_at, changed.map(Time::from_ticks));
+    }
+    let mut selection = wave.select(&[signal]).unwrap();
+    let traces = selection.traces(TimeRange::all()).unwrap();
+    let changes = traces[0]
+        .changes()
+        .iter()
+        .map(|change| {
+            let ValueRef::Real(real) = change.value() else {
+                panic!("expected real change")
+            };
+            (change.time().ticks(), real.to_bits())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        changes,
+        [
+            (1, first_nan),
+            (3, second_nan),
+            (5, 0.0f64.to_bits()),
+            (6, (-0.0f64).to_bits())
+        ]
+    );
+    let traces = selection
+        .traces(TimeRange::point(Time::from_ticks(4)))
+        .unwrap();
+    let initial = traces[0].initial().unwrap();
+    assert!(matches!(initial.value(), ValueRef::Real(real) if real.to_bits() == second_nan));
+    assert_eq!(initial.changed_at(), Some(Time::from_ticks(3)));
+    assert!(traces[0].changes().is_empty());
+}
+
+#[test]
 fn slices_have_independent_changes_and_entering_states() {
     let mut wave = waveform();
     let base = wave.hierarchy().signals().next().unwrap();
