@@ -42,6 +42,15 @@ payload. Source failures are injected during advancement; selective read failure
 use the reference path's fallible visitor. Both preserve completed observations,
 release read resources and permit fresh queries.
 
+`tests/query_composition.rs` checks a caller's ordinary Rust conditions through
+public APIs over small VCD inputs. It confirms candidates before reading current
+control and a caller-selected event/payload tick. Literal expected rows distinguish
+prior-tick state from range baseline/current state, including sparse events and
+non-driver updates. Permutations, conservative extra candidates and long rejected
+prefixes must not change output policy; staged payload is committed only after all
+fallible reads succeed. This is a local composition regression, not an application
+integration or expression evaluator.
+
 ## Reader conformance
 
 The common runner applies a backend-neutral oracle through the public API:
