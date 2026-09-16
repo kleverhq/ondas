@@ -31,8 +31,8 @@ body offset saved during opening. It parses every intervening record through
 A sample likewise needs all records at its requested tick to obtain the final
 state or event count.
 
-The query engine applies projections, removes redundant persistent writes and
-keeps entering state separate from changes. Scans emit callbacks without retaining
+The query engine applies projections and final-tick normalization, including
+per-tick event aggregates, and keeps entering state separate from changes. Scans emit callbacks without retaining
 an entire trace; owned trace requests collect their output. `Break` stops a scan,
 but it does not create a checkpoint for the next query. Queries do not reuse a
 previous replay position.
@@ -49,7 +49,7 @@ Shared observation logic is in [`src/query/engine.rs`](../src/query/engine.rs).
 | Batch selected signals | One traversal serves the batch. Reusable selections retain validated handles and grouping, not values from previous queries. |
 | No history cache or time index | Repeated queries repeat parsing. The identifier lookup map resolves signals; it cannot seek to a tick. |
 | Buffered file input | The reader does not load the entire file into memory. Bytes input, by contrast, retains the caller's shared source allocation. |
-| Streaming observations | Working storage includes declarations, identifier maps, parser buffers and the previous value per selection entry, not the complete history. Wide values still need space. Owned traces also retain their requested output. |
+| Streaming observations | Working storage includes declarations, identifier maps, parser buffers and bounded entering/pending values and event counts per selection entry, not the complete history. Wide values still need space. Owned traces also retain their requested output. |
 
 The reader uses no checkpoint database, mmap or parallel parser. These choices
 favor avoiding retained histories over fast repeated seeks; they are not a

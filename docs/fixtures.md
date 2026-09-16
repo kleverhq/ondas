@@ -210,6 +210,29 @@ logs, source paths and oracle-generation provenance outside runtime sidecars.
 Artifact provenance belongs in the envelope's `provenance`; format comes only
 from `artifact.format`. Performance expectations are outside this contract.
 
+### Current runner coverage
+
+The schema defines the provider format, not a claim that the current conformance
+runner executes every valid assertion form. `tests/conformance.rs` implements the
+forms used by the locked FST/VCD/FSDB pools. It is not a general JSON Schema
+validator or a complete oracle-language executor.
+
+Nonempty successful pool oracles currently need explicit `metadata`, `hierarchy`
+and nonempty `signals` sections, with each signal ID referenced by a variable.
+Supported scope assertions are `path`, `kind` and `definition_name`; supported
+variable assertions are `path`, `kind`, `direction`, `range`, `type_name`,
+`is_constant` and `signal`. Those fields are checked during execution. Supported
+signal encodings are bits, real, string and event, with successful samples/windows.
+Opening-error oracles currently cover `malformed` only.
+
+The format's additional sparse forms, packing/spelling/enumeration assertions,
+unsupported encodings, `unknown-format` opening assertions and sample/window
+errors are not executable by this runner. Unsupported forms are rejected rather
+than silently treated as passing observations. The format below remains unchanged;
+full schema-form execution needs separate coverage before such assertions are
+added to a locked pool. Local API tests cover contracts beyond this pool profile;
+see [coverage](api-coverage.md). Passing the pool is not complete schema coverage.
+
 ### Common types and references
 
 | Type | Contract |

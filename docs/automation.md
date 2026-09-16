@@ -194,6 +194,14 @@ download data. The public installer remains public-only. See [fsdb-lib](fsdb-lib
 the source-build deployment contract and [fixtures](fixtures.md) for absence
 versus corruption handling.
 
+Compatibility covers released public signatures and documented observations,
+including value identity and query semantics, not just whether consumers compile.
+Breaking changes require a minor version increase before 1.0, or a major increase
+afterward, with migration notes and contract tests. Patch releases preserve those
+contracts and the supported Rust floor. Unreleased development checkpoints are
+not separate compatibility baselines. Contract review does not itself bump a
+version, tag, publish or authorize a release.
+
 A release consists of a crates.io package, `vX.Y.Z` tag and GitHub Release, without
 a binary matrix, release assets or Pages site. Preparation updates the package
 version, affected lockfile entries and changelog. Checks must not publish: run

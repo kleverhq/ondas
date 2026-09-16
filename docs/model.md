@@ -78,7 +78,7 @@ to the completed candidate tick and its predecessor; conditions and output polic
 remain caller code. Non-driver updates between candidates still contribute to
 sampled state. Exact-tick event counts do not persist across gaps.
 
-Owned observations can outlive queries. Callback views borrow reader buffers;
+Owned observations can outlive queries. Callback views borrow query data;
 copying a view produces owned data, and a borrow cannot outlive its owner or
 callback. Packed bits are an implementation choice, not a public string-storage
 contract.
@@ -86,6 +86,20 @@ contract.
 Candidate timestamps form a conservative activity index, not a decoded history.
 Public query contracts define their ordering and allowances, along with event
 multiplicity, range bounds and callback termination.
+
+## Compatibility boundary
+
+Reader optimizations may change traversal, indexing or internal storage, not the
+public rules for representation identity, final tick state, event multiplicity,
+selection positions, supported observation times, lifetimes or error/stop
+propagation. Candidate supersets may differ within the documented contract;
+consumers still confirm their conditions. Optional metadata and change-time
+precision may improve only when supported by actual evidence. Additional query
+state remains distinct from input, decoder/index, SDK and caller-output residency.
+
+Conditions, numerical interpretation and output policy remain caller code. There
+is no public backend plugin interface, raw/final mode, expression runtime or
+implicit promise of arbitrary-time sampling inside a callback context.
 
 ## Adapter responsibilities
 

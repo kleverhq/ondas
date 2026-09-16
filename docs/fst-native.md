@@ -50,8 +50,8 @@ A value chain holds one signal's encoded changes within a section; the decoder
 loads that chain before delivering its individual changes.
 
 The adapter converts callbacks to Ondas values. The shared query engine applies
-projections, keeps state before `start` separate from in-window changes, removes
-redundant persistent writes and counts events. Samples consume all observations
+projections, keeps state before `start` separate from in-window changes, and emits
+final persistent tick changes and per-tick event aggregates. Samples consume all observations
 at their requested tick. Scans can stop traversal with `Break`; owned traces
 collect their output. A subsequent query starts a new traversal, not a continuation
 from the previous query's position.
@@ -70,7 +70,7 @@ logic is in [`src/query/engine.rs`](../src/query/engine.rs).
 | Batch selected signals | One traversal serves the batch. Aliases and projections share base reads; output order, duplicates and separate slice histories remain intact. |
 | No cross-query history cache | Reusing a selection retains validated handles and grouping, not decoded values. Repeated queries repeat section reads and decompression. |
 | Buffered files and shared bytes | Ordinary file input stays buffered; bytes input retains the shared source allocation. A whole-file gzip wrapper instead creates an in-memory decompressed source. |
-| Streaming observations | The query engine keeps previous values per selection entry, not complete histories. Owned traces additionally retain their requested output. |
+| Streaming observations | The query engine keeps bounded entering/pending values and event counts per selection entry, not complete histories. Owned traces additionally retain their requested output. |
 
 The adapter adds no time index, checkpoint database, mmap or parallel decoder.
 The decoder's section directory and temporary tables are distinct from a retained
@@ -91,6 +91,8 @@ artifact, workload and explicit reader under the
   normalized positions used for projections.
 - Known declaration kinds map to canonical names. Direction, constant flags,
   VHDL type names, enumeration tables and scope packing are retained when supplied.
+  Explicit declaration type tags can supply interpretation metadata; ambiguous or
+  absent tags remain unknown rather than being inferred from observed values.
 - Source-path/stem attributes and standalone SV enum attributes are not exposed.
 
 ### Values
@@ -117,10 +119,10 @@ artifact, workload and explicit reader under the
 
 ### First-tick events and recording gaps
 
-Frame snapshots and changes share a callback shape. Ondas preserves event
-callbacks, including initialization at the first recorded tick. Exact event counts
-there are a reader limitation: neither payload guessing nor dropping all first-tick
-records resolves it.
+Frame snapshots and changes share a callback shape. Ondas counts observed event
+callbacks, including initialization at the first recorded tick, in per-tick
+aggregates. These counts may include initialization rather than only HDL triggers;
+neither payload guessing nor dropping all first-tick records resolves that ambiguity.
 
 Blackout metadata does not invent off-values or reconstruct unrecorded activity.
 The query engine observes decoded records, not hidden physical transitions.
