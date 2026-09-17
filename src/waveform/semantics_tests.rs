@@ -472,11 +472,11 @@ fn facade_operations_match_explicit_histories_under_permutations() {
             let _ = selection
                 .query(TimeRange::all(), &[0], |ctx| {
                     candidates.push(ctx.time().ticks());
+                    let Some(before) = ctx.time().ticks().checked_sub(1) else {
+                        return Ok(ControlFlow::<()>::Continue(()));
+                    };
                     let mut values = Vec::new();
-                    for tick in [
-                        ctx.time().ticks().checked_sub(1).unwrap(),
-                        ctx.time().ticks(),
-                    ] {
+                    for tick in [before, ctx.time().ticks()] {
                         let _ = ctx.visit_samples(Time::from_ticks(tick), &[0], |_, sample| {
                             values.push(match sample {
                                 SampleRef::Missing { .. } => None,
@@ -493,7 +493,13 @@ fn facade_operations_match_explicit_histories_under_permutations() {
                 })
                 .unwrap();
             assert_eq!(confirmed, [7, 9, 14]);
-            assert_eq!(candidates.contains(&12), extra);
+            assert!(candidates.windows(2).all(|pair| pair[0] < pair[1]));
+            assert!(candidates.iter().all(|&tick| tick <= 14)); // all() ends at EOF.
+            assert!(
+                histories[0]
+                    .iter()
+                    .all(|(tick, _)| candidates.binary_search(tick).is_ok())
+            ); // Optional candidates may be retained or pruned.
         }
     }
 }

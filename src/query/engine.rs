@@ -245,6 +245,13 @@ impl<'w> Selection<'w> {
     /// Empty drivers or an empty range produce no callbacks. Driver indices are
     /// validated before reading; invalid indices return [`Error::InvalidSelectionIndex`].
     ///
+    /// On successful completion without an early stop, every timestamp at which
+    /// a full normalized scan of the driver entries in the same range would emit
+    /// a [`ScanRef::Change`] is visited, including event aggregates. Initial states
+    /// do not contribute timestamps, and driver duplicates do not multiply them.
+    /// The exact superset need not match [`Self::scan_candidate_times`] or remain
+    /// identical across reader implementations.
+    ///
     /// Each context exposes only its completed tick and the checked predecessor,
     /// including a predecessor before the range start. No unfinished tick is
     /// published. Only requested samples are delivered to read visitors; a

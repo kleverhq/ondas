@@ -33,7 +33,10 @@ slot values after each raw record, read starts, requested bases and resource
 leases. Fixed-width runs and an early-stop advance budget check bounded state and
 lazy delivery without timing or RSS assertions. Repeated adjacent-tick reads must
 not advance or restart the reader. These counters exclude caller-owned results
-and reader/SDK residency; they are not a public metrics API.
+and reader/SDK residency; they are not a public metrics API. They observe the
+current slot structures, not arbitrary future allocations. New query-owned queues
+or caches need their own accounting or directed tests; unchanged slot high-water
+marks alone do not prove that a new implementation remains bounded.
 
 Caller payload visits and copies are counted separately from sequential fallback
 decoding and state copies. An unselected failing channel need not be validated by
