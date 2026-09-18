@@ -14,7 +14,7 @@ handles, native callbacks and format-local indices stay private.
 
 | Format | Backend | Input | Availability |
 |---|---|---|---|
-| FST | `fst-native` | Files and shared in-memory bytes | Included; uses `fst-reader` 0.17.0 |
+| FST | `fst-lib` | Files and shared in-memory bytes | Included; uses `fst-reader` 0.17.0 |
 | VCD | `vcd-native` | Files and shared in-memory bytes | Included; reads VCD directly without conversion |
 | FSDB | `fsdb-lib` | Files only | Optional Cargo feature; requires a local FSDB Reader SDK |
 
@@ -146,7 +146,7 @@ Source files must remain unchanged while open.
 <details>
 <summary>Reader behavior, declaration metadata and query costs</summary>
 
-`fst-native` is a direct, unmodified adapter to `fst-reader` 0.17.0. It reads bits,
+`fst-lib` is a direct, unmodified adapter to `fst-reader` 0.17.0. It reads bits,
 reals, strings and event callbacks, preserving aliases and explicit source ranges.
 
 - String bytes map reversibly to Unicode U+0000 to U+00FF (Latin-1), including NULs

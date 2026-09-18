@@ -8,7 +8,7 @@ mod fixtures;
 #[path = "fst/hotpaths.rs"]
 mod hotpaths;
 
-const BACKEND: &str = "fst-native";
+const BACKEND: &str = "fst-lib";
 const SCR1_SIGNALS: [&str; 4] = [
     "TOP.clk",
     "TOP.scr1_top_tb_ahb.i_top.timer_val",

@@ -1,6 +1,6 @@
-# FST Native backend
+# FST Library backend
 
-`fst-native` is Ondas's FST backend. It reads binary FST through
+`fst-lib` is Ondas's FST backend. It reads binary FST through
 [fst-reader](https://github.com/ekiwi/fst-reader), which handles format decoding
 and decompression. The Ondas adapter maps declarations, reader handles and value
 callbacks into the common model. It accepts files and shared owned bytes.
@@ -16,7 +16,7 @@ The decoder uses Rust compression libraries and requires buffered, seekable inpu
 
 ## How it works
 
-![FST opening retains section locations, signal geometry and mapped declarations. Each query filters selected handles from tick zero, decodes relevant sections and sends values through the shared query engine.](images/fst-native-flow.drawio.svg)
+![FST opening retains section locations, signal geometry and mapped declarations. Each query filters selected handles from tick zero, decodes relevant sections and sends values through the shared query engine.](images/fst-lib-flow.drawio.svg)
 
 ### Opening
 

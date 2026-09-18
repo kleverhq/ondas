@@ -14,7 +14,7 @@ use crate::{
 
 /// Opens a waveform file with an automatically selected available backend.
 ///
-/// FST uses `fst-native`; VCD uses `vcd-native`. FSDB uses `fsdb-lib` when the
+/// FST uses `fst-lib`; VCD uses `vcd-native`. FSDB uses `fsdb-lib` when the
 /// optional feature of the same name is enabled. Content recognition takes
 /// precedence over the filename; a recognized extension is a fallback hint. A recognized format without a
 /// reader returns [`Error::NoBackend`]; unrecognized input returns
@@ -28,7 +28,7 @@ pub fn open(path: impl AsRef<Path>) -> Result<Waveform> {
 
 /// Opens a waveform file with only the named backend, without fallback.
 ///
-/// Available names are `fst-native`, `vcd-native`, and feature-enabled `fsdb-lib`.
+/// Available names are `fst-lib`, `vcd-native`, and feature-enabled `fsdb-lib`.
 /// A disabled optional backend is an unknown name. Unknown names return
 /// [`Error::UnknownBackend`]; a format unsupported by the selected backend returns
 /// [`Error::BackendDoesNotSupport`]. See [`open`] for detection and reader limits.
@@ -40,7 +40,7 @@ pub fn open_with(path: impl AsRef<Path>, backend: &str) -> Result<Waveform> {
 ///
 /// `name` is the logical [`Metadata::source_name`] and a format-detection hint.
 /// The input stays alive through the shared ownership of `bytes`. Detection,
-/// errors, and reader limitations are the same as [`open`]. Both native readers
+/// errors, and reader limitations are the same as [`open`]. Both FST and VCD readers
 /// support file and byte input. `fsdb-lib` is file-only: FSDB selected by the
 /// filename hint returns [`Error::UnsupportedInput`] when that feature is enabled.
 /// The SDK's content probe is only available for file paths.
@@ -68,7 +68,7 @@ pub fn open_bytes_with(
 
 fn check_backend(backend: Option<&str>) -> Result<()> {
     if let Some(backend) = backend
-        && !matches!(backend, "fst-native" | "vcd-native")
+        && !matches!(backend, "fst-lib" | "vcd-native")
         && !(cfg!(feature = "fsdb-lib") && backend == "fsdb-lib")
     {
         return Err(Error::UnknownBackend {
@@ -158,7 +158,7 @@ fn open_input(
         }
     };
     let (reader, hierarchy, metadata) = match (format, backend) {
-        (Format::Fst, None | Some("fst-native")) => {
+        (Format::Fst, None | Some("fst-lib")) => {
             let (reader, hierarchy, metadata) = fst::Reader::open(input, name)?;
             (Reader::Fst(Box::new(reader)), hierarchy, metadata)
         }
@@ -278,11 +278,11 @@ impl Waveform {
 
     /// Returns the selected implementation's stable lower-kebab-case name.
     ///
-    /// `fst-native` identifies the direct Rust FST reader, independently of the
+    /// `fst-lib` identifies the `fst-reader` adapter, independently of the
     /// source format. Use this name for diagnostics or explicit opening.
     pub fn backend(&self) -> &str {
         match self.reader {
-            Reader::Fst(_) => "fst-native",
+            Reader::Fst(_) => "fst-lib",
             Reader::Vcd(_) => "vcd-native",
             #[cfg(feature = "fsdb-lib")]
             Reader::Fsdb(_) => "fsdb-lib",
@@ -504,7 +504,7 @@ mod tests {
                 );
             }
             assert!(
-                matches!(open_bytes_with(name, bytes(content), "fst-native"), Err(Error::BackendDoesNotSupport { backend, format: actual }) if backend == "fst-native" && actual == format),
+                matches!(open_bytes_with(name, bytes(content), "fst-lib"), Err(Error::BackendDoesNotSupport { backend, format: actual }) if backend == "fst-lib" && actual == format),
                 "{name}"
             );
         }
@@ -512,7 +512,7 @@ mod tests {
         assert!(
             matches!(open_with("", "unknown-reader"), Err(Error::UnknownBackend { backend }) if backend == "unknown-reader")
         );
-        assert!(matches!(open_with("", "fst-native"), Err(Error::Io(_))));
+        assert!(matches!(open_with("", "fst-lib"), Err(Error::Io(_))));
     }
 
     #[test]
@@ -569,16 +569,22 @@ mod tests {
             })
         ));
         assert!(matches!(
-            open_bytes_with("dump.vcd", bytes(b"$scope module tb $end"), "fst-native"),
+            open_bytes_with("dump.vcd", bytes(b"$scope module tb $end"), "fst-lib"),
             Err(Error::BackendDoesNotSupport {
                 format: Format::Vcd,
                 ..
             })
         ));
-        assert!(matches!(
-            open_bytes_with("dump.fst", bytes(b""), "not-a-reader"),
-            Err(Error::UnknownBackend { .. })
-        ));
+        for backend in ["not-a-reader", "fst-native"] {
+            assert!(matches!(
+                open_bytes_with("dump.fst", bytes(b""), backend),
+                Err(Error::UnknownBackend { backend: actual }) if actual == backend
+            ));
+            assert!(matches!(
+                open_with("", backend),
+                Err(Error::UnknownBackend { backend: actual }) if actual == backend
+            ));
+        }
         assert!(matches!(
             open_bytes("empty.fst", bytes(b"")),
             Err(Error::Malformed {

@@ -104,13 +104,13 @@ fixtures, paths, bounds and measurement settings belong in `benches/vcd.rs`.
 
 ## FST workload design
 
-`benches/fst.rs` measures the public API with the explicit `fst-native` reader,
+`benches/fst.rs` measures the public API with the explicit `fst-lib` reader,
 not the decoder dependency in isolation. Real recordings cover a compact design
 with every unique history selected, a medium recording with focused queries, and
 a larger recording with a small selection. They distinguish total artifact size
 from selected activity without requiring a cross-format comparison.
 
-The [FST backend model](fst-native.md) explains why section seeking does not
+The [FST backend model](fst-lib.md) explains why section seeking does not
 imply direct lookup at the requested start tick. Equal-width early and late
 windows expose replay from zero; individual and batched samples expose shared
 traversal; sample series measure repeated queries without a history cache.
