@@ -1,4 +1,4 @@
-use crate::{Format, HierarchyPath, Signal};
+use crate::{Format, HierarchyPath, Signal, Time};
 
 /// An error encountered while parsing a hierarchy path.
 ///
@@ -113,7 +113,7 @@ pub enum LookupError {
 /// # Failure contract
 ///
 /// Failures reported by a backend return this type. Upstream reader panics are
-/// not intercepted; see the [reader limits](crate#reader-support-and-limits).
+/// not intercepted; see the [reader limits](crate#reader-details).
 /// Empty results are not error sentinels: no known persistent state is [`Sample::Missing`](crate::Sample::Missing),
 /// no event is an occurrence count of zero, and no changes is an empty trace
 /// change list. Invalid handles and unsupported values remain errors.
@@ -187,6 +187,26 @@ pub enum Error {
         backend: String,
         /// A description of the malformed data.
         message: String,
+    },
+
+    /// A driver or readable subset index is outside its selection.
+    #[error("selection index {index} is outside 0..{len}")]
+    InvalidSelectionIndex {
+        /// The rejected input position.
+        index: usize,
+        /// The number of entries in the selection.
+        len: usize,
+    },
+
+    /// A query-context read is outside the current/preceding tick window.
+    #[error(
+        "cannot read {requested:?} in a query at {current:?}; only the current tick and its checked predecessor are available"
+    )]
+    InvalidQueryTime {
+        /// The requested sample time.
+        requested: Time,
+        /// The current candidate time.
+        current: Time,
     },
 
     /// The signal belongs to a different hierarchy or waveform.

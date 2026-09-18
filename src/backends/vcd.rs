@@ -240,6 +240,8 @@ impl Reader {
                             direction: Direction::Implicit,
                             range,
                             type_name: None,
+                            signedness: None,
+                            logic_domain: None,
                             enumeration: None,
                             signal: Some(index),
                         });
@@ -386,14 +388,14 @@ impl Reader {
                         bits.extend_from_slice(&payload[payload.len().saturating_sub(width)..]);
                         ValueRef::Bits(BitsRef::from_ascii(&bits).expect("validated bits"))
                     } else {
-                        ValueRef::Event
+                        ValueRef::Event { occurrences: 1 }
                     }
                 }
                 _ => return Err(self.tokens.error("value conflicts with storage encoding")),
             };
             // Checkpoints describe event snapshots, not observable triggers.
             if selected
-                && !(block && matches!(value, ValueRef::Event))
+                && !(block && matches!(value, ValueRef::Event { .. }))
                 && let ControlFlow::Break(value) = visitor(index, Time::from_ticks(time), value)
             {
                 return Ok((ControlFlow::Break(value), span));

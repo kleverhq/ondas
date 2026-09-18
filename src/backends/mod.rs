@@ -2,6 +2,8 @@
 #[allow(unsafe_code)] // The private, audited C ABI boundary only.
 pub(crate) mod fsdb;
 pub(crate) mod fst;
+#[cfg(test)]
+pub(crate) mod generated;
 pub(crate) mod vcd;
 
 use std::{
@@ -19,6 +21,8 @@ pub(crate) enum Reader {
     Vcd(Box<vcd::Reader>),
     #[cfg(feature = "fsdb-lib")]
     Fsdb(Box<fsdb::Reader>),
+    #[cfg(test)]
+    Generated(generated::Reader),
     #[cfg(test)]
     Memory {
         records: Vec<(usize, Time, crate::Value)>,
@@ -41,6 +45,8 @@ impl Reader {
             Self::Vcd(reader) => reader.read(signals, end, visitor),
             #[cfg(feature = "fsdb-lib")]
             Self::Fsdb(reader) => reader.read(signals, end, visitor),
+            #[cfg(test)]
+            Self::Generated(reader) => reader.read(signals, end, visitor),
             #[cfg(test)]
             Self::Memory {
                 records,

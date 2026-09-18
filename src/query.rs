@@ -9,9 +9,9 @@ mod tests;
 
 /// A reusable, ordered selection of waveform signals.
 ///
-/// Created by [`Waveform::select`], this holds a mutable borrow of the waveform
-/// and hides prepared backend resources. It changes query reuse, not semantics:
-/// one-shot waveform methods are equivalent to using a temporary selection.
+/// Created by [`Waveform::select`], this mutably borrows the waveform, validates
+/// the selected handles and groups their underlying histories for reuse.
+/// One-shot waveform methods have the same semantics as temporary selections.
 ///
 /// Input order and duplicates are preserved. Each occurrence of a handle gets
 /// its corresponding sample, trace, or scan observations, even for equal aliases
@@ -19,12 +19,69 @@ mod tests;
 /// Candidate timestamps are the exception: they form a unique time union.
 ///
 /// Clone [`Self::hierarchy`] before retaining hierarchy views across mutable
-/// selection queries. See the crate-level examples for ownership and borrowing.
+/// selection queries. See the [`Waveform`] example for ownership and borrowing.
 pub struct Selection<'w> {
     waveform: &'w mut Waveform,
     signals: Vec<Signal>,
     bases: Vec<Signal>,
     groups: HashMap<usize, Vec<usize>>,
+}
+
+/// Selective reads at one completed candidate tick of [`Selection::query`].
+///
+/// Only the current absolute tick and the tick immediately before it (`t - 1`)
+/// are readable, not the previous candidate time. The preceding tick may lie
+/// before the query range; at tick zero it does not exist. Reads may be repeated
+/// in any order and return final, never provisional, states. Conditions and
+/// event/edge interpretation remain caller code.
+///
+/// Samples are delivered only when requested; the context does not provide a
+/// prebuilt snapshot or access to arbitrary history. A sequential reader may
+/// still decode records while advancing. Borrowed samples are valid only for
+/// their visitor; use [`ValueRef::to_owned`] to retain their contents.
+///
+/// # Borrowing rules
+///
+/// A context cannot escape its candidate callback:
+///
+/// ```compile_fail,E0521
+/// use ondas::{Result, Selection, TimeRange};
+/// use std::ops::ControlFlow;
+/// fn escape(selection: &mut Selection<'_>) -> Result<()> {
+///     let mut saved = None;
+///     selection.query(TimeRange::all(), &[0], |context| {
+///         saved = Some(context);
+///         Ok(ControlFlow::<()>::Continue(()))
+///     })?;
+///     println!("{:?}", saved.unwrap().time());
+///     Ok(())
+/// }
+/// ```
+///
+/// A sample cannot escape even into its surrounding candidate callback:
+///
+/// ```compile_fail,E0521
+/// use ondas::{Result, Selection, TimeRange};
+/// use std::ops::ControlFlow;
+/// fn escape(selection: &mut Selection<'_>) -> Result<()> {
+///     selection.query(TimeRange::all(), &[0], |context| {
+///         let mut saved = None;
+///         context.visit_samples(context.time(), &[0], |_, sample| {
+///             saved = Some(sample);
+///             Ok(ControlFlow::<()>::Continue(()))
+///         })?;
+///         println!("{:?}", saved.unwrap());
+///         Ok(ControlFlow::<()>::Continue(()))
+///     })?;
+///     Ok(())
+/// }
+/// ```
+pub struct QueryContext<'a> {
+    time: Time,
+    signals: &'a [Signal],
+    slots: &'a [engine::Slot],
+    previous_tick: Option<Time>,
+    previous_events: &'a [u64],
 }
 
 impl Selection<'_> {
@@ -122,6 +179,9 @@ impl Selection<'_> {
 
     /// Visits entering states, then time-ordered changes, in inclusive `range`.
     ///
+    /// For input-position indices that distinguish repeated entries, use
+    /// [`Self::scan_each`]. This convenience form uses the same execution path.
+    ///
     /// # Entering state
     ///
     /// For each selection entry with a known persistent state strictly before
@@ -134,15 +194,19 @@ impl Selection<'_> {
     ///
     /// Changes and event occurrences inside the closed range follow in
     /// nondecreasing time. Different signals have no defined order within one
-    /// tick. Multiple changes to the same signal within one tick preserve their
-    /// order and distinct intermediate values; only redundant writes identical
-    /// to the preceding known persistent state may be omitted. Without an
-    /// initial state, the first record establishing a previously unknown state
-    /// is retained. Point sampling instead uses that tick's final state.
+    /// tick. Each persistent selection entry emits at most one net change per
+    /// tick: its final recorded value, compared with the state entering that tick
+    /// using [`ValueRef`] representation identity. A same-tick excursion returning
+    /// to that state disappears and does not advance `changed_at`. Without a known
+    /// state entering the tick, the final value establishes one, including HDL unknown.
+    /// Samples, scans and traces use these same final tick states.
     ///
-    /// Each [`ValueRef::Event`] change is one occurrence, subject to the FST
-    /// [first-tick initialization limitation](crate#reader-support-and-limits).
-    /// Occurrences never coalesce or deduplicate, even with identical time and value. Slices emit
+    /// Each [`ValueRef::Event`] change aggregates a positive `occurrences` count
+    /// for one entry and tick, subject to the FST
+    /// [first-tick initialization limitation](crate#fst).
+    /// Counts preserve reader observations, not ordering within the tick or
+    /// events omitted by the producer. Overflow returns an error, never wraps.
+    /// Repeated selection entries each receive the same count. Slices emit
     /// only changes of their projected values, not unrelated base-bit activity.
     /// Duplicate selection entries retain their observations. An empty range
     /// invokes no visitor, including for initials.
@@ -156,7 +220,10 @@ impl Selection<'_> {
     ///
     /// This operation has partial-observation semantics: a late backend failure
     /// returns [`Error`](crate::Error) after earlier visitor calls may have run.
-    /// It does not roll those observations back. Owned [`Self::samples`] and
+    /// It does not roll those observations back. Only completed ticks are
+    /// published; a failure discards the unfinished pending tick. A sequential
+    /// reader may need one record of the next tick to complete the preceding
+    /// tick before calling the visitor. Owned [`Self::samples`] and
     /// [`Self::traces`] instead return no partial result on error.
     pub fn scan<B>(
         &mut self,
@@ -171,7 +238,8 @@ impl Selection<'_> {
     /// Every timestamp that could be emitted as [`ScanRef::Change`] by a full
     /// [`Self::scan`] of this selection and range must occur. Additional candidate
     /// times are allowed; for a slice these may include changes to other bits of
-    /// its base signal. This permits activity indexes without decoding values.
+    /// its base signal. A backend may use an activity index for these candidates,
+    /// but callers must not assume that the operation avoids decoding values.
     ///
     /// Initial states do not contribute timestamps. The union identifies neither
     /// the changing signal nor event multiplicity: repeated handles and multiple
@@ -205,14 +273,15 @@ impl Selection<'_> {
 /// sampled tick. `changed_at`, when known, is the tick that established the
 /// observed state and is no later than the sampled time. For a slice, it is the
 /// last projected-value change, not activity in other base bits; an unreliable
-/// timestamp is `None`.
+/// timestamp is `None`. Same-tick excursions returning to the entering value
+/// do not advance this timestamp.
 ///
 /// [`Self::Missing`] means no persistent value is known at or before that time,
 /// not a read error or an HDL unknown logic value. Events have no persistent
 /// state and never use `Missing`: [`Self::Event`] counts occurrences at exactly
 /// the requested tick, including zero. The FST reader can expose initialization
 /// callbacks at the first recorded tick; see the
-/// [reader limits](crate#reader-support-and-limits) before interpreting that count.
+/// [reader limits](crate#reader-details) before interpreting that count.
 ///
 /// Query times are not restricted by [`Metadata::time_span`](crate::Metadata::time_span).
 /// After EOF, the last known persistent value is held; event counts are zero.
@@ -335,13 +404,13 @@ pub enum ScanRef<'a> {
         /// For a slice this describes the projected value, not unrelated base activity.
         changed_at: Option<Time>,
     },
-    /// A value change or event occurrence within the range.
+    /// A value change or per-tick event aggregate within the range.
     Change {
         /// The signal that changed or produced the event.
         signal: Signal,
         /// The change or occurrence time.
         time: Time,
-        /// The new value, or [`ValueRef::Event`] for one occurrence.
+        /// The new persistent value, or a positive [`ValueRef::Event`] count.
         value: ValueRef<'a>,
     },
 }
@@ -355,11 +424,11 @@ pub struct Initial {
     changed_at: Option<Time>,
 }
 
-/// An owned value change or event occurrence within a trace range.
+/// An owned value change or per-tick event aggregate within a trace range.
 ///
-/// Each event record represents one occurrence, even if its time and value match
-/// another record. Distinct intermediate persistent values within a tick remain
-/// separate changes in their original same-signal order.
+/// Each event record carries a positive count for one tick. Persistent changes
+/// contain only a tick's final recorded state when it differs from the state
+/// entering that tick, or first establishes a state.
 pub struct Change {
     time: Time,
     value: Value,
@@ -403,7 +472,7 @@ impl Change {
         self.time
     }
 
-    /// Returns the new value, or [`ValueRef::Event`] for an occurrence.
+    /// Returns the new persistent value, or a positive [`ValueRef::Event`] count.
     pub fn value(&self) -> ValueRef<'_> {
         self.value.as_ref()
     }
@@ -429,9 +498,10 @@ impl Trace {
 
     /// Returns the changes and event occurrences within the closed range.
     ///
-    /// Times are nondecreasing. Same-signal changes within a tick retain their
-    /// order and distinct intermediate values. Redundant identical persistent
-    /// writes may be omitted; event occurrences are never coalesced.
+    /// Times are nondecreasing. Each persistent signal has at most one net
+    /// change per tick, representing its final recorded state. Redundant persistent
+    /// writes are omitted; event occurrences are aggregated into one positive
+    /// count per tick, without carrying state between ticks.
     pub fn changes(&self) -> &[Change] {
         &self.changes
     }

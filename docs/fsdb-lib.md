@@ -84,13 +84,14 @@ Traversal starts at the beginning, not at `start`. Earlier selected records
 establish entering values for late windows. The cursor checks each timestamp
 against the inclusive `end` **before decoding the value**, so an excluded record
 does not fail a prefix query. Equal-tick cross-signal order is not a public
-guarantee; the adapter does not sort records or collapse repeated writes.
+guarantee. The raw SDK traversal does not sort or collapse records; the shared
+query engine applies the public tick normalization described below.
 
 The shim reads storage metadata before `ffrGetVC` and normalizes logic bytes.
 Rust immediately copies transient value bytes while holding the SDK lock. After
 unlocking, it decodes reals and strings and passes borrowed values to the shared
-query engine. That engine applies projections, tracks entering state, removes
-redundant persistent writes and counts events. Samples consume all observations
+query engine. That engine applies projections, tracks entering state, and emits
+final persistent tick changes and per-tick event aggregates. Samples consume all observations
 at their requested tick; scans can stop with `Break`; owned traces collect output.
 
 A traversal guard frees the cursor, unloads selected values and resets the SDK
@@ -113,7 +114,7 @@ in [`native/fsdb.cpp`](../native/fsdb.cpp), and linking in
 | Copy transient records | Native logic scratch, a reusable Rust byte buffer and string storage hold current values; borrowed SDK pointers never reach visitors. |
 | No cross-query history cache | Repeated queries repeat SDK selection, loading and traversal. Reusing a selection retains validation/grouping, not decoded values. |
 | Serialized SDK calls | Independent waveform readers do not execute SDK operations concurrently through this adapter. Rust visitors run outside the lock. |
-| Streaming observations | Shared query state retains previous values per selection entry. Owned traces additionally retain their output. |
+| Streaming observations | Shared query state retains bounded entering/pending values and event counts per selection entry. Owned traces additionally retain their output. |
 
 Ondas adds no time index, checkpoint database, mmap or parallel decoder. SDK
 loading is distinct from an adapter history cache; memory is not bounded by the

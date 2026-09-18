@@ -8,6 +8,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Optional declaration signedness and logic-domain metadata, independent of
+  shared signal histories; unavailable interpretation remains absent.
+- Indexed borrowed scans with selection-position identity for aliases,
+  duplicates and projections.
+- Bounded callback queries with separate driver/readable subsets and fallible
+  current/preceding-tick reads through one query owner.
+- Independent legacy-oracle derivation, streaming/composition regressions and
+  runnable public usage examples.
+
 - Optional `fsdb-lib` feature/backend using a local Verdi FSDB Reader SDK on
   Linux x86_64 GNU. FSDB input is file-only; executables require the SDK at its
   build-time path. Vendor handles and synchronization remain private.
@@ -28,12 +37,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Persistent observations use final tick states across samples, scans and traces.
+  Net-equal excursions no longer appear as changes or advance `changed_at`;
+  unfinished ticks are not published on read failure.
+- Borrowed and owned event values carry `occurrences: u64`; scans and traces emit
+  one aggregate per selected entry/tick instead of repeated unit markers. Update
+  matches on `ValueRef::Event` and `Value::Event` to account for the count.
+- Real representation identity compares exact bits, including NaN payload/sign
+  and signed zero. Numerical equality policies remain caller-owned.
+- Version-1 fixture sidecars keep their original meaning; conformance derives
+  normalized expectations without inventing NaN identity or change timestamps.
+
 - Public quality gates and docs.rs use nonvendor features; explicit FSDB recipes
   validate SDK-dependent configurations without weakening public checks.
 - FST content detection includes the header length to avoid mistaking FSDB for FST.
 - Minimum supported Rust version is 1.88.0 to support `fst-reader` 0.17.0.
 - Hierarchy lookup avoids constructing paths for unrelated declaration names.
-- Fixture provider pin is 4.1.3; FST and VCD share oracle checks.
+- Fixture provider pin is 4.6.0; FST and VCD share oracle checks.
 
 ### Fixed
 

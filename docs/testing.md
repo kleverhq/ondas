@@ -23,6 +23,36 @@ reals, strings, events, aliases, delayed first values, wide values, whole signal
 and projections. Narrow counting or failing readers can check batching, resource
 reuse/release, borrowed lifetimes, early termination and partial failure. A
 configurable mock framework or simulated proprietary format is unnecessary.
+`src/waveform/semantics_tests.rs` keeps raw observations separate from explicitly
+authored final-state histories, applying the same reference to ordinary facade
+operations and cross-signal permutations. Its expected projections use string
+positions, not production slicing or normalization.
+
+The generated reader retains no history. Logical counters observe actual pending
+slot values after each raw record, read starts, requested bases and resource
+leases. Fixed-width runs and an early-stop advance budget check bounded state and
+lazy delivery without timing or RSS assertions. Repeated adjacent-tick reads must
+not advance or restart the reader. These counters exclude caller-owned results
+and reader/SDK residency; they are not a public metrics API. They observe the
+current slot structures, not arbitrary future allocations. New query-owned queues
+or caches need their own accounting or directed tests; unchanged slot high-water
+marks alone do not prove that a new implementation remains bounded.
+
+Caller payload visits and copies are counted separately from sequential fallback
+decoding and state copies. An unselected failing channel need not be validated by
+the narrow reader; this does not promise deferred decoding for selected fallback
+payload. Source failures are injected during advancement; selective read failures
+use the reference path's fallible visitor. Both preserve completed observations,
+release read resources and permit fresh queries.
+
+`tests/query_composition.rs` checks a caller's ordinary Rust conditions through
+public APIs over small VCD inputs. It confirms candidates before reading current
+control and a caller-selected event/payload tick. Literal expected rows distinguish
+prior-tick state from range baseline/current state, including sparse events and
+non-driver updates. Permutations, conservative extra candidates and long rejected
+prefixes must not change output policy; staged payload is committed only after all
+fallible reads succeed. This is a local composition regression, not an application
+integration or expression evaluator.
 
 ## Reader conformance
 
@@ -42,7 +72,14 @@ Test automatic selection separately, and compare file/bytes modes where supporte
 Derive samples, traces, scans, entering states and projections from oracle windows
 instead of repeating histories in assertions. Check metadata, traversal, paths,
 identity, encodings, batches and selections. Candidate times may include extras,
-but must contain every required change time.
+but must contain every required change time. The test-only normalized-oracle
+module derives final tick states and event counts independently of production
+code while preserving [version-1 evidence limits](fixtures.md#normalized-expectations).
+Do not assert raw change times as normalized times, infer NaN payload identity,
+or overwrite installed sidecars to make a comparison pass. Indexed scan checks
+retain input-slot identity even when aliases or projections share histories.
+Composed-query checks use a driver subset and compare all readable entries at
+current/preceding ticks covered by the oracle, in each advertised input mode.
 
 Ordinary tests cover selection order, duplicate inputs, early termination, invalid
 handles/slices, path errors and late callback failures. Sidecars are observations,

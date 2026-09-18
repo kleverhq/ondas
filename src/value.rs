@@ -9,10 +9,16 @@ use std::fmt;
 /// valid for that borrow; not every view is callback-only.
 ///
 /// Bit-vector signedness is a declaration interpretation, not a separate value
-/// variant. Persistent histories describe observed value changes: redundant writes
-/// identical to the previous known state may be omitted, but distinct intermediate
-/// values in one tick remain observable in traces and scans. Each event occurrence
-/// remains observable even when multiple occurrences share a tick.
+/// variant. Persistent histories expose final recorded states at source ticks,
+/// with at most one net change per selection entry and tick. Intermediate
+/// same-tick excursions are not exposed. Events carry observed per-tick counts,
+/// not persistent state or an ordering of individual occurrences.
+///
+/// Queries detect persistent net changes by comparing all logic states distinctly,
+/// strings by exact contents, and reals by their binary64 bit patterns. Signed zeros and
+/// different NaN patterns therefore differ. This preserves the representation
+/// supplied by the reader, not source precision or NaN payloads already lost
+/// during decoding. Numerical equality remains caller policy.
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub enum ValueRef<'a> {
@@ -31,8 +37,15 @@ pub enum ValueRef<'a> {
         /// The string payload.
         &'a str,
     ),
-    /// A single event occurrence.
-    Event,
+    /// An aggregate of event observations at one tick.
+    ///
+    /// Scan and trace records have positive counts. Counts reflect reader
+    /// observations, including [reader limitations](crate#reader-details),
+    /// not events omitted by the producer.
+    Event {
+        /// The number of observed occurrences at this tick.
+        occurrences: u64,
+    },
 }
 
 /// An owned waveform value suitable for long-term storage.
@@ -58,19 +71,22 @@ pub enum Value {
         /// The string payload.
         Box<str>,
     ),
-    /// A single event occurrence.
-    Event,
+    /// An aggregate of event observations at one tick; see [`ValueRef::Event`].
+    Event {
+        /// The number of observed occurrences at this tick.
+        occurrences: u64,
+    },
 }
 
 impl ValueRef<'_> {
     pub(crate) fn same_value(self, other: ValueRef<'_>) -> bool {
         match (self, other) {
             (Self::Bits(left), ValueRef::Bits(right)) => left.iter_msb().eq(right.iter_msb()),
-            (Self::Real(left), ValueRef::Real(right)) => {
-                left.to_bits() == right.to_bits() || (left.is_nan() && right.is_nan())
-            }
+            (Self::Real(left), ValueRef::Real(right)) => left.to_bits() == right.to_bits(),
             (Self::String(left), ValueRef::String(right)) => left == right,
-            (Self::Event, ValueRef::Event) => true,
+            (Self::Event { occurrences: left }, ValueRef::Event { occurrences: right }) => {
+                left == right
+            }
             _ => false,
         }
     }
@@ -81,7 +97,7 @@ impl ValueRef<'_> {
             Self::Bits(bits) => Value::Bits(bits.to_owned()),
             Self::Real(real) => Value::Real(real),
             Self::String(string) => Value::String(string.into()),
-            Self::Event => Value::Event,
+            Self::Event { occurrences } => Value::Event { occurrences },
         }
     }
 }
@@ -98,7 +114,9 @@ impl Value {
             Self::Bits(bits) => ValueRef::Bits(bits.as_ref()),
             Self::Real(real) => ValueRef::Real(*real),
             Self::String(string) => ValueRef::String(string),
-            Self::Event => ValueRef::Event,
+            Self::Event { occurrences } => ValueRef::Event {
+                occurrences: *occurrences,
+            },
         }
     }
 }
@@ -340,22 +358,53 @@ mod tests {
         let real = ValueRef::Real(3.5).to_owned();
         assert!(matches!(real.as_ref(), ValueRef::Real(3.5)));
         assert!(real.same_value(&real.as_ref().to_owned()));
-        assert!(ValueRef::Event.to_owned().same_value(&Value::Event));
-        assert!(matches!(Value::Event.as_ref(), ValueRef::Event));
+        let event = ValueRef::Event { occurrences: 7 }.to_owned();
+        assert!(matches!(event.as_ref(), ValueRef::Event { occurrences: 7 }));
+        assert!(event.same_value(&event.as_ref().to_owned()));
+        assert!(!event.same_value(&Value::Event { occurrences: 1 }));
         assert!(!real.same_value(&text));
-        assert!(!Value::Event.same_value(&real));
+        assert!(!event.same_value(&real));
     }
 
     #[test]
-    fn real_dedup_uses_nan_equivalence_and_signed_zero() {
-        let nan = Value::Real(f64::NAN);
-        assert!(nan.same_value(&Value::Real(f64::from_bits(0xfff8_0000_0000_0042))));
-        assert!(!nan.same_value(&Value::Real(f64::INFINITY)));
-        assert!(!Value::Real(0.0).same_value(&Value::Real(-0.0)));
-        assert!(!ValueRef::Real(0.0).same_value(ValueRef::Real(-0.0)));
-        assert!(ValueRef::Real(f64::NAN).same_value(nan.as_ref()));
-        assert!(Value::Real(-0.0).same_value(&Value::Real(-0.0)));
-        assert!(Value::Real(f64::INFINITY).same_value(&Value::Real(f64::INFINITY)));
-        assert!(!Value::Real(f64::INFINITY).same_value(&Value::Real(f64::NEG_INFINITY)));
+    fn real_identity_and_conversion_preserve_bits() {
+        let patterns = [
+            0x7ff8_0000_0000_0001, // Quiet NaN, first payload.
+            0x7ff8_0000_0000_0002, // Different payload.
+            0xfff8_0000_0000_0001, // Different sign.
+            0x7ff0_0000_0000_0001, // Signaling NaN.
+            0.0f64.to_bits(),
+            (-0.0f64).to_bits(),
+            f64::INFINITY.to_bits(),
+            f64::NEG_INFINITY.to_bits(),
+            3.5f64.to_bits(),
+        ];
+        for left in patterns {
+            let value = ValueRef::Real(f64::from_bits(left));
+            let owned = value.to_owned();
+            let ValueRef::Real(real) = owned.as_ref() else {
+                panic!("expected real")
+            };
+            assert_eq!(real.to_bits(), left);
+            for right in patterns {
+                let other = Value::Real(f64::from_bits(right));
+                assert_eq!(value.same_value(other.as_ref()), left == right);
+                assert_eq!(owned.same_value(&other), left == right);
+            }
+        }
+    }
+
+    #[test]
+    fn identity_distinguishes_every_logic_state() {
+        for left in b"01xzhuwl-" {
+            for right in b"01xzhuwl-" {
+                let left_value = BitsRef::from_ascii(std::slice::from_ref(left)).unwrap();
+                let right_value = BitsRef::from_ascii(std::slice::from_ref(right)).unwrap();
+                assert_eq!(
+                    ValueRef::Bits(left_value).same_value(ValueRef::Bits(right_value)),
+                    left == right
+                );
+            }
+        }
     }
 }

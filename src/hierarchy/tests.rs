@@ -36,6 +36,8 @@ fn fixture() -> Hierarchy {
         range: Some(BitRange::new(-16, 15)),
         is_constant: true,
         type_name: Some("state_t".into()),
+        signedness: None,
+        logic_domain: None,
         enumeration: Some(EnumerationData {
             name: Some("state_t".into()),
             variants: vec![("00".into(), "IDLE".into()), ("01".into(), "RUN".into())],
@@ -110,6 +112,75 @@ fn hierarchy_views_aliases_and_metadata() {
     assert_eq!(clone.validate(whole).unwrap(), 0);
     drop(hierarchy);
     assert_eq!(clone.variable("tb.dut.data").unwrap().name(), "data");
+}
+
+#[test]
+fn interpretation_belongs_to_declarations_not_shared_histories() {
+    let cases = [
+        (
+            "signed",
+            Some(0),
+            Some(Signedness::Signed),
+            Some(LogicDomain::NineState),
+        ),
+        (
+            "unsigned_alias",
+            Some(0),
+            Some(Signedness::Unsigned),
+            Some(LogicDomain::TwoState),
+        ),
+        (
+            "four_state_alias",
+            Some(0),
+            None,
+            Some(LogicDomain::FourState),
+        ),
+        ("unknown_alias", Some(0), None, None),
+        ("real", Some(1), None, None),
+        ("string", Some(2), None, None),
+        ("event", Some(3), None, None),
+        ("no_history", None, None, None),
+    ];
+    // Construct metadata alone: no reader exists that could load value histories.
+    let hierarchy = Hierarchy::new(
+        vec![],
+        cases
+            .iter()
+            .map(|&(name, signal, signedness, logic_domain)| VariableData {
+                name: name.into(),
+                parent: None,
+                kind: "variable".into(),
+                direction: Direction::Unknown,
+                range: None,
+                is_constant: false,
+                type_name: None,
+                signedness,
+                logic_domain,
+                enumeration: None,
+                signal,
+            })
+            .collect(),
+        vec![
+            Encoding::Bits { width: 8 },
+            Encoding::Real,
+            Encoding::String,
+            Encoding::Event,
+        ],
+    );
+    for (name, signal, signedness, logic_domain) in cases {
+        let variable = hierarchy.variable(name).unwrap();
+        assert_eq!(variable.signedness(), signedness);
+        assert_eq!(variable.logic_domain(), logic_domain);
+        assert_eq!(
+            variable.signal(),
+            signal.map(|index| hierarchy.signal_at(index))
+        );
+    }
+    let signal = hierarchy.signal("signed").unwrap();
+    assert_eq!(signal, hierarchy.signal("unsigned_alias").unwrap());
+    assert_eq!(signal.encoding(), Encoding::Bits { width: 8 });
+    assert_eq!(signal.slice(3, 0).unwrap().width(), Some(4));
+    assert_eq!(hierarchy.aliases(signal).unwrap().count(), 4);
 }
 
 #[test]
@@ -277,6 +348,8 @@ fn root_declarations_duplicate_scopes_and_extreme_ranges() {
             range: None,
             is_constant: true,
             type_name: None,
+            signedness: None,
+            logic_domain: None,
             enumeration: None,
             signal: None,
         }],
@@ -349,6 +422,8 @@ fn exact_unicode_paths_do_not_normalize_names() {
                 range: None,
                 is_constant: false,
                 type_name: None,
+                signedness: None,
+                logic_domain: None,
                 enumeration: None,
                 signal: Some(index),
             })

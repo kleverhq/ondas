@@ -218,6 +218,45 @@ pub enum Format {
 /// Handles from another source return [`Error::InvalidSignal`]. Querying an
 /// unsupported value class returns [`Error::UnsupportedSignal`]. Ordinary decoder
 /// errors are returned, but upstream panics are not intercepted; see crate docs.
+///
+/// # Example: resolve a declaration, sample a slice and read a trace
+///
+/// This example requires a file containing the named signal. Clone the hierarchy
+/// before keeping a [`crate::Variable`] or [`crate::Scope`] view across mutable
+/// waveform queries: those views borrow their hierarchy, while [`Signal`] is
+/// copyable. The clone lets the declaration view coexist with `&mut Waveform`.
+///
+/// [`crate::HierarchyPath`] handles exact names and escaping. After resolving the
+/// signal, `slice(31, 28)` selects normalized value positions, not HDL indices.
+/// The sample reports the value at one tick. The trace separates state before
+/// the requested range from changes inside it.
+///
+/// ```no_run
+/// use ondas::{HierarchyPath, Time, TimeRange};
+///
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let mut wave = ondas::open("dump.fst")?;
+/// let hierarchy = wave.hierarchy().clone();
+/// let path = HierarchyPath::parse(r"tb.\gen.blk[0] .data")?;
+/// let declaration = hierarchy.variable_path(&path)?;
+/// let data = hierarchy.signal_path(&path)?;
+/// let opcode = data.slice(31, 28)?;
+///
+/// let sample = wave.sample(opcode, Time::from_ticks(1_000))?;
+/// println!("{}: {sample:?}", declaration.name());
+/// let trace = wave.trace(
+///     opcode,
+///     TimeRange::closed(Time::from_ticks(10_000), Time::from_ticks(20_000)),
+/// )?;
+/// if let Some(initial) = trace.initial() {
+///     println!("entering: {:?}", initial.value());
+/// }
+/// for change in trace.changes() {
+///     println!("{}: {:?}", change.time().ticks(), change.value());
+/// }
+/// # Ok(())
+/// # }
+/// ```
 pub struct Waveform {
     pub(crate) reader: Reader,
     hierarchy: Hierarchy,
@@ -233,7 +272,7 @@ impl Waveform {
             #[cfg(feature = "fsdb-lib")]
             Reader::Fsdb(_) => Format::Fsdb,
             #[cfg(test)]
-            Reader::Memory { .. } => Format::Fst,
+            Reader::Memory { .. } | Reader::Generated(_) => Format::Fst,
         }
     }
 
@@ -249,6 +288,8 @@ impl Waveform {
             Reader::Fsdb(_) => "fsdb-lib",
             #[cfg(test)]
             Reader::Memory { .. } => "memory",
+            #[cfg(test)]
+            Reader::Generated(_) => "generated",
         }
     }
 
@@ -414,6 +455,9 @@ impl Metadata {
         self.comments.iter().map(String::as_str)
     }
 }
+
+#[cfg(test)]
+mod semantics_tests;
 
 #[cfg(test)]
 mod tests {

@@ -37,7 +37,9 @@ model.
 A hierarchy is immutable and cloneable; scopes and variables borrow it. A
 variable is a declaration, while a signal identifies a history. Aliases can
 share a history without losing their separate declaration metadata. Some
-declarations have no queryable history.
+declarations have no queryable history. Known signedness and logic domain belong
+to each declaration, not the shared signal or stored bits. Unavailable or
+inapplicable interpretation remains absent; observed values do not establish it.
 
 A signal handle identifies a whole history or a static bit projection, not a
 path or raw reader index. Validation includes waveform identity so a foreign
@@ -54,8 +56,11 @@ Reader-local time indices and timestamp tables stay private. The model has no
 separate delta-cycle coordinate.
 
 Persistent values establish state; events have multiplicity but no persistent
-state. Point and range queries answer different questions about changes within
-one tick. Entering state is separate from changes in the range: never invent a
+state. Point and range queries use final recorded states at each source tick.
+A persistent slot has at most one net change per tick; an excursion returning to
+its entering representation does not advance its change time. First establishment
+is observable even when the recorded value is HDL unknown. Entering state is
+separate from changes in the range: never invent a
 `start - 1` timestamp. Missing state, empty history and query failure are distinct.
 
 A bit projection reports changes to its observed value, not activity in discarded
@@ -67,9 +72,13 @@ identity or semantics.
 
 A waveform owns source access and query state. A selection holds ordered signal
 handles and reusable reader preparation. One-shot and prepared queries have the
-same meaning; only their cost differs.
+same meaning; only their cost differs. A composed query separates drivers that
+advance candidate time from entries the caller can read. One context owns access
+to the completed candidate tick and its predecessor; conditions and output policy
+remain caller code. Non-driver updates between candidates still contribute to
+sampled state. Exact-tick event counts do not persist across gaps.
 
-Owned observations can outlive queries. Callback views borrow reader buffers;
+Owned observations can outlive queries. Callback views borrow query data;
 copying a view produces owned data, and a borrow cannot outlive its owner or
 callback. Packed bits are an implementation choice, not a public string-storage
 contract.
@@ -78,12 +87,30 @@ Candidate timestamps form a conservative activity index, not a decoded history.
 Public query contracts define their ordering and allowances, along with event
 multiplicity, range bounds and callback termination.
 
+## Compatibility boundary
+
+Reader optimizations may change traversal, indexing or internal storage, not the
+public rules for representation identity, final tick state, event multiplicity,
+selection positions, supported observation times, lifetimes or error/stop
+propagation. Candidate supersets may differ within the documented contract;
+consumers still confirm their conditions. Optional metadata and change-time
+precision may improve only when supported by actual evidence. Additional query
+state remains distinct from input, decoder/index, SDK and caller-output residency.
+
+Conditions, numerical interpretation and output policy remain caller code. There
+is no public backend plugin interface, raw/final mode, expression runtime or
+implicit promise of arbitrary-time sampling inside a callback context.
+
 ## Adapter responsibilities
 
 Shared code owns path identity, projections, selection ordering and normalized
 observations. Adapters decode sources, manage resources, convert metadata and
-translate reader failures. Test pure conversions locally and adapters against
-real artifacts.
+translate reader failures. The shared sequential traversal keeps an entering
+state, a pending final value and an event count per selected entry, visiting a
+completed tick before committing that state. It traverses the prefix once, not
+once per operand. This additional state excludes input, decoder/index and SDK
+residency, and variable-sized values contribute their own size. Test pure
+conversions locally and adapters against real artifacts.
 
 Keep known metadata and represent absent or unsupported information explicitly.
 Do not invent ranges, replace missing values with zero or turn failures into empty
