@@ -22,7 +22,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   build-time path. Vendor handles and synchronization remain private.
 - Public FSDB conformance and optional private conformance, with a strict
   `ONDAS_REQUIRE_PRIVATE_FIXTURES=1` mode and separate local private version lock.
-- Independent `fst-native` reader for FST files and shared in-memory bytes.
+- `fst-lib` adapter to `fst-reader` for FST files and shared in-memory bytes.
   The unmodified upstream reader can panic on malformed input and include
   initialization in first-tick event counts. Strings map bytes as Latin-1.
 - Independent `vcd-native` reader with full opening validation and batched replay.
@@ -36,6 +36,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   in file/bytes modes and reports all case failures.
 
 ### Changed
+
+- Rename the FST backend from `fst-native` to `fst-lib` to reflect its external
+  reader dependency. Explicit backend selection and reported names use `fst-lib`.
 
 - Persistent observations use final tick states across samples, scans and traces.
   Net-equal excursions no longer appear as changes or advance `changed_at`;

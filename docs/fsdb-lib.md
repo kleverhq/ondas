@@ -200,7 +200,7 @@ in [fixtures](fixtures.md).
 
 Focused tests cover duplicate selections, projections, boundaries, early stops,
 reentrancy, panic cleanup, independent opens, thread movement and path handling.
-Feature-disabled tests check availability and unchanged native readers.
+Feature-disabled tests check availability and unchanged FST/VCD readers.
 `just ci-fsdb` also runs a separate downstream executable on development Rust and
 MSRV, launched directly without `LD_LIBRARY_PATH` or `VERDI_HOME` to verify native
 dependency propagation.

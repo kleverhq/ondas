@@ -1,4 +1,4 @@
-//! Full-pool native conformance plus focused FST public-API regressions.
+//! Full-pool conformance plus focused FST public-API regressions.
 //! The independent oracle is sparse: only listed declarations and observations
 //! are assertions. Every discovered FST/VCD runs in file and bytes modes.
 use std::{
@@ -41,7 +41,7 @@ struct Fixture {
 impl Fixture {
     fn backend(&self) -> &'static str {
         match self.format {
-            Format::Fst => "fst-native",
+            Format::Fst => "fst-lib",
             Format::Vcd => "vcd-native",
             Format::Fsdb => "fsdb-lib",
             _ => unreachable!(),
@@ -2045,7 +2045,7 @@ fn automatic_opening_uses_content_and_keeps_logical_names() {
     );
     for mut wave in [file, memory] {
         assert_eq!(wave.format(), Format::Fst);
-        assert_eq!(wave.backend(), "fst-native");
+        assert_eq!(wave.backend(), "fst-lib");
         let signal = wave.hierarchy().signal("tb.dut.counter").unwrap();
         sample(
             wave.sample(signal, Time::from_ticks(801)).unwrap().as_ref(),

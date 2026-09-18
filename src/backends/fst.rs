@@ -66,7 +66,7 @@ pub(crate) struct Reader {
 fn malformed(message: impl Into<String>) -> Error {
     Error::Malformed {
         format: Format::Fst,
-        backend: "fst-native".into(),
+        backend: "fst-lib".into(),
         message: message.into(),
     }
 }
