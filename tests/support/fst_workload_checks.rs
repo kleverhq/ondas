@@ -83,7 +83,12 @@ fn fst_composed_wide_observations() {
         }
     }
     let mut selection = wave.select(&[scalar, low]).unwrap();
-    for ticks in [[4094, 4094, 4094], [4093, 4094, 4095], [4094, 4095, 4094]] {
+    for ticks in [
+        [4094, 4094, 4094],
+        [4093, 4094, 4095],
+        [4095, 4094, 4093],
+        [4094, 4095, 4094],
+    ] {
         for tick in ticks {
             let _ = selection
                 .visit_samples(Time::from_ticks(tick), |sample| {

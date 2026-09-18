@@ -33,6 +33,7 @@ pub(super) fn wide(c: &mut Criterion) {
     for (name, ticks) in [
         ("repeat", [4094, 4094, 4094]),
         ("forward", [4093, 4094, 4095]),
+        ("backward", [4095, 4094, 4093]),
         ("backstep", [4094, 4095, 4094]),
     ] {
         group.bench_function(
