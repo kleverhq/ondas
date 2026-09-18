@@ -9,9 +9,9 @@ mod tests;
 
 /// A reusable, ordered selection of waveform signals.
 ///
-/// Created by [`Waveform::select`], this holds a mutable borrow of the waveform
-/// and hides prepared backend resources. It changes query reuse, not semantics:
-/// one-shot waveform methods are equivalent to using a temporary selection.
+/// Created by [`Waveform::select`], this mutably borrows the waveform, validates
+/// the selected handles and groups their underlying histories for reuse.
+/// One-shot waveform methods have the same semantics as temporary selections.
 ///
 /// Input order and duplicates are preserved. Each occurrence of a handle gets
 /// its corresponding sample, trace, or scan observations, even for equal aliases
@@ -19,7 +19,7 @@ mod tests;
 /// Candidate timestamps are the exception: they form a unique time union.
 ///
 /// Clone [`Self::hierarchy`] before retaining hierarchy views across mutable
-/// selection queries. See the crate-level examples for ownership and borrowing.
+/// selection queries. See the [`Waveform`] example for ownership and borrowing.
 pub struct Selection<'w> {
     waveform: &'w mut Waveform,
     signals: Vec<Signal>,
@@ -29,15 +29,18 @@ pub struct Selection<'w> {
 
 /// Selective reads at one completed candidate tick of [`Selection::query`].
 ///
-/// Only the current tick and its checked predecessor are readable; the latter
-/// may precede the query range. At tick zero no predecessor exists. Reads may be
-/// repeated in any order and return final, never provisional, states. Ordinary
-/// conditions and event/edge interpretation remain caller code.
+/// Only the current absolute tick and the tick immediately before it (`t - 1`)
+/// are readable, not the previous candidate time. The preceding tick may lie
+/// before the query range; at tick zero it does not exist. Reads may be repeated
+/// in any order and return final, never provisional, states. Conditions and
+/// event/edge interpretation remain caller code.
 ///
-/// The context is not an eager caller snapshot or an arbitrary-history handle.
-/// A sequential reader may decode records while advancing, but only requested
-/// samples are delivered. Borrowed samples are valid only for their visitor;
-/// copy a [`ValueRef`] to retain its contents.
+/// Samples are delivered only when requested; the context does not provide a
+/// prebuilt snapshot or access to arbitrary history. A sequential reader may
+/// still decode records while advancing. Borrowed samples are valid only for
+/// their visitor; use [`ValueRef::to_owned`] to retain their contents.
+///
+/// # Borrowing rules
 ///
 /// A context cannot escape its candidate callback:
 ///
@@ -192,15 +195,15 @@ impl Selection<'_> {
     /// Changes and event occurrences inside the closed range follow in
     /// nondecreasing time. Different signals have no defined order within one
     /// tick. Each persistent selection entry emits at most one net change per
-    /// tick: its final recorded value, compared with its entering state using
-    /// [`ValueRef`] representation identity. A same-tick excursion returning to
-    /// that state disappears and does not advance `changed_at`. Without a known
-    /// entering state, the final value establishes one, including HDL unknown.
+    /// tick: its final recorded value, compared with the state entering that tick
+    /// using [`ValueRef`] representation identity. A same-tick excursion returning
+    /// to that state disappears and does not advance `changed_at`. Without a known
+    /// state entering the tick, the final value establishes one, including HDL unknown.
     /// Samples, scans and traces use these same final tick states.
     ///
     /// Each [`ValueRef::Event`] change aggregates a positive `occurrences` count
     /// for one entry and tick, subject to the FST
-    /// [first-tick initialization limitation](crate#reader-support-and-limits).
+    /// [first-tick initialization limitation](crate#fst).
     /// Counts preserve reader observations, not ordering within the tick or
     /// events omitted by the producer. Overflow returns an error, never wraps.
     /// Repeated selection entries each receive the same count. Slices emit
@@ -235,7 +238,8 @@ impl Selection<'_> {
     /// Every timestamp that could be emitted as [`ScanRef::Change`] by a full
     /// [`Self::scan`] of this selection and range must occur. Additional candidate
     /// times are allowed; for a slice these may include changes to other bits of
-    /// its base signal. This permits activity indexes without decoding values.
+    /// its base signal. A backend may use an activity index for these candidates,
+    /// but callers must not assume that the operation avoids decoding values.
     ///
     /// Initial states do not contribute timestamps. The union identifies neither
     /// the changing signal nor event multiplicity: repeated handles and multiple
@@ -277,7 +281,7 @@ impl Selection<'_> {
 /// state and never use `Missing`: [`Self::Event`] counts occurrences at exactly
 /// the requested tick, including zero. The FST reader can expose initialization
 /// callbacks at the first recorded tick; see the
-/// [reader limits](crate#reader-support-and-limits) before interpreting that count.
+/// [reader limits](crate#reader-details) before interpreting that count.
 ///
 /// Query times are not restricted by [`Metadata::time_span`](crate::Metadata::time_span).
 /// After EOF, the last known persistent value is held; event counts are zero.
@@ -423,8 +427,8 @@ pub struct Initial {
 /// An owned value change or per-tick event aggregate within a trace range.
 ///
 /// Each event record carries a positive count for one tick. Persistent changes
-/// contain only the final recorded state of
-/// a tick when it differs from the entering state, or first establishes a state.
+/// contain only a tick's final recorded state when it differs from the state
+/// entering that tick, or first establishes a state.
 pub struct Change {
     time: Time,
     value: Value,

@@ -14,8 +14,8 @@ use std::fmt;
 /// same-tick excursions are not exposed. Events carry observed per-tick counts,
 /// not persistent state or an ordering of individual occurrences.
 ///
-/// Persistent-value identity compares all logic states distinctly, strings by
-/// exact contents, and reals by their binary64 bit patterns. Signed zeros and
+/// Queries detect persistent net changes by comparing all logic states distinctly,
+/// strings by exact contents, and reals by their binary64 bit patterns. Signed zeros and
 /// different NaN patterns therefore differ. This preserves the representation
 /// supplied by the reader, not source precision or NaN payloads already lost
 /// during decoding. Numerical equality remains caller policy.
@@ -40,7 +40,7 @@ pub enum ValueRef<'a> {
     /// An aggregate of event observations at one tick.
     ///
     /// Scan and trace records have positive counts. Counts reflect reader
-    /// observations, including [reader limitations](crate#reader-support-and-limits),
+    /// observations, including [reader limitations](crate#reader-details),
     /// not events omitted by the producer.
     Event {
         /// The number of observed occurrences at this tick.

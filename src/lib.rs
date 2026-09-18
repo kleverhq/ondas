@@ -1,249 +1,52 @@
 #![doc = r#"
 # Ondas
 
-Read-only, format-independent waveform analysis.
+Ondas is a Rust library for reading waveform files and analyzing signal values.
+Use it to browse a design's hierarchy, sample signals at a given time, or process
+changes over a time range. The same API works across supported formats; the
+library does not write or convert waveforms.
 
-The `fst-native` backend reads FST files and shared in-memory bytes using the
-Rust `fst-reader` library. The independent `vcd-native` backend reads VCD directly,
-without converting to FST or storing full value histories. The optional `fsdb-lib`
-feature adds an FSDB Reader SDK backend of the same name. Other formats have no
-reader in this release. File-based
-examples use `no_run` because they need a waveform containing the named signals.
-The minimum supported Rust version is 1.88.
+## Supported formats
 
-## API overview
+A backend is the reader that opens a source and retrieves its recorded values.
+Ondas uses one backend per opened waveform. Backend types, reader-specific
+handles, native callbacks and format-local indices stay private.
 
-[`Waveform`] owns a source, its [`Metadata`], and an immutable [`Hierarchy`].
-[`Scope`] and [`Variable`] describe declarations; [`Signal`] identifies a queryable
-history, optionally projected to a static bit slice. Aliased declarations can
-share one signal. [`Selection`] reuses an ordered signal list for repeated queries.
-[`Sample`] and [`Trace`] own results; [`SampleRef`], [`ScanRef`], and [`ValueRef`]
-provide borrowed views.
+| Format | Backend | Input | Availability |
+|---|---|---|---|
+| FST | `fst-native` | Files and shared in-memory bytes | Included; uses `fst-reader` 0.17.0 |
+| VCD | `vcd-native` | Files and shared in-memory bytes | Included; reads VCD directly without conversion |
+| FSDB | `fsdb-lib` | Files only | Optional Cargo feature; requires a local FSDB Reader SDK |
 
-Use [`open`] or [`open_bytes`] for automatic backend selection, or [`open_with`]
-and [`open_bytes_with`] to choose a backend without fallback. [`Format`] describes
-source contents, not the reader implementation. Backend types, handles, callbacks,
-and format-local indices do not form part of the public model.
+Other formats have no reader in this release. The minimum supported Rust version
+is 1.88. See [reader details](#reader-details) for format limits and FSDB setup.
+In particular, the FST reader can panic on malformed input; it is not a hardened
+parser for untrusted files.
 
-## Resolve, sample, and trace
+## How the API fits together
 
-Clone the hierarchy before keeping declaration views across mutable waveform
-queries. A [`Signal`] is copyable; a [`Scope`] or [`Variable`] borrows its hierarchy.
-The clone lets those views coexist with `&mut Waveform` queries.
+Open a source, resolve its signals, then query their values. The public types
+are available directly under `ondas`, for example `ondas::Waveform`; the source
+modules are private.
 
-```no_run
-use ondas::{HierarchyPath, Time, TimeRange};
+| Type | What it represents |
+|---|---|
+| [`Waveform`] | An open source, its [`Metadata`], its hierarchy and its query interface. |
+| [`Hierarchy`] | Immutable declarations. [`Scope`] groups declarations; [`Variable`] describes one declaration. |
+| [`Signal`] | A handle to a signal's history, optionally sliced to fixed bit positions. Aliased declarations can share a signal. |
+| [`Selection`] | An ordered signal list reused across queries. It mutably borrows its waveform and preserves order and duplicates. |
+| [`Sample`], [`Trace`] | Owned query results: an observation at one tick, or state and changes over a range. |
+| [`SampleRef`], [`ScanRef`], [`ValueRef`] | Borrowed views. Callback views cannot escape their callback; use [`ValueRef::to_owned`] when a value must be retained. |
 
-# fn main() -> Result<(), Box<dyn std::error::Error>> {
-let mut wave = ondas::open("dump.fst")?;
-let hierarchy = wave.hierarchy().clone();
-let path = HierarchyPath::parse(r"tb.\gen.blk[0] .data")?;
-let declaration = hierarchy.variable_path(&path)?;
-let data = hierarchy.signal_path(&path)?;
-let opcode = data.slice(31, 28)?;
+Use [`open`] or [`open_bytes`] for automatic backend selection. Use [`open_with`]
+or [`open_bytes_with`] to select a backend explicitly, without fallback.
+[`Format`] describes source contents, not the reader implementation.
 
-let sample = wave.sample(opcode, Time::from_ticks(1_000))?;
-println!("{}: {sample:?}", declaration.name());
-let trace = wave.trace(
-    opcode,
-    TimeRange::closed(Time::from_ticks(10_000), Time::from_ticks(20_000)),
-)?;
-if let Some(initial) = trace.initial() {
-    println!("entering: {:?}", initial.value());
-}
-for change in trace.changes() {
-    println!("{}: {:?}", change.time().ticks(), change.value());
-}
-# Ok(())
-# }
-```
+## Read a signal
 
-[`HierarchyPath`] handles exact names and escaping. [`Hierarchy::signal`] first
-looks up an exact variable path, then considers one trailing `[msb:lsb]` slice.
-For unambiguous slicing, use [`Hierarchy::signal_path`] followed by
-[`Signal::slice`]. Slice indices are normalized value positions, not HDL indices.
-
-## Export normalized changes by selection slot
-
-Selection order and duplicates are preserved. A selection mutably borrows its
-waveform; query through it until that borrow ends. Indexed callbacks distinguish
-aliases and projections without collecting a trace. This example emits borrowed
-records immediately and stops after four changes; its assertion buffer is bounded
-by that limit, not input history. Same-tick changes across slots need not have a
-particular order.
-
-```rust
-use std::ops::ControlFlow;
-use ondas::{Sample, ScanRef, Time, TimeRange, ValueRef};
-
-fn render(value: ValueRef<'_>) -> String {
-    match value {
-        ValueRef::Bits(bits) => format!("bits:{bits}"),
-        ValueRef::Real(real) => format!("real:{:016x}", real.to_bits()),
-        ValueRef::String(text) => format!("string:{text:?}"),
-        ValueRef::Event { occurrences } => format!("events:{occurrences}"),
-        _ => format!("{value:?}"),
-    }
-}
-
-# fn main() -> Result<(), Box<dyn std::error::Error>> {
-let input = b"$var wire 4 ! data $end $var wire 4 ! alias $end
-    $enddefinitions $end #0 b0000 ! #2 b1111 ! b0000 !
-    #5 b1001 ! #8 b0110 !";
-let mut wave = ondas::open_bytes_with("export.vcd", input.as_slice().into(), "vcd-native")?;
-let hierarchy = wave.hierarchy().clone();
-let declaration = hierarchy.variable("data")?;
-assert_eq!(declaration.signedness(), None); // Do not invent missing interpretation.
-assert_eq!(declaration.logic_domain(), None);
-let data = hierarchy.signal("data")?;
-let alias = hierarchy.signal("alias")?;
-let high = data.slice(3, 2)?;
-let low = data.slice(1, 0)?;
-assert_eq!(data, alias); // Distinct declarations can share a history.
-
-// No candidate traversal is needed for an ordinary point or batch request.
-assert!(matches!(wave.sample(data, Time::from_ticks(5))?, Sample::Value { .. }));
-let batch = wave.samples(&[data, low], Time::from_ticks(5))?;
-assert_eq!(batch.len(), 2);
-
-let mut selection = wave.select(&[data, alias, high, low])?;
-let mut entering_slots = Vec::new();
-let mut exported = Vec::new(); // Small bounded test sink; a real sink can write directly.
-let outcome = selection.scan_each(TimeRange::from(Time::from_ticks(1)), |slot, record| {
-    match record {
-        ScanRef::Initial { .. } => entering_slots.push(slot),
-        ScanRef::Change { time, value, .. } => {
-            let text = render(value); // Borrowed value is consumed only here.
-            println!("{slot}\t{}\t{text}", time.ticks());
-            exported.push((slot, time.ticks(), text));
-            if exported.len() == 4 {
-                return ControlFlow::Break(4);
-            }
-        }
-        _ => {} // Public result enums are non-exhaustive.
-    }
-    ControlFlow::Continue(())
-})?;
-assert_eq!(outcome, ControlFlow::Break(4));
-assert_eq!(entering_slots, [0, 1, 2, 3]);
-exported.sort();
-assert_eq!(exported, vec![
-    (0, 5, "bits:1001".into()), (1, 5, "bits:1001".into()),
-    (2, 5, "bits:10".into()), (3, 5, "bits:01".into()),
-]); // The excursion at tick 2 disappears; tick 8 is not delivered after Break.
-# Ok(())
-# }
-```
-
-## Sample conditionally at activity ticks
-
-Drivers determine candidate times, independently of the readable control and
-payload entries. Conditions and output policy are ordinary Rust. Here the caller
-requires a strict `0 → 1` activity transition and a high control value; missing
-or other logic states do not pass. It chooses previous/current observation times
-and copies only accepted payloads, never collecting candidates. A sequential
-reader may still decode selected payload while advancing.
-
-```rust
-use std::ops::ControlFlow;
-use ondas::{Logic, SampleRef, Time, TimeRange, ValueRef};
-
-fn scalar(sample: SampleRef<'_>) -> Option<Logic> {
-    match sample {
-        SampleRef::Value { value: ValueRef::Bits(bits), .. } if bits.width() == 1 => bits.bit(0),
-        _ => None,
-    }
-}
-
-# fn main() -> Result<(), Box<dyn std::error::Error>> {
-let input = b"$var wire 1 c activity $end $var wire 1 e control $end
-    $var wire 4 d payload $end $enddefinitions $end
-    #0 0c 0e b0011 d #1 1c #2 1e 0c #3 b1001 d 1c
-    #4 0c 0e #5 1c b1111 d #6 1e 0c #7 b0110 d 1c";
-let mut wave = ondas::open_bytes_with("conditional.vcd", input.as_slice().into(), "vcd-native")?;
-let signals = ["activity", "control", "payload"].map(|name| wave.hierarchy().signal(name).unwrap());
-let mut selection = wave.select(&signals)?;
-let mut accepted = Vec::new();
-let _ = selection.query(TimeRange::all(), &[0], |context| {
-    let time = context.time();
-    let Some(previous) = time.ticks().checked_sub(1).map(Time::from_ticks) else {
-        return Ok(ControlFlow::<()>::Continue(())); // No predecessor at tick zero.
-    };
-    let mut before = None;
-    let _ = context.visit_samples(previous, &[0], |_, sample| {
-        before = scalar(sample);
-        Ok(ControlFlow::<()>::Continue(()))
-    })?;
-    let mut now = [None; 2];
-    let _ = context.visit_samples(time, &[0, 1], |slot, sample| {
-        now[slot] = scalar(sample);
-        Ok(ControlFlow::<()>::Continue(()))
-    })?;
-    if before == Some(Logic::Zero) && now == [Some(Logic::One), Some(Logic::One)] {
-        let _ = context.visit_samples(time, &[2], |_, sample| {
-            if let SampleRef::Value { value, .. } = sample {
-                accepted.push((time, value.to_owned())); // Explicit caller ownership.
-            } // This caller skips missing payload.
-            Ok(ControlFlow::<()>::Continue(()))
-        })?;
-    }
-    Ok(ControlFlow::<()>::Continue(()))
-})?;
-drop(wave);
-let output = accepted.iter().map(|(time, value)| {
-    let ValueRef::Bits(bits) = value.as_ref() else { panic!("expected bit payload") };
-    (time.ticks(), bits.to_string()) // Borrows retained storage, not callback storage.
-}).collect::<Vec<_>>();
-assert_eq!(output, [(3, "1001".into()), (7, "0110".into())]);
-# Ok(())
-# }
-```
-
-Callback views cannot escape their callback. Use [`ValueRef::to_owned`] only when
-retention is needed; owned samples and batch results already retain their values.
-
-## Time, observations, and failures
-
-[`Time`] is an absolute source tick, not a backend time-table index. Ranges are
-closed; reversed bounded ranges are empty, not errors. Delta cycles are not
-modeled. Point samples report the final persistent state at a tick; event samples
-count reader-observed occurrences at exactly that tick, including zero. Scans and
-traces carry one positive event aggregate per selection entry and tick; aggregation
-does not recover omitted events or expose intra-tick ordering. [`Sample::Missing`] means
-no persistent state is known at or before the sampled time.
-
-[`Selection::scan`] separates state strictly before the range from actual changes
-inside it. [`Selection::scan_candidate_times`] provides a strictly increasing
-superset of change times, without initial states or event multiplicity. See those
-methods for ordering, projection, and early-stop contracts.
-
-[`Selection::query`] composes candidate advancement and selective reads through
-one [`QueryContext`]. Driver indices are separate from readable entries; the
-context supports its completed tick and the preceding tick, not arbitrary history.
-Conditions and output policy remain ordinary caller code, without a candidate list
-or reborrowing the waveform from a callback.
-
-[`PathError`], [`PathFormatError`], [`LookupError`], and [`SliceError`] distinguish
-path and metadata resolution from opening and query [`Error`]s. File and backend
-failures reported by the reader become errors, not empty-result sentinels. Scans
-and callback queries may already have called a visitor before a later error;
-owned samples and traces return no partial collection. Reader-specific limitations are described below.
-
-## Reader support and limits
-
-`vcd-native` opens files and shared bytes with a full sequential validation pass,
-then replays selected signals for queries. It preserves aliases, exact ranges,
-nine-state bits, real signed zero, strings and ordinary repeated events. Source
-files must remain unchanged while open. Strings use reversible Latin-1 decoding,
-including escapes, NUL and padding. A real declaration with string records is
-classified as string storage before handles are returned.
-
-Persistent dump-block records are applied at their recorded tick. Event records
-inside `$dumpvars`, `$dumpall`, `$dumpoff` and `$dumpon` are snapshots, not emitted
-occurrences. Mixed checkpoint/event ticks do not establish physical multiplicity;
-resume records establish observed state, not the physical time of hidden changes.
-Unknown significant commands, incompatible aliases and malformed records fail
-opening; EVCD strength records and nonzero timezero are unsupported.
+This example opens a small VCD from memory, resolves `ready` by name and samples
+it. The first recorded value is at tick 5, so the earlier sample has no known
+state. It runs without an external waveform file.
 
 ```rust
 use ondas::{Encoding, Sample, Time};
@@ -258,37 +61,132 @@ assert!(matches!(wave.sample(ready, Time::from_ticks(5))?, Sample::Value { .. })
 # }
 ```
 
-`fst-native` is a direct, unmodified adapter to `fst-reader` 0.17.0. It reads bits,
-reals, strings, and event callbacks, preserving aliases and explicit source ranges.
-FST string bytes map reversibly to Unicode U+0000–U+00FF (Latin-1), including NULs
-and padding; the adapter does not guess whether a byte sequence is UTF-8.
-Explicit FST SystemVerilog types can supply [`Variable::logic_domain`]; explicit
-VHDL type attributes can additionally supply [`Variable::signedness`]. Legacy
-storage kinds and type-name text are not used to guess interpretation. The
-current VCD and FSDB adapters leave both fields unavailable.
+For a file, start with `ondas::open("dump.fst")?` instead. The [`Waveform`] example
+also shows escaped hierarchy names, a bit slice and a trace over a bounded range.
+File-based examples use `no_run` because they require the named signals.
 
-The underlying reader can panic on some malformed inputs. Those panics are not
-intercepted; do not treat this release as a hardened parser for untrusted files.
-Ordinary reader errors and detected hierarchy inconsistencies return [`Error`].
-Event callbacks at the first recorded tick can include an initialization snapshot,
-which the reader does not distinguish from occurrences. Ondas preserves these
-callbacks; do not infer exact physical event counts at that initial tick.
+[`HierarchyPath`] represents exact names and escaping. [`Hierarchy::signal`]
+first looks up an exact variable path, then considers one trailing `[msb:lsb]`
+slice. To separate name lookup from slicing, use [`Hierarchy::signal_path`]
+followed by [`Signal::slice`]. Slice indices are normalized value positions,
+not HDL indices.
+
+## Choose a query
+
+| Task | Operation |
+|---|---|
+| Read one signal at one tick | [`Waveform::sample`] |
+| Read several signals at one tick | [`Waveform::samples`] or [`Selection::samples`] |
+| Keep the state and changes over a range | [`Waveform::trace`], [`Waveform::traces`] or [`Selection::traces`] |
+| Process changes without collecting a trace | [`Selection::scan`] or [`Selection::scan_each`] |
+| Visit possible change times | [`Selection::scan_candidate_times`] |
+| Check conditions at activity ticks and read only the requested samples | [`Selection::query`] |
+
+Use an ordinary point or batch query when the observation time is already known.
+A selection is useful when the same signal list is queried repeatedly.
+
+For streamed output, [`Selection::scan_each`] identifies each record by its
+position in the selection. Its example exports a bus, an alias and two slices,
+then stops early.
+
+For conditional sampling, [`Selection::query`] separates driver signals, which
+determine candidate times, from the other signals the caller may read. Each
+[`QueryContext`] can read its completed tick and the preceding tick, not arbitrary
+history. Its example checks a transition and control value before copying a
+payload. Conditions remain ordinary Rust code; the query does not collect a
+candidate list or require reborrowing the waveform inside a callback.
+
+## Time, values and errors
+
+- [`Time`] counts absolute source ticks, not indices into a backend time table.
+  Ranges are closed. A reversed bounded range is empty, not an error.
+- A point sample reports the final persistent state at its tick. Delta cycles
+  are not modeled. [`Sample::Missing`] means no persistent state is known at or
+  before the requested time.
+- An event sample counts reader-observed occurrences at exactly that tick,
+  including zero. Scans and traces carry one positive aggregate per selection
+  entry and tick. Aggregation cannot recover omitted events or expose intra-tick
+  ordering.
+- A scan separates state strictly before the range from changes inside it.
+  Candidate-time scans return a strictly increasing superset of change times;
+  initials and event multiplicity do not add candidate times. See
+  [`Selection::scan`] and [`Selection::scan_candidate_times`] for the full contracts.
+- [`PathError`], [`PathFormatError`], [`LookupError`] and [`SliceError`] describe
+  path and metadata resolution errors. Opening and query failures use [`Error`].
+  Reader-reported failures return errors, not empty-result sentinels.
+- Scans and callback queries may have delivered observations before a later
+  failure. Owned samples and traces return no partial collection.
+
+## Reader details
+
+### VCD
+
+<details>
+<summary>Validation, value representation and event limits</summary>
+
+`vcd-native` validates the source with a full sequential pass when opening, then
+replays selected signals for queries. It does not store full value histories.
+Source files must remain unchanged while open.
+
+- The reader preserves aliases, exact ranges, nine-state bits, real signed zero,
+  strings and ordinary repeated events. Strings use reversible Latin-1 decoding,
+  including escapes, NUL and padding. A real declaration with string records is
+  classified as string storage before signal handles are returned.
+- Persistent dump-block records apply at their recorded tick. Event records in
+  `$dumpvars`, `$dumpall`, `$dumpoff` and `$dumpon` are snapshots, not occurrences.
+  Mixed checkpoint/event ticks do not establish physical multiplicity. Resume
+  records establish observed state, not the physical time of hidden changes.
+- Unknown significant commands, incompatible aliases and malformed records fail
+  opening. EVCD strength records and nonzero timezero are unsupported.
+
+</details>
+
+### FST
+
+<details>
+<summary>Reader behavior, declaration metadata and query costs</summary>
+
+`fst-native` is a direct, unmodified adapter to `fst-reader` 0.17.0. It reads bits,
+reals, strings and event callbacks, preserving aliases and explicit source ranges.
+
+- String bytes map reversibly to Unicode U+0000 to U+00FF (Latin-1), including NULs
+  and padding. The adapter does not guess whether a byte sequence is UTF-8.
+- Explicit FST SystemVerilog types can supply [`Variable::logic_domain`]. Explicit
+  VHDL type attributes can also supply [`Variable::signedness`]. Legacy storage
+  kinds and type-name text do not establish either field. The current VCD and
+  FSDB adapters leave both fields unavailable.
+- Some malformed inputs can make the underlying reader panic. Ondas does not
+  intercept those panics. Ordinary reader errors and detected hierarchy
+  inconsistencies return [`Error`].
+- At the first recorded tick, event callbacks can include an initialization
+  snapshot that the reader cannot distinguish from occurrences. Ondas preserves
+  those callbacks; they do not establish exact physical event counts at that tick.
 
 Selections reuse validated handles and base-signal grouping, not complete value
-histories. Each query traverses selected histories from the beginning through its
-end to establish state reliably. Scans retain entering and pending final values per selected
-entry and stop reader callbacks on `Break`; owned traces additionally retain their
-output. The decoder also owns its input/decompression buffers, so this is not a
-fixed bound on total memory use. Candidate-time scans decode values rather than using a separate activity
-index. These are cost characteristics, not different observation semantics.
+histories. Each query traverses selected histories from their beginning through
+its end to establish state. Scans retain entering and pending final values per
+selected entry and stop reader callbacks on `Break`; owned traces also retain
+their output. The decoder owns input and decompression buffers, so this is not a
+fixed bound on total memory use. Candidate-time scans decode values rather than
+using a separate activity index. These costs do not change observation semantics.
 
-## Optional FSDB Reader
+</details>
 
-Enable the additive Cargo feature `fsdb-lib` and set `VERDI_HOME` to a local Verdi
-installation when building. Use Verdi 2021 or newer. The supported
-target is Linux x86_64 GNU. Building requires a C++11 compiler, binutils and zlib
-development files. Older SDKs can reject newer FSDB format versions; use a newer
-Reader for those files. No SDK discovery occurs without the feature.
+### FSDB
+
+<details>
+<summary>SDK setup, supported values and runtime requirements</summary>
+
+Enable the additive Cargo feature `fsdb-lib` and set `VERDI_HOME` to a local
+Verdi installation when building.
+
+- Use Verdi 2021 or newer on Linux x86_64 GNU. Building requires a C++11 compiler,
+  binutils and zlib development files. Older SDKs can reject newer FSDB format
+  versions; use a newer Reader for those files.
+- Without the feature, Ondas does not discover an SDK and the backend name
+  `fsdb-lib` returns [`Error::UnknownBackend`].
+- The backend opens files only. Explicit byte input returns
+  [`Error::UnsupportedInput`]; it creates no temporary file or conversion.
 
 ```no_run
 # #[cfg(feature = "fsdb-lib")]
@@ -300,32 +198,33 @@ let sample = wave.sample(signal, ondas::Time::from_ticks(10))?;
 # }
 ```
 
-This backend opens files only. Explicit byte input returns [`Error::UnsupportedInput`];
-there is no hidden temporary file or conversion. A disabled `fsdb-lib` name returns
-[`Error::UnknownBackend`]. Input files and the linked SDK installation must remain
-unchanged and available. Binaries retain the build-time SDK library paths;
-removing those libraries can prevent the entire executable from starting, even
-for VCD/FST operations. Runtime SDK absence is not handled gracefully.
+Input files and the linked SDK installation must remain unchanged and available.
+Binaries retain the build-time SDK library paths. Removing those libraries can
+prevent the entire executable from starting, even for VCD/FST operations;
+runtime SDK absence is not handled gracefully.
 
-Known digital storage preserves bits and source logic states; real storage maps
-to `f64`, NUL-terminated string bytes use reversible Latin-1, and normal HDL event
-records remain occurrences. Embedded-NUL string data and transaction events are
-not supported. No-change event initialization markers are not triggers; unknown
-event records and event queries on SDK-reported dump-off files return errors.
-Unsupported SDK data types retain their declarations with [`Encoding::Unsupported`].
-Integer ticks and scale factors remain exact; floating timestamp formats are
-rejected rather than rounded. Only recorded activity is observable: callbacks do
-not prove physical event counts during initialization or disabled dumping.
+- Known digital storage preserves bits and source logic states. Real storage maps
+  to `f64`; NUL-terminated strings use reversible Latin-1. Embedded-NUL string
+  data and transaction events are unsupported.
+- Normal HDL event records remain occurrences. No-change event initialization
+  markers are not triggers. Unknown event records and event queries on
+  SDK-reported dump-off files return errors. Callbacks describe recorded activity,
+  not physical event counts during initialization or disabled dumping.
+- Unsupported SDK data types retain their declarations with [`Encoding::Unsupported`].
+  Integer ticks and scale factors remain exact. Floating timestamp formats are
+  rejected rather than rounded.
 
 Independent Reader objects and serialized SDK calls preserve `Waveform: Send + Sync`.
-The lock is released before Rust visitors, permitting queries on another waveform
-inside a callback. Queries load selected histories and traverse from their
-beginning; vendor loading has its own memory cost. SDK diagnostics may appear on
-stdout/stderr. C++ exceptions become backend errors, but native crashes or aborts
-are not contained. SDK permissions and runtime dependencies remain the caller's
-responsibility; no vendor files are distributed with Ondas.
+The lock is released before Rust visitors, so a callback can query another
+waveform. Queries load selected histories and traverse from their beginning;
+vendor loading has its own memory cost. SDK diagnostics may appear on stdout/stderr.
+C++ exceptions become backend errors, but native crashes or aborts are not
+contained. SDK permissions and runtime dependencies remain the caller's
+responsibility. Ondas distributes no vendor files.
 
-## Model boundaries
+</details>
+
+## Scope of the library
 
 The API does not model writing or conversion, live ingestion, transactions,
 assertions, coverage, design connectivity, async operations, relative hierarchy

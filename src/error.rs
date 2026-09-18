@@ -113,7 +113,7 @@ pub enum LookupError {
 /// # Failure contract
 ///
 /// Failures reported by a backend return this type. Upstream reader panics are
-/// not intercepted; see the [reader limits](crate#reader-support-and-limits).
+/// not intercepted; see the [reader limits](crate#reader-details).
 /// Empty results are not error sentinels: no known persistent state is [`Sample::Missing`](crate::Sample::Missing),
 /// no event is an occurrence count of zero, and no changes is an empty trace
 /// change list. Invalid handles and unsupported values remain errors.

@@ -36,15 +36,15 @@ use crate::{LookupError, PathError, PathFormatError, Result, SliceError};
 /// `\\`, `\/`, `\b`, `\f`, `\n`, `\r`, `\t`, and `\uXXXX` with exactly four
 /// hexadecimal digits. Unicode surrogate pairs decode to one Unicode scalar;
 /// unpaired surrogates are invalid. Unknown escapes such as `\q`, incomplete
-/// escapes, and unescaped U+0000–U+001F characters produce [`PathError`]. These
+/// escapes, and unescaped `U+0000..=U+001F` characters produce [`PathError`]. These
 /// rules apply inside quotes, not to SystemVerilog escaped identifiers.
 ///
 /// [`Display`](fmt::Display) produces canonical Ondas syntax. Parsing that output
 /// recovers the same components. Empty components and components containing
-/// separators, whitespace, brackets, quotes, backslashes, U+0000–U+001F, or
+/// separators, whitespace, brackets, quotes, backslashes, `U+0000..=U+001F`, or
 /// slice-like spelling are quoted. Inside quotes, canonical output uses `\"`
 /// and `\\`, the short escapes `\b`, `\f`, `\n`, `\r`, and `\t`, and lowercase
-/// `\u00xx` for the remaining U+0000–U+001F characters. All other characters,
+/// `\u00xx` for the remaining `U+0000..=U+001F` characters. All other characters,
 /// including `/` and non-ASCII Unicode, are emitted literally, without Unicode
 /// normalization. Thus `tb."a\u000Ab"` canonicalizes to `tb."a\nb"`.
 ///
@@ -180,7 +180,7 @@ impl fmt::Display for HierarchyPath {
 ///
 /// [`Scope`] and [`Variable`] are borrowed views; [`Signal`] is a copyable query
 /// handle. Clone the hierarchy before retaining views across mutable queries on
-/// its [`Waveform`](crate::Waveform); see the crate-level usage example.
+/// its [`Waveform`](crate::Waveform); see the example on that type.
 ///
 /// Declarations and histories are distinct: [`Self::variables`] includes aliases,
 /// while [`Self::signals`] lists unique whole histories. Lookup failures use
@@ -246,7 +246,10 @@ pub struct Variable<'h> {
     index: usize,
 }
 
-/// An opaque handle to a queryable history and optional bit projection.
+/// An opaque waveform signal handle with an optional bit projection.
+///
+/// A handle can have [`Encoding::Unsupported`]; value queries then return
+/// [`Error::UnsupportedSignal`](crate::Error::UnsupportedSignal).
 ///
 /// Whole aliases of the same underlying history compare equal. Distinct histories
 /// have distinct whole handles. Handles belong to their source hierarchy/waveform;
@@ -536,10 +539,11 @@ impl<'h> Variable<'h> {
         })
     }
 
-    /// Returns the declaration's whole queryable signal, if it has one.
+    /// Returns the declaration's whole signal handle, if it has one.
     ///
     /// Aliases of the same underlying history return equal handles. A declaration
-    /// can exist without a queryable waveform signal.
+    /// can exist without a waveform signal. An unsupported encoding still has a
+    /// handle, but value queries return [`Error::UnsupportedSignal`](crate::Error::UnsupportedSignal).
     pub fn signal(&self) -> Option<Signal> {
         self.data()
             .signal

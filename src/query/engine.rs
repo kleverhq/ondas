@@ -46,8 +46,9 @@ impl QueryContext<'_> {
     /// Indices refer to the original selection, not the driver subset. The
     /// entire subset and sampling time are validated before any callback.
     /// Empty subsets produce no callbacks. Invalid indices return
-    /// [`Error::InvalidSelectionIndex`]; times other than the current tick or its
-    /// checked predecessor return [`Error::InvalidQueryTime`].
+    /// [`Error::InvalidSelectionIndex`]. Only the current absolute tick and the
+    /// tick immediately before it (`t - 1`, when `t > 0`) are valid; other times
+    /// return [`Error::InvalidQueryTime`].
     ///
     /// Persistent values and change times follow [`Selection::samples`]; events
     /// are exact-tick counts, including zero. A visitor borrows each sample only
@@ -236,12 +237,17 @@ impl<'w> Selection<'w> {
         })
     }
 
-    /// Advances candidate times and permits selective reads through one owner.
+    /// Visits candidate times and lets each callback read selected samples.
     ///
-    /// `drivers` contains input selection indices, independently of all readable
-    /// entries. Candidate ticks are increasing and unique in the inclusive
-    /// range. Conservative extras are permitted, including identical writes or
-    /// changes hidden by a projection; callers must confirm their conditions.
+    /// `drivers` lists positions in this selection that determine candidate
+    /// times. The callback can read any selection entry, not just its drivers,
+    /// through a [`QueryContext`].
+    ///
+    /// # Candidate times
+    ///
+    /// Candidates are increasing and unique in the inclusive range. A candidate
+    /// need not be an actual change: identical writes or changes hidden by a
+    /// projection may produce extra callbacks. Callers must confirm their conditions.
     /// Empty drivers or an empty range produce no callbacks. Driver indices are
     /// validated before reading; invalid indices return [`Error::InvalidSelectionIndex`].
     ///
@@ -252,19 +258,25 @@ impl<'w> Selection<'w> {
     /// The exact superset need not match [`Self::scan_candidate_times`] or remain
     /// identical across reader implementations.
     ///
-    /// Each context exposes only its completed tick and the checked predecessor,
-    /// including a predecessor before the range start. No unfinished tick is
-    /// published. Only requested samples are delivered to read visitors; a
+    /// # Reads and memory
+    ///
+    /// Each context exposes only its completed absolute tick and the tick
+    /// immediately before it (`t - 1`, when `t > 0`), even if that preceding tick
+    /// lies before the range start. No unfinished tick is published. Only requested samples are delivered to read visitors; a
     /// sequential fallback may decode records for all selected histories and
     /// traverse the prefix once to establish entering state. It never replays
     /// per operand or collects all candidates. Additional query state is bounded
     /// by selection and value sizes, excluding input, reader/index and SDK residency.
+    ///
+    /// # Stopping and errors
     ///
     /// Callback `Break` stops delivery immediately and is returned unchanged.
     /// Callback/read errors propagate without rolling back earlier observations.
     /// The reader may decode one next-tick record to complete a tick before
     /// invoking the callback. Fresh queries are valid after completion, stop or
     /// error, under the reader's documented malformed-input limitations.
+    ///
+    /// # Basic use
     ///
     /// ```no_run
     /// # use ondas::{Result, Selection, TimeRange};
@@ -276,6 +288,74 @@ impl<'w> Selection<'w> {
     ///         Ok(ControlFlow::<()>::Continue(()))
     ///     })
     /// })?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Example: read payload only when a condition passes
+    ///
+    /// The selection has three entries: activity, control and payload. Only
+    /// activity drives candidate times. At each candidate the caller checks for
+    /// a strict `0 → 1` transition, then checks that control is high at that tick.
+    /// Missing values and other logic states do not satisfy this condition.
+    ///
+    /// The payload visitor runs only for accepted candidates. It copies the
+    /// value so the result survives the callback and the waveform itself.
+    /// This limits caller reads and copies; a sequential reader may still decode
+    /// selected payload while advancing. The example uses tiny in-memory VCD
+    /// data so it can run without an external file.
+    ///
+    /// ```rust
+    /// use std::ops::ControlFlow;
+    /// use ondas::{Logic, SampleRef, Time, TimeRange, ValueRef};
+    ///
+    /// fn scalar(sample: SampleRef<'_>) -> Option<Logic> {
+    ///     match sample {
+    ///         SampleRef::Value { value: ValueRef::Bits(bits), .. } if bits.width() == 1 => bits.bit(0),
+    ///         _ => None,
+    ///     }
+    /// }
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let input = b"$var wire 1 c activity $end $var wire 1 e control $end
+    ///     $var wire 4 d payload $end $enddefinitions $end
+    ///     #0 0c 0e b0011 d #1 1c #2 1e 0c #3 b1001 d 1c
+    ///     #4 0c 0e #5 1c b1111 d #6 1e 0c #7 b0110 d 1c";
+    /// let mut wave = ondas::open_bytes_with("conditional.vcd", input.as_slice().into(), "vcd-native")?;
+    /// let signals = ["activity", "control", "payload"].map(|name| wave.hierarchy().signal(name).unwrap());
+    /// let mut selection = wave.select(&signals)?;
+    /// let mut accepted = Vec::new();
+    /// let _ = selection.query(TimeRange::all(), &[0], |context| {
+    ///     let time = context.time();
+    ///     let Some(previous) = time.ticks().checked_sub(1).map(Time::from_ticks) else {
+    ///         return Ok(ControlFlow::<()>::Continue(())); // No predecessor at tick zero.
+    ///     };
+    ///     let mut before = None;
+    ///     let _ = context.visit_samples(previous, &[0], |_, sample| {
+    ///         before = scalar(sample);
+    ///         Ok(ControlFlow::<()>::Continue(()))
+    ///     })?;
+    ///     let mut now = [None; 2];
+    ///     let _ = context.visit_samples(time, &[0, 1], |slot, sample| {
+    ///         now[slot] = scalar(sample);
+    ///         Ok(ControlFlow::<()>::Continue(()))
+    ///     })?;
+    ///     if before == Some(Logic::Zero) && now == [Some(Logic::One), Some(Logic::One)] {
+    ///         let _ = context.visit_samples(time, &[2], |_, sample| {
+    ///             if let SampleRef::Value { value, .. } = sample {
+    ///                 accepted.push((time, value.to_owned())); // Explicit caller ownership.
+    ///             } // This caller skips missing payload.
+    ///             Ok(ControlFlow::<()>::Continue(()))
+    ///         })?;
+    ///     }
+    ///     Ok(ControlFlow::<()>::Continue(()))
+    /// })?;
+    /// drop(wave);
+    /// let output = accepted.iter().map(|(time, value)| {
+    ///     let ValueRef::Bits(bits) = value.as_ref() else { panic!("expected bit payload") };
+    ///     (time.ticks(), bits.to_string()) // Borrows retained storage, not callback storage.
+    /// }).collect::<Vec<_>>();
+    /// assert_eq!(output, [(3, "1001".into()), (7, "0110".into())]);
     /// # Ok(())
     /// # }
     /// ```
@@ -380,8 +460,9 @@ impl<'w> Selection<'w> {
     /// complete-tick, event-count, stopping and error semantics. Every index is
     /// in `0..self.signals().len()` and identifies an input position, not a
     /// backend offset or global signal ID. Aliases and repeated whole signals
-    /// or slices each receive their own slot's records, including unchanged
-    /// event counts; internal base-history deduplication is not observable.
+    /// or slices each receive their own slot's records. Duplicate entries each
+    /// receive the same per-tick event aggregate; internal base-history
+    /// deduplication is not observable.
     ///
     /// Initial states appear first in selection order (entries without one are
     /// omitted). Changes follow in nondecreasing time order, with no additional
@@ -390,6 +471,8 @@ impl<'w> Selection<'w> {
     /// [`ValueRef::to_owned`] to retain values. `Break` stops delivery immediately
     /// and is returned unchanged; a read error preserves prior callbacks but
     /// does not publish the unfinished tick. No complete history is collected.
+    ///
+    /// # Basic use
     ///
     /// ```no_run
     /// # use ondas::{Result, Selection, TimeRange};
@@ -402,6 +485,82 @@ impl<'w> Selection<'w> {
     /// # Ok(())
     /// # }
     /// ```
+    ///
+    /// # Example: export changes by selection slot
+    ///
+    /// The selection below contains a bus, an alias of that bus and two slices.
+    /// Each has its own slot, even though they share one source history. The
+    /// visitor handles initial states separately and renders each borrowed change
+    /// immediately. It stops after four changes instead of collecting a trace.
+    ///
+    /// The small output buffer is only a test sink, bounded by that four-change
+    /// limit. A real exporter can write directly to its destination. Sorting the
+    /// assertion buffer avoids relying on cross-slot order within a tick.
+    ///
+    /// ```rust
+    /// use std::ops::ControlFlow;
+    /// use ondas::{Sample, ScanRef, Time, TimeRange, ValueRef};
+    ///
+    /// fn render(value: ValueRef<'_>) -> String {
+    ///     match value {
+    ///         ValueRef::Bits(bits) => format!("bits:{bits}"),
+    ///         ValueRef::Real(real) => format!("real:{:016x}", real.to_bits()),
+    ///         ValueRef::String(text) => format!("string:{text:?}"),
+    ///         ValueRef::Event { occurrences } => format!("events:{occurrences}"),
+    ///         _ => format!("{value:?}"),
+    ///     }
+    /// }
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let input = b"$var wire 4 ! data $end $var wire 4 ! alias $end
+    ///     $enddefinitions $end #0 b0000 ! #2 b1111 ! b0000 !
+    ///     #5 b1001 ! #8 b0110 !";
+    /// let mut wave = ondas::open_bytes_with("export.vcd", input.as_slice().into(), "vcd-native")?;
+    /// let hierarchy = wave.hierarchy().clone();
+    /// let declaration = hierarchy.variable("data")?;
+    /// assert_eq!(declaration.signedness(), None); // Do not invent missing interpretation.
+    /// assert_eq!(declaration.logic_domain(), None);
+    /// let data = hierarchy.signal("data")?;
+    /// let alias = hierarchy.signal("alias")?;
+    /// let high = data.slice(3, 2)?;
+    /// let low = data.slice(1, 0)?;
+    /// assert_eq!(data, alias); // Distinct declarations can share a history.
+    ///
+    /// // No candidate traversal is needed for an ordinary point or batch request.
+    /// assert!(matches!(wave.sample(data, Time::from_ticks(5))?, Sample::Value { .. }));
+    /// let batch = wave.samples(&[data, low], Time::from_ticks(5))?;
+    /// assert_eq!(batch.len(), 2);
+    ///
+    /// let mut selection = wave.select(&[data, alias, high, low])?;
+    /// let mut entering_slots = Vec::new();
+    /// let mut exported = Vec::new(); // Small bounded test sink; a real sink can write directly.
+    /// let outcome = selection.scan_each(TimeRange::from(Time::from_ticks(1)), |slot, record| {
+    ///     match record {
+    ///         ScanRef::Initial { .. } => entering_slots.push(slot),
+    ///         ScanRef::Change { time, value, .. } => {
+    ///             let text = render(value); // Borrowed value is consumed only here.
+    ///             println!("{slot}\t{}\t{text}", time.ticks());
+    ///             exported.push((slot, time.ticks(), text));
+    ///             if exported.len() == 4 {
+    ///                 return ControlFlow::Break(4);
+    ///             }
+    ///         }
+    ///         _ => {} // Public result enums are non-exhaustive.
+    ///     }
+    ///     ControlFlow::Continue(())
+    /// })?;
+    /// assert_eq!(outcome, ControlFlow::Break(4));
+    /// assert_eq!(entering_slots, [0, 1, 2, 3]);
+    /// exported.sort();
+    /// assert_eq!(exported, vec![
+    ///     (0, 5, "bits:1001".into()), (1, 5, "bits:1001".into()),
+    ///     (2, 5, "bits:10".into()), (3, 5, "bits:01".into()),
+    /// ]); // The excursion at tick 2 disappears; tick 8 is not delivered after Break.
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Borrowed records
     ///
     /// A borrowed record cannot escape its callback:
     ///
