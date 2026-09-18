@@ -55,7 +55,7 @@ exercise exact lookup and alias iterators. Native kind normalization has regress
 `real_parameter_kind_is_canonical` and `compound_scope_kinds_are_canonical` in
 [`src/backends/fst.rs`](../src/backends/fst.rs). Full-pool metadata assertions also
 check present-but-empty header text.
-The `open` helper selects the native reader explicitly for file/bytes input.
+The `open` helper selects each fixture's backend explicitly for file/bytes input.
 `metadata`, `hierarchy`, `sample_queries`, `window_queries` and `scan_queries`
 check the oracle through the public API. `automatic_opening_uses_content_and_keeps_logical_names`
 checks automatic opening, `Waveform::format` / `backend`, and logical source names.

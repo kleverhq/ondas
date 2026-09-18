@@ -1,4 +1,4 @@
-//! Full-pool native conformance plus focused FST public-API regressions.
+//! Full-pool conformance plus focused FST public-API regressions.
 //! The independent oracle is sparse: only listed declarations and observations
 //! are assertions. Every discovered FST/VCD runs in file and bytes modes.
 use std::{
