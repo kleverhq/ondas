@@ -3,10 +3,14 @@ use std::{collections::HashSet, fs, hint::black_box, ops::ControlFlow, sync::Arc
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use ondas::{ScanRef, Selection, Time, TimeRange};
 
+#[path = "fst/composed.rs"]
+mod composed;
 #[path = "../tests/support/fixtures.rs"]
 mod fixtures;
 #[path = "fst/hotpaths.rs"]
 mod hotpaths;
+#[path = "../tests/support/fst_workloads.rs"]
+mod workloads;
 
 const BACKEND: &str = "fst-lib";
 const SCR1_SIGNALS: [&str; 4] = [
@@ -356,6 +360,9 @@ criterion_group!(
     picorv32,
     hotpaths::topology,
     hotpaths::wide,
-    hotpaths::boundaries
+    hotpaths::boundaries,
+    composed::wide,
+    composed::sections,
+    composed::wrapped
 );
 criterion_main!(benches);

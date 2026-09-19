@@ -16,6 +16,10 @@ use ondas::{
 use serde_json::{Value as Json, json};
 #[path = "support/fixtures.rs"]
 mod fixture_catalog;
+#[path = "support/fst_workload_checks.rs"]
+mod fst_workload_checks;
+#[path = "support/fst_workloads.rs"]
+mod fst_workloads;
 #[path = "support/normalized_oracle.rs"]
 mod normalized_oracle;
 #[cfg(feature = "fsdb-lib")]

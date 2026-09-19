@@ -145,8 +145,8 @@ cases use the same windows as their scan counterparts. Fixture conformance check
 the independent histories; benchmark preflight checks ensure that the intended
 active and quiet cases remain distinct.
 
-Concrete fixtures, paths, bounds and sample counts remain in `benches/fst.rs`
-and `benches/fst/hotpaths.rs`.
+Concrete fixtures, paths, bounds and sample counts remain in `benches/fst.rs`,
+`benches/fst/hotpaths.rs` and `benches/fst/composed.rs`.
 
 ## FSDB workload design
 
