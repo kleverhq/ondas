@@ -212,6 +212,57 @@ measurement methods. A large numerical end tick is not a substitute for many
 recorded changes. Keep exact paths, bounds and sample settings in the benchmark
 sources, and verify fixture conformance before interpreting timings.
 
+### Composed FSDB workloads
+
+`benches/fsdb/composed.rs` adds three access patterns using the same public
+recordings and explicit `fsdb-lib` selection:
+
+- **W1, temporal sampling:** equal-width early/late sessions on the short/long
+  history pair read `t-1 → t → t-1` for every driver candidate. At zero only the
+  current tick is read. A separate eight-point series repeats, advances and
+  reverses timestamps through ordinary point reads. The typed/event session
+  includes event counts, four-state logic, reals and strings.
+- **W2, conditional payload:** a driver and a one-bit control gate an active
+  4096-bit payload, accepting one in two or one in 64 ticks on the same artifact.
+  Independent simultaneous drivers are compared with entries sharing a base
+  identity. The independent control is a projection of a second wide bus. A
+  bounded sequential scan consumer retains only three current values and emits
+  equivalent accepted payloads; neither timed consumer accumulates output rows.
+- **W3, scan and first accepted result:** full normalized scans, candidate-only
+  traversal, early accepted output, a long rejected prefix and no-match/EOF are
+  measured from both early and late bounds. Conditional cases pair prepared
+  execution with fresh open, hierarchy resolution, selection, query and drop.
+  First-result timing includes query cleanup and, for fresh cases, waveform
+  destruction; it is not a timestamp captured inside the first callback.
+
+The conditional query reads control before applying the Rust predicate and
+requests payload only on acceptance. This is logical selective access, not
+proof that native decoding, loading or retained-state work was skipped. The
+sequential comparison copies each changed value into bounded owned state; its
+cost is not an activity-only lower bound. Candidate-only W3 selects the same
+three entries as the full scan, whereas conditional W3 uses only the scalar
+entry as a driver.
+
+Ordinary real-runtime tests in `tests/support/fsdb_workload_tests.rs`, included
+by `just conformance-fsdb`, exercise the shared consumers outside timing. They
+check temporal values and `changed_at`, exact accepted times and wide bits,
+simultaneous/duplicate driver deduplication, stopping, no-match and typed/event
+agreement with normalized point reads. Full fixture conformance supplies the
+independent typed/event oracle. Run these tests before collecting a baseline:
+
+```sh
+./dev cargo test --locked --features fsdb-lib --test conformance fsdb_workload_tests -- --ignored
+./dev cargo bench --locked --features fsdb-lib --bench fsdb -- '/W[123]/' --test
+./dev cargo bench --locked --features fsdb-lib --bench fsdb -- '/W[123]/' --save-baseline fsdb-composed
+```
+
+Record the SDK runtime banner, compiler, machine, revision and fixture lock with
+local results. To attribute setup separately from traversal, use a local profile
+of selected-signal loading/cursor creation and record traversal, rather than
+subtracting fresh/prepared totals and calling the difference SDK loading. Both
+boundaries include loading. Keep profiling instrumentation separate from the
+uninstrumented Criterion baseline and do not infer SDK residency from timing.
+
 ## Local baselines
 
 Use Criterion's normal baseline mechanism for an existing format target, for
