@@ -6,6 +6,8 @@ use ondas::{ScanRef, Selection, Time, TimeRange};
 #[path = "../tests/support/fixtures.rs"]
 mod fixtures;
 
+#[path = "fsdb/composed.rs"]
+mod composed;
 #[path = "fsdb/controlled.rs"]
 mod controlled;
 #[path = "fsdb/typed.rs"]
@@ -349,5 +351,14 @@ fn controlled_corpus(c: &mut Criterion) {
     typed::records(c, "fsdb0018-native-real32", &["top.real32", "top.control"]);
 }
 
-criterion_group!(benches, compare, mode_change, wide, controlled_corpus);
+criterion_group!(
+    benches,
+    compare,
+    mode_change,
+    wide,
+    controlled_corpus,
+    composed::temporal,
+    composed::payload,
+    composed::typed
+);
 criterion_main!(benches);
