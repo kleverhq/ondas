@@ -6,8 +6,11 @@ use ondas::{ScanRef, Time, TimeRange};
 #[path = "../tests/support/fixtures.rs"]
 mod fixtures;
 
+#[path = "../tests/support/vcd_workloads.rs"]
+mod workloads;
+
 const FIXTURE: &str = "vcd0071-swerv1";
-const BACKEND: &str = "vcd-native";
+const BACKEND: &str = workloads::BACKEND;
 const SIGNALS: [&str; 4] = [
     "TOP.core_clk",
     "TOP.tb_top.cycleCnt",
@@ -417,5 +420,180 @@ fn scr1(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, swerv, compact_wide, scr1);
+fn composed(c: &mut Criterion) {
+    let (path, _) = fixtures::load_artifact(&fixtures::provider(), workloads::FIXTURE);
+    let mut wave = ondas::open_with(&path, BACKEND).unwrap();
+    let signals = workloads::signals(&wave);
+    let mut group = c.benchmark_group(format!(
+        "vcd/{}/{}/file/composed",
+        fixtures::PROVIDER,
+        workloads::FIXTURE
+    ));
+    group.sample_size(10);
+    {
+        let mut selection = wave.select(&signals).unwrap();
+        for start in [0, 13000] {
+            let range = workloads::range(start, start + 100);
+            group.bench_function(
+                BenchmarkId::new(
+                    format!("w1/prepared/adjacent/{start}..={}", start + 100),
+                    BACKEND,
+                ),
+                |b| {
+                    b.iter(|| {
+                        workloads::temporal(&mut selection, black_box(range), |at, slot, sample| {
+                            black_box((at, slot, sample));
+                        })
+                        .unwrap()
+                    })
+                },
+            );
+        }
+        for (name, ticks) in [
+            ("repeated", [13000, 13000, 13000, 13000]),
+            ("forward", [13000, 13001, 13002, 13003]),
+            ("backward", [13003, 13002, 13001, 13000]),
+        ] {
+            group.bench_function(
+                BenchmarkId::new(format!("w1/prepared/points/{name}"), BACKEND),
+                |b| {
+                    b.iter(|| {
+                        for tick in black_box(ticks) {
+                            let _ = selection
+                                .visit_samples(Time::from_ticks(tick), |sample| {
+                                    black_box(sample);
+                                    ControlFlow::<()>::Continue(())
+                                })
+                                .unwrap();
+                        }
+                    })
+                },
+            );
+        }
+        let range = workloads::range(0, 13675);
+        for (name, drivers, mask) in [
+            ("dense", &[0][..], 0),
+            ("sparse", &[0][..], 63),
+            ("sparse-shared", &[0, 0][..], 63),
+            ("sparse-independent", &[0, 3][..], 63),
+        ] {
+            group.bench_function(
+                BenchmarkId::new(format!("w2/prepared/query/{name}"), BACKEND),
+                |b| {
+                    b.iter(|| {
+                        black_box(
+                            workloads::conditional(
+                                &mut selection,
+                                black_box(range),
+                                drivers,
+                                black_box(mask),
+                                |time, value| {
+                                    black_box((time, value));
+                                    ControlFlow::Continue(())
+                                },
+                            )
+                            .unwrap(),
+                        )
+                    })
+                },
+            );
+        }
+        group.bench_function(BenchmarkId::new("w2/prepared/scan/sparse", BACKEND), |b| {
+            b.iter(|| {
+                black_box(
+                    workloads::conditional_scan(
+                        &mut selection,
+                        black_box(range),
+                        black_box(63),
+                        |time, value| {
+                            black_box((time, value));
+                            ControlFlow::Continue(())
+                        },
+                    )
+                    .unwrap(),
+                )
+            });
+        });
+        group.bench_function(BenchmarkId::new("w3/prepared/scan/full", BACKEND), |b| {
+            b.iter(|| {
+                let _ = selection
+                    .scan(black_box(range), |record| {
+                        black_box(record);
+                        ControlFlow::<()>::Continue(())
+                    })
+                    .unwrap();
+            });
+        });
+        for (name, range, mask) in [
+            ("first-after-rejections", range, 63),
+            ("first-late", workloads::range(13000, 13675), 63),
+            ("no-match-eof", TimeRange::all(), u32::MAX),
+        ] {
+            group.bench_function(
+                BenchmarkId::new(format!("w3/prepared/{name}"), BACKEND),
+                |b| {
+                    b.iter(|| {
+                        black_box(
+                            workloads::conditional(
+                                &mut selection,
+                                black_box(range),
+                                &[0],
+                                black_box(mask),
+                                |time, value| {
+                                    black_box((time, value));
+                                    ControlFlow::Break(())
+                                },
+                            )
+                            .unwrap(),
+                        )
+                    });
+                },
+            );
+        }
+    }
+    {
+        // Candidate-only traversal needs only the driver, not payload histories.
+        let mut selection = wave.select(&signals[..1]).unwrap();
+        group.bench_function(
+            BenchmarkId::new("w3/prepared/candidates/full", BACKEND),
+            |b| {
+                b.iter(|| {
+                    let _ = selection
+                        .scan_candidate_times(workloads::range(0, 13675), |time| {
+                            black_box(time);
+                            ControlFlow::<()>::Continue(())
+                        })
+                        .unwrap();
+                });
+            },
+        );
+    }
+    // Includes validation, path resolution, selection construction and all drops.
+    group.bench_function(
+        BenchmarkId::new("w3/end-to-end/first-after-rejections", BACKEND),
+        |b| {
+            b.iter(|| {
+                let mut wave = ondas::open_with(black_box(&path), BACKEND).unwrap();
+                let signals = workloads::signals(&wave);
+                let mut selection = wave.select(&signals).unwrap();
+                black_box(
+                    workloads::conditional(
+                        &mut selection,
+                        workloads::range(0, 13675),
+                        &[0],
+                        black_box(63),
+                        |time, value| {
+                            black_box((time, value));
+                            ControlFlow::Break(())
+                        },
+                    )
+                    .unwrap(),
+                )
+            });
+        },
+    );
+    group.finish();
+}
+
+criterion_group!(benches, composed, swerv, compact_wide, scr1);
 criterion_main!(benches);
