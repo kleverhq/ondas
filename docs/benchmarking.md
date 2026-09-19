@@ -145,17 +145,6 @@ cases use the same windows as their scan counterparts. Fixture conformance check
 the independent histories; benchmark preflight checks ensure that the intended
 active and quiet cases remain distinct.
 
-Composed-query cases in `benches/fst/composed.rs` cover session-local
-predecessor/current/predecessor reads, repeated point queries, sparse conditional
-4096-bit payload reads, and first accepted results after a rejected prefix.
-Conditional query and bounded sequential-scan consumers share correctness tests;
-simultaneous scalar drivers and shared-base projections use the same accepted
-observations. Lazy borrowed payload delivery is distinct from the eager consumer's
-owned copies and from internal decoding of selected payload. Prepared cases exclude
-opening and selection; fresh cases include opening, handle resolution, selection,
-query and destruction. Whole-file gzip inputs are labeled separately and are not
-size-matched comparisons with ordinary sources.
-
 Concrete fixtures, paths, bounds and sample counts remain in `benches/fst.rs`,
 `benches/fst/hotpaths.rs` and `benches/fst/composed.rs`.
 
