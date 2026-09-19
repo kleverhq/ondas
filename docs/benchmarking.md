@@ -212,6 +212,14 @@ measurement methods. A large numerical end tick is not a substitute for many
 recorded changes. Keep exact paths, bounds and sample settings in the benchmark
 sources, and verify fixture conformance before interpreting timings.
 
+`benches/fsdb/composed.rs` covers temporal sampling, conditional wide payload
+reads and first accepted results; `just conformance-fsdb` checks the consumers
+outside timing. Fresh cases include open, handle resolution, selection and
+cleanup; prepared cases exclude that setup but still include SDK loading.
+First-result timing includes query cleanup, not just time to the callback.
+Selective payload access does not imply skipped native decoding; the bounded
+sequential comparison retains owned current values rather than an output list.
+
 ## Local baselines
 
 Use Criterion's normal baseline mechanism for an existing format target, for
