@@ -22,6 +22,10 @@ mod fst_workload_checks;
 mod fst_workloads;
 #[path = "support/normalized_oracle.rs"]
 mod normalized_oracle;
+#[path = "support/vcd_workload_checks.rs"]
+mod vcd_workload_checks;
+#[path = "support/vcd_workloads.rs"]
+mod vcd_workloads;
 #[cfg(feature = "fsdb-lib")]
 use fixture_catalog::checked_provider;
 use fixture_catalog::{provider, provider_directory};
