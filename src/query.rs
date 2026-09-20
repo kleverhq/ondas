@@ -28,6 +28,7 @@ pub struct Selection<'w> {
     slot_indices: Vec<usize>,
     retained_signals: Vec<Signal>,
     replay: Option<engine::Replay>,
+    checkpoint: Option<engine::Replay>,
 }
 
 /// Selective reads at one completed candidate tick of [`Selection::query`].

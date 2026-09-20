@@ -568,6 +568,24 @@ fn composed(c: &mut Criterion) {
             },
         );
     }
+    for start in [0, 13000] {
+        let range = workloads::range(start, start + 100);
+        group.bench_function(
+            BenchmarkId::new(
+                format!("w1/setup/adjacent/{start}..={}", start + 100),
+                BACKEND,
+            ),
+            |b| {
+                b.iter(|| {
+                    let mut selection = wave.select(&signals).unwrap();
+                    workloads::temporal(&mut selection, black_box(range), |at, slot, sample| {
+                        black_box((at, slot, sample));
+                    })
+                    .unwrap();
+                })
+            },
+        );
+    }
     // Include selection setup and its first prefix traversal in each iteration.
     // The prepared repeated case intentionally measures warm reuse instead.
     group.bench_function(BenchmarkId::new("w1/setup/points/repeated", BACKEND), |b| {

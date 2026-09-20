@@ -66,35 +66,37 @@ fn reused_selection_matches_fresh_replay() {
         let expected = wave.select(&signals).unwrap().traces(range).unwrap();
         let mut selection = wave.select(&signals).unwrap();
         selection.samples(Time::from_ticks(start)).unwrap();
-        for (actual, expected) in selection.traces(range).unwrap().iter().zip(&expected) {
-            assert_eq!(
-                format!(
-                    "{:?}",
-                    actual.initial().map(|v| (v.value(), v.changed_at()))
-                ),
-                format!(
-                    "{:?}",
-                    expected.initial().map(|v| (v.value(), v.changed_at()))
-                )
-            );
-            assert_eq!(
-                format!(
-                    "{:?}",
-                    actual
-                        .changes()
-                        .iter()
-                        .map(|v| (v.time(), v.value()))
-                        .collect::<Vec<_>>()
-                ),
-                format!(
-                    "{:?}",
-                    expected
-                        .changes()
-                        .iter()
-                        .map(|v| (v.time(), v.value()))
-                        .collect::<Vec<_>>()
-                )
-            );
+        for _ in 0..2 {
+            for (actual, expected) in selection.traces(range).unwrap().iter().zip(&expected) {
+                assert_eq!(
+                    format!(
+                        "{:?}",
+                        actual.initial().map(|v| (v.value(), v.changed_at()))
+                    ),
+                    format!(
+                        "{:?}",
+                        expected.initial().map(|v| (v.value(), v.changed_at()))
+                    )
+                );
+                assert_eq!(
+                    format!(
+                        "{:?}",
+                        actual
+                            .changes()
+                            .iter()
+                            .map(|v| (v.time(), v.value()))
+                            .collect::<Vec<_>>()
+                    ),
+                    format!(
+                        "{:?}",
+                        expected
+                            .changes()
+                            .iter()
+                            .map(|v| (v.time(), v.value()))
+                            .collect::<Vec<_>>()
+                    )
+                );
+            }
         }
     }
     // Warm a prefix ending immediately before a session, then verify both sides
@@ -107,31 +109,84 @@ fn reused_selection_matches_fresh_replay() {
         selection
             .samples(Time::from_ticks(start.saturating_sub(1)))
             .unwrap();
+        for _ in 0..2 {
+            let _ = selection
+                .query(
+                    TimeRange::closed(Time::from_ticks(start), Time::from_ticks(103)),
+                    &[0, 2, 3, 4],
+                    |ctx| {
+                        let t = ctx.time().ticks();
+                        for at in [t.checked_sub(1), Some(t), t.checked_sub(1)]
+                            .into_iter()
+                            .flatten()
+                        {
+                            let _ = ctx.visit_samples(
+                                Time::from_ticks(at),
+                                &[0, 1, 2, 3, 4, 5, 6],
+                                |slot, sample| {
+                                    assert_eq!(
+                                        format!("{sample:?}"),
+                                        format!("{:?}", expected[at as usize][slot].as_ref())
+                                    );
+                                    Ok(ControlFlow::<()>::Continue(()))
+                                },
+                            )?;
+                        }
+                        Ok(ControlFlow::<()>::Continue(()))
+                    },
+                )
+                .unwrap();
+        }
+    }
+}
+
+#[test]
+fn checkpoint_preserves_inactive_state_and_previous_tick_events() {
+    let mut body = String::from("#0 b0010 ! 0n ");
+    for tick in 1..4096 {
+        body.push_str(&format!("#{tick} {}n ", tick % 2));
+    }
+    body.push_str("1e 1e #4096 $dumpall b1010 ! 1e $end 1e #4097 b1110 !");
+    let mut wave = open(
+        "$var wire 4 ! bus $end $var wire 1 n noise $end $var event 1 e event $end",
+        body.as_bytes(),
+    );
+    let bus = wave.hierarchy().signal("top.bus").unwrap();
+    let event = wave.hierarchy().signal("top.event").unwrap();
+    let signals = [bus, bus.slice(1, 0).unwrap(), event];
+    let mut selection = wave.select(&signals).unwrap();
+    let range = TimeRange::closed(Time::from_ticks(4096), Time::from_ticks(4097));
+    for _ in 0..3 {
+        let traces = selection.traces(range).unwrap();
+        assert_eq!(bits(traces[0].initial().unwrap().value()), "0010");
+        assert_eq!(traces[0].initial().unwrap().changed_at(), None);
+        assert!(traces[1].changes().is_empty());
         let _ = selection
-            .query(
-                TimeRange::closed(Time::from_ticks(start), Time::from_ticks(103)),
-                &[0, 2, 3, 4],
-                |ctx| {
-                    let t = ctx.time().ticks();
-                    for at in [t.checked_sub(1), Some(t), t.checked_sub(1)]
-                        .into_iter()
-                        .flatten()
-                    {
-                        let _ = ctx.visit_samples(
-                            Time::from_ticks(at),
-                            &[0, 1, 2, 3, 4, 5, 6],
-                            |slot, sample| {
-                                assert_eq!(
-                                    format!("{sample:?}"),
-                                    format!("{:?}", expected[at as usize][slot].as_ref())
-                                );
+            .query(range, &[0, 2], |ctx| {
+                if ctx.time() == Time::from_ticks(4096) {
+                    for (tick, events) in [(4095, 2), (4096, 1), (4095, 2)] {
+                        let _ =
+                            ctx.visit_samples(Time::from_ticks(tick), &[1, 2], |slot, sample| {
+                                match (slot, sample) {
+                                    (
+                                        1,
+                                        ondas::SampleRef::Value {
+                                            value,
+                                            changed_at: None,
+                                            ..
+                                        },
+                                    ) => assert_eq!(bits(value), "10"),
+                                    (2, ondas::SampleRef::Event { occurrences, .. }) => {
+                                        assert_eq!(occurrences, events)
+                                    }
+                                    _ => panic!("unexpected {sample:?}"),
+                                }
                                 Ok(ControlFlow::<()>::Continue(()))
-                            },
-                        )?;
+                            })?;
                     }
-                    Ok(ControlFlow::<()>::Continue(()))
-                },
-            )
+                }
+                Ok(ControlFlow::<()>::Continue(()))
+            })
             .unwrap();
     }
 }

@@ -17,9 +17,34 @@ pub(super) struct Slot {
 
 pub(super) struct Replay {
     position: crate::backends::vcd::Position,
+    start: Time,
     end: Time,
     time: Option<Time>,
     slots: Vec<Slot>,
+}
+
+// One query-boundary snapshot, not a time index or value history.
+const CHECKPOINT_BYTES: usize = 4 * 1024 * 1024;
+
+fn checkpoint_bytes(slots: &[Slot]) -> usize {
+    slots.iter().fold(
+        std::mem::size_of::<Replay>() + std::mem::size_of_val(slots),
+        |bytes, slot| {
+            [
+                slot.state.as_ref().map(|state| &state.value),
+                slot.pending.as_ref(),
+            ]
+            .into_iter()
+            .flatten()
+            .fold(bytes, |bytes, value| {
+                bytes.saturating_add(match value.as_ref() {
+                    ValueRef::Bits(bits) => bits.width() as usize,
+                    ValueRef::String(text) => text.len(),
+                    _ => 0,
+                })
+            })
+        },
+    )
 }
 
 fn update(state: &mut Option<State>, value: Value, time: Time) -> bool {
@@ -268,6 +293,7 @@ impl<'w> Selection<'w> {
             slot_indices,
             retained_signals,
             replay: None,
+            checkpoint: None,
         })
     }
 
@@ -492,6 +518,7 @@ impl<'w> Selection<'w> {
             };
             if let ControlFlow::Break(value) = visitor(sample) {
                 self.replay = None;
+                self.checkpoint = None;
                 return Ok(ControlFlow::Break(value));
             }
         }
@@ -660,6 +687,7 @@ impl<'w> Selection<'w> {
             let result = initials(&self.signals, &slots, &slot_indices, &mut visitor);
             if result.is_break() {
                 self.replay = None;
+                self.checkpoint = None;
             }
             return Ok(result);
         }
@@ -685,53 +713,84 @@ impl<'w> Selection<'w> {
         slots: &mut [Slot],
         mut visitor: impl FnMut(Time, &[Signal], &[Slot]) -> Result<ControlFlow<B>>,
     ) -> Result<ControlFlow<B>> {
-        let replay = self.replay.take().filter(|replay| {
-            start.is_some_and(|start| replay.time.is_none_or(|time| time <= start))
-                && replay.end <= end
+        let mut checkpoint = self.checkpoint.take();
+        let eligible =
+            |replay: &Replay| start.is_some_and(|start| replay.start <= start) && replay.end <= end;
+        let retained = self.replay.take().filter(&eligible);
+        let replay = retained.as_ref().or_else(|| {
+            checkpoint
+                .as_ref()
+                .filter(|checkpoint| eligible(checkpoint))
         });
-        let mut pending_time = replay.as_ref().and_then(|replay| replay.time);
-        let position = replay.as_ref().map(|replay| replay.position);
+        let mut checkpoint_considered = checkpoint
+            .as_ref()
+            .is_some_and(|checkpoint| Some(checkpoint.start) == start);
+        let mut pending_time = replay.and_then(|replay| replay.time);
+        let position = replay.map(|replay| replay.position);
         if let Some(replay) = replay {
             slots.clone_from_slice(&replay.slots);
         }
+        drop(retained);
         let backend = self.waveform.backend().to_owned();
         #[cfg(test)]
         let probe = streaming_tests::probe(&self.waveform.reader);
         // One entering/final value and event count per slot, never intra-tick writes.
-        let mut consume = |base, time, value: ValueRef<'_>| {
-            if let Some(previous) = pending_time
-                && previous != time
-            {
-                match complete_tick(&self.signals, slots, previous, &mut visitor) {
-                    Ok(ControlFlow::Continue(())) => (),
-                    outcome => return ControlFlow::Break(outcome),
+        let mut consume =
+            |base, time, value: ValueRef<'_>, position: Option<crate::backends::vcd::Position>| {
+                if let Some(previous) = pending_time
+                    && previous != time
+                {
+                    match complete_tick(&self.signals, slots, previous, &mut visitor) {
+                        Ok(ControlFlow::Continue(())) => (),
+                        outcome => return ControlFlow::Break(outcome),
+                    }
                 }
-            }
-            pending_time = Some(time);
-            for &index in &self.groups[&base] {
-                let slot = &mut slots[index];
-                if let ValueRef::Event { occurrences } = value {
-                    let Some(count) = slot.events.checked_add(occurrences) else {
-                        return ControlFlow::Break(Err(Error::Backend {
-                            backend: backend.clone(),
-                            operation: "count events",
-                            message: "event occurrence count exceeds u64::MAX".into(),
-                        }));
-                    };
-                    slot.events = count;
-                } else {
-                    slot.pending = Some(project(value, self.retained_signals[index]).to_owned());
+                if !checkpoint_considered
+                    && let (Some(start), Some(position)) = (start, position)
+                    && time >= start
+                    && pending_time.is_none_or(|previous| previous < start)
+                {
+                    checkpoint_considered = true;
+                    // The previous tick has committed; this record is still unread
+                    // at the saved position. Oversized selections simply replay.
+                    checkpoint = (checkpoint_bytes(slots) <= CHECKPOINT_BYTES).then(|| Replay {
+                        position,
+                        start,
+                        end: Time::from_ticks(position.time),
+                        time: None,
+                        slots: slots.to_vec(),
+                    });
                 }
-            }
-            #[cfg(test)]
-            streaming_tests::observe_pending(&probe, slots);
-            ControlFlow::Continue(())
-        };
+                pending_time = Some(time);
+                for &index in &self.groups[&base] {
+                    let slot = &mut slots[index];
+                    if let ValueRef::Event { occurrences } = value {
+                        let Some(count) = slot.events.checked_add(occurrences) else {
+                            return ControlFlow::Break(Err(Error::Backend {
+                                backend: backend.clone(),
+                                operation: "count events",
+                                message: "event occurrence count exceeds u64::MAX".into(),
+                            }));
+                        };
+                        slot.events = count;
+                    } else {
+                        slot.pending =
+                            Some(project(value, self.retained_signals[index]).to_owned());
+                    }
+                }
+                #[cfg(test)]
+                streaming_tests::observe_pending(&probe, slots);
+                ControlFlow::Continue(())
+            };
         let result = match &mut self.waveform.reader {
             crate::backends::Reader::Vcd(reader) => {
-                reader.read_from(&self.bases, end, position, &mut consume)
+                reader.read_from(&self.bases, end, position, |base, time, value, position| {
+                    consume(base, time, value, Some(position))
+                })
             }
-            reader => reader.read(&self.bases, end, &mut consume),
+            reader => reader.read(&self.bases, end, |base, time, value| {
+                consume(base, time, value, None)
+            }),
         }?;
         if let ControlFlow::Break(outcome) = result {
             return outcome;
@@ -740,6 +799,7 @@ impl<'w> Selection<'w> {
         let replay = match &self.waveform.reader {
             crate::backends::Reader::Vcd(reader) => reader.position().map(|position| Replay {
                 position,
+                start: pending_time.unwrap_or(Time::ZERO),
                 end,
                 time: pending_time,
                 slots: slots.to_vec(),
@@ -754,6 +814,7 @@ impl<'w> Selection<'w> {
         };
         if result.is_continue() {
             self.replay = replay;
+            self.checkpoint = checkpoint;
         }
         Ok(result)
     }
@@ -860,6 +921,53 @@ mod tests {
         assert!(selection.replay.is_none());
         selection.samples(Time::from_ticks(102)).unwrap();
         assert!(selection.replay.is_some());
+    }
+
+    #[test]
+    fn vcd_boundary_checkpoint_skips_prefix_and_is_bounded() {
+        let mut text = String::from("$var wire 1 ! bit $end $enddefinitions $end ");
+        for tick in 0..1000 {
+            text.push_str(&format!("#{tick} {}! ", tick % 2));
+        }
+        let mut wave =
+            crate::open_bytes_with("checkpoint.vcd", text.into_bytes().into(), "vcd-native")
+                .unwrap();
+        let signal = wave.hierarchy().signal("bit").unwrap();
+        let mut selection = wave.select(&[signal]).unwrap();
+        let range = TimeRange::closed(Time::from_ticks(900), Time::from_ticks(910));
+        selection.traces(range).unwrap();
+        let bytes = checkpoint_bytes(&selection.checkpoint.as_ref().unwrap().slots);
+        eprintln!("single-signal checkpoint storage: {bytes} bytes");
+        assert!(bytes <= CHECKPOINT_BYTES);
+        let before = match &selection.waveform.reader {
+            crate::backends::Reader::Vcd(reader) => reader.records_read,
+            _ => unreachable!(),
+        };
+        selection.traces(range).unwrap();
+        let crate::backends::Reader::Vcd(reader) = &selection.waveform.reader else {
+            unreachable!()
+        };
+        assert_eq!(reader.records_read - before, 11);
+        assert_eq!(
+            checkpoint_bytes(&selection.checkpoint.as_ref().unwrap().slots),
+            bytes
+        );
+        let _ = selection
+            .query(range, &[0], |_| Ok(ControlFlow::Break(())))
+            .unwrap();
+        assert!(selection.checkpoint.is_none());
+        // An oversized selected value does not become an oversized index entry.
+        let text = format!(
+            "$var wire {} ! wide $end $enddefinitions $end #0 b0 ! #1 b1 !",
+            CHECKPOINT_BYTES
+        );
+        let mut wave =
+            crate::open_bytes_with("budget.vcd", text.into_bytes().into(), "vcd-native").unwrap();
+        let signal = wave.hierarchy().signal("wide").unwrap();
+        let mut selection = wave.select(&[signal]).unwrap();
+        selection.samples(Time::from_ticks(1)).unwrap();
+        assert!(selection.checkpoint.is_none());
+        assert!(selection.replay.is_some()); // bounded selected state, not index storage
     }
 
     #[test]

@@ -88,7 +88,8 @@ fn utf8(bytes: &[u8]) -> Result<String> {
 #[derive(Clone, Copy)]
 pub(crate) struct Position {
     offset: u64,
-    time: u64,
+    pub(crate) time: u64,
+    block: bool,
 }
 
 pub(crate) struct Reader {
@@ -278,9 +279,12 @@ impl Reader {
             ids,
             encodings,
         };
-        let (_, span) = reader.walk(u64::MAX, None, Some(&mut metadata.comments), |_, _, _| {
-            ControlFlow::<()>::Continue(())
-        })?;
+        let (_, span) = reader.walk(
+            u64::MAX,
+            None,
+            Some(&mut metadata.comments),
+            |_, _, _, _| ControlFlow::<()>::Continue(()),
+        )?;
         metadata.time_span = span;
         let hierarchy = Hierarchy::new(scopes, variables, reader.encodings.clone());
         Ok((reader, hierarchy, metadata))
@@ -290,9 +294,11 @@ impl Reader {
         &mut self,
         signals: &[Signal],
         end: Time,
-        visitor: impl for<'v> FnMut(usize, Time, ValueRef<'v>) -> ControlFlow<B>,
+        mut visitor: impl for<'v> FnMut(usize, Time, ValueRef<'v>) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>> {
-        self.read_from(signals, end, None, visitor)
+        self.read_from(signals, end, None, |index, time, value, _| {
+            visitor(index, time, value)
+        })
     }
 
     pub(crate) fn position(&self) -> Option<Position> {
@@ -304,11 +310,12 @@ impl Reader {
         signals: &[Signal],
         end: Time,
         position: Option<Position>,
-        visitor: impl for<'v> FnMut(usize, Time, ValueRef<'v>) -> ControlFlow<B>,
+        visitor: impl for<'v> FnMut(usize, Time, ValueRef<'v>, Position) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>> {
         let position = position.unwrap_or(Position {
             offset: self.body,
             time: 0,
+            block: false,
         });
         self.position = None;
         self.tokens.input.seek(SeekFrom::Start(position.offset))?;
@@ -327,12 +334,12 @@ impl Reader {
         end: u64,
         selected: Option<&HashSet<usize>>,
         mut comments: Option<&mut Vec<String>>,
-        mut visitor: impl for<'v> FnMut(usize, Time, ValueRef<'v>) -> ControlFlow<B>,
+        mut visitor: impl for<'v> FnMut(usize, Time, ValueRef<'v>, Position) -> ControlFlow<B>,
     ) -> Result<(ControlFlow<B>, Option<TimeSpan>)> {
-        let mut time = self.position.map_or(0, |position| position.time);
-        self.position = None;
+        let position = self.position.take();
+        let mut time = position.map_or(0, |position| position.time);
         let mut span = None::<TimeSpan>;
-        let mut block = false;
+        let mut block = position.is_some_and(|position| position.block);
         let mut bits = Vec::new();
         let mut string = String::new();
         let mut seen = if selected.is_none() {
@@ -354,7 +361,11 @@ impl Reader {
                     return Err(self.tokens.error("backwards timestamp"));
                 }
                 if next > end {
-                    self.position = Some(Position { offset, time });
+                    self.position = Some(Position {
+                        offset,
+                        time,
+                        block,
+                    });
                     break;
                 }
                 time = next;
@@ -441,7 +452,16 @@ impl Reader {
             // Checkpoints describe event snapshots, not observable triggers.
             if selected
                 && !(block && matches!(value, ValueRef::Event { .. }))
-                && let ControlFlow::Break(value) = visitor(index, Time::from_ticks(time), value)
+                && let ControlFlow::Break(value) = visitor(
+                    index,
+                    Time::from_ticks(time),
+                    value,
+                    Position {
+                        offset,
+                        time,
+                        block,
+                    },
+                )
             {
                 return Ok((ControlFlow::Break(value), span));
             }
@@ -452,6 +472,7 @@ impl Reader {
         self.position.get_or_insert(Position {
             offset: self.tokens.offset,
             time,
+            block,
         });
         Ok((ControlFlow::Continue(()), span))
     }
