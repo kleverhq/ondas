@@ -85,8 +85,17 @@ fn utf8(bytes: &[u8]) -> Result<String> {
         .map_err(|_| malformed("invalid UTF-8 declaration or metadata"))
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct Position {
+    offset: u64,
+    time: u64,
+}
+
 pub(crate) struct Reader {
     tokens: Tokens,
+    position: Option<Position>,
+    #[cfg(test)]
+    pub(crate) records_read: usize,
     body: u64,
     ids: HashMap<Vec<u8>, usize>,
     encodings: Vec<Encoding>,
@@ -262,6 +271,9 @@ impl Reader {
         }
         let mut reader = Self {
             tokens,
+            position: None,
+            #[cfg(test)]
+            records_read: 0,
             body,
             ids,
             encodings,
@@ -280,11 +292,34 @@ impl Reader {
         end: Time,
         visitor: impl for<'v> FnMut(usize, Time, ValueRef<'v>) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>> {
-        self.tokens.input.seek(SeekFrom::Start(self.body))?;
-        self.tokens.offset = self.body;
+        self.read_from(signals, end, None, visitor)
+    }
+
+    pub(crate) fn position(&self) -> Option<Position> {
+        self.position
+    }
+
+    pub(crate) fn read_from<B>(
+        &mut self,
+        signals: &[Signal],
+        end: Time,
+        position: Option<Position>,
+        visitor: impl for<'v> FnMut(usize, Time, ValueRef<'v>) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>> {
+        let position = position.unwrap_or(Position {
+            offset: self.body,
+            time: 0,
+        });
+        self.position = None;
+        self.tokens.input.seek(SeekFrom::Start(position.offset))?;
+        self.tokens.offset = position.offset;
+        self.position = Some(position);
         let selected = signals.iter().map(|s| s.index()).collect();
-        self.walk(end.ticks(), Some(&selected), None, visitor)
-            .map(|(flow, _)| flow)
+        let result = self.walk(end.ticks(), Some(&selected), None, visitor);
+        if !matches!(result, Ok((ControlFlow::Continue(()), _))) {
+            self.position = None;
+        }
+        result.map(|(flow, _)| flow)
     }
 
     fn walk<B>(
@@ -294,7 +329,8 @@ impl Reader {
         mut comments: Option<&mut Vec<String>>,
         mut visitor: impl for<'v> FnMut(usize, Time, ValueRef<'v>) -> ControlFlow<B>,
     ) -> Result<(ControlFlow<B>, Option<TimeSpan>)> {
-        let mut time = 0;
+        let mut time = self.position.map_or(0, |position| position.time);
+        self.position = None;
         let mut span = None::<TimeSpan>;
         let mut block = false;
         let mut bits = Vec::new();
@@ -304,7 +340,11 @@ impl Reader {
         } else {
             Vec::new()
         };
-        while let Some(word) = self.tokens.next()? {
+        loop {
+            let offset = self.tokens.offset;
+            let Some(word) = self.tokens.next()? else {
+                break;
+            };
             if word[0] == b'#' {
                 if block {
                     return Err(self.tokens.error("timestamp inside dump block"));
@@ -313,10 +353,11 @@ impl Reader {
                 if next < time {
                     return Err(self.tokens.error("backwards timestamp"));
                 }
-                time = next;
-                if time > end {
+                if next > end {
+                    self.position = Some(Position { offset, time });
                     break;
                 }
+                time = next;
                 span = Some(TimeSpan::new(
                     span.map_or(Time::from_ticks(time), |s| s.first()),
                     Time::from_ticks(time),
@@ -336,6 +377,10 @@ impl Reader {
                     _ => return Err(self.tokens.error("unexpected body command")),
                 }
                 continue;
+            }
+            #[cfg(test)]
+            {
+                self.records_read += 1;
             }
             let prefix = word[0].to_ascii_lowercase();
             let (payload, id) = if matches!(prefix, b'b' | b'r' | b's') {
@@ -404,6 +449,10 @@ impl Reader {
         if block {
             return Err(self.tokens.error("unterminated dump block"));
         }
+        self.position.get_or_insert(Position {
+            offset: self.tokens.offset,
+            time,
+        });
         Ok((ControlFlow::Continue(()), span))
     }
 }

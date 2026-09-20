@@ -29,6 +29,114 @@ fn bits(value: ValueRef<'_>) -> String {
 }
 
 #[test]
+fn reused_selection_matches_fresh_replay() {
+    let mut wave = open(
+        "$var wire 4 ! bus $end $var event 1 e ev $end $var real 64 r real $end $var string 1 s text $end $var wire 1 m missing $end",
+        b"#0 b0 ! #3 b11 ! b0 ! 1e 1e r1 r sfirst s #4 1e #10 $dumpoff bx ! 1e $end #12 $dumpon b1 ! 1e $end 1e #12 b10 ! #20 r-0 r slast s #100 b11 !",
+    );
+    let h = wave.hierarchy();
+    let bus = h.signal("top.bus").unwrap();
+    let signals = [
+        bus,
+        bus.slice(1, 0).unwrap(),
+        h.signal("top.ev").unwrap(),
+        h.signal("top.real").unwrap(),
+        h.signal("top.text").unwrap(),
+        h.signal("top.missing").unwrap(),
+        bus,
+    ];
+    let ticks = [
+        0, 3, 3, 4, 5, 10, 12, 12, 13, 20, 100, 101, 1000, 4, 3, 0, 12,
+    ];
+    let expected: Vec<_> = ticks
+        .iter()
+        .map(|&t| wave.samples(&signals, Time::from_ticks(t)).unwrap())
+        .collect();
+    let mut selection = wave.select(&signals).unwrap();
+    for (&tick, expected) in ticks.iter().zip(&expected) {
+        assert_eq!(
+            format!("{:?}", selection.samples(Time::from_ticks(tick)).unwrap()),
+            format!("{expected:?}"),
+            "tick {tick}"
+        );
+    }
+    drop(selection);
+    for start in [0, 3, 4, 5, 10, 12, 13, 20, 100, 101] {
+        let range = TimeRange::closed(Time::from_ticks(start), Time::from_ticks(start + 3));
+        let expected = wave.select(&signals).unwrap().traces(range).unwrap();
+        let mut selection = wave.select(&signals).unwrap();
+        selection.samples(Time::from_ticks(start)).unwrap();
+        for (actual, expected) in selection.traces(range).unwrap().iter().zip(&expected) {
+            assert_eq!(
+                format!(
+                    "{:?}",
+                    actual.initial().map(|v| (v.value(), v.changed_at()))
+                ),
+                format!(
+                    "{:?}",
+                    expected.initial().map(|v| (v.value(), v.changed_at()))
+                )
+            );
+            assert_eq!(
+                format!(
+                    "{:?}",
+                    actual
+                        .changes()
+                        .iter()
+                        .map(|v| (v.time(), v.value()))
+                        .collect::<Vec<_>>()
+                ),
+                format!(
+                    "{:?}",
+                    expected
+                        .changes()
+                        .iter()
+                        .map(|v| (v.time(), v.value()))
+                        .collect::<Vec<_>>()
+                )
+            );
+        }
+    }
+    // Warm a prefix ending immediately before a session, then verify both sides
+    // of every candidate, including repeated t-1 reads and event multiplicity.
+    let expected: Vec<_> = (0..=103)
+        .map(|t| wave.samples(&signals, Time::from_ticks(t)).unwrap())
+        .collect();
+    for start in [0_u64, 3, 4, 5, 10, 12, 13, 20, 100] {
+        let mut selection = wave.select(&signals).unwrap();
+        selection
+            .samples(Time::from_ticks(start.saturating_sub(1)))
+            .unwrap();
+        let _ = selection
+            .query(
+                TimeRange::closed(Time::from_ticks(start), Time::from_ticks(103)),
+                &[0, 2, 3, 4],
+                |ctx| {
+                    let t = ctx.time().ticks();
+                    for at in [t.checked_sub(1), Some(t), t.checked_sub(1)]
+                        .into_iter()
+                        .flatten()
+                    {
+                        let _ = ctx.visit_samples(
+                            Time::from_ticks(at),
+                            &[0, 1, 2, 3, 4, 5, 6],
+                            |slot, sample| {
+                                assert_eq!(
+                                    format!("{sample:?}"),
+                                    format!("{:?}", expected[at as usize][slot].as_ref())
+                                );
+                                Ok(ControlFlow::<()>::Continue(()))
+                            },
+                        )?;
+                    }
+                    Ok(ControlFlow::<()>::Continue(()))
+                },
+            )
+            .unwrap();
+    }
+}
+
+#[test]
 fn events_reals_strings_and_fixed_storage_class() {
     let mut wave = open(
         "$var event 1 ! ev $end $var real 64 r real $end $var real 1 s text $end",

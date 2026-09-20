@@ -568,6 +568,21 @@ fn composed(c: &mut Criterion) {
             },
         );
     }
+    // Include selection setup and its first prefix traversal in each iteration.
+    // The prepared repeated case intentionally measures warm reuse instead.
+    group.bench_function(BenchmarkId::new("w1/setup/points/repeated", BACKEND), |b| {
+        b.iter(|| {
+            let mut selection = wave.select(&signals).unwrap();
+            for _ in 0..4 {
+                let _ = selection
+                    .visit_samples(Time::from_ticks(13000), |sample| {
+                        black_box(sample);
+                        ControlFlow::<()>::Continue(())
+                    })
+                    .unwrap();
+            }
+        })
+    });
     // Includes validation, path resolution, selection construction and all drops.
     group.bench_function(
         BenchmarkId::new("w3/end-to-end/first-after-rejections", BACKEND),

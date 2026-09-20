@@ -24,8 +24,8 @@ the sequence of value records does not.
 
 ### Queries
 
-A window `[start, end]` does not cause a seek to `start`: the reader seeks to the
-body offset saved during opening. It parses every intervening record through
+Without reusable selected state, a window `[start, end]` does not cause a seek
+to `start`: the reader seeks to the body offset saved during opening. It parses every intervening record through
 `end`, forwarding selected signals to the shared query engine. Records before
 `start` establish entering state; records inside the window produce changes.
 A sample likewise needs all records at its requested tick to obtain the final
@@ -34,8 +34,15 @@ state or event count.
 The query engine applies projections and final-tick normalization, including
 per-tick event aggregates, and keeps entering state separate from changes. Scans emit callbacks without retaining
 an entire trace; owned trace requests collect their output. `Break` stops a scan,
-but it does not create a checkpoint for the next query. Queries do not reuse a
-previous replay position.
+and invalidates the selection's replay state.
+
+A reusable selection retains one private parser position and the entering/final
+selected state at its last completed tick. Repeated and forward reads can resume
+there; requests before the retained window replay from the body. Session reuse
+also requires the retained tick to precede the session start, so previous-tick
+events remain exact. Failed or stopped traversals discard reuse; a new selection
+always starts without retained values. No history or candidate list is cached.
+The diagram above shows the uncached path.
 
 The parser and replay loop are in [`src/backends/vcd.rs`](../src/backends/vcd.rs).
 Shared observation logic is in [`src/query/engine.rs`](../src/query/engine.rs).
@@ -45,9 +52,9 @@ Shared observation logic is in [`src/query/engine.rs`](../src/query/engine.rs).
 | Choice | Consequence |
 |---|---|
 | Full validation at opening | Opening reads the whole source before any query can run. Encodings and time bounds are then fixed. |
-| Replay from the body start | Each query pays for the prefix through its end tick, including records before the requested range. A narrow late window is not a random-access read. |
-| Batch selected signals | One traversal serves the batch. Reusable selections retain validated handles and grouping, not values from previous queries. |
-| No history cache or time index | Repeated queries repeat parsing. The identifier lookup map resolves signals; it cannot seek to a tick. |
+| Replay from the body start when no reusable state exists | First reads and backward requests pay for the prefix through their end tick. A narrow late window is not a random-access read. |
+| Batch selected signals | One traversal serves the batch. A reusable selection also retains bounded projected values and event counts for replay reuse. |
+| No history cache or time index | Only the last replay window survives within a selection. The identifier lookup map resolves signals; it cannot seek to a tick. |
 | Buffered file input | The reader does not load the entire file into memory. Bytes input, by contrast, retains the caller's shared source allocation. |
 | Streaming observations | Working storage includes declarations, identifier maps, parser buffers and bounded entering/pending values and event counts per selection entry, not the complete history. Wide values still need space. Owned traces also retain their requested output. |
 
