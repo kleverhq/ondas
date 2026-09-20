@@ -69,12 +69,13 @@ impl QueryContext<'_> {
         validate_indices(self.signals.len(), indices)?;
         for &index in indices {
             let signal = self.signals[index];
-            let slot = &self.slots[index];
+            let slot_index = self.slot_indices[index];
+            let slot = &self.slots[slot_index];
             let sample = if signal.encoding() == Encoding::Event {
                 let occurrences = if current {
                     slot.events
                 } else if self.previous_tick == Some(time) {
-                    self.previous_events[index]
+                    self.previous_events[slot_index]
                 } else {
                     0
                 };
@@ -127,9 +128,11 @@ fn project(value: ValueRef<'_>, signal: Signal) -> ValueRef<'_> {
 fn initials<B>(
     signals: &[Signal],
     slots: &[Slot],
+    slot_indices: &[usize],
     visitor: &mut impl for<'v> FnMut(usize, ScanRef<'v>) -> ControlFlow<B>,
 ) -> ControlFlow<B> {
-    for (index, (signal, slot)) in signals.iter().zip(slots).enumerate() {
+    for (index, signal) in signals.iter().enumerate() {
+        let slot = &slots[slot_indices[index]];
         if let Some(state) = &slot.state
             && let ControlFlow::Break(value) = visitor(
                 index,
@@ -149,6 +152,7 @@ fn initials<B>(
 fn scan_tick<B>(
     signals: &[Signal],
     slots: &[Slot],
+    slot_indices: &[usize],
     time: Time,
     range: TimeRange,
     emitted_initials: &mut bool,
@@ -156,9 +160,10 @@ fn scan_tick<B>(
 ) -> ControlFlow<B> {
     if !*emitted_initials && time >= range.start() {
         *emitted_initials = true;
-        initials(signals, slots, visitor)?;
+        initials(signals, slots, slot_indices, visitor)?;
     }
-    for (index, (&signal, slot)) in signals.iter().zip(slots).enumerate() {
+    for (index, &signal) in signals.iter().enumerate() {
+        let slot = &slots[slot_indices[index]];
         if let Some(value) = &slot.pending
             && slot.changed
             && time >= range.start()
@@ -226,11 +231,21 @@ impl<'w> Selection<'w> {
     pub(crate) fn new(waveform: &'w mut Waveform, signals: &[Signal]) -> Result<Self> {
         let mut groups = HashMap::<usize, Vec<usize>>::new();
         let mut bases = Vec::new();
-        for (position, &signal) in signals.iter().enumerate() {
+        let mut first_slots = HashMap::new();
+        let mut slot_indices = Vec::with_capacity(signals.len());
+        let mut retained_signals = Vec::new();
+        for &signal in signals {
             let index = waveform.hierarchy().validate(signal)?;
             if signal.encoding() == Encoding::Unsupported {
                 return Err(Error::UnsupportedSignal { signal });
             }
+            let position = retained_signals.len();
+            let first = *first_slots.entry(signal).or_insert(position);
+            slot_indices.push(first);
+            if first != position {
+                continue;
+            }
+            retained_signals.push(signal);
             let entries = groups.entry(index).or_default();
             if entries.is_empty() {
                 bases.push(signal.base());
@@ -242,6 +257,8 @@ impl<'w> Selection<'w> {
             signals: signals.to_vec(),
             bases,
             groups,
+            slot_indices,
+            retained_signals,
         })
     }
 
@@ -381,21 +398,24 @@ impl<'w> Selection<'w> {
         if drivers.is_empty() || range.is_empty() || range.start() > end {
             return Ok(ControlFlow::Continue(()));
         }
-        let mut slots = (0..self.signals.len())
+        let mut slots = (0..self.retained_signals.len())
             .map(|_| Slot::default())
             .collect::<Vec<_>>();
-        let mut previous_events = vec![0; self.signals.len()];
+        let mut previous_events = vec![0; self.retained_signals.len()];
         let mut previous_tick = None;
+        let slot_indices = self.slot_indices.clone();
         self.read_ticks(end, &mut slots, |time, signals, slots| {
             if time >= range.start()
-                && drivers
-                    .iter()
-                    .any(|&index| slots[index].pending.is_some() || slots[index].events > 0)
+                && drivers.iter().any(|&index| {
+                    let slot = &slots[slot_indices[index]];
+                    slot.pending.is_some() || slot.events > 0
+                })
             {
                 let context = QueryContext {
                     time,
                     signals,
                     slots,
+                    slot_indices: &slot_indices,
                     previous_tick,
                     previous_events: &previous_events,
                 };
@@ -597,15 +617,17 @@ impl<'w> Selection<'w> {
         if range.is_empty() || range.start() > end || self.signals.is_empty() {
             return Ok(ControlFlow::Continue(()));
         }
-        let mut slots = (0..self.signals.len())
+        let mut slots = (0..self.retained_signals.len())
             .map(|_| Slot::default())
             .collect::<Vec<_>>();
         let mut emitted_initials = false;
+        let slot_indices = self.slot_indices.clone();
         if let ControlFlow::Break(value) =
             self.read_ticks(end, &mut slots, |time, signals, slots| {
                 Ok(scan_tick(
                     signals,
                     slots,
+                    &slot_indices,
                     time,
                     range,
                     &mut emitted_initials,
@@ -616,7 +638,7 @@ impl<'w> Selection<'w> {
             return Ok(ControlFlow::Break(value));
         }
         if !emitted_initials {
-            return Ok(initials(&self.signals, &slots, &mut visitor));
+            return Ok(initials(&self.signals, &slots, &slot_indices, &mut visitor));
         }
         Ok(ControlFlow::Continue(()))
     }
@@ -659,7 +681,8 @@ impl<'w> Selection<'w> {
                         };
                         slot.events = count;
                     } else {
-                        slot.pending = Some(project(value, self.signals[index]).to_owned());
+                        slot.pending =
+                            Some(project(value, self.retained_signals[index]).to_owned());
                     }
                 }
                 #[cfg(test)]

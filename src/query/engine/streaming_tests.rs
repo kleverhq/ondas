@@ -82,7 +82,7 @@ fn generated_stream_bounds_and_deferred_caller_work_do_not_grow_with_history() {
                 candidates += 1;
                 let tick = ctx.time().ticks();
                 assert_eq!(tick, candidates);
-                assert_eq!(ctx.previous_events.len(), selected.len());
+                assert_eq!(ctx.previous_events.len(), 3);
                 let before_counts = counts(&probe);
                 assert_eq!(before_counts.starts, 1);
                 let before = Time::from_ticks(tick.checked_sub(1).unwrap());
@@ -144,9 +144,9 @@ fn generated_stream_bounds_and_deferred_caller_work_do_not_grow_with_history() {
             (observed.starts, observed.releases, observed.active),
             (1, 1, 0)
         );
-        assert_eq!(observed.max_slots, 4);
-        assert_eq!(observed.max_pending_records, 7);
-        assert_eq!(observed.max_pending_bytes, 2 * (8 + 2 * PAYLOAD.len()));
+        assert_eq!(observed.max_slots, 3);
+        assert_eq!(observed.max_pending_records, 5);
+        assert_eq!(observed.max_pending_bytes, 2 * (8 + PAYLOAD.len()));
         footprints.push((observed.max_pending_records, observed.max_pending_bytes));
         drop(wave);
         assert_eq!(counts(&probe).reader_drops, 1);

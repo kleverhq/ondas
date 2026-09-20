@@ -167,6 +167,38 @@ pub(super) fn wide(c: &mut Criterion) {
             );
         }
     }
+    // Isolate selection setup without duplicate-slot savings or history reads.
+    let distinct = [wide, high, low, scalar];
+    group.bench_function(
+        BenchmarkId::new("retention/distinct/select-drop", BACKEND),
+        |b| {
+            b.iter(|| drop(black_box(wave.select(black_box(&distinct)).unwrap())));
+        },
+    );
+    // Retention controls include selection setup, but exclude file opening.
+    for (name, signals, expected) in [
+        ("whole8", vec![wide; 8], 2050 * 8),
+        (
+            "mixed",
+            vec![wide, wide, high, high, low, low],
+            2050 * 4 + 2,
+        ),
+        ("narrow8", vec![low; 8], 2050 * 8),
+    ] {
+        assert_eq!(
+            scan_count(&mut wave.select(&signals).unwrap(), window),
+            expected
+        );
+        group.bench_function(
+            BenchmarkId::new(format!("retention/{name}/select-and-scan"), BACKEND),
+            |b| {
+                b.iter(|| {
+                    let mut selection = wave.select(black_box(&signals)).unwrap();
+                    black_box(scan_count(&mut selection, black_box(window)))
+                });
+            },
+        );
+    }
     // Duplicate entries share the base read but retain separate result entries.
     for count in [1, 8, 64] {
         let signals = vec![low; count];

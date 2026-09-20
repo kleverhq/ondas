@@ -25,6 +25,8 @@ pub struct Selection<'w> {
     signals: Vec<Signal>,
     bases: Vec<Signal>,
     groups: HashMap<usize, Vec<usize>>,
+    slot_indices: Vec<usize>,
+    retained_signals: Vec<Signal>,
 }
 
 /// Selective reads at one completed candidate tick of [`Selection::query`].
@@ -80,6 +82,7 @@ pub struct QueryContext<'a> {
     time: Time,
     signals: &'a [Signal],
     slots: &'a [engine::Slot],
+    slot_indices: &'a [usize],
     previous_tick: Option<Time>,
     previous_events: &'a [u64],
 }

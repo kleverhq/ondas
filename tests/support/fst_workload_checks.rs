@@ -10,6 +10,40 @@ fn range(start: u64, end: u64) -> TimeRange {
 
 #[test]
 #[ignore = "requires ONDAS_FIXTURES; run just conformance"]
+fn fst_duplicate_projections_match_individual_scans() {
+    let (path, _) = fixtures::load_artifact(&fixtures::provider(), "fst0083-wide-compact-toggle");
+    let mut wave = ondas::open_with(&path, "fst-lib").unwrap();
+    let wide = wave.hierarchy().signal("top.wide").unwrap();
+    let high = wide.slice(4095, 1).unwrap();
+    let low = wide.slice(0, 0).unwrap();
+    let selected = [wide, high, low, wide, high, low];
+    let mut expected = Vec::new();
+    for signal in selected {
+        let mut records = Vec::new();
+        let _ = wave
+            .select(&[signal])
+            .unwrap()
+            .scan(range(2048, 2052), |record| {
+                records.push(format!("{record:?}"));
+                ControlFlow::<()>::Continue(())
+            })
+            .unwrap();
+        expected.push(records);
+    }
+    let mut actual = vec![Vec::new(); selected.len()];
+    let _ = wave
+        .select(&selected)
+        .unwrap()
+        .scan_each(range(2048, 2052), |index, record| {
+            actual[index].push(format!("{record:?}"));
+            ControlFlow::<()>::Continue(())
+        })
+        .unwrap();
+    assert_eq!(actual, expected);
+}
+
+#[test]
+#[ignore = "requires ONDAS_FIXTURES; run just conformance"]
 fn fst_wide_normalized_whole_and_stable_projection() {
     let (path, _) = fixtures::load_artifact(&fixtures::provider(), "fst0083-wide-compact-toggle");
     let mut wave = ondas::open_with(&path, "fst-lib").unwrap();
