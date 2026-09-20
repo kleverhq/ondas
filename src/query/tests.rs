@@ -30,6 +30,53 @@ fn text(value: ValueRef<'_>) -> String {
 }
 
 #[test]
+fn duplicate_projections_match_individual_normalized_scans() {
+    let mut wave = waveform();
+    let signals = wave.hierarchy().signals().collect::<Vec<_>>();
+    let wide = signals[0];
+    let high = wide.slice(7, 4).unwrap();
+    let low = wide.slice(0, 0).unwrap();
+    let selected = [high, wide, high, signals[1], low, wide, signals[1], low];
+    let range = TimeRange::from(Time::from_ticks(15));
+    let render = |record: ScanRef<'_>| match record {
+        ScanRef::Initial {
+            value, changed_at, ..
+        } => (None, changed_at, text(value)),
+        ScanRef::Change { time, value, .. } => (
+            Some(time),
+            None,
+            match value {
+                ValueRef::Event { occurrences } => occurrences.to_string(),
+                _ => text(value),
+            },
+        ),
+    };
+    let mut expected = Vec::new();
+    for signal in selected {
+        let mut records = Vec::new();
+        let _ = wave
+            .select(&[signal])
+            .unwrap()
+            .scan(range, |record| {
+                records.push(render(record));
+                ControlFlow::<()>::Continue(())
+            })
+            .unwrap();
+        expected.push(records);
+    }
+    let mut actual = vec![Vec::new(); selected.len()];
+    let _ = wave
+        .select(&selected)
+        .unwrap()
+        .scan_each(range, |index, record| {
+            actual[index].push(render(record));
+            ControlFlow::<()>::Continue(())
+        })
+        .unwrap();
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn samples_hold_final_tick_state_and_count_every_event() {
     let mut wave = waveform();
     let signals = wave.hierarchy().signals().collect::<Vec<_>>();

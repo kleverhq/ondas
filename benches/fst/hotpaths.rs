@@ -65,6 +65,17 @@ pub(super) fn topology(c: &mut Criterion) {
         let full = TimeRange::closed(Time::from_ticks(1), late);
         let mut group = c.benchmark_group(format!("fst/{}/{fixture}/file", fixtures::PROVIDER));
         group.sample_size(20);
+        let lookup = ondas::HierarchyPath::parse("top.probe_sparse").unwrap();
+        group.bench_function(BenchmarkId::new("hierarchy/variable-path", BACKEND), |b| {
+            b.iter(|| black_box(wave.hierarchy().variable_path(black_box(&lookup)).unwrap()));
+        });
+        group.bench_function(BenchmarkId::new("hierarchy/open-drop", BACKEND), |b| {
+            b.iter(|| {
+                drop(black_box(
+                    ondas::open_with(black_box(&path), BACKEND).unwrap(),
+                ))
+            });
+        });
         for (name, signal) in [("sparse", sparse), ("constant", constant)] {
             let mut selection = wave.select(&[signal]).unwrap();
             selection.samples(quiet).unwrap();
@@ -166,6 +177,38 @@ pub(super) fn wide(c: &mut Criterion) {
                 },
             );
         }
+    }
+    // Isolate selection setup without duplicate-slot savings or history reads.
+    let distinct = [wide, high, low, scalar];
+    group.bench_function(
+        BenchmarkId::new("retention/distinct/select-drop", BACKEND),
+        |b| {
+            b.iter(|| drop(black_box(wave.select(black_box(&distinct)).unwrap())));
+        },
+    );
+    // Retention controls include selection setup, but exclude file opening.
+    for (name, signals, expected) in [
+        ("whole8", vec![wide; 8], 2050 * 8),
+        (
+            "mixed",
+            vec![wide, wide, high, high, low, low],
+            2050 * 4 + 2,
+        ),
+        ("narrow8", vec![low; 8], 2050 * 8),
+    ] {
+        assert_eq!(
+            scan_count(&mut wave.select(&signals).unwrap(), window),
+            expected
+        );
+        group.bench_function(
+            BenchmarkId::new(format!("retention/{name}/select-and-scan"), BACKEND),
+            |b| {
+                b.iter(|| {
+                    let mut selection = wave.select(black_box(&signals)).unwrap();
+                    black_box(scan_count(&mut selection, black_box(window)))
+                });
+            },
+        );
     }
     // Duplicate entries share the base read but retain separate result entries.
     for count in [1, 8, 64] {

@@ -10,21 +10,19 @@ struct State {
 pub(super) struct Slot {
     state: Option<State>,
     pending: Option<Value>,
+    changed: bool,
     events: u64,
 }
 
-fn update(state: &mut Option<State>, value: ValueRef<'_>, time: Time) -> bool {
+fn update(state: &mut Option<State>, value: Value, time: Time) -> bool {
     if state
         .as_ref()
-        .is_some_and(|previous| previous.value.as_ref().same_value(value))
+        .is_some_and(|previous| previous.value.as_ref().same_value(value.as_ref()))
     {
         return false;
     }
     let changed_at = state.as_ref().map(|_| time);
-    *state = Some(State {
-        value: value.to_owned(),
-        changed_at,
-    });
+    *state = Some(State { value, changed_at });
     true
 }
 
@@ -71,12 +69,13 @@ impl QueryContext<'_> {
         validate_indices(self.signals.len(), indices)?;
         for &index in indices {
             let signal = self.signals[index];
-            let slot = &self.slots[index];
+            let slot_index = self.slot_indices[index];
+            let slot = &self.slots[slot_index];
             let sample = if signal.encoding() == Encoding::Event {
                 let occurrences = if current {
                     slot.events
                 } else if self.previous_tick == Some(time) {
-                    self.previous_events[index]
+                    self.previous_events[slot_index]
                 } else {
                     0
                 };
@@ -93,7 +92,7 @@ impl QueryContext<'_> {
                 };
                 if let Some(value) = value {
                     let changed_at = state.and_then(|state| {
-                        if current && !state.value.as_ref().same_value(value.as_ref()) {
+                        if current && slot.changed {
                             Some(self.time)
                         } else {
                             state.changed_at
@@ -129,9 +128,11 @@ fn project(value: ValueRef<'_>, signal: Signal) -> ValueRef<'_> {
 fn initials<B>(
     signals: &[Signal],
     slots: &[Slot],
+    slot_indices: &[usize],
     visitor: &mut impl for<'v> FnMut(usize, ScanRef<'v>) -> ControlFlow<B>,
 ) -> ControlFlow<B> {
-    for (index, (signal, slot)) in signals.iter().zip(slots).enumerate() {
+    for (index, signal) in signals.iter().enumerate() {
+        let slot = &slots[slot_indices[index]];
         if let Some(state) = &slot.state
             && let ControlFlow::Break(value) = visitor(
                 index,
@@ -151,6 +152,7 @@ fn initials<B>(
 fn scan_tick<B>(
     signals: &[Signal],
     slots: &[Slot],
+    slot_indices: &[usize],
     time: Time,
     range: TimeRange,
     emitted_initials: &mut bool,
@@ -158,14 +160,12 @@ fn scan_tick<B>(
 ) -> ControlFlow<B> {
     if !*emitted_initials && time >= range.start() {
         *emitted_initials = true;
-        initials(signals, slots, visitor)?;
+        initials(signals, slots, slot_indices, visitor)?;
     }
-    for (index, (&signal, slot)) in signals.iter().zip(slots).enumerate() {
+    for (index, &signal) in signals.iter().enumerate() {
+        let slot = &slots[slot_indices[index]];
         if let Some(value) = &slot.pending
-            && !slot
-                .state
-                .as_ref()
-                .is_some_and(|state| state.value.as_ref().same_value(value.as_ref()))
+            && slot.changed
             && time >= range.start()
         {
             visitor(
@@ -202,12 +202,25 @@ fn complete_tick<B>(
     time: Time,
     visitor: &mut impl FnMut(Time, &[Signal], &[Slot]) -> Result<ControlFlow<B>>,
 ) -> Result<ControlFlow<B>> {
+    for slot in &mut *slots {
+        slot.changed = slot.pending.as_ref().is_some_and(|value| {
+            !slot
+                .state
+                .as_ref()
+                .is_some_and(|state| state.value.as_ref().same_value(value.as_ref()))
+        });
+    }
     if let ControlFlow::Break(value) = visitor(time, signals, slots)? {
         return Ok(ControlFlow::Break(value));
     }
     for slot in slots {
-        if let Some(value) = slot.pending.take() {
-            update(&mut slot.state, value.as_ref(), time);
+        if let Some(value) = slot.pending.take()
+            && slot.changed
+        {
+            slot.state = Some(State {
+                value,
+                changed_at: slot.state.as_ref().map(|_| time),
+            });
         }
         slot.events = 0;
     }
@@ -218,11 +231,21 @@ impl<'w> Selection<'w> {
     pub(crate) fn new(waveform: &'w mut Waveform, signals: &[Signal]) -> Result<Self> {
         let mut groups = HashMap::<usize, Vec<usize>>::new();
         let mut bases = Vec::new();
-        for (position, &signal) in signals.iter().enumerate() {
+        let mut first_slots = HashMap::new();
+        let mut slot_indices = Vec::with_capacity(signals.len());
+        let mut retained_signals = Vec::new();
+        for &signal in signals {
             let index = waveform.hierarchy().validate(signal)?;
             if signal.encoding() == Encoding::Unsupported {
                 return Err(Error::UnsupportedSignal { signal });
             }
+            let position = retained_signals.len();
+            let first = *first_slots.entry(signal).or_insert(position);
+            slot_indices.push(first);
+            if first != position {
+                continue;
+            }
+            retained_signals.push(signal);
             let entries = groups.entry(index).or_default();
             if entries.is_empty() {
                 bases.push(signal.base());
@@ -234,6 +257,8 @@ impl<'w> Selection<'w> {
             signals: signals.to_vec(),
             bases,
             groups,
+            slot_indices,
+            retained_signals,
         })
     }
 
@@ -373,21 +398,24 @@ impl<'w> Selection<'w> {
         if drivers.is_empty() || range.is_empty() || range.start() > end {
             return Ok(ControlFlow::Continue(()));
         }
-        let mut slots = (0..self.signals.len())
+        let mut slots = (0..self.retained_signals.len())
             .map(|_| Slot::default())
             .collect::<Vec<_>>();
-        let mut previous_events = vec![0; self.signals.len()];
+        let mut previous_events = vec![0; self.retained_signals.len()];
         let mut previous_tick = None;
+        let slot_indices = self.slot_indices.clone();
         self.read_ticks(end, &mut slots, |time, signals, slots| {
             if time >= range.start()
-                && drivers
-                    .iter()
-                    .any(|&index| slots[index].pending.is_some() || slots[index].events > 0)
+                && drivers.iter().any(|&index| {
+                    let slot = &slots[slot_indices[index]];
+                    slot.pending.is_some() || slot.events > 0
+                })
             {
                 let context = QueryContext {
                     time,
                     signals,
                     slots,
+                    slot_indices: &slot_indices,
                     previous_tick,
                     previous_events: &previous_events,
                 };
@@ -426,7 +454,7 @@ impl<'w> Selection<'w> {
                     if let ValueRef::Event { occurrences } = value {
                         events[index] = occurrences;
                     } else {
-                        update(&mut states[index], value, time);
+                        update(&mut states[index], value.to_owned(), time);
                     }
                 }
             }
@@ -589,15 +617,17 @@ impl<'w> Selection<'w> {
         if range.is_empty() || range.start() > end || self.signals.is_empty() {
             return Ok(ControlFlow::Continue(()));
         }
-        let mut slots = (0..self.signals.len())
+        let mut slots = (0..self.retained_signals.len())
             .map(|_| Slot::default())
             .collect::<Vec<_>>();
         let mut emitted_initials = false;
+        let slot_indices = self.slot_indices.clone();
         if let ControlFlow::Break(value) =
             self.read_ticks(end, &mut slots, |time, signals, slots| {
                 Ok(scan_tick(
                     signals,
                     slots,
+                    &slot_indices,
                     time,
                     range,
                     &mut emitted_initials,
@@ -608,7 +638,7 @@ impl<'w> Selection<'w> {
             return Ok(ControlFlow::Break(value));
         }
         if !emitted_initials {
-            return Ok(initials(&self.signals, &slots, &mut visitor));
+            return Ok(initials(&self.signals, &slots, &slot_indices, &mut visitor));
         }
         Ok(ControlFlow::Continue(()))
     }
@@ -651,7 +681,8 @@ impl<'w> Selection<'w> {
                         };
                         slot.events = count;
                     } else {
-                        slot.pending = Some(project(value, self.signals[index]).to_owned());
+                        slot.pending =
+                            Some(project(value, self.retained_signals[index]).to_owned());
                     }
                 }
                 #[cfg(test)]
@@ -675,6 +706,42 @@ mod streaming_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn completed_tick_moves_pending_storage_after_the_callback() {
+        let pending: Box<str> = "x".repeat(4096).into();
+        let address = pending.as_ptr();
+        let mut slots = [Slot {
+            state: Some(State {
+                value: Value::String("old".into()),
+                changed_at: None,
+            }),
+            pending: Some(Value::String(pending)),
+            ..Slot::default()
+        }];
+        let _ = complete_tick(&[], &mut slots, Time::from_ticks(1), &mut |_, _, slots| {
+            assert!(matches!(
+                slots[0].state.as_ref().unwrap().value.as_ref(),
+                ValueRef::String("old")
+            ));
+            assert!(slots[0].changed);
+            Ok(ControlFlow::<()>::Continue(()))
+        })
+        .unwrap();
+        let Value::String(retained) = &slots[0].state.as_ref().unwrap().value else {
+            panic!("string")
+        };
+        assert_eq!(
+            retained.as_ptr(),
+            address,
+            "commit must not copy the pending payload"
+        );
+        assert_eq!(
+            slots[0].state.as_ref().unwrap().changed_at,
+            Some(Time::from_ticks(1))
+        );
+        assert!(slots[0].pending.is_none());
+    }
 
     #[test]
     fn completed_tick_callback_reads_before_and_final_state_and_can_fail() {
