@@ -65,6 +65,17 @@ pub(super) fn topology(c: &mut Criterion) {
         let full = TimeRange::closed(Time::from_ticks(1), late);
         let mut group = c.benchmark_group(format!("fst/{}/{fixture}/file", fixtures::PROVIDER));
         group.sample_size(20);
+        let lookup = ondas::HierarchyPath::parse("top.probe_sparse").unwrap();
+        group.bench_function(BenchmarkId::new("hierarchy/variable-path", BACKEND), |b| {
+            b.iter(|| black_box(wave.hierarchy().variable_path(black_box(&lookup)).unwrap()));
+        });
+        group.bench_function(BenchmarkId::new("hierarchy/open-drop", BACKEND), |b| {
+            b.iter(|| {
+                drop(black_box(
+                    ondas::open_with(black_box(&path), BACKEND).unwrap(),
+                ))
+            });
+        });
         for (name, signal) in [("sparse", sparse), ("constant", constant)] {
             let mut selection = wave.select(&[signal]).unwrap();
             selection.samples(quiet).unwrap();

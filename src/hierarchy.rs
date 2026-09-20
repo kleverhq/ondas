@@ -4,6 +4,7 @@ mod tests;
 mod path;
 
 use std::{
+    collections::HashMap,
     fmt,
     str::FromStr,
     sync::{
@@ -222,6 +223,7 @@ struct HierarchyData {
     scopes: Vec<ScopeData>,
     variables: Vec<VariableData>,
     encodings: Vec<Encoding>,
+    variables_by_path: HashMap<HierarchyPath, (usize, usize)>,
 }
 
 static NEXT_SOURCE: AtomicU64 = AtomicU64::new(1);
@@ -279,14 +281,26 @@ impl Hierarchy {
         let source = NEXT_SOURCE
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
             .expect("hierarchy source IDs exhausted");
-        Self {
+        let mut hierarchy = Self {
             data: Arc::new(HierarchyData {
                 source,
                 scopes,
                 variables,
                 encodings,
+                variables_by_path: HashMap::new(),
             }),
+        };
+        let mut variables_by_path = HashMap::with_capacity(hierarchy.data.variables.len());
+        for variable in hierarchy.variables() {
+            let entry = variables_by_path
+                .entry(variable.path())
+                .or_insert((variable.index, 0));
+            entry.1 += 1;
         }
+        Arc::get_mut(&mut hierarchy.data)
+            .expect("new hierarchy has one owner")
+            .variables_by_path = variables_by_path;
+        hierarchy
     }
 
     pub(crate) fn signal_at(&self, index: usize) -> Signal {
@@ -425,17 +439,15 @@ impl Hierarchy {
         &self,
         path: &HierarchyPath,
     ) -> std::result::Result<Variable<'_>, LookupError> {
-        // ponytail: linear lookup; index exact paths if hierarchy lookup becomes a bottleneck.
-        let mut matches = self
-            .variables()
-            .filter(|variable| Some(variable.name()) == path.name() && variable.path() == *path);
-        let first = matches.next();
-        match (first, matches.count()) {
-            (None, _) => Err(LookupError::NotFound { path: path.clone() }),
-            (Some(variable), 0) => Ok(variable),
-            (_, remaining) => Err(LookupError::Ambiguous {
+        match self.data.variables_by_path.get(path) {
+            None => Err(LookupError::NotFound { path: path.clone() }),
+            Some(&(index, 1)) => Ok(Variable {
+                hierarchy: self,
+                index,
+            }),
+            Some(&(_, matches)) => Err(LookupError::Ambiguous {
                 path: path.clone(),
-                matches: remaining + 1,
+                matches,
             }),
         }
     }

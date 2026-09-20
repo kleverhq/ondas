@@ -57,6 +57,70 @@ fn fixture() -> Hierarchy {
 }
 
 #[test]
+fn indexed_paths_match_linear_lookup_across_duplicate_scope_paths() {
+    let mut data = Arc::try_unwrap(fixture().data).ok().unwrap();
+    for parent in [None, Some(2)] {
+        data.scopes.push(ScopeData {
+            name: if parent.is_none() { "tb" } else { "dut" }.into(),
+            parent,
+            kind: "module".into(),
+            definition_name: None,
+            packing: None,
+        });
+    }
+    let variable = data.variables.last_mut().unwrap();
+    variable.name = "data".into();
+    variable.parent = Some(3);
+    let hierarchy = Hierarchy::new(data.scopes, data.variables, data.encodings);
+    let paths = hierarchy
+        .variables()
+        .map(|variable| variable.path())
+        .chain([
+            HierarchyPath::from_components([] as [&str; 0]),
+            HierarchyPath::parse("tb.missing").unwrap(),
+        ]);
+    for path in paths {
+        let expected = hierarchy
+            .variables()
+            .filter(|variable| variable.path() == path)
+            .map(|variable| variable.index)
+            .collect::<Vec<_>>();
+        match hierarchy.variable_path(&path) {
+            Ok(variable) => assert_eq!(expected, [variable.index]),
+            Err(LookupError::NotFound { .. }) => assert!(expected.is_empty()),
+            Err(LookupError::Ambiguous { matches, .. }) => {
+                assert!(expected.len() > 1);
+                assert_eq!(matches, expected.len());
+            }
+            Err(error) => panic!("unexpected lookup error: {error}"),
+        }
+    }
+    assert_eq!(
+        hierarchy
+            .scopes()
+            .map(|scope| scope.name())
+            .collect::<Vec<_>>(),
+        ["tb", "dut", "tb", "dut"]
+    );
+    assert_eq!(
+        hierarchy
+            .variables()
+            .map(|variable| variable.name())
+            .collect::<Vec<_>>(),
+        [
+            "data",
+            "alias",
+            "data[7:0]",
+            "mem[0]",
+            "no_history",
+            "duplicate",
+            "duplicate",
+            "data"
+        ]
+    );
+}
+
+#[test]
 fn hierarchy_views_aliases_and_metadata() {
     let hierarchy = fixture();
     assert_eq!(hierarchy.roots().count(), 1);
