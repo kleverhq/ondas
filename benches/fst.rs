@@ -361,6 +361,7 @@ criterion_group!(
     hotpaths::topology,
     hotpaths::wide,
     hotpaths::boundaries,
+    hotpaths::strings,
     composed::wide,
     composed::sections,
     composed::wrapped
