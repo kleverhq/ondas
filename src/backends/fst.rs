@@ -316,9 +316,9 @@ impl Reader {
             return Ok(ControlFlow::Continue(()));
         }
         let mut pending = None;
-        // Keep validation and prefix reading, but do not project or own values.
-        // Raw activity is a permitted superset, including same-tick excursions.
-        let result = self.read(signals, end, |_, time, _| {
+        // No entering values are needed: skip sections before the window.
+        // Raw activity and section frames are a permitted candidate superset.
+        let result = self.read(signals, start, end, |_, time, _| {
             if time < start {
                 return ControlFlow::Continue(());
             }
@@ -343,6 +343,7 @@ impl Reader {
     pub(crate) fn read<B>(
         &mut self,
         signals: &[Signal],
+        start: Time,
         end: Time,
         mut visitor: impl for<'v> FnMut(usize, Time, ValueRef<'v>) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>> {
@@ -351,15 +352,16 @@ impl Reader {
             Error(Error),
         }
         let filter = FstFilter::new(
-            0,
+            start.ticks(),
             end.ticks(),
             signals
                 .iter()
                 .map(|signal| FstSignalHandle::from_index(self.handles[signal.index()]))
                 .collect(),
         );
-        // Read from zero for reliable entering values, including variable-length strings.
-        // Event callbacks are preserved verbatim; the reader can expose initialization at the first tick.
+        // Stateful consumers pass zero for reliable values and exact change times,
+        // including strings absent from frames. Candidates need no entering state.
+        // Event callbacks are preserved verbatim; frames may expose initialization.
         let result = self.inner.read_signals(&filter, |time, handle, raw| {
             if time > end.ticks() {
                 return Ok(());

@@ -41,7 +41,7 @@ impl Reader {
             return Ok(ControlFlow::Continue(()));
         }
         match self {
-            Self::Fst(reader) => reader.read(signals, end, visitor),
+            Self::Fst(reader) => reader.read(signals, Time::from_ticks(0), end, visitor),
             Self::Vcd(reader) => reader.read(signals, end, visitor),
             #[cfg(feature = "fsdb-lib")]
             Self::Fsdb(reader) => reader.read(signals, end, visitor),

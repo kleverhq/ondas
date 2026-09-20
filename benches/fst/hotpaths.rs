@@ -159,6 +159,7 @@ pub(super) fn boundaries(c: &mut Criterion) {
         .hierarchy()
         .signal("TOP.$unit.SCR1_ARCH_RST_VECTOR")
         .unwrap();
+    let clock = wave.hierarchy().signal("TOP.clk").unwrap();
     let mut selection = wave.select(&[constant]).unwrap();
     let mut group = c.benchmark_group(format!("fst/{}/{fixture}/file", fixtures::PROVIDER));
     group.sample_size(20);
@@ -174,6 +175,18 @@ pub(super) fn boundaries(c: &mut Criterion) {
                 },
             );
         }
+    }
+    let mut selection = wave.select(&[clock]).unwrap();
+    for boundary in [745342_u64, 3248312, 5812392] {
+        let window = TimeRange::closed(
+            Time::from_ticks(boundary - 20),
+            Time::from_ticks(boundary + 20),
+        );
+        assert!(candidates(&mut selection, window) > 0);
+        group.bench_function(
+            BenchmarkId::new(format!("candidate-times/clock/section{boundary}"), BACKEND),
+            |b| b.iter(|| black_box(candidates(&mut selection, black_box(window)))),
+        );
     }
     group.finish();
 }

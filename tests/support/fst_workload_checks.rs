@@ -213,6 +213,35 @@ fn fst_composed_sections_and_wrapper() {
     let signals = ["TOP.clk", "TOP.$unit.SCR1_ARCH_RST_VECTOR"]
         .map(|name| wave.hierarchy().signal(name).unwrap());
     let mut selection = wave.select(&signals).unwrap();
+    for boundary in [745342, 3248312, 5812392] {
+        for start in [boundary - 1, boundary, boundary + 1] {
+            let window = range(start, start + 44);
+            let mut required = std::collections::BTreeSet::new();
+            let _ = selection
+                .scan(window, |record| {
+                    if let ondas::ScanRef::Change { time, .. } = record {
+                        required.insert(time);
+                    }
+                    ControlFlow::<()>::Continue(())
+                })
+                .unwrap();
+            let mut candidates = Vec::new();
+            let _ = selection
+                .scan_candidate_times(window, |time| {
+                    candidates.push(time);
+                    ControlFlow::<()>::Continue(())
+                })
+                .unwrap();
+            assert!(candidates.windows(2).all(|pair| pair[0] < pair[1]));
+            assert!(
+                candidates
+                    .iter()
+                    .all(|time| (start..=start + 44).contains(&time.ticks()))
+            );
+            assert!(!required.is_empty());
+            assert!(required.is_subset(&candidates.into_iter().collect()));
+        }
+    }
     for start in [1000, 745320, 5812370] {
         // Resolve independent point observations outside query callbacks.
         let expected = (start - 1..=start + 44)
