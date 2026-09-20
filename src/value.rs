@@ -81,7 +81,7 @@ pub enum Value {
 impl ValueRef<'_> {
     pub(crate) fn same_value(self, other: ValueRef<'_>) -> bool {
         match (self, other) {
-            (Self::Bits(left), ValueRef::Bits(right)) => left.iter_msb().eq(right.iter_msb()),
+            (Self::Bits(left), ValueRef::Bits(right)) => left.data.eq_ignore_ascii_case(right.data),
             (Self::Real(left), ValueRef::Real(right)) => left.to_bits() == right.to_bits(),
             (Self::String(left), ValueRef::String(right)) => left == right,
             (Self::Event { occurrences: left }, ValueRef::Event { occurrences: right }) => {
@@ -390,6 +390,32 @@ mod tests {
                 let other = Value::Real(f64::from_bits(right));
                 assert_eq!(value.same_value(other.as_ref()), left == right);
                 assert_eq!(owned.same_value(&other), left == right);
+            }
+        }
+    }
+
+    #[test]
+    fn bit_identity_handles_case_width_and_non_word_aligned_slices() {
+        for width in [0, 1, 7, 9, 63, 65, 4095] {
+            let upper = b"01XZHUWL-"
+                .iter()
+                .copied()
+                .cycle()
+                .take(width)
+                .collect::<Vec<_>>();
+            let lower = upper.to_ascii_lowercase();
+            let left = BitsRef::from_ascii(&upper).unwrap();
+            let right = BitsRef::from_ascii(&lower).unwrap();
+            assert!(ValueRef::Bits(left).same_value(ValueRef::Bits(right)));
+            if width > 1 {
+                assert!(
+                    ValueRef::Bits(left.slice(width as u32 - 2, 0))
+                        .same_value(ValueRef::Bits(right.slice(width as u32 - 2, 0)))
+                );
+                assert!(
+                    !ValueRef::Bits(left)
+                        .same_value(ValueRef::Bits(right.slice(width as u32 - 2, 0)))
+                );
             }
         }
     }

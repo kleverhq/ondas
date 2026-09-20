@@ -10,21 +10,19 @@ struct State {
 pub(super) struct Slot {
     state: Option<State>,
     pending: Option<Value>,
+    changed: bool,
     events: u64,
 }
 
-fn update(state: &mut Option<State>, value: ValueRef<'_>, time: Time) -> bool {
+fn update(state: &mut Option<State>, value: Value, time: Time) -> bool {
     if state
         .as_ref()
-        .is_some_and(|previous| previous.value.as_ref().same_value(value))
+        .is_some_and(|previous| previous.value.as_ref().same_value(value.as_ref()))
     {
         return false;
     }
     let changed_at = state.as_ref().map(|_| time);
-    *state = Some(State {
-        value: value.to_owned(),
-        changed_at,
-    });
+    *state = Some(State { value, changed_at });
     true
 }
 
@@ -93,7 +91,7 @@ impl QueryContext<'_> {
                 };
                 if let Some(value) = value {
                     let changed_at = state.and_then(|state| {
-                        if current && !state.value.as_ref().same_value(value.as_ref()) {
+                        if current && slot.changed {
                             Some(self.time)
                         } else {
                             state.changed_at
@@ -162,10 +160,7 @@ fn scan_tick<B>(
     }
     for (index, (&signal, slot)) in signals.iter().zip(slots).enumerate() {
         if let Some(value) = &slot.pending
-            && !slot
-                .state
-                .as_ref()
-                .is_some_and(|state| state.value.as_ref().same_value(value.as_ref()))
+            && slot.changed
             && time >= range.start()
         {
             visitor(
@@ -202,12 +197,25 @@ fn complete_tick<B>(
     time: Time,
     visitor: &mut impl FnMut(Time, &[Signal], &[Slot]) -> Result<ControlFlow<B>>,
 ) -> Result<ControlFlow<B>> {
+    for slot in &mut *slots {
+        slot.changed = slot.pending.as_ref().is_some_and(|value| {
+            !slot
+                .state
+                .as_ref()
+                .is_some_and(|state| state.value.as_ref().same_value(value.as_ref()))
+        });
+    }
     if let ControlFlow::Break(value) = visitor(time, signals, slots)? {
         return Ok(ControlFlow::Break(value));
     }
     for slot in slots {
-        if let Some(value) = slot.pending.take() {
-            update(&mut slot.state, value.as_ref(), time);
+        if let Some(value) = slot.pending.take()
+            && slot.changed
+        {
+            slot.state = Some(State {
+                value,
+                changed_at: slot.state.as_ref().map(|_| time),
+            });
         }
         slot.events = 0;
     }
@@ -426,7 +434,7 @@ impl<'w> Selection<'w> {
                     if let ValueRef::Event { occurrences } = value {
                         events[index] = occurrences;
                     } else {
-                        update(&mut states[index], value, time);
+                        update(&mut states[index], value.to_owned(), time);
                     }
                 }
             }
@@ -675,6 +683,42 @@ mod streaming_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn completed_tick_moves_pending_storage_after_the_callback() {
+        let pending: Box<str> = "x".repeat(4096).into();
+        let address = pending.as_ptr();
+        let mut slots = [Slot {
+            state: Some(State {
+                value: Value::String("old".into()),
+                changed_at: None,
+            }),
+            pending: Some(Value::String(pending)),
+            ..Slot::default()
+        }];
+        let _ = complete_tick(&[], &mut slots, Time::from_ticks(1), &mut |_, _, slots| {
+            assert!(matches!(
+                slots[0].state.as_ref().unwrap().value.as_ref(),
+                ValueRef::String("old")
+            ));
+            assert!(slots[0].changed);
+            Ok(ControlFlow::<()>::Continue(()))
+        })
+        .unwrap();
+        let Value::String(retained) = &slots[0].state.as_ref().unwrap().value else {
+            panic!("string")
+        };
+        assert_eq!(
+            retained.as_ptr(),
+            address,
+            "commit must not copy the pending payload"
+        );
+        assert_eq!(
+            slots[0].state.as_ref().unwrap().changed_at,
+            Some(Time::from_ticks(1))
+        );
+        assert!(slots[0].pending.is_none());
+    }
 
     #[test]
     fn completed_tick_callback_reads_before_and_final_state_and_can_fail() {

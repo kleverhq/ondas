@@ -10,6 +10,67 @@ fn range(start: u64, end: u64) -> TimeRange {
 
 #[test]
 #[ignore = "requires ONDAS_FIXTURES; run just conformance"]
+fn fst_wide_normalized_whole_and_stable_projection() {
+    let (path, _) = fixtures::load_artifact(&fixtures::provider(), "fst0083-wide-compact-toggle");
+    let mut wave = ondas::open_with(&path, "fst-lib").unwrap();
+    let wide = wave.hierarchy().signal("top.wide").unwrap();
+    for signal in [wide, wide.slice(4095, 1).unwrap()] {
+        let mut selection = wave.select(&[signal]).unwrap();
+        let mut initials = 0;
+        let mut changes = Vec::new();
+        let _ = selection
+            .scan(range(2048, 2052), |record| {
+                match record {
+                    ondas::ScanRef::Initial {
+                        value, changed_at, ..
+                    } => {
+                        initials += 1;
+                        assert_eq!(
+                            changed_at,
+                            if signal == wide {
+                                Some(Time::from_ticks(2047))
+                            } else {
+                                None
+                            }
+                        );
+                        let ValueRef::Bits(bits) = value else {
+                            panic!("bits")
+                        };
+                        assert_eq!(bits.width(), signal.width().unwrap());
+                    }
+                    ondas::ScanRef::Change { time, value, .. } => {
+                        let ValueRef::Bits(bits) = value else {
+                            panic!("bits")
+                        };
+                        assert_eq!(
+                            bits.bit(0),
+                            Some(if time.ticks() % 2 == 0 {
+                                Logic::Zero
+                            } else {
+                                Logic::One
+                            })
+                        );
+                        changes.push(time.ticks());
+                    }
+                    _ => panic!("unexpected scan record"),
+                }
+                ControlFlow::<()>::Continue(())
+            })
+            .unwrap();
+        assert_eq!(initials, 1);
+        assert_eq!(
+            changes,
+            if signal == wide {
+                vec![2048, 2049, 2050, 2051, 2052]
+            } else {
+                vec![]
+            }
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires ONDAS_FIXTURES; run just conformance"]
 fn fst_composed_wide_observations() {
     let (path, _) = fixtures::load_artifact(&fixtures::provider(), "fst0083-wide-compact-toggle");
     let mut wave = ondas::open_with(&path, "fst-lib").unwrap();
