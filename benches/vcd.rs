@@ -299,6 +299,15 @@ fn compact_wide(c: &mut Criterion) {
         ("top.wide[0:0]", wide.slice(0, 0).unwrap()),
         ("top.control", control),
     ] {
+        group.bench_function(
+            BenchmarkId::new(format!("setup/sample/{name}/t4096"), BACKEND),
+            |b| {
+                b.iter(|| {
+                    let mut selection = wave.select(&[signal]).unwrap();
+                    black_box(selection.samples(black_box(time)).unwrap())
+                })
+            },
+        );
         let mut selection = wave.select(&[signal]).unwrap();
         selection.samples(time).expect("compact sample preflight");
         group.bench_function(
@@ -311,6 +320,20 @@ fn compact_wide(c: &mut Criterion) {
         ("top.wide", wide),
         ("top.wide[4095:1]", wide.slice(4095, 1).unwrap()),
     ] {
+        group.bench_function(
+            BenchmarkId::new(format!("setup/scan/{name}/2048..=4096"), BACKEND),
+            |b| {
+                b.iter(|| {
+                    let mut selection = wave.select(&[signal]).unwrap();
+                    let _ = selection
+                        .scan(black_box(range), |record| {
+                            black_box(record);
+                            ControlFlow::<()>::Continue(())
+                        })
+                        .unwrap();
+                })
+            },
+        );
         let mut selection = wave.select(&[signal]).unwrap();
         let _ = selection
             .scan(range, |_| ControlFlow::<()>::Continue(()))

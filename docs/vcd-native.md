@@ -68,8 +68,18 @@ Shared observation logic is in [`src/query/engine.rs`](../src/query/engine.rs).
 | Replay from the body start when no reusable state exists | First reads and backward requests pay for the prefix through their end tick. A narrow late window is not a random-access read. |
 | Batch selected signals | One traversal serves the batch. A reusable selection also retains bounded projected values and event counts for replay reuse. |
 | No history cache or time index | A selection retains the last replay window and at most one bounded range-boundary snapshot. The identifier map alone cannot seek to a tick. |
-| Buffered file input | The reader does not load the entire file into memory. Bytes input, by contrast, retains the caller's shared source allocation. |
+| Buffered file input and reusable body token buffers | The reader traverses every intervening token, but reuses token/identifier storage and borrows scalar identifiers. It does not load the entire file into memory. Bytes input retains the caller's shared source allocation. |
 | Streaming observations | Working storage includes declarations, identifier maps, parser buffers and bounded entering/pending values and event counts per selection entry, not the complete history. Wide values still need space. Owned traces also retain their requested output. |
+
+Source bit digits are validated before selection filtering, including high digits
+that will be truncated. Padding/truncation then constructs the selected vector
+from validated states without rescanning its full declared width. Selected
+persistent values still need materialization for later accepted reads; reducing
+token allocation does not imply skipping source bytes or physical I/O.
+
+Prepared repeated samples and windows can measure retained-state reuse rather
+than parsing. Fresh-selection benchmark cases include the first prefix and
+snapshot construction; opening remains a separate operation.
 
 The reader uses no persistent checkpoint database, mmap or parallel parser. These choices
 favor avoiding retained histories over fast repeated seeks; they are not a

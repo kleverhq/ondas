@@ -442,6 +442,43 @@ fn exact_large_times_and_decimal_timescale() {
 }
 
 #[test]
+fn padded_and_truncated_values_keep_all_logic_states() {
+    for width in [1, 7, 65] {
+        for state in "01XZHUWL-".chars() {
+            let mut wave = open(
+                &format!("$var wire {width} ! bits $end"),
+                format!("#0 b{state} ! #1 b1010XZHUWL- !").as_bytes(),
+            );
+            let signal = wave.hierarchy().signal("top.bits").unwrap();
+            let fill = if matches!(state, '0' | '1') {
+                '0'
+            } else {
+                state.to_ascii_lowercase()
+            };
+            let expected = format!(
+                "{}{}",
+                fill.to_string().repeat(width - 1),
+                state.to_ascii_lowercase()
+            );
+            assert_eq!(
+                bits(value(wave.sample(signal, Time::ZERO).unwrap()).as_ref()),
+                expected
+            );
+            let digits = "1010xzhuwl-";
+            let expected = if width > digits.len() {
+                format!("{}{digits}", "0".repeat(width - digits.len()))
+            } else {
+                digits[digits.len() - width..].to_owned()
+            };
+            assert_eq!(
+                bits(value(wave.sample(signal, Time::from_ticks(1)).unwrap()).as_ref()),
+                expected
+            );
+        }
+    }
+}
+
+#[test]
 fn rejects_malformed_full_body_not_just_selected_values() {
     let declarations = "$var wire 4 ! bits $end $var real 1 r real $end";
     for body in [
