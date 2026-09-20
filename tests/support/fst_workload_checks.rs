@@ -109,6 +109,176 @@ fn fst_composed_wide_observations() {
     }
 }
 
+#[test]
+#[ignore = "requires ONDAS_FIXTURES; run just conformance"]
+fn fst_candidates_deduplicate_raw_activity_and_reuse_after_stop() {
+    let (path, _) = fixtures::load_artifact(&fixtures::provider(), "fst0083-wide-compact-toggle");
+    let mut wave = ondas::open_with(&path, "fst-lib").unwrap();
+    let wide = wave.hierarchy().signal("top.wide").unwrap();
+    let low = wide.slice(0, 0).unwrap();
+    let stable = wide.slice(4095, 1).unwrap();
+    let mut selection = wave.select(&[low, stable, low]).unwrap();
+    let window = range(2048, 2052);
+    let mut required = std::collections::BTreeSet::new();
+    let _ = selection
+        .scan(window, |record| {
+            if let ondas::ScanRef::Change { time, .. } = record {
+                required.insert(time);
+            }
+            ControlFlow::<()>::Continue(())
+        })
+        .unwrap();
+    let mut times = Vec::new();
+    let _ = selection
+        .scan_candidate_times(window, |time| {
+            times.push(time);
+            ControlFlow::<()>::Continue(())
+        })
+        .unwrap();
+    assert!(!required.is_empty());
+    assert!(times.windows(2).all(|pair| pair[0] < pair[1]));
+    assert!(required.is_subset(&times.iter().copied().collect()));
+    assert!(
+        times
+            .iter()
+            .all(|time| (2048..=2052).contains(&time.ticks()))
+    );
+    let mut calls = 0;
+    assert_eq!(
+        selection
+            .scan_candidate_times(window, |time| {
+                calls += 1;
+                ControlFlow::Break(time)
+            })
+            .unwrap(),
+        ControlFlow::Break(times[0])
+    );
+    assert_eq!(calls, 1);
+    let mut replay = Vec::new();
+    let _ = selection
+        .scan_candidate_times(window, |time| {
+            replay.push(time);
+            ControlFlow::<()>::Continue(())
+        })
+        .unwrap();
+    assert_eq!(replay, times);
+    for window in [range(2052, 2048), range(4097, 4100)] {
+        let _ = selection
+            .scan_candidate_times::<()>(window, |_| {
+                panic!("unexpected candidate in an empty or past-end window")
+            })
+            .unwrap_or_else(|error| panic!("{error}"));
+    }
+    let mut empty = wave.select(&[]).unwrap();
+    assert_eq!(
+        empty
+            .scan_candidate_times(TimeRange::all(), |_| ControlFlow::Break(()))
+            .unwrap(),
+        ControlFlow::Continue(())
+    );
+}
+
+#[test]
+#[ignore = "requires ONDAS_FIXTURES; run just conformance"]
+fn fst_string_candidates_preserve_values_and_reuse_after_stop() {
+    for fixture in [
+        "fst0044-overlay-tb-issue-21",
+        "fst0060-manytypes2",
+        "fst0061-shortstring",
+    ] {
+        let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
+        for bytes in [false, true] {
+            let mut wave = if bytes {
+                ondas::open_bytes_with(
+                    "waveform.fst",
+                    std::fs::read(&path).unwrap().into(),
+                    "fst-lib",
+                )
+                .unwrap()
+            } else {
+                ondas::open_with(&path, "fst-lib").unwrap()
+            };
+            let mut signals = wave
+                .hierarchy()
+                .signals()
+                .filter(|signal| signal.encoding() == ondas::Encoding::String)
+                .collect::<Vec<_>>();
+            assert!(!signals.is_empty());
+            signals.push(signals[0]);
+            let mut selection = wave.select(&signals).unwrap();
+            let read_values = |selection: &mut ondas::Selection<'_>| {
+                let mut values = Vec::new();
+                let _ = selection
+                    .scan_each(TimeRange::all(), |slot, record| {
+                        if let ondas::ScanRef::Change { time, value, .. } = record {
+                            let ValueRef::String(text) = value else {
+                                panic!("expected string value")
+                            };
+                            values.push((slot, time, text.to_owned()));
+                        }
+                        ControlFlow::<()>::Continue(())
+                    })
+                    .unwrap();
+                values
+            };
+            let before = read_values(&mut selection);
+            assert!(!before.is_empty());
+            if fixture == "fst0061-shortstring" {
+                assert!(
+                    before
+                        .iter()
+                        .any(|(_, _, text)| text == &format!("{:<50}", "En lång röd räv"))
+                );
+            }
+            let first = before.iter().map(|(_, time, _)| *time).min().unwrap();
+            let last = before.iter().map(|(_, time, _)| *time).max().unwrap();
+            for window in [
+                TimeRange::all(),
+                TimeRange::point(first),
+                TimeRange::point(last),
+            ] {
+                let mut times = Vec::new();
+                let _ = selection
+                    .scan_candidate_times(window, |time| {
+                        times.push(time);
+                        ControlFlow::<()>::Continue(())
+                    })
+                    .unwrap();
+                assert!(times.windows(2).all(|pair| pair[0] < pair[1]));
+                assert!(
+                    times.iter().all(|&time| time >= window.start()
+                        && window.end().is_none_or(|end| time <= end))
+                );
+                for (_, time, _) in &before {
+                    if *time >= window.start() && window.end().is_none_or(|end| *time <= end) {
+                        assert!(times.contains(time));
+                    }
+                }
+                let mut calls = 0;
+                assert_eq!(
+                    selection
+                        .scan_candidate_times(window, |time| {
+                            calls += 1;
+                            ControlFlow::Break(time)
+                        })
+                        .unwrap(),
+                    ControlFlow::Break(times[0])
+                );
+                assert_eq!(calls, 1);
+                let mut replay = Vec::new();
+                let _ = selection
+                    .scan_candidate_times(window, |time| {
+                        replay.push(time);
+                        ControlFlow::<()>::Continue(())
+                    })
+                    .unwrap();
+                assert_eq!(replay, times);
+            }
+            assert_eq!(read_values(&mut selection), before);
+        }
+    }
+}
+
 fn bits(value: ValueRef<'_>) -> String {
     let ValueRef::Bits(bits) = value else {
         panic!("expected bit value")
@@ -144,6 +314,35 @@ fn fst_composed_sections_and_wrapper() {
     let signals = ["TOP.clk", "TOP.$unit.SCR1_ARCH_RST_VECTOR"]
         .map(|name| wave.hierarchy().signal(name).unwrap());
     let mut selection = wave.select(&signals).unwrap();
+    for boundary in [745342, 3248312, 5812392] {
+        for start in [boundary - 1, boundary, boundary + 1] {
+            let window = range(start, start + 44);
+            let mut required = std::collections::BTreeSet::new();
+            let _ = selection
+                .scan(window, |record| {
+                    if let ondas::ScanRef::Change { time, .. } = record {
+                        required.insert(time);
+                    }
+                    ControlFlow::<()>::Continue(())
+                })
+                .unwrap();
+            let mut candidates = Vec::new();
+            let _ = selection
+                .scan_candidate_times(window, |time| {
+                    candidates.push(time);
+                    ControlFlow::<()>::Continue(())
+                })
+                .unwrap();
+            assert!(candidates.windows(2).all(|pair| pair[0] < pair[1]));
+            assert!(
+                candidates
+                    .iter()
+                    .all(|time| (start..=start + 44).contains(&time.ticks()))
+            );
+            assert!(!required.is_empty());
+            assert!(required.is_subset(&candidates.into_iter().collect()));
+        }
+    }
     for start in [1000, 745320, 5812370] {
         // Resolve independent point observations outside query callbacks.
         let expected = (start - 1..=start + 44)

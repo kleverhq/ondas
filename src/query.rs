@@ -253,7 +253,13 @@ impl Selection<'_> {
         range: TimeRange,
         mut visitor: impl FnMut(Time) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>> {
-        // ponytail: decode selected values; use a cheaper activity index if benchmarks justify it.
+        let end = range
+            .end()
+            .or_else(|| self.waveform.metadata().time_span().map(|span| span.last()))
+            .unwrap_or(Time::from_ticks(u64::MAX));
+        if let crate::backends::Reader::Fst(reader) = &mut self.waveform.reader {
+            return reader.read_candidate_times(&self.bases, range.start(), end, visitor);
+        }
         let mut last = None;
         self.scan(range, |record| {
             if let ScanRef::Change { time, .. } = record

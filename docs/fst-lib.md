@@ -16,7 +16,7 @@ The decoder uses Rust compression libraries and requires buffered, seekable inpu
 
 ## How it works
 
-![FST opening retains section locations, signal geometry and mapped declarations. Each query filters selected handles from tick zero, decodes relevant sections and sends values through the shared query engine.](images/fst-lib-flow.drawio.svg)
+![FST opening retains section locations, signal geometry and mapped declarations. Stateful queries filter selected handles from tick zero and send decoded values through the shared query engine. Candidate-only scans filter sections by the requested window and deduplicate validated activity timestamps.](images/fst-lib-flow.drawio.svg)
 
 ### Opening
 
@@ -38,7 +38,7 @@ completeness.
 
 ### Queries
 
-For a window `[start, end]`, the adapter builds a decoder filter containing the
+For a stateful window `[start, end]`, the adapter builds a decoder filter containing the
 selected base handles and the time range **`0..=end`**, not `start..=end`. Reading
 from zero establishes entering values reliably, including variable-length strings
 that have no initial value in frame snapshots.
@@ -56,6 +56,16 @@ at their requested tick. Scans can stop traversal with `Break`; owned traces
 collect their output. A subsequent query starts a new traversal, not a continuation
 from the previous query's position.
 
+Timestamp-only candidate enumeration filters sections using `start..=end` because
+it needs no entering values or change times. It validates decoded values in the
+selected sections but does not project, compare or retain them. It deduplicates
+raw activity at each completed tick, so a candidate may describe a redundant
+write, a section frame or a change outside a selected slice. The decoder still
+expands and decompresses selected chains, including earlier records in the first
+overlapping section. Skipped sections are not value-validated by this operation. Composed queries continue
+to use the shared query engine, which serves controls and payload from the same
+traversal rather than issuing point queries for each candidate.
+
 The adapter is in [`src/backends/fst.rs`](../src/backends/fst.rs). Shared observation
 logic is in [`src/query/engine.rs`](../src/query/engine.rs).
 
@@ -64,7 +74,7 @@ logic is in [`src/query/engine.rs`](../src/query/engine.rs).
 | Choice | Consequence |
 |---|---|
 | Section directory at opening | The decoder can seek past value sections without decoding them. Opening still reads metadata and decompresses the hierarchy; it is not full value validation. |
-| Filtering from tick zero | A narrow late window still traverses earlier selected history. Section offsets do not make the adapter a direct lookup at the requested start tick. |
+| Stateful queries filter from tick zero | A narrow late window still traverses earlier selected history. Section offsets do not make the adapter a direct lookup at the requested start tick. |
 | Selected value chains | Unselected chains can be skipped, but selected chains are decompressed for the section, potentially beyond the query end. A callback break cannot undo that work. |
 | Section-local decoding | Memory includes section time/offset tables, selected decompressed chains and per-handle arrays. An initial frame can require full-frame decompression even for a small selection. Memory is not bounded by the number of selected signals alone. |
 | Batch selected signals | One traversal serves the batch. Aliases and projections share base reads; output order, duplicates and separate slice histories remain intact. |

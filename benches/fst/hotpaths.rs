@@ -1,7 +1,7 @@
 use std::{hint::black_box, ops::ControlFlow};
 
 use criterion::{BenchmarkId, Criterion};
-use ondas::{Selection, Time, TimeRange};
+use ondas::{Encoding, Selection, Time, TimeRange};
 
 use super::{BACKEND, first_change, fixtures, scan_count};
 
@@ -14,6 +14,37 @@ fn candidates(selection: &mut Selection<'_>, range: TimeRange) -> u64 {
         })
         .unwrap();
     count
+}
+
+pub(super) fn strings(c: &mut Criterion) {
+    for fixture in [
+        "fst0044-overlay-tb-issue-21",
+        "fst0060-manytypes2",
+        "fst0061-shortstring",
+    ] {
+        let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
+        let mut wave = ondas::open_with(&path, BACKEND).unwrap();
+        let signals = wave
+            .hierarchy()
+            .signals()
+            .filter(|signal| signal.encoding() == Encoding::String)
+            .collect::<Vec<_>>();
+        assert!(!signals.is_empty());
+        let window = TimeRange::all();
+        let mut selection = wave.select(&signals).unwrap();
+        assert!(candidates(&mut selection, window) > 0);
+        assert!(scan_count(&mut selection, window) > 0);
+        let mut group =
+            c.benchmark_group(format!("fst/{}/{fixture}/file/strings", fixtures::PROVIDER));
+        group.sample_size(30);
+        group.bench_function(BenchmarkId::new("candidate-times/all", BACKEND), |b| {
+            b.iter(|| black_box(candidates(&mut selection, black_box(window))));
+        });
+        group.bench_function(BenchmarkId::new("scan/all", BACKEND), |b| {
+            b.iter(|| black_box(scan_count(&mut selection, black_box(window))));
+        });
+        group.finish();
+    }
 }
 
 pub(super) fn topology(c: &mut Criterion) {
@@ -159,6 +190,7 @@ pub(super) fn boundaries(c: &mut Criterion) {
         .hierarchy()
         .signal("TOP.$unit.SCR1_ARCH_RST_VECTOR")
         .unwrap();
+    let clock = wave.hierarchy().signal("TOP.clk").unwrap();
     let mut selection = wave.select(&[constant]).unwrap();
     let mut group = c.benchmark_group(format!("fst/{}/{fixture}/file", fixtures::PROVIDER));
     group.sample_size(20);
@@ -174,6 +206,18 @@ pub(super) fn boundaries(c: &mut Criterion) {
                 },
             );
         }
+    }
+    let mut selection = wave.select(&[clock]).unwrap();
+    for boundary in [745342_u64, 3248312, 5812392] {
+        let window = TimeRange::closed(
+            Time::from_ticks(boundary - 20),
+            Time::from_ticks(boundary + 20),
+        );
+        assert!(candidates(&mut selection, window) > 0);
+        group.bench_function(
+            BenchmarkId::new(format!("candidate-times/clock/section{boundary}"), BACKEND),
+            |b| b.iter(|| black_box(candidates(&mut selection, black_box(window)))),
+        );
     }
     group.finish();
 }

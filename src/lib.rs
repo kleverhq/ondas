@@ -163,12 +163,14 @@ reals, strings and event callbacks, preserving aliases and explicit source range
   those callbacks; they do not establish exact physical event counts at that tick.
 
 Selections reuse validated handles and base-signal grouping, not complete value
-histories. Each query traverses selected histories from their beginning through
-its end to establish state. Scans retain entering and pending final values per
+histories. Stateful queries traverse selected histories from their beginning
+through their end to establish state. Scans retain entering and pending final values per
 selected entry and stop reader callbacks on `Break`; owned traces also retain
 their output. The decoder owns input and decompression buffers, so this is not a
-fixed bound on total memory use. Candidate-time scans decode values rather than
-using a separate activity index. These costs do not change observation semantics.
+fixed bound on total memory use. Candidate-time scans skip sections before their
+window and avoid retaining values, but still decode and validate selected chains
+rather than using a separate activity index. Section frames and base activity may
+produce extra candidates. These costs do not change observation semantics.
 
 </details>
 
