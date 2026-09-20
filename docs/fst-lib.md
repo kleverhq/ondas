@@ -56,6 +56,13 @@ at their requested tick. Scans can stop traversal with `Break`; owned traces
 collect their output. A subsequent query starts a new traversal, not a continuation
 from the previous query's position.
 
+Timestamp-only candidate enumeration validates the same decoded values but does
+not project, compare or retain them. It deduplicates raw activity at each completed
+tick, so a candidate may describe a redundant write or a change outside a selected
+slice. Decoder expansion and decompression still occur. Composed queries continue
+to use the shared query engine, which serves controls and payload from the same
+traversal rather than issuing point queries for each candidate.
+
 The adapter is in [`src/backends/fst.rs`](../src/backends/fst.rs). Shared observation
 logic is in [`src/query/engine.rs`](../src/query/engine.rs).
 

@@ -109,6 +109,75 @@ fn fst_composed_wide_observations() {
     }
 }
 
+#[test]
+#[ignore = "requires ONDAS_FIXTURES; run just conformance"]
+fn fst_candidates_deduplicate_raw_activity_and_reuse_after_stop() {
+    let (path, _) = fixtures::load_artifact(&fixtures::provider(), "fst0083-wide-compact-toggle");
+    let mut wave = ondas::open_with(&path, "fst-lib").unwrap();
+    let wide = wave.hierarchy().signal("top.wide").unwrap();
+    let low = wide.slice(0, 0).unwrap();
+    let stable = wide.slice(4095, 1).unwrap();
+    let mut selection = wave.select(&[low, stable, low]).unwrap();
+    let window = range(2048, 2052);
+    let mut required = std::collections::BTreeSet::new();
+    let _ = selection
+        .scan(window, |record| {
+            if let ondas::ScanRef::Change { time, .. } = record {
+                required.insert(time);
+            }
+            ControlFlow::<()>::Continue(())
+        })
+        .unwrap();
+    let mut times = Vec::new();
+    let _ = selection
+        .scan_candidate_times(window, |time| {
+            times.push(time);
+            ControlFlow::<()>::Continue(())
+        })
+        .unwrap();
+    assert!(!required.is_empty());
+    assert!(times.windows(2).all(|pair| pair[0] < pair[1]));
+    assert!(required.is_subset(&times.iter().copied().collect()));
+    assert!(
+        times
+            .iter()
+            .all(|time| (2048..=2052).contains(&time.ticks()))
+    );
+    let mut calls = 0;
+    assert_eq!(
+        selection
+            .scan_candidate_times(window, |time| {
+                calls += 1;
+                ControlFlow::Break(time)
+            })
+            .unwrap(),
+        ControlFlow::Break(times[0])
+    );
+    assert_eq!(calls, 1);
+    let mut replay = Vec::new();
+    let _ = selection
+        .scan_candidate_times(window, |time| {
+            replay.push(time);
+            ControlFlow::<()>::Continue(())
+        })
+        .unwrap();
+    assert_eq!(replay, times);
+    for window in [range(2052, 2048), range(4097, 4100)] {
+        let _ = selection
+            .scan_candidate_times::<()>(window, |_| {
+                panic!("unexpected candidate in an empty or past-end window")
+            })
+            .unwrap_or_else(|error| panic!("{error}"));
+    }
+    let mut empty = wave.select(&[]).unwrap();
+    assert_eq!(
+        empty
+            .scan_candidate_times(TimeRange::all(), |_| ControlFlow::Break(()))
+            .unwrap(),
+        ControlFlow::Continue(())
+    );
+}
+
 fn bits(value: ValueRef<'_>) -> String {
     let ValueRef::Bits(bits) = value else {
         panic!("expected bit value")

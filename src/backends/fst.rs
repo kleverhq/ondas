@@ -305,6 +305,41 @@ impl Reader {
         ))
     }
 
+    pub(crate) fn read_candidate_times<B>(
+        &mut self,
+        signals: &[Signal],
+        start: Time,
+        end: Time,
+        mut visitor: impl FnMut(Time) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>> {
+        if signals.is_empty() || start > end {
+            return Ok(ControlFlow::Continue(()));
+        }
+        let mut pending = None;
+        // Keep validation and prefix reading, but do not project or own values.
+        // Raw activity is a permitted superset, including same-tick excursions.
+        let result = self.read(signals, end, |_, time, _| {
+            if time < start {
+                return ControlFlow::Continue(());
+            }
+            if let Some(previous) = pending
+                && previous != time
+            {
+                visitor(previous)?;
+            }
+            pending = Some(time);
+            ControlFlow::Continue(())
+        })?;
+        if let ControlFlow::Break(value) = result {
+            return Ok(ControlFlow::Break(value));
+        }
+        // As with scans, a failed read must not publish the unfinished tick.
+        match pending {
+            Some(time) => Ok(visitor(time)),
+            None => Ok(ControlFlow::Continue(())),
+        }
+    }
+
     pub(crate) fn read<B>(
         &mut self,
         signals: &[Signal],
