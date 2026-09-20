@@ -16,7 +16,7 @@ The decoder uses Rust compression libraries and requires buffered, seekable inpu
 
 ## How it works
 
-![FST opening retains section locations, signal geometry and mapped declarations. Each query filters selected handles from tick zero, decodes relevant sections and sends values through the shared query engine.](images/fst-lib-flow.drawio.svg)
+![FST opening retains section locations, signal geometry and mapped declarations. Stateful queries filter selected handles from tick zero and send decoded values through the shared query engine. Candidate-only scans filter sections by the requested window and deduplicate validated activity timestamps.](images/fst-lib-flow.drawio.svg)
 
 ### Opening
 
