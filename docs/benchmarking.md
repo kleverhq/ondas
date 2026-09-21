@@ -167,13 +167,20 @@ also has an open/drop case. Workload preflight distinguishes active windows from
 quiet windows; independent value correctness belongs to fixture conformance.
 
 The [FSDB backend model](fsdb-lib.md) explains why prepared selections do not
-imply cached histories: every query loads selected signals into the SDK, creates
-a traversal handle, starts from the beginning and unloads afterward. That SDK
-work is included in prepared-query measurements. Early callback termination
+imply cached SDK histories: every traversal loads selected signals, creates a
+handle and unloads afterward. Persistent-only selections can reuse a bounded
+normalized checkpoint to start a compatible traversal at its saved boundary
+when the file supports view windows. Other files retain full SDK loading and
+prefix traversal, suppressing pre-boundary records before value decoding.
+Cold or incompatible requests still replay the prefix. Prepared-query warmup
+can establish that checkpoint, so prepared results are not cold late-entry
+measurements. A final selected-state snapshot can also avoid SDK traversal for
+repeated point reads or resume forward reads. Measurements include SDK work
+whenever a traversal is needed; warmed prepared samples can avoid it entirely. Early callback termination
 cannot avoid loading that precedes the first callback. Selection construction
 alone does not load values. One-shot individual and batched samples both include
-selection creation and owned result destruction; prepared samples exclude only
-the selection setup. Scan and candidate callbacks count records without storing
+selection creation and owned result destruction; prepared samples exclude
+selection setup and can benefit from selection-local state reuse. Scan and candidate callbacks count records without storing
 them; traces include materialization and destruction. A query-series iteration
 contains 8 or 32 point queries by repeating the same eight-timestamp block once
 or four times, with throughput reported in queries rather than returned records.

@@ -117,13 +117,12 @@ void encoding(Declaration &d, const fsdbTreeCBDataVar &v) {
 struct ondas_fsdb {
     ffrObject *file = nullptr;
     ffrTimeBasedVCTrvsHdl cursor = nullptr;
-    bool loaded = false, advance = false;
+    bool loaded = false, advance = false, view_window = false;
     std::vector<Declaration> declarations;
     std::unordered_map<uint64_t, size_t> variables;
-    std::vector<uint8_t> buffer;
     std::string path, scale, writer, date;
     bool has_writer = false, has_date = false;
-    uint64_t first = 0, last = 0, end_tick = 0;
+    uint64_t first = 0, last = 0, start_tick = 0, end_tick = 0;
     std::exception_ptr tree_error;
     void end() noexcept {
         // No exceptions may escape cleanup, including during Rust unwinding.
@@ -226,6 +225,9 @@ extern "C" int ondas_fsdb_open(const char *path, ondas_fsdb **out, char *error, 
         reader->file = ffrObject::ffrOpenNonSharedObj(&reader->path[0]);
         require(reader->file != nullptr, "FSDB Reader could not open the file (check file variant and SDK version)");
         auto *file = reader->file;
+        ffrFSDBInfo info{};
+        reader->view_window = ffrObject::ffrGetFSDBInfo(&reader->path[0], info) == FSDB_RC_SUCCESS
+                              && info.is_view_window_available;
         require(file->ffrGetXTagType() == FSDB_XTAG_TYPE_L || file->ffrGetXTagType() == FSDB_XTAG_TYPE_HL,
                 "floating FSDB timestamps are unsupported");
         file->ffrSetTreeCBFunc(tree, reader.get());
@@ -260,10 +262,11 @@ extern "C" void ondas_fsdb_declaration(ondas_fsdb *reader, size_t index, ondas_f
     out->definition = d.definition.empty() ? nullptr : d.definition.c_str();
 }
 extern "C" void ondas_fsdb_end(ondas_fsdb *reader) { reader->end(); }
-extern "C" int ondas_fsdb_begin(ondas_fsdb *reader, const uint64_t *ids, size_t count, uint64_t end, char *error, size_t cap) {
+extern "C" int ondas_fsdb_begin(ondas_fsdb *reader, const uint64_t *ids, size_t count, uint64_t begin, uint64_t end, char *error, size_t cap) {
     try {
         reader->end();
         require(count > 0 && count <= UINT32_MAX, "invalid selected signal count");
+        reader->start_tick = begin;
         reader->end_tick = end;
         std::vector<fsdbVarIdcode> selected(ids, ids + count);
         for (auto id : selected) {
@@ -272,6 +275,21 @@ extern "C" int ondas_fsdb_begin(ondas_fsdb *reader, const uint64_t *ids, size_t 
                     "FSDB event queries with dump-off ranges are unsupported");
             success(reader->file->ffrAddToSignalList(id), "select FSDB signal");
         }
+        // A nonzero start requires the engine's exact normalized checkpoint.
+        // Without one, begin is zero. Loading remains flush-session granular.
+        if (reader->view_window) {
+            fsdbXTag start{}, close{};
+            if (reader->file->ffrGetXTagType() == FSDB_XTAG_TYPE_L) {
+                start.ltag.L = begin > UINT32_MAX ? UINT32_MAX : uint32_t(begin);
+                close.ltag.L = end > UINT32_MAX ? UINT32_MAX : uint32_t(end);
+            } else {
+                start.hltag.H = uint32_t(begin >> 32);
+                start.hltag.L = uint32_t(begin);
+                close.hltag.H = uint32_t(end >> 32);
+                close.hltag.L = uint32_t(end);
+            }
+            success(reader->file->ffrResetViewWindow(&start, &close), "set FSDB view window");
+        }
         reader->loaded = true;
         success(reader->file->ffrLoadSignals(), "load selected FSDB signals");
         reader->cursor = reader->file->ffrCreateTimeBasedVCTrvsHdl(uint32_t(count), selected.data());
@@ -279,7 +297,7 @@ extern "C" int ondas_fsdb_begin(ondas_fsdb *reader, const uint64_t *ids, size_t 
         return 0;
     } OFS_CATCH(error, cap)
 }
-extern "C" int ondas_fsdb_next(ondas_fsdb *reader, ondas_fsdb_value *out, char *error, size_t cap) {
+extern "C" int ondas_fsdb_next(ondas_fsdb *reader, ondas_fsdb_value *out, uint8_t *bits, size_t bits_cap, char *error, size_t cap) {
     try {
         auto *cursor = reader->cursor;
         require(cursor != nullptr, "no active FSDB traversal");
@@ -291,6 +309,9 @@ extern "C" int ondas_fsdb_next(ondas_fsdb *reader, ondas_fsdb_value *out, char *
             reader->advance = true;
             const auto tick = ticks(time);
             if (tick > reader->end_tick) return 0;
+            // The SDK may include an entering value before the view window.
+            // The engine already owns that state; do not replay it as a change.
+            if (tick < reader->start_tick) continue;
             fsdbVarIdcode id = 0;
             success(cursor->ffrGetVarIdcode(&id), "read FSDB value identity");
             const auto &d = reader->declarations.at(reader->variables.at(id));
@@ -314,12 +335,12 @@ extern "C" int ondas_fsdb_next(ondas_fsdb *reader, ondas_fsdb_value *out, char *
                 } else if (d.dt >= FSDB_DT_VHDL_STD_ULOGIC && d.dt <= FSDB_DT_VHDL_SIGNED) {
                     alphabet = "ux01zwlh-"; states = 9;
                 }
-                reader->buffer.resize(size);
+                require(bits != nullptr && size <= bits_cap, "short FSDB bit buffer");
                 for (size_t i = 0; i < size; ++i) {
                     require(raw[i] < states, "unknown FSDB logic state");
-                    reader->buffer[i] = alphabet[raw[i]];
+                    bits[i] = alphabet[raw[i]];
                 }
-                out->data = reader->buffer.data(); out->len = size;
+                out->data = bits; out->len = size;
             } else if (out->encoding == OFS_REAL) {
                 require((size == 4 && d.bytes_per_bit == FSDB_BYTES_PER_BIT_4B) ||
                         (size == 8 && d.bytes_per_bit == FSDB_BYTES_PER_BIT_8B), "invalid FSDB real storage");

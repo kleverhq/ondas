@@ -45,6 +45,7 @@ conformance: _inside
 # Set ONDAS_REQUIRE_PRIVATE_FIXTURES=1 to require the complete private selection.
 conformance-fsdb: _inside
     cargo test --locked --features fsdb-lib --test conformance fsdb_ -- --ignored --nocapture
+    cargo test --locked --features fsdb-lib --lib fsdb_ -- --ignored
 
 # Verify actual downstream linking, independent of Cargo's runtime environment.
 fsdb-consumer: _inside
