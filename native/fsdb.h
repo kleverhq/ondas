@@ -44,7 +44,7 @@ void ondas_fsdb_close(ondas_fsdb *);
 void ondas_fsdb_metadata(ondas_fsdb *, ondas_fsdb_meta *);
 size_t ondas_fsdb_decl_count(ondas_fsdb *);
 void ondas_fsdb_declaration(ondas_fsdb *, size_t, ondas_fsdb_decl *);
-int ondas_fsdb_begin(ondas_fsdb *, const uint64_t *, size_t, uint64_t, char *, size_t);
+int ondas_fsdb_begin(ondas_fsdb *, const uint64_t *, size_t, uint64_t, uint64_t, char *, size_t);
 int ondas_fsdb_next(ondas_fsdb *, ondas_fsdb_value *, char *, size_t);
 void ondas_fsdb_end(ondas_fsdb *);
 

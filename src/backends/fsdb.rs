@@ -79,6 +79,7 @@ unsafe extern "C" {
         reader: *mut c_void,
         ids: *const u64,
         count: usize,
+        start: u64,
         end: u64,
         error: *mut c_char,
         cap: usize,
@@ -170,6 +171,8 @@ pub(crate) struct Reader {
     ids: Vec<u64>,
     indices: HashMap<u64, usize>,
     encodings: Vec<Encoding>,
+    #[cfg(test)]
+    pub(crate) records_read: usize,
 }
 impl Reader {
     pub(crate) fn open(path: &Path, source_name: String) -> Result<(Self, Hierarchy, Metadata)> {
@@ -343,6 +346,8 @@ impl Reader {
                 ids,
                 indices,
                 encodings,
+                #[cfg(test)]
+                records_read: 0,
             },
             hierarchy,
             metadata,
@@ -353,9 +358,20 @@ impl Reader {
         &mut self,
         signals: &[Signal],
         end: Time,
+        visitor: impl for<'v> FnMut(usize, Time, ValueRef<'v>) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>> {
+        self.read_from(signals, Time::ZERO, end, visitor)
+    }
+
+    // Nonzero starts require normalized entering state owned by the query engine.
+    pub(crate) fn read_from<B>(
+        &mut self,
+        signals: &[Signal],
+        start: Time,
+        end: Time,
         mut visitor: impl for<'v> FnMut(usize, Time, ValueRef<'v>) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>> {
-        if signals.is_empty() {
+        if signals.is_empty() || start > end {
             return Ok(ControlFlow::Continue(()));
         }
         let ids: Vec<_> = signals.iter().map(|s| self.ids[s.index()]).collect();
@@ -369,6 +385,7 @@ impl Reader {
                     traversal.0.0.as_ptr(),
                     ids.as_ptr(),
                     ids.len(),
+                    start.ticks(),
                     end.ticks(),
                     error.as_mut_ptr(),
                     error.len(),
@@ -414,6 +431,10 @@ impl Reader {
                 return Err(backend_error("backwards FSDB timestamps"));
             }
             previous = record.tick;
+            #[cfg(test)]
+            {
+                self.records_read += 1;
+            }
             let index = *self
                 .indices
                 .get(&record.id)

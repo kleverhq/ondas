@@ -47,7 +47,10 @@ build contexts.
 
 ## How it works
 
-![FSDB opening reads hierarchy and metadata into an owned model. Each query loads selected SDK identities, traverses from the beginning through the inclusive end, copies values under the SDK lock and feeds the shared query engine outside that lock.](images/fsdb-lib-flow.drawio.svg)
+The diagram shows the cold-query path; compatible repeated selections can use
+the normalized checkpoint described below.
+
+![FSDB opening reads hierarchy and metadata into an owned model. A cold query loads selected SDK identities, traverses from the beginning through the inclusive end, copies values under the SDK lock and feeds the shared query engine outside that lock.](images/fsdb-lib-flow.drawio.svg)
 
 ### Opening
 
@@ -80,8 +83,13 @@ projections into selected base signals. The shim adds their SDK identities with
 `ffrAddToSignalList`, calls `ffrLoadSignals`, and creates a chronological cursor
 with `ffrCreateTimeBasedVCTrvsHdl`.
 
-Traversal starts at the beginning, not at `start`. Earlier selected records
-establish entering values for late windows. The cursor checks each timestamp
+Cold traversal starts at the beginning, not at `start`. Earlier selected records
+establish entering values for late windows. A persistent-only selection can retain
+one normalized boundary checkpoint, using the query engine's existing 4 MiB
+checkpoint budget. Compatible later requests restore exact values and projected
+change times and position the SDK view at the saved boundary. Earlier requests,
+event selections and oversized checkpoints use the full-prefix path. Break,
+error and panic discard the checkpoint. The cursor checks each timestamp
 against the inclusive `end` **before decoding the value**, so an excluded record
 does not fail a prefix query. Equal-tick cross-signal order is not a public
 guarantee. The raw SDK traversal does not sort or collapse records; the shared
@@ -94,8 +102,10 @@ query engine. That engine applies projections, tracks entering state, and emits
 final persistent tick changes and per-tick event aggregates. Samples consume all observations
 at their requested tick; scans can stop with `Break`; owned traces collect output.
 
-When the file supports view windows, loading uses zero through the inclusive
-query end, preserving the prefix needed for exact normalized change times. The
+When the file supports view windows, loading uses the checkpoint boundary (or
+zero without a checkpoint) through the inclusive query end. The retained state
+preserves exact normalized change times; SDK values preceding the boundary are
+not emitted again. The
 SDK loads complete flush sessions intersecting that window, not precisely the
 requested ticks. Other files retain full loading.
 
@@ -115,10 +125,10 @@ in [`native/fsdb.cpp`](../native/fsdb.cpp), and linking in
 |---|---|
 | Hierarchy at opening | Opening retains declarations and identity maps, not decoded histories. Value errors can first appear during queries. |
 | Load selected SDK signals through the query end | Loading precedes callbacks and is flush-session granular. The SDK may allocate substantial selected-history storage even for a short window or an early `Break`. |
-| Traverse from the beginning | A narrow late window still walks earlier selected records; there is no adapter checkpoint at `start`. |
+| Bounded normalized checkpoint | A cold late window walks earlier selected records. Compatible repeated windows on the same persistent-only selection can skip that prefix; there is no multi-time index. |
 | Batch base identities | Aliases and projections share base reads. The query engine preserves separate output entries and slice histories. |
 | Copy transient records | Native logic scratch, a reusable Rust byte buffer and string storage hold current values; borrowed SDK pointers never reach visitors. |
-| No cross-query history cache | Repeated queries repeat SDK selection, loading and traversal. Reusing a selection retains validation/grouping, not decoded values. |
+| No SDK history cache | Each traversal still performs SDK selection/loading and creates a new cursor. Retained normalized checkpoint state belongs to the selection, not to an SDK history cache. |
 | Serialized SDK calls | Independent waveform readers do not execute SDK operations concurrently through this adapter. Rust visitors run outside the lock. |
 | Streaming observations | Shared query state retains bounded entering/pending values and event counts per selection entry. Owned traces additionally retain their output. |
 

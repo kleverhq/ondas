@@ -123,7 +123,7 @@ struct ondas_fsdb {
     std::vector<uint8_t> buffer;
     std::string path, scale, writer, date;
     bool has_writer = false, has_date = false;
-    uint64_t first = 0, last = 0, end_tick = 0;
+    uint64_t first = 0, last = 0, start_tick = 0, end_tick = 0;
     std::exception_ptr tree_error;
     void end() noexcept {
         // No exceptions may escape cleanup, including during Rust unwinding.
@@ -263,10 +263,11 @@ extern "C" void ondas_fsdb_declaration(ondas_fsdb *reader, size_t index, ondas_f
     out->definition = d.definition.empty() ? nullptr : d.definition.c_str();
 }
 extern "C" void ondas_fsdb_end(ondas_fsdb *reader) { reader->end(); }
-extern "C" int ondas_fsdb_begin(ondas_fsdb *reader, const uint64_t *ids, size_t count, uint64_t end, char *error, size_t cap) {
+extern "C" int ondas_fsdb_begin(ondas_fsdb *reader, const uint64_t *ids, size_t count, uint64_t begin, uint64_t end, char *error, size_t cap) {
     try {
         reader->end();
         require(count > 0 && count <= UINT32_MAX, "invalid selected signal count");
+        reader->start_tick = begin;
         reader->end_tick = end;
         std::vector<fsdbVarIdcode> selected(ids, ids + count);
         for (auto id : selected) {
@@ -275,13 +276,16 @@ extern "C" int ondas_fsdb_begin(ondas_fsdb *reader, const uint64_t *ids, size_t 
                     "FSDB event queries with dump-off ranges are unsupported");
             success(reader->file->ffrAddToSignalList(id), "select FSDB signal");
         }
-        // Keep the entire entering prefix: a clipped start would lose normalized
-        // change times. The SDK loads whole flush sessions, not exact tick ranges.
+        // A nonzero start requires the engine's exact normalized checkpoint.
+        // Without one, begin is zero. Loading remains flush-session granular.
         if (reader->view_window) {
             fsdbXTag start{}, close{};
             if (reader->file->ffrGetXTagType() == FSDB_XTAG_TYPE_L) {
+                start.ltag.L = begin > UINT32_MAX ? UINT32_MAX : uint32_t(begin);
                 close.ltag.L = end > UINT32_MAX ? UINT32_MAX : uint32_t(end);
             } else {
+                start.hltag.H = uint32_t(begin >> 32);
+                start.hltag.L = uint32_t(begin);
                 close.hltag.H = uint32_t(end >> 32);
                 close.hltag.L = uint32_t(end);
             }
@@ -306,6 +310,9 @@ extern "C" int ondas_fsdb_next(ondas_fsdb *reader, ondas_fsdb_value *out, char *
             reader->advance = true;
             const auto tick = ticks(time);
             if (tick > reader->end_tick) return 0;
+            // The SDK may include an entering value before the view window.
+            // The engine already owns that state; do not replay it as a change.
+            if (tick < reader->start_tick) continue;
             fsdbVarIdcode id = 0;
             success(cursor->ffrGetVarIdcode(&id), "read FSDB value identity");
             const auto &d = reader->declarations.at(reader->variables.at(id));

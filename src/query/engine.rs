@@ -15,8 +15,25 @@ pub(super) struct Slot {
     events: u64,
 }
 
+#[derive(Clone, Copy)]
+enum Position {
+    Vcd(crate::backends::vcd::Position),
+    #[cfg(feature = "fsdb-lib")]
+    Fsdb(Time),
+}
+
+impl Position {
+    fn time(self) -> Time {
+        match self {
+            Self::Vcd(position) => Time::from_ticks(position.time),
+            #[cfg(feature = "fsdb-lib")]
+            Self::Fsdb(time) => time,
+        }
+    }
+}
+
 pub(super) struct Replay {
-    position: crate::backends::vcd::Position,
+    position: Position,
     start: Time,
     end: Time,
     time: Option<Time>,
@@ -501,6 +518,10 @@ impl<'w> Selection<'w> {
             }
             ControlFlow::<()>::Continue(())
         })?;
+        // User callbacks also run after traversal has completed. Keep caches
+        // provisional until they return, so unwinding cannot retain them.
+        let replay = self.replay.take();
+        let checkpoint = self.checkpoint.take();
         for (index, &signal) in self.signals.iter().enumerate() {
             let sample = if signal.encoding() == Encoding::Event {
                 SampleRef::Event {
@@ -517,11 +538,11 @@ impl<'w> Selection<'w> {
                 SampleRef::Missing { signal }
             };
             if let ControlFlow::Break(value) = visitor(sample) {
-                self.replay = None;
-                self.checkpoint = None;
                 return Ok(ControlFlow::Break(value));
             }
         }
+        self.replay = replay;
+        self.checkpoint = checkpoint;
         Ok(ControlFlow::Continue(()))
     }
 
@@ -684,10 +705,12 @@ impl<'w> Selection<'w> {
             return Ok(ControlFlow::Break(value));
         }
         if !emitted_initials {
+            let replay = self.replay.take();
+            let checkpoint = self.checkpoint.take();
             let result = initials(&self.signals, &slots, &slot_indices, &mut visitor);
-            if result.is_break() {
-                self.replay = None;
-                self.checkpoint = None;
+            if result.is_continue() {
+                self.replay = replay;
+                self.checkpoint = checkpoint;
             }
             return Ok(result);
         }
@@ -735,57 +758,74 @@ impl<'w> Selection<'w> {
         #[cfg(test)]
         let probe = streaming_tests::probe(&self.waveform.reader);
         // One entering/final value and event count per slot, never intra-tick writes.
-        let mut consume =
-            |base, time, value: ValueRef<'_>, position: Option<crate::backends::vcd::Position>| {
-                if let Some(previous) = pending_time
-                    && previous != time
-                {
-                    match complete_tick(&self.signals, slots, previous, &mut visitor) {
-                        Ok(ControlFlow::Continue(())) => (),
-                        outcome => return ControlFlow::Break(outcome),
-                    }
+        let mut consume = |base, time, value: ValueRef<'_>, position: Option<Position>| {
+            if let Some(previous) = pending_time
+                && previous != time
+            {
+                match complete_tick(&self.signals, slots, previous, &mut visitor) {
+                    Ok(ControlFlow::Continue(())) => (),
+                    outcome => return ControlFlow::Break(outcome),
                 }
-                if !checkpoint_considered
-                    && let (Some(start), Some(position)) = (start, position)
-                    && time >= start
-                    && pending_time.is_none_or(|previous| previous < start)
-                {
-                    checkpoint_considered = true;
-                    // The previous tick has committed; this record is still unread
-                    // at the saved position. Oversized selections simply replay.
-                    checkpoint = (checkpoint_bytes(slots) <= CHECKPOINT_BYTES).then(|| Replay {
-                        position,
-                        start,
-                        end: Time::from_ticks(position.time),
-                        time: None,
-                        slots: slots.to_vec(),
-                    });
+            }
+            if !checkpoint_considered
+                && let (Some(start), Some(position)) = (start, position)
+                && time >= start
+                && pending_time.is_none_or(|previous| previous < start)
+            {
+                checkpoint_considered = true;
+                // The previous tick has committed; this record is still unread
+                // at the saved position. Oversized selections simply replay.
+                checkpoint = (checkpoint_bytes(slots) <= CHECKPOINT_BYTES).then(|| Replay {
+                    position,
+                    start,
+                    end: position.time(),
+                    time: None,
+                    slots: slots.to_vec(),
+                });
+            }
+            pending_time = Some(time);
+            for &index in &self.groups[&base] {
+                let slot = &mut slots[index];
+                if let ValueRef::Event { occurrences } = value {
+                    let Some(count) = slot.events.checked_add(occurrences) else {
+                        return ControlFlow::Break(Err(Error::Backend {
+                            backend: backend.clone(),
+                            operation: "count events",
+                            message: "event occurrence count exceeds u64::MAX".into(),
+                        }));
+                    };
+                    slot.events = count;
+                } else {
+                    slot.pending = Some(project(value, self.retained_signals[index]).to_owned());
                 }
-                pending_time = Some(time);
-                for &index in &self.groups[&base] {
-                    let slot = &mut slots[index];
-                    if let ValueRef::Event { occurrences } = value {
-                        let Some(count) = slot.events.checked_add(occurrences) else {
-                            return ControlFlow::Break(Err(Error::Backend {
-                                backend: backend.clone(),
-                                operation: "count events",
-                                message: "event occurrence count exceeds u64::MAX".into(),
-                            }));
-                        };
-                        slot.events = count;
-                    } else {
-                        slot.pending =
-                            Some(project(value, self.retained_signals[index]).to_owned());
-                    }
-                }
-                #[cfg(test)]
-                streaming_tests::observe_pending(&probe, slots);
-                ControlFlow::Continue(())
-            };
+            }
+            #[cfg(test)]
+            streaming_tests::observe_pending(&probe, slots);
+            ControlFlow::Continue(())
+        };
         let result = match &mut self.waveform.reader {
             crate::backends::Reader::Vcd(reader) => {
+                let position = position.map(|position| match position {
+                    Position::Vcd(position) => position,
+                    #[cfg(feature = "fsdb-lib")]
+                    Position::Fsdb(_) => unreachable!("reader is fixed for a selection"),
+                });
                 reader.read_from(&self.bases, end, position, |base, time, value, position| {
-                    consume(base, time, value, Some(position))
+                    consume(base, time, value, Some(Position::Vcd(position)))
+                })
+            }
+            #[cfg(feature = "fsdb-lib")]
+            crate::backends::Reader::Fsdb(reader) => {
+                let from = match position {
+                    Some(Position::Fsdb(time)) => time,
+                    None => Time::ZERO,
+                    Some(Position::Vcd(_)) => unreachable!("reader is fixed for a selection"),
+                };
+                // A boundary checkpoint does not retain the preceding tick's
+                // event counts. Event selections keep the full reference path.
+                let cacheable = !self.bases.iter().any(|s| s.encoding() == Encoding::Event);
+                reader.read_from(&self.bases, from, end, |base, time, value| {
+                    consume(base, time, value, cacheable.then_some(Position::Fsdb(time)))
                 })
             }
             reader => reader.read(&self.bases, end, |base, time, value| {
@@ -798,7 +838,7 @@ impl<'w> Selection<'w> {
         // Preserve a successful position even when selected signals are missing.
         let replay = match &self.waveform.reader {
             crate::backends::Reader::Vcd(reader) => reader.position().map(|position| Replay {
-                position,
+                position: Position::Vcd(position),
                 start: pending_time.unwrap_or(Time::ZERO),
                 end,
                 time: pending_time,
@@ -826,6 +866,88 @@ mod streaming_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "fsdb-lib")]
+    #[test]
+    #[ignore = "requires real FSDB runtime and locked public fixtures"]
+    fn fsdb_checkpoint_preserves_projected_state_and_invalidates() {
+        let root = std::path::PathBuf::from(std::env::var_os("ONDAS_FIXTURES").unwrap());
+        let path = root.join("kleverhq.ondas-fixtures/fsdb0010-history-short/waveform.fsdb");
+        let mut wave = crate::open_with(path, "fsdb-lib").unwrap();
+        let clock = wave.hierarchy().signal("top.clock").unwrap();
+        let word = wave.hierarchy().signal("top.word_00").unwrap();
+        let signals = [
+            clock,
+            word,
+            word.slice(0, 0).unwrap(),
+            word.slice(31, 16).unwrap(),
+            word,
+        ];
+        let mut selection = wave.select(&signals).unwrap();
+        fn count(selection: &Selection<'_>) -> usize {
+            let crate::backends::Reader::Fsdb(reader) = &selection.waveform.reader else {
+                unreachable!()
+            };
+            reader.records_read
+        }
+        let time = Time::from_ticks(4000);
+        let expected = format!("{:?}", selection.samples(time).unwrap());
+        let cold = count(&selection);
+        assert!(cold > 4000);
+        assert!(selection.checkpoint.is_some());
+        assert_eq!(format!("{:?}", selection.samples(time).unwrap()), expected);
+        assert!(
+            count(&selection) - cold < 10,
+            "checkpoint must avoid the source prefix"
+        );
+        // A stable projection retains unknown initial changed_at, not the seek tick.
+        let sample = selection.samples(time).unwrap();
+        assert!(matches!(
+            sample[3],
+            Sample::Value {
+                changed_at: None,
+                ..
+            }
+        ));
+        // Earlier bounds fall back; later access reconstructs the same checkpoint.
+        selection.samples(Time::from_ticks(3)).unwrap();
+        assert_eq!(format!("{:?}", selection.samples(time).unwrap()), expected);
+        let _ = selection
+            .scan(TimeRange::all(), |_| ControlFlow::Break(()))
+            .unwrap();
+        assert!(selection.checkpoint.is_none());
+        let before = count(&selection);
+        assert_eq!(format!("{:?}", selection.samples(time).unwrap()), expected);
+        assert!(count(&selection) - before > 4000);
+        let error = selection.query(TimeRange::all(), &[0], |_| -> Result<ControlFlow<()>> {
+            Err(Error::Backend {
+                backend: "test".into(),
+                operation: "query",
+                message: "stop".into(),
+            })
+        });
+        assert!(error.is_err());
+        assert!(selection.checkpoint.is_none());
+        for sample_callback in [true, false] {
+            selection.samples(time).unwrap();
+            assert!(selection.checkpoint.is_some());
+            let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if sample_callback {
+                    let _ = selection.visit_samples(time, |_| -> ControlFlow<()> {
+                        panic!("sample callback after traversal");
+                    });
+                } else {
+                    let _ = selection.scan(
+                        TimeRange::point(Time::from_ticks(5000)),
+                        |_| -> ControlFlow<()> { panic!("quiet-window initial after traversal") },
+                    );
+                }
+            }));
+            assert!(panic.is_err());
+            assert!(selection.checkpoint.is_none());
+            assert!(selection.replay.is_none());
+        }
+    }
 
     #[test]
     fn vcd_replay_avoids_prefix_and_invalidates_on_stop() {
