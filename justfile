@@ -76,5 +76,11 @@ fixtures-install: _inside
 # Run offline quality checks without external fixtures (also used by pre-commit).
 check-local: fmt-check lint check docs test tools-test
 
+# Validate release metadata and the actual crates.io package without publishing.
+release-check: _inside
+    python3 -B tools/repo/check_release.py
+    cargo package --list --locked
+    cargo publish --dry-run --locked
+
 # Run the full quality gate; fixtures must already be installed.
-ci: check-local conformance
+ci: check-local conformance release-check

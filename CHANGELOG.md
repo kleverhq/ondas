@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-09-21
+
 ### Added
 
 - Optional declaration signedness and logic-domain metadata, independent of
@@ -62,4 +64,5 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Preserve present-but-empty FST header text and canonical declaration kinds.
 
-[Unreleased]: https://github.com/kleverhq/ondas/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/kleverhq/ondas/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/kleverhq/ondas/releases/tag/v1.0.0
