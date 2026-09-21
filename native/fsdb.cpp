@@ -117,7 +117,7 @@ void encoding(Declaration &d, const fsdbTreeCBDataVar &v) {
 struct ondas_fsdb {
     ffrObject *file = nullptr;
     ffrTimeBasedVCTrvsHdl cursor = nullptr;
-    bool loaded = false, advance = false;
+    bool loaded = false, advance = false, view_window = false;
     std::vector<Declaration> declarations;
     std::unordered_map<uint64_t, size_t> variables;
     std::vector<uint8_t> buffer;
@@ -226,6 +226,9 @@ extern "C" int ondas_fsdb_open(const char *path, ondas_fsdb **out, char *error, 
         reader->file = ffrObject::ffrOpenNonSharedObj(&reader->path[0]);
         require(reader->file != nullptr, "FSDB Reader could not open the file (check file variant and SDK version)");
         auto *file = reader->file;
+        ffrFSDBInfo info{};
+        reader->view_window = ffrObject::ffrGetFSDBInfo(&reader->path[0], info) == FSDB_RC_SUCCESS
+                              && info.is_view_window_available;
         require(file->ffrGetXTagType() == FSDB_XTAG_TYPE_L || file->ffrGetXTagType() == FSDB_XTAG_TYPE_HL,
                 "floating FSDB timestamps are unsupported");
         file->ffrSetTreeCBFunc(tree, reader.get());
@@ -271,6 +274,18 @@ extern "C" int ondas_fsdb_begin(ondas_fsdb *reader, const uint64_t *ids, size_t 
             require(d.data.encoding != OFS_EVENT || !reader->file->ffrHasDumpOffRange(),
                     "FSDB event queries with dump-off ranges are unsupported");
             success(reader->file->ffrAddToSignalList(id), "select FSDB signal");
+        }
+        // Keep the entire entering prefix: a clipped start would lose normalized
+        // change times. The SDK loads whole flush sessions, not exact tick ranges.
+        if (reader->view_window) {
+            fsdbXTag start{}, close{};
+            if (reader->file->ffrGetXTagType() == FSDB_XTAG_TYPE_L) {
+                close.ltag.L = end > UINT32_MAX ? UINT32_MAX : uint32_t(end);
+            } else {
+                close.hltag.H = uint32_t(end >> 32);
+                close.hltag.L = uint32_t(end);
+            }
+            success(reader->file->ffrResetViewWindow(&start, &close), "set FSDB view window");
         }
         reader->loaded = true;
         success(reader->file->ffrLoadSignals(), "load selected FSDB signals");

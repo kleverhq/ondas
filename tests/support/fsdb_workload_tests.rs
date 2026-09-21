@@ -85,6 +85,41 @@ fn fsdb_temporal_workloads() {
 
 #[test]
 #[ignore = "requires real FSDB runtime and locked fixtures; run just conformance-fsdb"]
+fn fsdb_loading_window_resets() {
+    let fixture = load_fixture(&provider(), "fsdb0010-history-short");
+    let mut wave = ondas::open_with(&fixture.path, workloads::BACKEND).unwrap();
+    let clock = wave.hierarchy().signal("top.clock").unwrap();
+    let word = wave.hierarchy().signal("top.word_00").unwrap();
+    // Shrinking, expanding, changed selection, and a bound beyond the file.
+    for (signal, tick) in [
+        (clock, 0),
+        (word, 4096),
+        (clock, 16),
+        (clock, u64::MAX),
+        (word, 1),
+    ] {
+        let sample = wave.sample(signal, Time::from_ticks(tick)).unwrap();
+        let SampleRef::Value {
+            value: ValueRef::Bits(bits),
+            changed_at,
+            ..
+        } = sample.as_ref()
+        else {
+            panic!("recorded value must survive changing load windows");
+        };
+        let tick = tick.min(4096);
+        let (value, changed, width) = if signal == clock {
+            (tick % 2, tick, 1)
+        } else {
+            (tick / 16, tick / 16 * 16, 32)
+        };
+        assert_eq!(bits.to_string(), format!("{value:0width$b}"));
+        assert_eq!(changed_at, (changed > 0).then(|| Time::from_ticks(changed)));
+    }
+}
+
+#[test]
+#[ignore = "requires real FSDB runtime and locked fixtures; run just conformance-fsdb"]
 fn fsdb_conditional_workloads() {
     let fixture = load_fixture(&provider(), workloads::WIDE);
     let mut wave = ondas::open_with(&fixture.path, workloads::BACKEND).unwrap();

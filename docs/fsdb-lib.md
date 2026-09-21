@@ -94,8 +94,14 @@ query engine. That engine applies projections, tracks entering state, and emits
 final persistent tick changes and per-tick event aggregates. Samples consume all observations
 at their requested tick; scans can stop with `Break`; owned traces collect output.
 
+When the file supports view windows, loading uses zero through the inclusive
+query end, preserving the prefix needed for exact normalized change times. The
+SDK loads complete flush sessions intersecting that window, not precisely the
+requested ticks. Other files retain full loading.
+
 A traversal guard frees the cursor, unloads selected values and resets the SDK
-selection on completion, `Break`, error or Rust panic. The Reader remains open.
+selection on completion, `Break`, error or Rust panic. A supported view window
+is replaced before each load. The Reader remains open.
 The next query creates a new traversal; it does not resume the previous cursor.
 
 The adapter is in [`src/backends/fsdb.rs`](../src/backends/fsdb.rs), the SDK shim
@@ -108,7 +114,7 @@ in [`native/fsdb.cpp`](../native/fsdb.cpp), and linking in
 | Choice | Consequence |
 |---|---|
 | Hierarchy at opening | Opening retains declarations and identity maps, not decoded histories. Value errors can first appear during queries. |
-| Load selected SDK signals | Loading precedes callbacks. The SDK may allocate substantial selected-history storage even for a short window or an early `Break`. |
+| Load selected SDK signals through the query end | Loading precedes callbacks and is flush-session granular. The SDK may allocate substantial selected-history storage even for a short window or an early `Break`. |
 | Traverse from the beginning | A narrow late window still walks earlier selected records; there is no adapter checkpoint at `start`. |
 | Batch base identities | Aliases and projections share base reads. The query engine preserves separate output entries and slice histories. |
 | Copy transient records | Native logic scratch, a reusable Rust byte buffer and string storage hold current values; borrowed SDK pointers never reach visitors. |
