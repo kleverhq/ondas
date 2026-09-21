@@ -89,7 +89,18 @@ one normalized boundary checkpoint, using the query engine's existing 4 MiB
 checkpoint budget. Compatible later requests restore exact values and projected
 change times and position the SDK view at the saved boundary. Earlier requests,
 event selections and oversized checkpoints use the full-prefix path. Break,
-error and panic discard the checkpoint. The cursor checks each timestamp
+error and panic discard the checkpoint.
+
+A successful persistent-only query also retains its final bounded slot state
+and next unread tick. Repeated point reads need no SDK traversal; forward reads
+can resume from that state. Requests before it use the boundary checkpoint or
+full replay. Neither snapshot accumulates requested times or retains SDK
+histories. Both snapshots are discarded on break, error or panic; a new selection
+starts without them and never shares another selection's state. Event selections
+use the reference path for exact preceding-tick counts, and `u64::MAX` has no
+resumable next tick.
+
+The cursor checks each timestamp
 against the inclusive `end` **before decoding the value**, so an excluded record
 does not fail a prefix query. Equal-tick cross-signal order is not a public
 guarantee. The raw SDK traversal does not sort or collapse records; the shared
@@ -128,7 +139,7 @@ in [`native/fsdb.cpp`](../native/fsdb.cpp), and linking in
 | Bounded normalized checkpoint | A cold late window walks earlier selected records. Compatible repeated windows on the same persistent-only selection can skip that prefix; there is no multi-time index. |
 | Batch base identities | Aliases and projections share base reads. The query engine preserves separate output entries and slice histories. |
 | Copy transient records | Native logic scratch, a reusable Rust byte buffer and string storage hold current values; borrowed SDK pointers never reach visitors. |
-| No SDK history cache | Each traversal still performs SDK selection/loading and creates a new cursor. Retained normalized checkpoint state belongs to the selection, not to an SDK history cache. |
+| Selected-state reuse, no SDK history cache | One final snapshot and one bounded boundary checkpoint belong to the selection. Repeated points can avoid traversal; an actual traversal still performs SDK selection/loading and creates a new cursor. Neither cache grows with query history. |
 | Serialized SDK calls | Independent waveform readers do not execute SDK operations concurrently through this adapter. Rust visitors run outside the lock. |
 | Streaming observations | Shared query state retains bounded entering/pending values and event counts per selection entry. Owned traces additionally retain their output. |
 

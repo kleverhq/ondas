@@ -844,6 +844,18 @@ impl<'w> Selection<'w> {
                 time: pending_time,
                 slots: slots.to_vec(),
             }),
+            #[cfg(feature = "fsdb-lib")]
+            crate::backends::Reader::Fsdb(_)
+                if !self.bases.iter().any(|s| s.encoding() == Encoding::Event) =>
+            {
+                end.ticks().checked_add(1).map(|next| Replay {
+                    position: Position::Fsdb(Time::from_ticks(next)),
+                    start: pending_time.unwrap_or(Time::ZERO),
+                    end,
+                    time: pending_time,
+                    slots: slots.to_vec(),
+                })
+            }
             _ => None,
         };
         // Only successful EOF completes the final pending tick.
@@ -947,6 +959,76 @@ mod tests {
             assert!(selection.checkpoint.is_none());
             assert!(selection.replay.is_none());
         }
+    }
+
+    #[cfg(feature = "fsdb-lib")]
+    #[test]
+    #[ignore = "requires real FSDB runtime and locked public fixtures"]
+    fn fsdb_replay_reuses_completed_point_reads() {
+        let root = std::path::PathBuf::from(std::env::var_os("ONDAS_FIXTURES").unwrap());
+        let path = root.join("kleverhq.ondas-fixtures/fsdb0010-history-short/waveform.fsdb");
+        let mut wave = crate::open_with(&path, "fsdb-lib").unwrap();
+        let clock = wave.hierarchy().signal("top.clock").unwrap();
+        let word = wave.hierarchy().signal("top.word_00").unwrap();
+        let signals = [
+            clock,
+            word.slice(0, 0).unwrap(),
+            word.slice(31, 16).unwrap(),
+        ];
+        let mut selection = wave.select(&signals).unwrap();
+        fn count(selection: &Selection<'_>) -> usize {
+            let crate::backends::Reader::Fsdb(reader) = &selection.waveform.reader else {
+                unreachable!()
+            };
+            reader.records_read
+        }
+        let expected = format!("{:?}", selection.samples(Time::from_ticks(4000)).unwrap());
+        let before = count(&selection);
+        assert_eq!(
+            format!("{:?}", selection.samples(Time::from_ticks(4000)).unwrap()),
+            expected
+        );
+        assert_eq!(
+            count(&selection),
+            before,
+            "repeated point must not enter native traversal"
+        );
+        let next = selection.samples(Time::from_ticks(4001)).unwrap();
+        // The SDK can synthesize an unchanged word at the new window start.
+        assert!(count(&selection) - before <= 2);
+        assert!(
+            matches!(next[1], Sample::Value { changed_at: Some(time), .. } if time == Time::from_ticks(4000))
+        );
+        assert!(matches!(
+            next[2],
+            Sample::Value {
+                changed_at: None,
+                ..
+            }
+        ));
+        assert_eq!(
+            format!("{:?}", selection.samples(Time::from_ticks(4000)).unwrap()),
+            expected
+        );
+        // EOF has no next representable tick at u64::MAX; don't wrap its position.
+        selection.samples(Time::from_ticks(u64::MAX)).unwrap();
+        assert!(selection.replay.is_none());
+        assert_eq!(
+            format!("{:?}", selection.samples(Time::from_ticks(4000)).unwrap()),
+            expected
+        );
+        // Event counts require the full reference path, including repeated reads.
+        let path = root.join("kleverhq.ondas-fixtures/fsdb0017-typed-records/waveform.fsdb");
+        let mut wave = crate::open_with(path, "fsdb-lib").unwrap();
+        let event = wave.hierarchy().signal("top.trigger").unwrap();
+        let mut selection = wave.select(&[event]).unwrap();
+        let expected = format!("{:?}", selection.samples(Time::from_ticks(2048)).unwrap());
+        assert_eq!(
+            format!("{:?}", selection.samples(Time::from_ticks(2048)).unwrap()),
+            expected
+        );
+        assert!(selection.replay.is_none());
+        assert!(selection.checkpoint.is_none());
     }
 
     #[test]
