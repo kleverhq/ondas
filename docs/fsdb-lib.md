@@ -68,7 +68,7 @@ supply bounds, timescale, writer and date.
 
 The returned `Waveform` retains the owned hierarchy and metadata. Its adapter
 keeps the Reader object, identity/index maps and encodings; the shim retains
-hierarchy descriptors and decoding scratch storage. Opening does not traverse
+hierarchy descriptors. Opening does not traverse
 all value histories or certify that every later record can be decoded.
 
 Actual Unix path bytes are passed to the SDK, including non-UTF-8 names;
@@ -106,9 +106,12 @@ does not fail a prefix query. Equal-tick cross-signal order is not a public
 guarantee. The raw SDK traversal does not sort or collapse records; the shared
 query engine applies the public tick normalization described below.
 
-The shim reads storage metadata before `ffrGetVC` and normalizes logic bytes.
-Rust immediately copies transient value bytes while holding the SDK lock. After
-unlocking, it decodes reals and strings and passes borrowed values to the shared
+The shim reads storage metadata before `ffrGetVC`, validates each logic code and
+writes normalized digits directly into the caller-owned Rust byte buffer. Rust
+checks the declared width and borrows those already validated digits without
+another release-build validation pass. Reals and strings are copied from
+transient SDK storage while holding the lock. After unlocking, Rust decodes
+reals and strings and passes borrowed values to the shared
 query engine. That engine applies projections, tracks entering state, and emits
 final persistent tick changes and per-tick event aggregates. Samples consume all observations
 at their requested tick; scans can stop with `Break`; owned traces collect output.
@@ -138,7 +141,7 @@ in [`native/fsdb.cpp`](../native/fsdb.cpp), and linking in
 | Load selected SDK signals through the query end | Loading precedes callbacks and is flush-session granular. The SDK may allocate substantial selected-history storage even for a short window or an early `Break`. |
 | Bounded normalized checkpoint | A cold late window walks earlier selected records. Compatible repeated windows on the same persistent-only selection can skip that prefix; there is no multi-time index. |
 | Batch base identities | Aliases and projections share base reads. The query engine preserves separate output entries and slice histories. |
-| Copy transient records | Native logic scratch, a reusable Rust byte buffer and string storage hold current values; borrowed SDK pointers never reach visitors. |
+| Caller-owned logic buffer | Each traversal sizes one buffer to the widest selected base bit signal, even when no bit record is reached. Logic is validated/normalized directly into it; a separate reusable buffer copies non-bit records without clearing or resizing the bit destination. SDK pointers never reach visitors. |
 | Selected-state reuse, no SDK history cache | One final snapshot and one bounded boundary checkpoint belong to the selection. Repeated points can avoid traversal; an actual traversal still performs SDK selection/loading and creates a new cursor. Neither cache grows with query history. |
 | Serialized SDK calls | Independent waveform readers do not execute SDK operations concurrently through this adapter. Rust visitors run outside the lock. |
 | Streaming observations | Shared query state retains bounded entering/pending values and event counts per selection entry. Owned traces additionally retain their output. |

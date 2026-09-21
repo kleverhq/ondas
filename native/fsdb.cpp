@@ -120,7 +120,6 @@ struct ondas_fsdb {
     bool loaded = false, advance = false, view_window = false;
     std::vector<Declaration> declarations;
     std::unordered_map<uint64_t, size_t> variables;
-    std::vector<uint8_t> buffer;
     std::string path, scale, writer, date;
     bool has_writer = false, has_date = false;
     uint64_t first = 0, last = 0, start_tick = 0, end_tick = 0;
@@ -298,7 +297,7 @@ extern "C" int ondas_fsdb_begin(ondas_fsdb *reader, const uint64_t *ids, size_t 
         return 0;
     } OFS_CATCH(error, cap)
 }
-extern "C" int ondas_fsdb_next(ondas_fsdb *reader, ondas_fsdb_value *out, char *error, size_t cap) {
+extern "C" int ondas_fsdb_next(ondas_fsdb *reader, ondas_fsdb_value *out, uint8_t *bits, size_t bits_cap, char *error, size_t cap) {
     try {
         auto *cursor = reader->cursor;
         require(cursor != nullptr, "no active FSDB traversal");
@@ -336,12 +335,12 @@ extern "C" int ondas_fsdb_next(ondas_fsdb *reader, ondas_fsdb_value *out, char *
                 } else if (d.dt >= FSDB_DT_VHDL_STD_ULOGIC && d.dt <= FSDB_DT_VHDL_SIGNED) {
                     alphabet = "ux01zwlh-"; states = 9;
                 }
-                reader->buffer.resize(size);
+                require(bits != nullptr && size <= bits_cap, "short FSDB bit buffer");
                 for (size_t i = 0; i < size; ++i) {
                     require(raw[i] < states, "unknown FSDB logic state");
-                    reader->buffer[i] = alphabet[raw[i]];
+                    bits[i] = alphabet[raw[i]];
                 }
-                out->data = reader->buffer.data(); out->len = size;
+                out->data = bits; out->len = size;
             } else if (out->encoding == OFS_REAL) {
                 require((size == 4 && d.bytes_per_bit == FSDB_BYTES_PER_BIT_4B) ||
                         (size == 8 && d.bytes_per_bit == FSDB_BYTES_PER_BIT_8B), "invalid FSDB real storage");

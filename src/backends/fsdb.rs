@@ -87,6 +87,8 @@ unsafe extern "C" {
     fn ondas_fsdb_next(
         reader: *mut c_void,
         out: *mut Record,
+        bits: *mut u8,
+        bits_cap: usize,
         error: *mut c_char,
         cap: usize,
     ) -> c_int;
@@ -393,6 +395,15 @@ impl Reader {
             };
             status(code, &error)?;
         }
+        let width = signals
+            .iter()
+            .filter_map(|signal| match self.encodings[signal.index()] {
+                Encoding::Bits { width } => Some(width as usize),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0);
+        let mut bits = vec![0; width];
         let mut data = Vec::new();
         let mut text = String::new();
         let mut previous = 0;
@@ -400,12 +411,15 @@ impl Reader {
             let mut record = Record::default();
             {
                 let _lock = lock();
-                // SAFETY: live cursor; transient bytes copied before any other SDK
-                // call or unlock. C++ never invokes the Rust visitor.
+                // SAFETY: live cursor and writable caller-owned bit buffer. Other
+                // transient bytes are copied before any further SDK call/unlock.
+                // C++ never retains the buffer or invokes the Rust visitor.
                 let code = unsafe {
                     ondas_fsdb_next(
                         traversal.0.0.as_ptr(),
                         &mut record,
+                        bits.as_mut_ptr(),
+                        bits.len(),
                         error.as_mut_ptr(),
                         error.len(),
                     )
@@ -417,14 +431,20 @@ impl Reader {
                 if record.tick > end.ticks() {
                     break;
                 }
-                data.clear();
-                if record.len > 0 {
-                    if record.data.is_null() || record.len > isize::MAX as usize {
-                        return Err(backend_error("invalid FSDB buffer"));
+                if record.encoding == 1 {
+                    if record.len > bits.len() {
+                        return Err(backend_error("invalid FSDB bit buffer"));
                     }
-                    data.extend_from_slice(unsafe {
-                        std::slice::from_raw_parts(record.data, record.len)
-                    });
+                } else {
+                    data.clear();
+                    if record.len > 0 {
+                        if record.data.is_null() || record.len > isize::MAX as usize {
+                            return Err(backend_error("invalid FSDB buffer"));
+                        }
+                        data.extend_from_slice(unsafe {
+                            std::slice::from_raw_parts(record.data, record.len)
+                        });
+                    }
                 }
             }
             if record.tick < previous {
@@ -439,16 +459,24 @@ impl Reader {
                 .indices
                 .get(&record.id)
                 .ok_or_else(|| backend_error("unknown FSDB value identity"))?;
+            let bytes = if record.encoding == 1 {
+                &bits[..record.len]
+            } else {
+                &data[..record.len]
+            };
             let value = match (self.encodings[index], record.encoding) {
-                (Encoding::Bits { width }, 1) => ValueRef::Bits(
-                    BitsRef::from_ascii(&data)
-                        .filter(|v| v.width() == width)
-                        .ok_or_else(|| backend_error("invalid FSDB bits"))?,
-                ),
-                (Encoding::Real, 2) => ValueRef::Real(real(&data)?),
+                (Encoding::Bits { width }, 1) => {
+                    if bytes.len() != width as usize {
+                        return Err(backend_error("invalid FSDB bits"));
+                    }
+                    // The private shim validates every SDK digit before writing
+                    // its normalized ASCII form. Don't parse those digits again.
+                    ValueRef::Bits(BitsRef::from_validated_ascii(bytes))
+                }
+                (Encoding::Real, 2) => ValueRef::Real(real(bytes)?),
                 (Encoding::String, 3) => {
                     text.clear();
-                    text.extend(data.iter().copied().map(char::from));
+                    text.extend(bytes.iter().copied().map(char::from));
                     ValueRef::String(&text)
                 }
                 (Encoding::Event, 4) => ValueRef::Event { occurrences: 1 },
@@ -518,6 +546,87 @@ mod tests {
         }
         for invalid in [0, 1, 3, 5, 9] {
             assert!(real(&vec![0; invalid]).is_err());
+        }
+    }
+
+    #[test]
+    #[ignore = "requires real FSDB runtime and locked public fixtures"]
+    fn fsdb_bits_use_caller_storage() {
+        let root = std::path::PathBuf::from(std::env::var_os("ONDAS_FIXTURES").unwrap());
+        let path = root.join("kleverhq.ondas-fixtures/fsdb0015-wide-compact-toggle/waveform.fsdb");
+        let (mut reader, hierarchy, _) = Reader::open(&path, "bits".into()).unwrap();
+        let signal = hierarchy.signal("top.wide").unwrap();
+        let id = reader.ids[signal.index()];
+        let width = signal.width().unwrap() as usize;
+        // A short destination fails inside the shim; the next session still works.
+        for capacity in [0, width] {
+            let traversal = Traversal(&mut reader.handle);
+            let _lock = lock();
+            let mut error = [0; 512];
+            let mut bits = vec![0; capacity];
+            let mut records = 0;
+            let mut bytes = 0;
+            // SAFETY: live exclusive owner, writable caller buffers, SDK lock.
+            let code = unsafe {
+                ondas_fsdb_begin(
+                    traversal.0.0.as_ptr(),
+                    &id,
+                    1,
+                    0,
+                    4096,
+                    error.as_mut_ptr(),
+                    error.len(),
+                )
+            };
+            status(code, &error).unwrap();
+            loop {
+                let mut record = Record::default();
+                // SAFETY: the destination length is passed exactly, including
+                // the intentional zero-capacity error case; no pointer escapes.
+                let code = unsafe {
+                    ondas_fsdb_next(
+                        traversal.0.0.as_ptr(),
+                        &mut record,
+                        bits.as_mut_ptr(),
+                        bits.len(),
+                        error.as_mut_ptr(),
+                        error.len(),
+                    )
+                };
+                if capacity == 0 {
+                    assert!(status(code, &error).is_err());
+                    break;
+                }
+                status(code, &error).unwrap();
+                if code == 0 {
+                    break;
+                }
+                assert_eq!(record.encoding, 1);
+                assert_eq!(record.len, width);
+                assert_eq!(
+                    record.data,
+                    bits.as_ptr(),
+                    "no native scratch/copy for bits"
+                );
+                let value = BitsRef::from_ascii(&bits).unwrap();
+                assert_eq!(
+                    value.bit(0),
+                    Some(if record.tick % 2 == 0 {
+                        crate::Logic::Zero
+                    } else {
+                        crate::Logic::One
+                    })
+                );
+                records += 1;
+                bytes += record.len;
+            }
+            if capacity != 0 {
+                assert_eq!(records, 4097);
+                assert_eq!(bytes, 4097 * 4096);
+                eprintln!(
+                    "FSDB bit-buffer counters: {records} records, {bytes} directly written digits; no intermediate bit-buffer copy"
+                );
+            }
         }
     }
 
