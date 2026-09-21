@@ -22,6 +22,8 @@ fn malformed(message: impl Into<String>) -> Error {
 struct Tokens {
     input: Box<dyn Input>,
     offset: u64,
+    #[cfg(test)]
+    growths: usize,
 }
 
 impl Tokens {
@@ -33,6 +35,10 @@ impl Tokens {
                 .take_while(|b| b.is_ascii_whitespace() == whitespace)
                 .count();
             if let Some(output) = output.as_mut() {
+                #[cfg(test)]
+                if output.len() + n > output.capacity() {
+                    self.growths += 1;
+                }
                 output.extend_from_slice(&bytes[..n]);
             }
             let done = n < bytes.len() || bytes.is_empty();
@@ -44,11 +50,16 @@ impl Tokens {
         }
     }
 
-    fn next(&mut self) -> Result<Option<Vec<u8>>> {
+    fn next_into(&mut self, word: &mut Vec<u8>) -> Result<bool> {
+        word.clear();
         self.take(true, None)?;
+        self.take(false, Some(word))?;
+        Ok(!word.is_empty())
+    }
+
+    fn next(&mut self) -> Result<Option<Vec<u8>>> {
         let mut word = Vec::new();
-        self.take(false, Some(&mut word))?;
-        Ok((!word.is_empty()).then_some(word))
+        Ok(self.next_into(&mut word)?.then_some(word))
     }
 
     fn required(&mut self) -> Result<Vec<u8>> {
@@ -85,8 +96,18 @@ fn utf8(bytes: &[u8]) -> Result<String> {
         .map_err(|_| malformed("invalid UTF-8 declaration or metadata"))
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct Position {
+    offset: u64,
+    pub(crate) time: u64,
+    block: bool,
+}
+
 pub(crate) struct Reader {
     tokens: Tokens,
+    position: Option<Position>,
+    #[cfg(test)]
+    pub(crate) records_read: usize,
     body: u64,
     ids: HashMap<Vec<u8>, usize>,
     encodings: Vec<Encoding>,
@@ -97,7 +118,12 @@ impl Reader {
         input: Box<dyn Input>,
         source_name: String,
     ) -> Result<(Self, Hierarchy, Metadata)> {
-        let mut tokens = Tokens { input, offset: 0 };
+        let mut tokens = Tokens {
+            input,
+            offset: 0,
+            #[cfg(test)]
+            growths: 0,
+        };
         let mut metadata = Metadata {
             source_name,
             timescale: None,
@@ -262,13 +288,19 @@ impl Reader {
         }
         let mut reader = Self {
             tokens,
+            position: None,
+            #[cfg(test)]
+            records_read: 0,
             body,
             ids,
             encodings,
         };
-        let (_, span) = reader.walk(u64::MAX, None, Some(&mut metadata.comments), |_, _, _| {
-            ControlFlow::<()>::Continue(())
-        })?;
+        let (_, span) = reader.walk(
+            u64::MAX,
+            None,
+            Some(&mut metadata.comments),
+            |_, _, _, _| ControlFlow::<()>::Continue(()),
+        )?;
         metadata.time_span = span;
         let hierarchy = Hierarchy::new(scopes, variables, reader.encodings.clone());
         Ok((reader, hierarchy, metadata))
@@ -278,13 +310,39 @@ impl Reader {
         &mut self,
         signals: &[Signal],
         end: Time,
-        visitor: impl for<'v> FnMut(usize, Time, ValueRef<'v>) -> ControlFlow<B>,
+        mut visitor: impl for<'v> FnMut(usize, Time, ValueRef<'v>) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>> {
-        self.tokens.input.seek(SeekFrom::Start(self.body))?;
-        self.tokens.offset = self.body;
+        self.read_from(signals, end, None, |index, time, value, _| {
+            visitor(index, time, value)
+        })
+    }
+
+    pub(crate) fn position(&self) -> Option<Position> {
+        self.position
+    }
+
+    pub(crate) fn read_from<B>(
+        &mut self,
+        signals: &[Signal],
+        end: Time,
+        position: Option<Position>,
+        visitor: impl for<'v> FnMut(usize, Time, ValueRef<'v>, Position) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>> {
+        let position = position.unwrap_or(Position {
+            offset: self.body,
+            time: 0,
+            block: false,
+        });
+        self.position = None;
+        self.tokens.input.seek(SeekFrom::Start(position.offset))?;
+        self.tokens.offset = position.offset;
+        self.position = Some(position);
         let selected = signals.iter().map(|s| s.index()).collect();
-        self.walk(end.ticks(), Some(&selected), None, visitor)
-            .map(|(flow, _)| flow)
+        let result = self.walk(end.ticks(), Some(&selected), None, visitor);
+        if !matches!(result, Ok((ControlFlow::Continue(()), _))) {
+            self.position = None;
+        }
+        result.map(|(flow, _)| flow)
     }
 
     fn walk<B>(
@@ -292,19 +350,26 @@ impl Reader {
         end: u64,
         selected: Option<&HashSet<usize>>,
         mut comments: Option<&mut Vec<String>>,
-        mut visitor: impl for<'v> FnMut(usize, Time, ValueRef<'v>) -> ControlFlow<B>,
+        mut visitor: impl for<'v> FnMut(usize, Time, ValueRef<'v>, Position) -> ControlFlow<B>,
     ) -> Result<(ControlFlow<B>, Option<TimeSpan>)> {
-        let mut time = 0;
+        let position = self.position.take();
+        let mut time = position.map_or(0, |position| position.time);
         let mut span = None::<TimeSpan>;
-        let mut block = false;
+        let mut block = position.is_some_and(|position| position.block);
         let mut bits = Vec::new();
         let mut string = String::new();
+        let mut word = Vec::new();
+        let mut id = Vec::new();
         let mut seen = if selected.is_none() {
             vec![false; self.encodings.len()]
         } else {
             Vec::new()
         };
-        while let Some(word) = self.tokens.next()? {
+        loop {
+            let offset = self.tokens.offset;
+            if !self.tokens.next_into(&mut word)? {
+                break;
+            }
             if word[0] == b'#' {
                 if block {
                     return Err(self.tokens.error("timestamp inside dump block"));
@@ -313,10 +378,15 @@ impl Reader {
                 if next < time {
                     return Err(self.tokens.error("backwards timestamp"));
                 }
-                time = next;
-                if time > end {
+                if next > end {
+                    self.position = Some(Position {
+                        offset,
+                        time,
+                        block,
+                    });
                     break;
                 }
+                time = next;
                 span = Some(TimeSpan::new(
                     span.map_or(Time::from_ticks(time), |s| s.first()),
                     Time::from_ticks(time),
@@ -337,15 +407,22 @@ impl Reader {
                 }
                 continue;
             }
+            #[cfg(test)]
+            {
+                self.records_read += 1;
+            }
             let prefix = word[0].to_ascii_lowercase();
             let (payload, id) = if matches!(prefix, b'b' | b'r' | b's') {
-                (&word[1..], self.tokens.required()?)
+                if !self.tokens.next_into(&mut id)? {
+                    return Err(self.tokens.error("unexpected EOF"));
+                }
+                (&word[1..], id.as_slice())
             } else {
-                (&word[..1], word[1..].to_vec())
+                (&word[..1], &word[1..])
             };
             let index = *self
                 .ids
-                .get(&id)
+                .get(id)
                 .ok_or_else(|| self.tokens.error("unknown identifier code"))?;
             if selected.is_none() {
                 if prefix == b's' && self.encodings[index] == Encoding::Real && !seen[index] {
@@ -386,7 +463,9 @@ impl Reader {
                         bits.clear();
                         bits.resize(width.saturating_sub(payload.len()), fill);
                         bits.extend_from_slice(&payload[payload.len().saturating_sub(width)..]);
-                        ValueRef::Bits(BitsRef::from_ascii(&bits).expect("validated bits"))
+                        // Padding uses a validated source state; truncation keeps
+                        // validated digits. Do not rescan the declared width.
+                        ValueRef::Bits(BitsRef::from_validated_ascii(&bits))
                     } else {
                         ValueRef::Event { occurrences: 1 }
                     }
@@ -396,7 +475,16 @@ impl Reader {
             // Checkpoints describe event snapshots, not observable triggers.
             if selected
                 && !(block && matches!(value, ValueRef::Event { .. }))
-                && let ControlFlow::Break(value) = visitor(index, Time::from_ticks(time), value)
+                && let ControlFlow::Break(value) = visitor(
+                    index,
+                    Time::from_ticks(time),
+                    value,
+                    Position {
+                        offset,
+                        time,
+                        block,
+                    },
+                )
             {
                 return Ok((ControlFlow::Break(value), span));
             }
@@ -404,6 +492,11 @@ impl Reader {
         if block {
             return Err(self.tokens.error("unterminated dump block"));
         }
+        self.position.get_or_insert(Position {
+            offset: self.tokens.offset,
+            time,
+            block,
+        });
         Ok((ControlFlow::Continue(()), span))
     }
 }
@@ -628,4 +721,40 @@ fn timescale(text: &str) -> Result<Timescale> {
     let factor = u32::try_from(numerator / denominator)
         .map_err(|_| malformed("timescale factor overflow"))?;
     Ok(Timescale::new(factor, units[unit]))
+}
+
+#[cfg(test)]
+mod replay_tests {
+    use super::*;
+    use std::io::{BufReader, Cursor};
+
+    #[test]
+    fn body_token_buffers_grow_with_token_size_not_record_count() {
+        let mut text =
+            String::from("$var wire 4 ! bus $end $var wire 1 s scalar $end $enddefinitions $end ");
+        for tick in 0..1024 {
+            text.push_str(&format!("#{tick} b10Xz ! {}s ", tick % 2));
+        }
+        // Every multi-byte token crosses this reader's buffer boundaries.
+        let input = BufReader::with_capacity(2, Cursor::new(text.into_bytes()));
+        let (mut reader, hierarchy, _) =
+            Reader::open(Box::new(input), "tokens.vcd".into()).unwrap();
+        let signals = [
+            hierarchy.signal("bus").unwrap(),
+            hierarchy.signal("scalar").unwrap(),
+        ];
+        let before = reader.tokens.growths;
+        let mut records = 0;
+        let _ = reader
+            .read(&signals, Time::from_ticks(1023), |_, _, value| {
+                if let ValueRef::Bits(bits) = value {
+                    assert!(bits.width() == 1 || bits.to_string() == "10xz");
+                }
+                records += 1;
+                ControlFlow::<()>::Continue(())
+            })
+            .unwrap();
+        assert_eq!(records, 2048);
+        assert_eq!(reader.tokens.growths - before, 2);
+    }
 }

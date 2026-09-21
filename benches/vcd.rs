@@ -299,6 +299,15 @@ fn compact_wide(c: &mut Criterion) {
         ("top.wide[0:0]", wide.slice(0, 0).unwrap()),
         ("top.control", control),
     ] {
+        group.bench_function(
+            BenchmarkId::new(format!("setup/sample/{name}/t4096"), BACKEND),
+            |b| {
+                b.iter(|| {
+                    let mut selection = wave.select(&[signal]).unwrap();
+                    black_box(selection.samples(black_box(time)).unwrap())
+                })
+            },
+        );
         let mut selection = wave.select(&[signal]).unwrap();
         selection.samples(time).expect("compact sample preflight");
         group.bench_function(
@@ -311,6 +320,20 @@ fn compact_wide(c: &mut Criterion) {
         ("top.wide", wide),
         ("top.wide[4095:1]", wide.slice(4095, 1).unwrap()),
     ] {
+        group.bench_function(
+            BenchmarkId::new(format!("setup/scan/{name}/2048..=4096"), BACKEND),
+            |b| {
+                b.iter(|| {
+                    let mut selection = wave.select(&[signal]).unwrap();
+                    let _ = selection
+                        .scan(black_box(range), |record| {
+                            black_box(record);
+                            ControlFlow::<()>::Continue(())
+                        })
+                        .unwrap();
+                })
+            },
+        );
         let mut selection = wave.select(&[signal]).unwrap();
         let _ = selection
             .scan(range, |_| ControlFlow::<()>::Continue(()))
@@ -568,6 +591,39 @@ fn composed(c: &mut Criterion) {
             },
         );
     }
+    for start in [0, 13000] {
+        let range = workloads::range(start, start + 100);
+        group.bench_function(
+            BenchmarkId::new(
+                format!("w1/setup/adjacent/{start}..={}", start + 100),
+                BACKEND,
+            ),
+            |b| {
+                b.iter(|| {
+                    let mut selection = wave.select(&signals).unwrap();
+                    workloads::temporal(&mut selection, black_box(range), |at, slot, sample| {
+                        black_box((at, slot, sample));
+                    })
+                    .unwrap();
+                })
+            },
+        );
+    }
+    // Include selection setup and its first prefix traversal in each iteration.
+    // The prepared repeated case intentionally measures warm reuse instead.
+    group.bench_function(BenchmarkId::new("w1/setup/points/repeated", BACKEND), |b| {
+        b.iter(|| {
+            let mut selection = wave.select(&signals).unwrap();
+            for _ in 0..4 {
+                let _ = selection
+                    .visit_samples(Time::from_ticks(13000), |sample| {
+                        black_box(sample);
+                        ControlFlow::<()>::Continue(())
+                    })
+                    .unwrap();
+            }
+        })
+    });
     // Includes validation, path resolution, selection construction and all drops.
     group.bench_function(
         BenchmarkId::new("w3/end-to-end/first-after-rejections", BACKEND),

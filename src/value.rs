@@ -189,6 +189,12 @@ impl<'a> BitsRef<'a> {
             .then_some(Self { data: bytes })
     }
 
+    /// Borrows digits constructed from already validated logic bytes.
+    pub(crate) fn from_validated_ascii(bytes: &'a [u8]) -> Self {
+        debug_assert!(Self::from_ascii(bytes).is_some());
+        Self { data: bytes }
+    }
+
     /// Borrows an inclusive slice whose normalized bounds are already validated.
     pub(crate) fn slice(self, msb: u32, lsb: u32) -> Self {
         let end = self.data.len() - lsb as usize;
