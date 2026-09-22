@@ -489,35 +489,112 @@ impl<'w> Selection<'w> {
         )
     }
 
+    #[cfg(feature = "fsdb-lib")]
+    fn fsdb_point_states(&mut self, time: Time) -> Result<Option<Vec<Option<State>>>> {
+        if self.signals.is_empty()
+            || !self
+                .bases
+                .iter()
+                .all(|signal| matches!(signal.encoding(), Encoding::Bits { .. }))
+            || !matches!(self.waveform.reader, crate::backends::Reader::Fsdb(_))
+        {
+            return Ok(None);
+        }
+        let next = time.ticks().checked_add(1).map(Time::from_ticks);
+        if let Some(replay) = self.replay.as_ref().filter(|replay| {
+            replay.time.is_none() && replay.end == time && Some(replay.start) == next
+        }) {
+            return Ok(Some(
+                self.slot_indices
+                    .iter()
+                    .map(|&index| replay.slots[index].state.clone())
+                    .collect(),
+            ));
+        }
+        // Keep existing chronological replay when it already supplies an exact
+        // entering state. Otherwise seek cold/backwards bit-only point reads.
+        let eligible = |replay: &Replay| replay.start <= time && replay.end <= time;
+        if self.replay.as_ref().is_some_and(eligible)
+            || self.checkpoint.as_ref().is_some_and(eligible)
+        {
+            return Ok(None);
+        }
+        self.replay = None;
+        self.checkpoint = None;
+        let crate::backends::Reader::Fsdb(reader) = &mut self.waveform.reader else {
+            unreachable!()
+        };
+        let samples = reader.sample_bits(&self.bases, &self.retained_signals, time)?;
+        let slots: Vec<_> = samples
+            .into_iter()
+            .map(|sample| Slot {
+                state: match sample {
+                    Sample::Value {
+                        value, changed_at, ..
+                    } => Some(State { value, changed_at }),
+                    Sample::Missing { .. } => None,
+                    Sample::Event { .. } => unreachable!("bit-only point selection"),
+                },
+                ..Slot::default()
+            })
+            .collect();
+        let states = self
+            .slot_indices
+            .iter()
+            .map(|&index| slots[index].state.clone())
+            .collect();
+        if let Some(next) = next.filter(|_| checkpoint_bytes(&slots) <= CHECKPOINT_BYTES) {
+            // This is state AFTER time, not entering time. Only later scans may
+            // reuse it; same-tick point reads are handled explicitly above.
+            self.replay = Some(Replay {
+                position: Position::Fsdb(next),
+                start: next,
+                end: time,
+                time: None,
+                slots,
+            });
+        }
+        Ok(Some(states))
+    }
+
     pub(super) fn sample_visit<B>(
         &mut self,
         time: Time,
         mut visitor: impl for<'v> FnMut(SampleRef<'v>) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>> {
-        let mut states = (0..self.signals.len())
-            .map(|_| None)
-            .collect::<Vec<Option<State>>>();
+        #[cfg(feature = "fsdb-lib")]
+        let (point_sampled, mut states) = {
+            let states = self.fsdb_point_states(time)?;
+            (
+                states.is_some(),
+                states.unwrap_or_else(|| vec![None; self.signals.len()]),
+            )
+        };
+        #[cfg(not(feature = "fsdb-lib"))]
+        let (point_sampled, mut states) = (false, vec![None; self.signals.len()]);
         let mut events = vec![0u64; self.signals.len()];
-        let _ = self.scan_each(TimeRange::point(time), |index, record| {
-            match record {
-                ScanRef::Initial {
-                    value, changed_at, ..
-                } => {
-                    states[index] = Some(State {
-                        value: value.to_owned(),
-                        changed_at,
-                    });
-                }
-                ScanRef::Change { time, value, .. } => {
-                    if let ValueRef::Event { occurrences } = value {
-                        events[index] = occurrences;
-                    } else {
-                        update(&mut states[index], value.to_owned(), time);
+        if !point_sampled {
+            let _ = self.scan_each(TimeRange::point(time), |index, record| {
+                match record {
+                    ScanRef::Initial {
+                        value, changed_at, ..
+                    } => {
+                        states[index] = Some(State {
+                            value: value.to_owned(),
+                            changed_at,
+                        });
+                    }
+                    ScanRef::Change { time, value, .. } => {
+                        if let ValueRef::Event { occurrences } = value {
+                            events[index] = occurrences;
+                        } else {
+                            update(&mut states[index], value.to_owned(), time);
+                        }
                     }
                 }
-            }
-            ControlFlow::<()>::Continue(())
-        })?;
+                ControlFlow::<()>::Continue(())
+            })?;
+        }
         // User callbacks also run after traversal has completed. Keep caches
         // provisional until they return, so unwinding cannot retain them.
         let replay = self.replay.take();
@@ -748,6 +825,7 @@ impl<'w> Selection<'w> {
         let mut checkpoint_considered = checkpoint
             .as_ref()
             .is_some_and(|checkpoint| Some(checkpoint.start) == start);
+        let replay_start = replay.map(|replay| replay.start).unwrap_or(Time::ZERO);
         let mut pending_time = replay.and_then(|replay| replay.time);
         let position = replay.map(|replay| replay.position);
         if let Some(replay) = replay {
@@ -839,7 +917,7 @@ impl<'w> Selection<'w> {
         let replay = match &self.waveform.reader {
             crate::backends::Reader::Vcd(reader) => reader.position().map(|position| Replay {
                 position: Position::Vcd(position),
-                start: pending_time.unwrap_or(Time::ZERO),
+                start: pending_time.unwrap_or(replay_start),
                 end,
                 time: pending_time,
                 slots: slots.to_vec(),
@@ -850,7 +928,7 @@ impl<'w> Selection<'w> {
             {
                 end.ticks().checked_add(1).map(|next| Replay {
                     position: Position::Fsdb(Time::from_ticks(next)),
-                    start: pending_time.unwrap_or(Time::ZERO),
+                    start: pending_time.unwrap_or(replay_start),
                     end,
                     time: pending_time,
                     slots: slots.to_vec(),
@@ -903,6 +981,11 @@ mod tests {
             reader.records_read
         }
         let time = Time::from_ticks(4000);
+        // Exercise the chronological scan checkpoint, independently of the cold
+        // bit-only point fast path.
+        let _ = selection
+            .scan(TimeRange::point(time), |_| ControlFlow::<()>::Continue(()))
+            .unwrap();
         let expected = format!("{:?}", selection.samples(time).unwrap());
         let cold = count(&selection);
         assert!(cold > 4000);
@@ -929,6 +1012,9 @@ mod tests {
             .unwrap();
         assert!(selection.checkpoint.is_none());
         let before = count(&selection);
+        let _ = selection
+            .scan(TimeRange::point(time), |_| ControlFlow::<()>::Continue(()))
+            .unwrap();
         assert_eq!(format!("{:?}", selection.samples(time).unwrap()), expected);
         assert!(count(&selection) - before > 4000);
         let error = selection.query(TimeRange::all(), &[0], |_| -> Result<ControlFlow<()>> {
@@ -941,6 +1027,9 @@ mod tests {
         assert!(error.is_err());
         assert!(selection.checkpoint.is_none());
         for sample_callback in [true, false] {
+            let _ = selection
+                .scan(TimeRange::point(time), |_| ControlFlow::<()>::Continue(()))
+                .unwrap();
             selection.samples(time).unwrap();
             assert!(selection.checkpoint.is_some());
             let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -958,6 +1047,96 @@ mod tests {
             assert!(panic.is_err());
             assert!(selection.checkpoint.is_none());
             assert!(selection.replay.is_none());
+        }
+    }
+
+    #[cfg(feature = "fsdb-lib")]
+    #[test]
+    #[ignore = "requires real FSDB runtime and locked public fixtures"]
+    fn fsdb_cold_points_match_chronological_reference() {
+        let root = std::path::PathBuf::from(std::env::var_os("ONDAS_FIXTURES").unwrap());
+        for fixture in [
+            "fsdb0010-history-short",
+            "fsdb0017-typed-records",
+            "fsdb0019-typed-values",
+            "fsdb0020-nine-state-ranges",
+        ] {
+            let mut wave = crate::open(
+                root.join("kleverhq.ondas-fixtures")
+                    .join(fixture)
+                    .join("waveform.fsdb"),
+            )
+            .unwrap();
+            let mut signals = Vec::new();
+            for variable in wave.hierarchy().variables() {
+                if let Some(signal) = variable.signal()
+                    && let Encoding::Bits { width } = signal.encoding()
+                {
+                    signals.push(signal);
+                    signals.push(signal.slice(0, 0).unwrap());
+                    signals.push(signal.slice(width - 1, width - 1).unwrap());
+                    signals.push(signal);
+                }
+            }
+            assert!(!signals.is_empty());
+            for tick in [0, 1, 3, 4, 5, 16, 2048, 4000, 4001, u64::MAX] {
+                let time = Time::from_ticks(tick);
+                let mut expected: Vec<_> = signals
+                    .iter()
+                    .map(|&signal| Sample::Missing { signal })
+                    .collect();
+                let _ = wave
+                    .select(&signals)
+                    .unwrap()
+                    .scan_each(TimeRange::point(time), |index, record| {
+                        let (value, changed_at) = match record {
+                            ScanRef::Initial {
+                                value, changed_at, ..
+                            } => (value, changed_at),
+                            ScanRef::Change { value, time, .. } => (
+                                value,
+                                matches!(expected[index], Sample::Value { .. }).then_some(time),
+                            ),
+                        };
+                        expected[index] = Sample::Value {
+                            signal: signals[index],
+                            value: value.to_owned(),
+                            changed_at,
+                        };
+                        ControlFlow::<()>::Continue(())
+                    })
+                    .unwrap();
+                let actual = wave.samples(&signals, time).unwrap();
+                assert_eq!(
+                    format!("{actual:?}"),
+                    format!("{expected:?}"),
+                    "{fixture} tick {tick}"
+                );
+            }
+            let range = TimeRange::closed(Time::ZERO, Time::from_ticks(6001));
+            let mut expected = Vec::new();
+            let _ = wave
+                .select(&signals)
+                .unwrap()
+                .scan_each(range, |index, record| {
+                    expected.push(format!("{index}:{record:?}"));
+                    ControlFlow::<()>::Continue(())
+                })
+                .unwrap();
+            let mut selection = wave.select(&signals).unwrap();
+            selection.samples(Time::from_ticks(6000)).unwrap();
+            selection.samples(Time::from_ticks(6001)).unwrap();
+            let mut actual = Vec::new();
+            let _ = selection
+                .scan_each(range, |index, record| {
+                    actual.push(format!("{index}:{record:?}"));
+                    ControlFlow::<()>::Continue(())
+                })
+                .unwrap();
+            assert_eq!(
+                actual, expected,
+                "quiet point cache must not be reused as earlier entering state"
+            );
         }
     }
 

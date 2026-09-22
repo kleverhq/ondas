@@ -80,6 +80,19 @@ open.
 
 ### Queries
 
+Cold bit-only point samples use per-signal SDK seeks after loading the deduplicated
+base selection. Each seek finishes its aligned tick. The reader walks earlier
+completed ticks until the selected projection differs, establishing its exact
+normalized `changed_at`; an initial or constant projected state retains `None`.
+This also handles same-tick excursions and redundant writes. A constant projection
+can still require walking its full history. Mixed-value and event selections keep
+the chronological reference path.
+
+The resulting bounded point snapshot represents state after the requested tick.
+It can serve the same point again or seed later windows, never the entering state
+of a window beginning at that tick or earlier. Point snapshots use the existing
+selection cache budget and are discarded on break, error or panic.
+
 For a window `[start, end]`, the shared query layer resolves aliases and
 projections into selected base signals. The shim adds their SDK identities with
 `ffrAddToSignalList`, calls `ffrLoadSignals`, and creates a chronological cursor
@@ -89,14 +102,14 @@ Cold traversal starts at the beginning, not at `start`. Earlier selected records
 establish entering values for late windows. A persistent-only selection can retain
 one normalized boundary checkpoint, using the query engine's existing 4 MiB
 checkpoint budget. Compatible later requests restore exact values and projected
-change times and position the SDK view at the saved boundary. Earlier requests,
+change times and position the SDK view at the saved boundary. Earlier windows,
 event selections and oversized checkpoints use the full-prefix path. Break,
 error and panic discard the checkpoint.
 
 A successful persistent-only query also retains its final bounded slot state
 and next unread tick. Repeated point reads need no SDK traversal; forward reads
-can resume from that state. Requests before it use the boundary checkpoint or
-full replay. Neither snapshot accumulates requested times or retains SDK
+can resume from that state. Earlier windows use the boundary checkpoint or
+full replay; cold bit-only points can seek independently. Neither snapshot accumulates requested times or retains SDK
 histories. Both snapshots are discarded on break, error or panic; a new selection
 starts without them and never shares another selection's state. Event selections
 use the reference path for exact preceding-tick counts, and `u64::MAX` has no
@@ -142,8 +155,9 @@ in [`native/fsdb.cpp`](../native/fsdb.cpp), and linking in
 | Hierarchy at opening | Opening retains declarations and identity maps, not decoded histories. Value errors can first appear during queries. |
 | Load selected SDK signals through the query end | Loading precedes callbacks and is flush-session granular. The SDK may allocate substantial selected-history storage even for a short window or an early `Break`. |
 | Bounded normalized checkpoint | A cold late window walks earlier selected records. Compatible repeated windows on the same persistent-only selection can skip that prefix; there is no multi-time index. |
-| Batch base identities | Aliases and projections share base reads. The query engine preserves separate output entries and slice histories. |
-| Caller-owned logic buffer | Each traversal sizes one buffer to the widest selected base bit signal, even when no bit record is reached. Logic is validated/normalized directly into it; a separate reusable buffer copies non-bit records without clearing or resizing the bit destination. SDK pointers never reach visitors. |
+| Batch base identities | Aliases and projections share SDK selection/loading. Chronological scans share base replay; cold points seek each distinct projection. Output order and duplicates are preserved. |
+| Cold bit-only point seeks | Skip unrelated prefix records while proving the selected projection's change time. Native point bytes are copied under the SDK lock; no handle or SDK buffer escapes. Constant projections may still walk the prefix. |
+| Caller-owned chronological logic buffer | Each traversal sizes one buffer to the widest selected base bit signal, even when no bit record is reached. Logic is validated/normalized directly into it; a separate reusable buffer copies non-bit records without clearing or resizing the bit destination. SDK pointers never reach visitors. |
 | Selected-state reuse, no SDK history cache | One final snapshot and one bounded boundary checkpoint belong to the selection. Repeated points can avoid traversal; an actual traversal still performs SDK selection/loading and creates a new cursor. Neither cache grows with query history. |
 | Serialized SDK calls | Independent waveform readers do not execute SDK operations concurrently through this adapter. Rust visitors run outside the lock. |
 | Streaming observations | Shared query state retains bounded entering/pending values and event counts per selection entry. Owned traces additionally retain their output. |

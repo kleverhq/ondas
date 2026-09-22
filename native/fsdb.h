@@ -50,6 +50,11 @@ int ondas_fsdb_begin(ondas_fsdb *, const uint64_t *, size_t, uint64_t, uint64_t,
 /* Bit records are validated/normalized directly into caller-owned storage.
  * Other record bytes are borrowed until the next SDK call. */
 int ondas_fsdb_next(ondas_fsdb *, ondas_fsdb_value *, uint8_t *, size_t, char *, size_t);
+/* Selected signals must already be loaded by begin. Returns 1 for a value,
+ * 0 before the first state, -1 on error. tick is meaningful only when changed
+ * is set. Bit bytes are borrowed until the next call on the reader. */
+int ondas_fsdb_sample_bits(ondas_fsdb *, uint64_t, uint64_t, uint32_t, uint32_t,
+                           ondas_fsdb_value *, int *, char *, size_t);
 void ondas_fsdb_end(ondas_fsdb *);
 
 #ifdef __cplusplus

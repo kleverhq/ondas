@@ -43,6 +43,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Seek cold FSDB bit-only point samples and prove their normalized projected
+  change times from prior completed ticks, rather than replaying the whole prefix.
 - Build the shared variable-path index lazily, avoiding its allocation and teardown
   for metadata-only opening and hierarchy traversal.
 - Rename the FST backend from `fst-native` to `fst-lib` to reflect its external

@@ -102,6 +102,17 @@ unsafe extern "C" {
         error: *mut c_char,
         cap: usize,
     ) -> c_int;
+    fn ondas_fsdb_sample_bits(
+        reader: *mut c_void,
+        id: u64,
+        time: u64,
+        lsb: u32,
+        width: u32,
+        out: *mut Record,
+        changed: *mut c_int,
+        error: *mut c_char,
+        cap: usize,
+    ) -> c_int;
     fn ondas_fsdb_end(reader: *mut c_void);
 }
 
@@ -185,6 +196,8 @@ pub(crate) struct Reader {
     encodings: Vec<Encoding>,
     #[cfg(test)]
     pub(crate) records_read: usize,
+    #[cfg(test)]
+    pub(crate) point_queries: usize,
 }
 impl Reader {
     pub(crate) fn open(path: &Path, source_name: String) -> Result<(Self, Hierarchy, Metadata)> {
@@ -387,10 +400,85 @@ impl Reader {
                 encodings,
                 #[cfg(test)]
                 records_read: 0,
+                #[cfg(test)]
+                point_queries: 0,
             },
             hierarchy,
             metadata,
         ))
+    }
+
+    pub(crate) fn sample_bits(
+        &mut self,
+        bases: &[Signal],
+        signals: &[Signal],
+        time: Time,
+    ) -> Result<Vec<crate::Sample>> {
+        let ids: Vec<_> = bases
+            .iter()
+            .map(|signal| self.ids[signal.index()])
+            .collect();
+        let traversal = Traversal(&mut self.handle);
+        let mut error = [0; 512];
+        let _lock = lock();
+        // SAFETY: live exclusive reader, validated base handles and writable
+        // error buffer. Traversal releases loaded signals on all exits.
+        let code = unsafe {
+            ondas_fsdb_begin(
+                traversal.0.0.as_ptr(),
+                ids.as_ptr(),
+                ids.len(),
+                0,
+                time.ticks(),
+                error.as_mut_ptr(),
+                error.len(),
+            )
+        };
+        status(code, &error)?;
+        let mut samples = Vec::with_capacity(signals.len());
+        for &signal in signals {
+            let mut record = Record::default();
+            let mut changed = 0;
+            let width = signal
+                .width()
+                .ok_or_else(|| backend_error("point sample requires bits"))?;
+            // SAFETY: selected, validated signal/projection and caller-owned
+            // output descriptors. Borrowed bytes are copied before another call.
+            let code = unsafe {
+                ondas_fsdb_sample_bits(
+                    traversal.0.0.as_ptr(),
+                    self.ids[signal.index()],
+                    time.ticks(),
+                    signal.lsb(),
+                    width,
+                    &mut record,
+                    &mut changed,
+                    error.as_mut_ptr(),
+                    error.len(),
+                )
+            };
+            status(code, &error)?;
+            #[cfg(test)]
+            {
+                self.point_queries += 1;
+            }
+            samples.push(if code == 0 {
+                crate::Sample::Missing { signal }
+            } else {
+                if record.encoding != 1 || record.len != width as usize || record.data.is_null() {
+                    return Err(backend_error("invalid FSDB point bit buffer"));
+                }
+                // SAFETY: the native descriptor supplies exactly width validated
+                // bytes, retained on the live owner until its next operation.
+                let bytes = unsafe { std::slice::from_raw_parts(record.data, record.len) };
+                crate::Sample::Value {
+                    signal,
+                    value: crate::Value::Bits(BitsRef::from_validated_ascii(bytes).to_owned()),
+                    changed_at: (changed != 0).then_some(Time::from_ticks(record.tick)),
+                }
+            });
+        }
+        Ok(samples)
     }
 
     pub(crate) fn read<B>(

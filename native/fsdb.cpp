@@ -149,6 +149,23 @@ void encoding(Declaration &d, const fsdbTreeCBDataVar &v) {
         out.has_range = width > 1 || v.lbitnum != 0;
     }
 }
+void decode_bits(const Declaration &d, const byte_T *raw, size_t size,
+                 unsigned lsb, unsigned width, uint8_t *out) {
+    require(size == d.data.width && raw && out, "FSDB vector width mismatch");
+    require(width && uint64_t(lsb) + width <= size, "invalid FSDB bit projection");
+    const char *alphabet = "01xz";
+    size_t states = 4;
+    if (d.dt == FSDB_DT_VHDL_BOOLEAN || d.dt == FSDB_DT_VHDL_BIT || d.dt == FSDB_DT_VHDL_BIT_VECTOR) {
+        alphabet = "01"; states = 2;
+    } else if (d.enum_logic == 2 || (d.dt >= FSDB_DT_VHDL_STD_ULOGIC && d.dt <= FSDB_DT_VHDL_SIGNED)) {
+        alphabet = "ux01zwlh-"; states = 9;
+    }
+    const auto first = size - lsb - width;
+    for (size_t i = 0; i < size; ++i) {
+        require(raw[i] < states, "unknown FSDB logic state");
+        if (i >= first && i - first < width) out[i - first] = alphabet[raw[i]];
+    }
+}
 }
 
 struct ondas_fsdb {
@@ -156,6 +173,7 @@ struct ondas_fsdb {
     ffrTimeBasedVCTrvsHdl cursor = nullptr;
     bool loaded = false, advance = false, view_window = false;
     std::vector<Declaration> declarations;
+    std::vector<uint8_t> point_value;
     std::unordered_map<uint64_t, size_t> variables;
     std::unordered_map<unsigned, Datatype> datatypes;
     std::string path, scale, writer, date;
@@ -401,6 +419,78 @@ extern "C" int ondas_fsdb_begin(ondas_fsdb *reader, const uint64_t *ids, size_t 
         return 0;
     } OFS_CATCH(error, cap)
 }
+namespace {
+struct PointCursor {
+    ffrVCTrvsHdl value;
+    ~PointCursor() { if (value) { try { value->ffrFree(); } catch (...) {} } }
+};
+uint64_t point_tick(ffrVCTrvsHdl cursor, unsigned tag_type) {
+    fsdbXTag tag{};
+    success(cursor->ffrGetXTag(&tag), "read FSDB point tick");
+    return tag_type == FSDB_XTAG_TYPE_L ? tag.ltag.L : (uint64_t(tag.hltag.H) << 32) | tag.hltag.L;
+}
+bool final_bits(ffrVCTrvsHdl cursor, unsigned tag_type, const Declaration &d,
+                uint64_t requested, unsigned lsb, unsigned width,
+                uint64_t &at, std::vector<uint8_t> &value) {
+    if (!cursor->ffrHasIncoreVC()) return false;
+    fsdbXTag first{};
+    success(cursor->ffrGetMinXTag(&first), "read first FSDB point tick");
+    const auto first_tick = tag_type == FSDB_XTAG_TYPE_L ? uint64_t(first.ltag.L) : (uint64_t(first.hltag.H) << 32) | first.hltag.L;
+    if (requested < first_tick) return false;
+    fsdbXTag last{};
+    success(cursor->ffrGetMaxXTag(&last), "read last FSDB point tick");
+    const auto last_tick = tag_type == FSDB_XTAG_TYPE_L ? uint64_t(last.ltag.L) : (uint64_t(last.hltag.H) << 32) | last.hltag.L;
+    if (requested > last_tick) requested = last_tick;
+    fsdbXTag tag{};
+    if (tag_type == FSDB_XTAG_TYPE_L) tag.ltag.L = requested > UINT32_MAX ? UINT32_MAX : uint32_t(requested);
+    else { tag.hltag.H = uint32_t(requested >> 32); tag.hltag.L = uint32_t(requested); }
+    int glitches = 0;
+    success(cursor->ffrGotoXTag(&tag, &glitches), "seek FSDB point");
+    at = point_tick(cursor, tag_type);
+    require(at <= requested, "FSDB point seek moved past requested tick");
+    value.resize(width);
+    // Finish the aligned tick, including equal-time records exposed separately
+    // by some SDK/file combinations. No later tick becomes the sampled state.
+    while (true) {
+        byte_T *raw = nullptr;
+        success(cursor->ffrGetVC(&raw), "read FSDB point value");
+        decode_bits(d, raw, cursor->ffrGetByteCount(), lsb, width, value.data());
+        if (cursor->ffrGotoNextVC() != FSDB_RC_SUCCESS) break;
+        const auto next = point_tick(cursor, tag_type);
+        require(next >= at, "backwards FSDB point traversal");
+        if (next != at) break;
+    }
+    return true;
+}
+}
+extern "C" int ondas_fsdb_sample_bits(ondas_fsdb *reader, uint64_t id, uint64_t time,
+                                      uint32_t lsb, uint32_t width, ondas_fsdb_value *out,
+                                      int *changed, char *error, size_t cap) {
+    *out = {}; *changed = 0;
+    try {
+        require(reader->loaded, "no loaded FSDB point selection");
+        const auto &d = reader->declarations.at(reader->variables.at(id));
+        require(d.data.encoding == OFS_BITS, "FSDB point fast path requires bits");
+        PointCursor cursor{reader->file->ffrCreateVCTrvsHdl(fsdbVarIdcode(id))};
+        require(cursor.value != nullptr, "create FSDB point cursor");
+        const auto tag_type = reader->file->ffrGetXTagType();
+        uint64_t at = 0;
+        if (!final_bits(cursor.value, tag_type, d, time, lsb, width, at, reader->point_value)) return 0;
+        std::vector<uint8_t> previous;
+        // ponytail: a constant projection can walk every preceding tick to prove
+        // changed_at is unknown; add an index only if that workload requires it.
+        while (at != 0) {
+            uint64_t before = 0;
+            if (!final_bits(cursor.value, tag_type, d, at - 1, lsb, width, before, previous)) break;
+            require(before < at, "FSDB point predecessor did not move backwards");
+            if (previous != reader->point_value) { *changed = 1; break; }
+            at = before;
+        }
+        out->id = id; out->tick = at; out->encoding = OFS_BITS;
+        out->data = reader->point_value.data(); out->len = reader->point_value.size();
+        return 1;
+    } OFS_CATCH(error, cap)
+}
 extern "C" int ondas_fsdb_next(ondas_fsdb *reader, ondas_fsdb_value *out, uint8_t *bits, size_t bits_cap, char *error, size_t cap) {
     try {
         auto *cursor = reader->cursor;
@@ -431,19 +521,8 @@ extern "C" int ondas_fsdb_next(ondas_fsdb *reader, ondas_fsdb_value *out, uint8_
                 if (raw[0] == FSDB_BT_VCD_NC) continue; // No-change initialization, not a trigger.
                 require(raw[0] == FSDB_BT_VCD_1, "unsupported FSDB event record");
             } else if (out->encoding == OFS_BITS) {
-                require(size == d.data.width, "FSDB vector width mismatch");
-                const char *alphabet = "01xz";
-                size_t states = 4;
-                if (d.dt == FSDB_DT_VHDL_BOOLEAN || d.dt == FSDB_DT_VHDL_BIT || d.dt == FSDB_DT_VHDL_BIT_VECTOR) {
-                    alphabet = "01"; states = 2;
-                } else if (d.enum_logic == 2 || (d.dt >= FSDB_DT_VHDL_STD_ULOGIC && d.dt <= FSDB_DT_VHDL_SIGNED)) {
-                    alphabet = "ux01zwlh-"; states = 9;
-                }
                 require(bits != nullptr && size <= bits_cap, "short FSDB bit buffer");
-                for (size_t i = 0; i < size; ++i) {
-                    require(raw[i] < states, "unknown FSDB logic state");
-                    bits[i] = alphabet[raw[i]];
-                }
+                decode_bits(d, raw, size, 0, d.data.width, bits);
                 out->data = bits; out->len = size;
             } else if (out->encoding == OFS_REAL) {
                 require((size == 4 && d.bytes_per_bit == FSDB_BYTES_PER_BIT_4B) ||

@@ -239,7 +239,16 @@ actual before/after timings; no unverified speedup target is promised.
   to 33.56/39.03 ms; Wellen controls stayed near 50/55 ms. The first variable
   lookup still pays the construction cost. Public conformance, MSRV, doctests,
   regression tests passed; `sol` high review was clean.
-- [ ] #22: cold FSDB point sampling.
+- [x] #22: cold bit-only SDK point seeks finish each aligned tick and compare
+  earlier completed projected states to prove exact `changed_at`. Mixed/event
+  selections retain chronological replay. The bounded after-point snapshot is
+  reusable only for the same point or later windows. Independent chronological
+  reference tests, quiet-cache regressions, full public and strict SDK/private
+  gates, MSRV, doctests and both package dry-runs passed. A replacement `sol` high
+  critic completed cleanly after the first attempt hit its provider usage limit.
+  Exact issue workload, five alternating release pairs: median query 4817.18 ms
+  before versus 106.90 ms after (351 unique signals); complete sample values and
+  change timestamps matched the baseline.
 - [ ] Final validation and temporary-document cleanup before merge.
 
 ### Surprises & discoveries
@@ -249,7 +258,10 @@ GUI runtime libraries absent from the reader-only container. Do not add GUI
 packages to the public development image merely for a regression fixture.
 The #20 regression therefore exercises the SDK descriptor normalization and
 public hierarchy lookup directly; the existing SDK corpus remains the native
-integration gate.
+integration gate. For #22 benchmarking, missing freely distributable runtime
+libraries were supplied under ignored `tmp/`, and the existing mounted SDK
+converter produced the public picorv32 input. No public image or canonical
+profile was changed. SDK-generated root logs were moved into ignored scratch.
 
 ### Decision log
 
@@ -270,6 +282,10 @@ integration gate.
 comments on their respective issues. #24 has a newly discovered provider-boundary
 blocker, not a waiver of conformance. #21 avoids work that metadata-only consumers
 do not need rather than changing the lookup algorithm or claiming faster queries.
+
+The #22 implementation was also compiled against the installed Verdi 2021 SDK;
+its SDK demo enum regression passed. This supplements, but does not replace,
+strict runtime conformance with the canonical SDK profile.
 
 Implementation is in progress. Final conclusions will be recorded with measured
 results, remaining limitations, review outcomes and linked issue comments.
