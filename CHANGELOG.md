@@ -43,6 +43,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Build the shared variable-path index lazily, avoiding its allocation and teardown
+  for metadata-only opening and hierarchy traversal.
 - Rename the FST backend from `fst-native` to `fst-lib` to reflect its external
   reader dependency. Explicit backend selection and reported names use `fst-lib`.
 

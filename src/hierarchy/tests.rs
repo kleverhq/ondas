@@ -59,6 +59,27 @@ fn fixture() -> Hierarchy {
 }
 
 #[test]
+fn path_index_is_lazy_and_shared_between_hierarchy_clones() {
+    let hierarchy = fixture();
+    let cloned = hierarchy.clone();
+    assert!(hierarchy.data.variables_by_path.get().is_none());
+    for variable in hierarchy.variables() {
+        let _ = variable.path();
+    }
+    assert!(hierarchy.data.variables_by_path.get().is_none());
+    assert_eq!(cloned.variable("tb.dut.data").unwrap().name(), "data");
+    let index = hierarchy.data.variables_by_path.get().unwrap();
+    assert!(std::ptr::eq(
+        index,
+        cloned.data.variables_by_path.get().unwrap()
+    ));
+    assert!(matches!(
+        hierarchy.variable("tb.dut.duplicate"),
+        Err(LookupError::Ambiguous { .. })
+    ));
+}
+
+#[test]
 fn hidden_flag_is_local_and_does_not_filter_hierarchy() {
     let mut hierarchy = fixture();
     Arc::get_mut(&mut hierarchy.data).unwrap().scopes[0].is_hidden = true;

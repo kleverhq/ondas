@@ -8,7 +8,7 @@ use std::{
     fmt,
     str::FromStr,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -224,7 +224,7 @@ struct HierarchyData {
     scopes: Vec<ScopeData>,
     variables: Vec<VariableData>,
     encodings: Vec<Encoding>,
-    variables_by_path: HashMap<HierarchyPath, (usize, usize)>,
+    variables_by_path: OnceLock<HashMap<HierarchyPath, (usize, usize)>>,
 }
 
 static NEXT_SOURCE: AtomicU64 = AtomicU64::new(1);
@@ -282,26 +282,15 @@ impl Hierarchy {
         let source = NEXT_SOURCE
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
             .expect("hierarchy source IDs exhausted");
-        let mut hierarchy = Self {
+        Self {
             data: Arc::new(HierarchyData {
                 source,
                 scopes,
                 variables,
                 encodings,
-                variables_by_path: HashMap::new(),
+                variables_by_path: OnceLock::new(),
             }),
-        };
-        let mut variables_by_path = HashMap::with_capacity(hierarchy.data.variables.len());
-        for variable in hierarchy.variables() {
-            let entry = variables_by_path
-                .entry(variable.path())
-                .or_insert((variable.index, 0));
-            entry.1 += 1;
         }
-        Arc::get_mut(&mut hierarchy.data)
-            .expect("new hierarchy has one owner")
-            .variables_by_path = variables_by_path;
-        hierarchy
     }
 
     pub(crate) fn signal_at(&self, index: usize) -> Signal {
@@ -440,7 +429,15 @@ impl Hierarchy {
         &self,
         path: &HierarchyPath,
     ) -> std::result::Result<Variable<'_>, LookupError> {
-        match self.data.variables_by_path.get(path) {
+        let variables_by_path = self.data.variables_by_path.get_or_init(|| {
+            let mut index = HashMap::with_capacity(self.data.variables.len());
+            for variable in self.variables() {
+                let entry = index.entry(variable.path()).or_insert((variable.index, 0));
+                entry.1 += 1;
+            }
+            index
+        });
+        match variables_by_path.get(path) {
             None => Err(LookupError::NotFound { path: path.clone() }),
             Some(&(index, 1)) => Ok(Variable {
                 hierarchy: self,

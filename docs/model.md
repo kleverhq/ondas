@@ -48,6 +48,9 @@ handle cannot accidentally select a local signal.
 Hierarchy paths contain exact components. Escaping affects display, not identity.
 Brackets, dots and whitespace inside source names are not traversal syntax.
 Public hierarchy contracts define lookup spelling and slice-selector precedence.
+The full variable-path index is built on the first variable lookup and shared by
+hierarchy clones. Opening and traversal do not allocate it; lookup-heavy consumers
+pay the one-time construction cost when they first resolve a variable.
 
 ## Time and observations
 

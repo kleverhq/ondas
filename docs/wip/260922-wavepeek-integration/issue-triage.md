@@ -227,8 +227,18 @@ actual before/after timings; no unverified speedup target is promised.
   width, kind, table and initial value. Strict SDK/private gate passed; `sol`
   high critic reported no substantive findings. Custom non-per-bit histories
   remain explicitly unsupported, not inferred from enum labels.
-- [ ] #24: canonical identifiers and declaration spelling.
-- [ ] #21: FST opening/teardown.
+- [ ] #24: implementation and `sol` high review complete; converter-backed
+  VCD/FST file+bytes regression passes. Diff saved in the stash named
+  `issue24: reviewed provenance implementation pending provider authorization`.
+  Public FST conformance exposed a locked oracle retaining an escape marker in
+  identity; strict private FSDB conformance also needs oracle path corrections.
+  Awaiting explicit permission for provider changes before completing this task.
+- [x] #21: defer the full variable-path index with shared `OnceLock`; preserve
+  exact lookup/ambiguity semantics. On the same public large FST, ten paired
+  release measurements changed Ondas median open/open+drop from 133.91/233.58 ms
+  to 33.56/39.03 ms; Wellen controls stayed near 50/55 ms. The first variable
+  lookup still pays the construction cost. Public conformance, MSRV, doctests,
+  regression tests passed; `sol` high review was clean.
 - [ ] #22: cold FSDB point sampling.
 - [ ] Final validation and temporary-document cleanup before merge.
 
@@ -255,6 +265,11 @@ integration gate.
   plan alongside each completed task rather than creating progress-only commits.
 
 ### Outcomes & retrospective
+
+#20 (`ac2d471`), #23 (`9b97938`) and #19 (`8369f6c`) are pushed with validation
+comments on their respective issues. #24 has a newly discovered provider-boundary
+blocker, not a waiver of conformance. #21 avoids work that metadata-only consumers
+do not need rather than changing the lookup algorithm or claiming faster queries.
 
 Implementation is in progress. Final conclusions will be recorded with measured
 results, remaining limitations, review outcomes and linked issue comments.
