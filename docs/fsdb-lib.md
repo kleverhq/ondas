@@ -159,6 +159,8 @@ under the [benchmarking policy](benchmarking.md), not inferred throughput claims
   aliases retain their paths and share compatible SDK storage identities.
 - Compatible repeated scopes merge and may supply an absent definition name.
   Conflicting definitions or scope metadata fail.
+- The SDK's hidden-scope flag is retained. Hidden scopes and their descendants
+  stay accessible; consumers choose whether to suppress them during traversal.
 - Explicit vector ranges, including `[0:0]`, become declaration metadata. A
   matching trailing range is removed from the name. Memory indices remain names,
   not query projections.

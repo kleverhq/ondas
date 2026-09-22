@@ -18,7 +18,7 @@ enum { OFS_SCOPE, OFS_UPSCOPE, OFS_VAR };
 
 typedef struct {
     uint64_t id;
-    uint32_t entry, encoding, width, direction, is_constant, has_range, packing;
+    uint32_t entry, encoding, width, direction, is_constant, has_range, packing, is_hidden;
     int64_t msb, lsb;
     const char *name, *kind, *definition;
 } ondas_fsdb_decl;

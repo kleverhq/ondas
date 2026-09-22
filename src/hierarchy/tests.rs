@@ -8,6 +8,7 @@ fn fixture() -> Hierarchy {
             kind: "module".into(),
             definition_name: Some("testbench".into()),
             packing: None,
+            is_hidden: false,
         },
         ScopeData {
             name: "dut".into(),
@@ -15,6 +16,7 @@ fn fixture() -> Hierarchy {
             kind: "struct".into(),
             definition_name: None,
             packing: Some(Packing::Packed),
+            is_hidden: false,
         },
     ];
     let variables = [
@@ -57,6 +59,19 @@ fn fixture() -> Hierarchy {
 }
 
 #[test]
+fn hidden_flag_is_local_and_does_not_filter_hierarchy() {
+    let mut hierarchy = fixture();
+    Arc::get_mut(&mut hierarchy.data).unwrap().scopes[0].is_hidden = true;
+    let parent = hierarchy.scope("tb").unwrap();
+    let child = hierarchy.scope("tb.dut").unwrap();
+    assert!(parent.is_hidden());
+    assert!(!child.is_hidden());
+    assert!(child.parent().unwrap().is_hidden());
+    assert!(parent.children().next().is_some());
+    assert!(hierarchy.variable("tb.dut.data").is_ok());
+}
+
+#[test]
 fn indexed_paths_match_linear_lookup_across_duplicate_scope_paths() {
     let mut data = Arc::try_unwrap(fixture().data).ok().unwrap();
     for parent in [None, Some(2)] {
@@ -66,6 +81,7 @@ fn indexed_paths_match_linear_lookup_across_duplicate_scope_paths() {
             kind: "module".into(),
             definition_name: None,
             packing: None,
+            is_hidden: false,
         });
     }
     let variable = data.variables.last_mut().unwrap();
@@ -395,6 +411,7 @@ fn root_declarations_duplicate_scopes_and_extreme_ranges() {
                 kind: "module".into(),
                 definition_name: None,
                 packing: None,
+                is_hidden: false,
             },
             ScopeData {
                 name: "same".into(),
@@ -402,6 +419,7 @@ fn root_declarations_duplicate_scopes_and_extreme_ranges() {
                 kind: "module".into(),
                 definition_name: None,
                 packing: None,
+                is_hidden: false,
             },
         ],
         vec![VariableData {

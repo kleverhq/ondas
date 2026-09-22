@@ -217,7 +217,10 @@ actual before/after timings; no unverified speedup target is promised.
   regressions pass; strict SDK/private gate passed. Critical review caught a
   separately printed scalar range after an escaped identifier; corrected and
   added space/tab boundary coverage.
-- [ ] #23: scope visibility.
+- [x] #23: public local `Scope::is_hidden`, native SDK flag propagation,
+  conservative duplicate-scope conflict handling, SDK/demo and hierarchy
+  regressions. Strict SDK/private gate and doctests passed; `sol` high critic
+  returned no substantive findings. No hierarchy filtering is performed.
 - [ ] #19: datatype-backed declarations and enums.
 - [ ] #24: canonical identifiers and declaration spelling.
 - [ ] #21: FST opening/teardown.

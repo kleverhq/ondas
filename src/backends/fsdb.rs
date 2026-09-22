@@ -34,6 +34,7 @@ struct Declaration {
     is_constant: u32,
     has_range: u32,
     packing: u32,
+    is_hidden: u32,
     msb: i64,
     lsb: i64,
     name: *const c_char,
@@ -225,6 +226,7 @@ impl Reader {
                         let id = if let Some(&id) = scope_ids.get(&key) {
                             let old: &mut ScopeData = &mut scopes[id];
                             if old.kind != kind
+                                || old.is_hidden != (d.is_hidden != 0)
                                 || old.packing != packing
                                 || (old.definition_name.is_some()
                                     && definition_name.is_some()
@@ -244,6 +246,7 @@ impl Reader {
                                 kind,
                                 definition_name,
                                 packing,
+                                is_hidden: d.is_hidden != 0,
                             });
                             scope_ids.insert(key, id);
                             id
@@ -637,6 +640,19 @@ mod tests {
                     "FSDB bit-buffer counters: {records} records, {bytes} directly written digits; no intermediate bit-buffer copy"
                 );
             }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires installed SDK demo FSDB"]
+    fn fsdb_hidden_scopes_remain_accessible() {
+        let sdk = std::path::PathBuf::from(std::env::var_os("VERDI_HOME").unwrap());
+        let wave = crate::open(sdk.join("share/VIA/demo/waveform/cpu.fsdb")).unwrap();
+        let hierarchy = wave.hierarchy();
+        assert!(hierarchy.scopes().any(|scope| scope.is_hidden()));
+        assert!(hierarchy.scopes().any(|scope| !scope.is_hidden()));
+        for scope in hierarchy.scopes().filter(|scope| scope.is_hidden()) {
+            assert!(hierarchy.scope_path(&scope.path()).unwrap().is_hidden());
         }
     }
 

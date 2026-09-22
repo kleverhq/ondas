@@ -10,6 +10,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `Scope::is_hidden` preserves explicit FSDB visibility metadata without filtering
+  the hierarchy; callers can inspect ancestors when suppressing hidden subtrees.
 - Optional declaration signedness and logic-domain metadata, independent of
   shared signal histories; unavailable interpretation remains absent.
 - Indexed borrowed scans with selection-position identity for aliases,

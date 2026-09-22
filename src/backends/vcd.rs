@@ -187,6 +187,7 @@ impl Reader {
                             kind,
                             definition_name: None,
                             packing: None,
+                            is_hidden: false,
                         });
                         scope_ids.insert(key, index);
                         index

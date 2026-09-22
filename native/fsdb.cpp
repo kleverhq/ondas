@@ -148,6 +148,7 @@ bool_T tree(fsdbTreeCBType type, void *user, void *raw) noexcept {
             const auto &v = *static_cast<fsdbTreeCBDataScope *>(raw);
             d.data.entry = OFS_SCOPE;
             d.name = text(v.name); d.kind = scope_kind(v.type); d.definition = text(v.module);
+            d.data.is_hidden = v.is_hidden_scope;
             break;
         }
         case FSDB_TREE_CBT_RECORD_BEGIN: {

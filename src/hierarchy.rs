@@ -197,6 +197,7 @@ pub(crate) struct ScopeData {
     pub(crate) kind: String,
     pub(crate) definition_name: Option<String>,
     pub(crate) packing: Option<Packing>,
+    pub(crate) is_hidden: bool,
 }
 
 pub(crate) struct VariableData {
@@ -513,6 +514,15 @@ impl<'h> Scope<'h> {
     /// spelling rather than being forced into a closed enum.
     pub fn kind(&self) -> &'h str {
         &self.data().kind
+    }
+
+    /// Returns whether the source explicitly marks this scope as hidden.
+    ///
+    /// Hidden scopes and their contents remain accessible. This flag is local
+    /// to the scope, not inherited: to hide a subtree, callers must also check
+    /// its ancestors. Returns `false` when the backend has no hidden-scope flag.
+    pub fn is_hidden(&self) -> bool {
+        self.data().is_hidden
     }
 
     /// Returns the defining module, entity, or equivalent name when available.
