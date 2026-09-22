@@ -62,6 +62,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Preserve literal range suffixes in escaped FSDB scalar identifiers, including
+  ambiguous duplicate names, without losing separately declared scalar ranges.
 - Preserve present-but-empty FST header text and canonical declaration kinds.
 
 [Unreleased]: https://github.com/kleverhq/ondas/compare/v1.0.0...HEAD

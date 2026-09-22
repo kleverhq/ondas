@@ -276,11 +276,8 @@ impl Reader {
                             encodings.push(encoding);
                             index
                         };
-                        let range = (d.has_range != 0
-                            || (matches!(encoding, Encoding::Bits { .. })
-                                && name.ends_with("[0:0]")))
-                        .then(|| BitRange::new(d.msb, d.lsb));
-                        let name = declared_name(name, range);
+                        let range = (d.has_range != 0).then(|| BitRange::new(d.msb, d.lsb));
+                        let (name, range) = declared_name(name, range, encoding);
                         // A file can append hierarchy trees repeating an identical
                         // declaration. Coalesce repetitions, not distinct aliases.
                         if !seen_variables.insert((
@@ -499,14 +496,27 @@ fn real(bytes: &[u8]) -> Result<f64> {
     }
 }
 
-fn declared_name(name: String, range: Option<BitRange>) -> String {
+fn declared_name(
+    name: String,
+    range: Option<BitRange>,
+    encoding: Encoding,
+) -> (String, Option<BitRange>) {
+    // The SDK omits [0:0] bounds for scalars. A range after an escaped
+    // identifier needs separating whitespace; an attached suffix is literal.
+    let range = range.or_else(|| {
+        (matches!(encoding, Encoding::Bits { .. })
+            && name
+                .strip_suffix("[0:0]")
+                .is_some_and(|base| !base.starts_with('\\') || base.ends_with(char::is_whitespace)))
+        .then_some(BitRange::new(0, 0))
+    });
     if let Some(range) = range {
         let suffix = format!("[{}:{}]", range.msb(), range.lsb());
         if let Some(base) = name.strip_suffix(&suffix) {
-            return base.trim_end().to_owned();
+            return (base.trim_end().to_owned(), Some(range));
         }
     }
-    name
+    (name, range)
 }
 fn timescale(text: &str) -> Option<Timescale> {
     let text = text.trim();
@@ -631,6 +641,50 @@ mod tests {
     }
 
     #[test]
+    fn escaped_scalar_suffix_preserves_ambiguous_lookup() {
+        let encodings = vec![
+            Encoding::Bits { width: 1 },
+            Encoding::Bits { width: 1 },
+            Encoding::Bits { width: 8 },
+        ];
+        let variables = [r"\flags[0:0]", r"\flags[0:0]", "flags[7:0]"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, raw)| {
+                let range = (index == 2).then_some(BitRange::new(7, 0));
+                let (name, range) = declared_name(raw.into(), range, encodings[index]);
+                VariableData {
+                    name,
+                    parent: None,
+                    kind: "wire".into(),
+                    direction: Direction::Implicit,
+                    range,
+                    is_constant: false,
+                    type_name: None,
+                    signedness: None,
+                    logic_domain: None,
+                    enumeration: None,
+                    signal: Some(index),
+                }
+            })
+            .collect();
+        let hierarchy = Hierarchy::new(Vec::new(), variables, encodings);
+        let path = crate::HierarchyPath::from_components([r"\flags[0:0]"]);
+        assert!(matches!(
+            hierarchy.signal(&path.to_string()),
+            Err(crate::LookupError::Ambiguous { .. })
+        ));
+        assert_eq!(hierarchy.signal("flags").unwrap().width(), Some(8));
+        assert_eq!(
+            hierarchy
+                .variables()
+                .filter(|var| var.range().is_none())
+                .count(),
+            2
+        );
+    }
+
+    #[test]
     fn exact_scale_and_declared_ranges() {
         let scale = timescale("100fs").unwrap();
         assert_eq!((scale.factor(), scale.unit()), (100, TimeUnit::Femtosecond));
@@ -638,10 +692,42 @@ mod tests {
             assert!(timescale(bad).is_none());
         }
         assert_eq!(
-            declared_name("bus [-2:-9]".into(), Some(BitRange::new(-2, -9))),
-            "bus"
+            declared_name(
+                "bus [-2:-9]".into(),
+                Some(BitRange::new(-2, -9)),
+                Encoding::Bits { width: 8 }
+            ),
+            ("bus".into(), Some(BitRange::new(-2, -9)))
         );
-        assert_eq!(declared_name("mem[3]".into(), None), "mem[3]");
+        for (name, native_range, expected_name, expected_range) in [
+            (r"\flags[0:0]", None, r"\flags[0:0]", None),
+            (
+                r"\flags[0:0] [0:0]",
+                None,
+                r"\flags[0:0]",
+                Some(BitRange::new(0, 0)),
+            ),
+            ("\\flags\t[0:0]", None, r"\flags", Some(BitRange::new(0, 0))),
+            ("flags[0:0]", None, "flags", Some(BitRange::new(0, 0))),
+            (
+                "flags[7:0]",
+                Some(BitRange::new(7, 0)),
+                "flags",
+                Some(BitRange::new(7, 0)),
+            ),
+            (
+                r"\flags[0:0] [7:0]",
+                Some(BitRange::new(7, 0)),
+                r"\flags[0:0]",
+                Some(BitRange::new(7, 0)),
+            ),
+            ("mem[3]", None, "mem[3]", None),
+        ] {
+            assert_eq!(
+                declared_name(name.into(), native_range, Encoding::Bits { width: 1 }),
+                (expected_name.into(), expected_range),
+            );
+        }
         assert!(filename(Path::new("a\0b.fsdb")).is_err());
     }
 }

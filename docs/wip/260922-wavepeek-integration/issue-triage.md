@@ -183,4 +183,69 @@ No hard external blocker is currently established. Before implementation:
 - Before merging, promote durable contracts and conclusions into their owning
   rustdoc/developer documents and remove this temporary task directory.
 
-This triage changed no tracked implementation files and made no issue updates.
+The initial triage changed no tracked implementation files and made no issue updates.
+
+## Execution plan
+
+Implement in dependency order: #20 (literal names), #23 (visibility), #19
+(datatype decoding), #24 (identity/source spelling), #21 (hierarchy performance),
+then #22 (cold point sampling). Each issue receives its own implementation commit,
+read-only critical review by `sol` at high reasoning, and a GitHub issue comment
+with the commit and verification evidence. The main agent implements and
+investigates; subagents only review. Do not merge or publish.
+
+Use `./dev` for all project commands. SDK work uses the canonical ignored local
+profile and private lock copied from `ondas-private`, with any previous local
+profile backed up under `tmp/`. Never modify provider repositories. SDK-derived
+scratch and logs stay ignored. Run the smallest regression first; then the
+relevant full gate (`just ci-fsdb` with required private fixtures for FSDB changes,
+`just ci` plus MSRV for shared/public changes). All commits must pass installed
+host hooks. Before the final handoff, run public CI, strict FSDB CI, MSRV,
+doctests and package dry-runs on the final state.
+
+Observable completion is the acceptance behavior in each issue, not merely
+compilation: exact-name ambiguity for #20, available hidden metadata for #23,
+readable integral enums with labels for #19, consistent identities plus source
+spelling for #24, independently measured reductions of opening/teardown overhead
+for #21 and cold sampling overhead for #22 without semantic regressions. Record
+actual before/after timings; no unverified speedup target is promised.
+
+### Progress
+
+- [x] Commit initial triage (`0840202`).
+- [x] #20: escaped scalar range suffix; normalization and duplicate-name lookup
+  regressions pass; strict SDK/private gate passed. Critical review caught a
+  separately printed scalar range after an escaped identifier; corrected and
+  added space/tab boundary coverage.
+- [ ] #23: scope visibility.
+- [ ] #19: datatype-backed declarations and enums.
+- [ ] #24: canonical identifiers and declaration spelling.
+- [ ] #21: FST opening/teardown.
+- [ ] #22: cold FSDB point sampling.
+- [ ] Final validation and temporary-document cleanup before merge.
+
+### Surprises & discoveries
+
+The installed converter's launcher requires Bash and its executable also requires
+GUI runtime libraries absent from the reader-only container. Do not add GUI
+packages to the public development image merely for a regression fixture.
+The #20 regression therefore exercises the SDK descriptor normalization and
+public hierarchy lookup directly; the existing SDK corpus remains the native
+integration gate.
+
+### Decision log
+
+- 2026-09-22: Keep authoritative SDK bounds separate from the scalar `[0:0]`
+  name fallback. An attached suffix is literal for escaped names; a whitespace-
+  separated suffix can still declare a scalar range. Escaped vectors also retain
+  authoritative SDK bounds and their separate printed range suffix.
+- 2026-09-22: Preserve one implementation commit per issue; update this living
+  plan alongside each completed task rather than creating progress-only commits.
+
+### Outcomes & retrospective
+
+Implementation is in progress. Final conclusions will be recorded with measured
+results, remaining limitations, review outcomes and linked issue comments.
+
+Plan revision: 2026-09-22, added the implementation sequence, acceptance and
+verification policy following the request to execute all six issues.
