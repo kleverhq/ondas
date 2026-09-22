@@ -12,7 +12,7 @@ use std::{
 use crate::{
     BitRange, BitsRef, Direction, Encoding, Error, Hierarchy, Metadata, Result, Signal, Time,
     TimeSpan, TimeUnit, Timescale, ValueRef,
-    hierarchy::{ScopeData, VariableData},
+    hierarchy::{EnumerationData, ScopeData, VariableData},
 };
 
 const BACKEND: &str = "fsdb-lib";
@@ -40,6 +40,8 @@ struct Declaration {
     name: *const c_char,
     kind: *const c_char,
     definition: *const c_char,
+    type_name: *const c_char,
+    enum_count: usize,
 }
 #[repr(C)]
 #[derive(Default)]
@@ -76,6 +78,13 @@ unsafe extern "C" {
     fn ondas_fsdb_metadata(reader: *mut c_void, out: *mut Meta);
     fn ondas_fsdb_decl_count(reader: *mut c_void) -> usize;
     fn ondas_fsdb_declaration(reader: *mut c_void, index: usize, out: *mut Declaration);
+    fn ondas_fsdb_enum_variant(
+        reader: *mut c_void,
+        declaration: usize,
+        variant: usize,
+        bits: *mut *const c_char,
+        label: *mut *const c_char,
+    );
     fn ondas_fsdb_begin(
         reader: *mut c_void,
         ids: *const u64,
@@ -206,9 +215,9 @@ impl Reader {
         let metadata = unsafe {
             let mut meta = Meta::default();
             ondas_fsdb_metadata(raw, &mut meta);
-            for index in 0..ondas_fsdb_decl_count(raw) {
+            for declaration_index in 0..ondas_fsdb_decl_count(raw) {
                 let mut d = Declaration::default();
-                ondas_fsdb_declaration(raw, index, &mut d);
+                ondas_fsdb_declaration(raw, declaration_index, &mut d);
                 let name = string(d.name)?.unwrap_or_default();
                 let kind = string(d.kind)?.unwrap_or_default();
                 match d.entry {
@@ -294,6 +303,34 @@ impl Reader {
                         )) {
                             continue;
                         }
+                        let type_name = string(d.type_name)?;
+                        let enumeration = if d.enum_count == 0 {
+                            None
+                        } else {
+                            let mut variants = Vec::with_capacity(d.enum_count);
+                            for variant in 0..d.enum_count {
+                                let (mut bits, mut label) = (std::ptr::null(), std::ptr::null());
+                                // Indices originate from this immutable native hierarchy;
+                                // borrowed strings are copied while the SDK lock is held.
+                                ondas_fsdb_enum_variant(
+                                    raw,
+                                    declaration_index,
+                                    variant,
+                                    &mut bits,
+                                    &mut label,
+                                );
+                                variants.push((
+                                    string(bits)?
+                                        .ok_or_else(|| backend_error("missing enum bits"))?,
+                                    string(label)?
+                                        .ok_or_else(|| backend_error("missing enum label"))?,
+                                ));
+                            }
+                            Some(EnumerationData {
+                                name: type_name.clone(),
+                                variants,
+                            })
+                        };
                         variables.push(VariableData {
                             name,
                             parent: stack.last().copied(),
@@ -309,10 +346,10 @@ impl Reader {
                             },
                             range,
                             is_constant: d.is_constant != 0,
-                            type_name: None,
+                            type_name,
                             signedness: None,
                             logic_domain: None,
-                            enumeration: None,
+                            enumeration,
                             signal: Some(index),
                         });
                     }
@@ -641,6 +678,45 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    #[ignore = "requires installed SDK demo FSDB"]
+    fn fsdb_datatype_enum_is_queryable() {
+        let sdk = std::path::PathBuf::from(std::env::var_os("VERDI_HOME").unwrap());
+        let mut wave = crate::open(sdk.join("share/VIA/demo/waveform/cpu.fsdb")).unwrap();
+        let variable = wave
+            .hierarchy()
+            .variables()
+            .find(|var| var.name() == "assertControlType")
+            .unwrap();
+        assert_eq!(variable.kind(), "enum");
+        assert_eq!(variable.range(), Some(BitRange::new(1, 0)));
+        assert!(variable.type_name().is_some());
+        let enumeration = variable.enumeration().unwrap();
+        assert_eq!(enumeration.name(), variable.type_name());
+        let variants: Vec<_> = enumeration.variants().collect();
+        assert_eq!(variants.len(), 4);
+        assert!(
+            variants
+                .iter()
+                .all(|variant| variant.encoded.len() == 2 && !variant.label.is_empty())
+        );
+        assert!(variants.iter().any(|variant| variant.encoded == "00"));
+        let signal = variable.signal().unwrap();
+        assert_eq!(signal.encoding(), Encoding::Bits { width: 2 });
+        let sample = wave.sample(signal, Time::ZERO).unwrap();
+        let crate::Sample::Value {
+            value: crate::Value::Bits(bits),
+            ..
+        } = sample
+        else {
+            panic!("expected integral enum sample");
+        };
+        assert_eq!(
+            bits.as_ref().iter_msb().collect::<Vec<_>>(),
+            vec![crate::Logic::Zero; 2]
+        );
     }
 
     #[test]

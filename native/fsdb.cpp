@@ -80,11 +80,48 @@ std::string var_kind(unsigned type) {
     default: return "fsdb:" + std::to_string(type);
     }
 }
+struct Datatype {
+    std::string name;
+    unsigned logic = 0; // 0: not a per-bit logic representation; 1: VCD; 2: VHDL.
+    std::vector<std::pair<std::string, std::string>> variants;
+};
+Datatype enumeration(const char *name, unsigned value_type, unsigned width,
+                     unsigned count, char **labels, byte_T **values) {
+    Datatype type;
+    type.name = text(name);
+    if (value_type == FSDB_ENUM_VALUE_TYPE_LOGIC || value_type == FSDB_ENUM_VALUE_TYPE_VERILOG_LOGIC)
+        type.logic = 1;
+    else if (value_type == FSDB_ENUM_VALUE_TYPE_VHDL_LOGIC) type.logic = 2;
+    if (value_type >= FSDB_ENUM_VALUE_TYPE_NONE) return type;
+    require(!count || (labels && values), "missing FSDB enum table");
+    for (unsigned i = 0; i < count; ++i) {
+        require(labels[i] && values[i] && width, "invalid FSDB enum entry");
+        std::string bits(width, '0');
+        if (type.logic) {
+            const char *alphabet = type.logic == 2 ? "ux01zwlh-" : "01xz";
+            const unsigned states = type.logic == 2 ? 9 : 4;
+            for (unsigned bit = 0; bit < width; ++bit) {
+                require(values[i][bit] < states, "invalid FSDB enum logic state");
+                bits[bit] = alphabet[values[i][bit]];
+            }
+        } else {
+            // Integral enum tables use native-endian scalar storage on this
+            // Linux x86_64 SDK target, not one byte per logic bit.
+            require(width <= 64, "unsupported FSDB integral enum width");
+            uint64_t value = 0;
+            std::memcpy(&value, values[i], (width + 7) / 8);
+            for (unsigned bit = 0; bit < width; ++bit)
+                bits[width - 1 - bit] = ((value >> bit) & 1) ? '1' : '0';
+        }
+        type.variants.emplace_back(std::move(bits), labels[i]);
+    }
+    return type;
+}
 struct Declaration {
     ondas_fsdb_decl data{};
     std::string name, kind, definition;
     // Only used inside C++: SDK data type and storage representation.
-    unsigned dt = 0, bytes_per_bit = 0;
+    unsigned dt = 0, bytes_per_bit = 0, enum_logic = 0;
 };
 void encoding(Declaration &d, const fsdbTreeCBDataVar &v) {
     auto &out = d.data;
@@ -120,6 +157,7 @@ struct ondas_fsdb {
     bool loaded = false, advance = false, view_window = false;
     std::vector<Declaration> declarations;
     std::unordered_map<uint64_t, size_t> variables;
+    std::unordered_map<unsigned, Datatype> datatypes;
     std::string path, scale, writer, date;
     bool has_writer = false, has_date = false;
     uint64_t first = 0, last = 0, start_tick = 0, end_tick = 0;
@@ -175,7 +213,10 @@ bool_T tree(fsdbTreeCBType type, void *user, void *raw) noexcept {
         case FSDB_TREE_CBT_UPSCOPE:
         case FSDB_TREE_CBT_RECORD_END:
         case FSDB_TREE_CBT_STRUCT_END: d.data.entry = OFS_UPSCOPE; break;
-        case FSDB_TREE_CBT_VAR: {
+        case FSDB_TREE_CBT_VAR:
+        case FSDB_TREE_CBT_ENUM_VAR:
+        case FSDB_TREE_CBT_PACKED_VAR:
+        case FSDB_TREE_CBT_PACKED_COMP_VAR: {
             const auto &v = *static_cast<fsdbTreeCBDataVar *>(raw);
             require(v.u.idcode > 0, "invalid FSDB variable identity");
             d.data.entry = OFS_VAR; d.data.id = uint64_t(v.u.idcode);
@@ -184,6 +225,18 @@ bool_T tree(fsdbTreeCBType type, void *user, void *raw) noexcept {
             d.data.direction = v.direction;
             d.data.is_constant = v.type == FSDB_VT_VCD_PARAMETER || v.type == FSDB_VT_VHDL_CONSTANT;
             encoding(d, v);
+            const auto datatype = reader.datatypes.find(d.dt);
+            if (datatype != reader.datatypes.end()) {
+                d.kind = "enum";
+                d.enum_logic = datatype->second.logic;
+                const auto width = uint64_t(std::abs(int64_t(v.lbitnum) - v.rbitnum)) + 1;
+                if (d.enum_logic && v.bytes_per_bit == FSDB_BYTES_PER_BIT_1B) {
+                    require(width <= UINT32_MAX, "enum width exceeds u32");
+                    d.data.encoding = OFS_BITS;
+                    d.data.width = uint32_t(width);
+                    d.data.has_range = width > 1 || v.lbitnum != 0;
+                }
+            }
             auto existing = reader.variables.find(d.data.id);
             if (existing != reader.variables.end()) {
                 const auto &previous = reader.declarations[existing->second];
@@ -192,6 +245,39 @@ bool_T tree(fsdbTreeCBType type, void *user, void *raw) noexcept {
                         "incompatible alias declarations");
             } else reader.variables.emplace(d.data.id, reader.declarations.size());
             break;
+        }
+        case FSDB_TREE_CBT_DT_ENUM: {
+            const auto &v = *static_cast<fsdbTreeCBDataEnum *>(raw);
+            require(!v.numLiteral || v.arrLiteral, "missing FSDB ordinal enum table");
+            Datatype type;
+            unsigned width = 1;
+            while ((uint64_t(1) << width) < v.numLiteral) ++width;
+            for (unsigned i = 0; i < v.numLiteral; ++i) {
+                require(v.arrLiteral[i] != nullptr, "missing FSDB enum label");
+                std::string bits(width, '0');
+                for (unsigned bit = 0; bit < width; ++bit)
+                    bits[width - 1 - bit] = ((i >> bit) & 1) ? '1' : '0';
+                type.variants.emplace_back(std::move(bits), v.arrLiteral[i]);
+            }
+            reader.datatypes[v.idcode] = std::move(type);
+            return true;
+        }
+        case FSDB_TREE_CBT_DT_ENUM2: {
+            const auto &v = *static_cast<fsdbTreeCBDataEnum2 *>(raw);
+            const bool logic = v.val_type == FSDB_ENUM_VALUE_TYPE_LOGIC ||
+                v.val_type == FSDB_ENUM_VALUE_TYPE_VERILOG_LOGIC || v.val_type == FSDB_ENUM_VALUE_TYPE_VHDL_LOGIC;
+            require(logic || v.val_len <= UINT32_MAX / 8, "enum width overflow");
+            reader.datatypes[v.idcode] = enumeration(v.name, v.val_type, v.val_len * (logic ? 1 : 8),
+                                                    v.literal_count, v.literal_arr, v.val_arr);
+            return true;
+        }
+        case FSDB_TREE_CBT_DT_ENUM3: {
+            const auto &v = *static_cast<fsdbTreeCBDataEnum3 *>(raw);
+            require(uint64_t(std::abs(int64_t(v.lbitnum) - v.rbitnum)) + 1 == v.val_len,
+                    "inconsistent FSDB enum bounds");
+            reader.datatypes[v.idcode] = enumeration(v.name, v.val_type, v.val_len,
+                                                    v.literal_count, v.literal_arr, v.val_arr);
+            return true;
         }
         default: return true;
         }
@@ -232,6 +318,12 @@ extern "C" int ondas_fsdb_open(const char *path, ondas_fsdb **out, char *error, 
         require(file->ffrGetXTagType() == FSDB_XTAG_TYPE_L || file->ffrGetXTagType() == FSDB_XTAG_TYPE_HL,
                 "floating FSDB timestamps are unsupported");
         file->ffrSetTreeCBFunc(tree, reader.get());
+        if (file->ffrHasDataTypeDef()) {
+            uint_T block = 0; // The SDK reads from this block through the last block.
+            const auto rc = file->ffrReadDataTypeDefByBlkIdx(block);
+            if (reader->tree_error) std::rethrow_exception(reader->tree_error);
+            success(rc, "read FSDB datatype definitions");
+        }
         const auto rc = file->ffrReadScopeVarTree();
         if (reader->tree_error) std::rethrow_exception(reader->tree_error);
         success(rc, "read FSDB hierarchy");
@@ -261,6 +353,17 @@ extern "C" void ondas_fsdb_declaration(ondas_fsdb *reader, size_t index, ondas_f
     *out = d.data;
     out->name = d.name.c_str(); out->kind = d.kind.c_str();
     out->definition = d.definition.empty() ? nullptr : d.definition.c_str();
+    const auto type = reader->datatypes.find(d.dt);
+    if (d.data.entry == OFS_VAR && type != reader->datatypes.end()) {
+        out->type_name = type->second.name.empty() ? nullptr : type->second.name.c_str();
+        out->enum_count = type->second.variants.size();
+    }
+}
+extern "C" void ondas_fsdb_enum_variant(ondas_fsdb *reader, size_t declaration, size_t variant,
+                                       const char **bits, const char **label) {
+    const auto &d = reader->declarations[declaration];
+    const auto &entry = reader->datatypes.find(d.dt)->second.variants[variant];
+    *bits = entry.first.c_str(); *label = entry.second.c_str();
 }
 extern "C" void ondas_fsdb_end(ondas_fsdb *reader) { reader->end(); }
 extern "C" int ondas_fsdb_begin(ondas_fsdb *reader, const uint64_t *ids, size_t count, uint64_t begin, uint64_t end, char *error, size_t cap) {
@@ -333,7 +436,7 @@ extern "C" int ondas_fsdb_next(ondas_fsdb *reader, ondas_fsdb_value *out, uint8_
                 size_t states = 4;
                 if (d.dt == FSDB_DT_VHDL_BOOLEAN || d.dt == FSDB_DT_VHDL_BIT || d.dt == FSDB_DT_VHDL_BIT_VECTOR) {
                     alphabet = "01"; states = 2;
-                } else if (d.dt >= FSDB_DT_VHDL_STD_ULOGIC && d.dt <= FSDB_DT_VHDL_SIGNED) {
+                } else if (d.enum_logic == 2 || (d.dt >= FSDB_DT_VHDL_STD_ULOGIC && d.dt <= FSDB_DT_VHDL_SIGNED)) {
                     alphabet = "ux01zwlh-"; states = 9;
                 }
                 require(bits != nullptr && size <= bits_cap, "short FSDB bit buffer");

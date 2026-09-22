@@ -221,7 +221,12 @@ actual before/after timings; no unverified speedup target is promised.
   conservative duplicate-scope conflict handling, SDK/demo and hierarchy
   regressions. Strict SDK/private gate and doctests passed; `sol` high critic
   returned no substantive findings. No hierarchy filtering is performed.
-- [ ] #19: datatype-backed declarations and enums.
+- [x] #19: read SDK datatype blocks before declarations, preserve enum1/2/3
+  names and value/label tables, accept typed enum/packed variable callbacks, and
+  decode supported per-bit enum histories. The real SDK demo regression verifies
+  width, kind, table and initial value. Strict SDK/private gate passed; `sol`
+  high critic reported no substantive findings. Custom non-per-bit histories
+  remain explicitly unsupported, not inferred from enum labels.
 - [ ] #24: canonical identifiers and declaration spelling.
 - [ ] #21: FST opening/teardown.
 - [ ] #22: cold FSDB point sampling.
@@ -242,6 +247,10 @@ integration gate.
   name fallback. An attached suffix is literal for escaped names; a whitespace-
   separated suffix can still declare a scalar range. Escaped vectors also retain
   authoritative SDK bounds and their separate printed range suffix.
+- 2026-09-22: SDK `ffrReadDataTypeDefByBlkIdx(0)` reads all existing blocks in
+  one call; do not copy the neighboring consumer's extra block loop. Copy enum
+  strings under the SDK lock, using native declaration indices rather than
+  shared signal indices. The dedicated SDK enum regression exercises this ABI.
 - 2026-09-22: Preserve one implementation commit per issue; update this living
   plan alongside each completed task rather than creating progress-only commits.
 

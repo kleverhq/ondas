@@ -61,7 +61,9 @@ case-insensitive extensions provide the fallback. Explicit selection never
 switches backends after an opening failure.
 
 The shim opens one `ffrOpenNonSharedObj` per waveform and calls
-`ffrReadScopeVarTree`. Tree callbacks collect scope and variable descriptors;
+`ffrReadScopeVarTree`. When present, datatype blocks are read first so enumeration
+definitions are available to declaration callbacks. Tree callbacks collect scope
+and variable descriptors;
 Rust builds the hierarchy and maps SDK identities to common base signals.
 Aliases retain separate declarations but share a base identity. Header queries
 supply bounds, timescale, writer and date.
@@ -166,8 +168,11 @@ under the [benchmarking policy](benchmarking.md), not inferred throughput claims
   not query projections.
 - Known scope and variable kinds map to canonical names; unknown kinds remain
   namespaced. Direction and constant flags are retained when supplied.
-- Record/struct members retain their containing scopes. Language type names,
-  enumeration tables and scope packing are not populated by this adapter.
+- Record/struct members retain their containing scopes and available packing.
+  Enum datatype definitions supply type names and encoded value/label tables.
+  Typed enum and packed-variable callbacks remain visible. Enum histories with
+  supported per-bit Verilog/VHDL logic storage are queryable as bits; other custom
+  storage remains unsupported rather than guessed from labels or observed values.
 - Unsupported declarations remain visible but fail query validation before
   visiting values. Not every composite or user-defined SDK type has a decoder.
 

@@ -20,7 +20,8 @@ typedef struct {
     uint64_t id;
     uint32_t entry, encoding, width, direction, is_constant, has_range, packing, is_hidden;
     int64_t msb, lsb;
-    const char *name, *kind, *definition;
+    const char *name, *kind, *definition, *type_name;
+    size_t enum_count;
 } ondas_fsdb_decl;
 
 typedef struct {
@@ -44,6 +45,7 @@ void ondas_fsdb_close(ondas_fsdb *);
 void ondas_fsdb_metadata(ondas_fsdb *, ondas_fsdb_meta *);
 size_t ondas_fsdb_decl_count(ondas_fsdb *);
 void ondas_fsdb_declaration(ondas_fsdb *, size_t, ondas_fsdb_decl *);
+void ondas_fsdb_enum_variant(ondas_fsdb *, size_t, size_t, const char **, const char **);
 int ondas_fsdb_begin(ondas_fsdb *, const uint64_t *, size_t, uint64_t, uint64_t, char *, size_t);
 /* Bit records are validated/normalized directly into caller-owned storage.
  * Other record bytes are borrowed until the next SDK call. */
