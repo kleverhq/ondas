@@ -52,6 +52,11 @@ The full variable-path index is built on the first variable lookup and shared by
 hierarchy clones. Opening and traversal do not allocate it; lookup-heavy consumers
 pay the one-time construction cost when they first resolve a variable.
 
+For VCD and FST, leading Verilog escape markers are separate from logical name
+identity. Scopes and variables retain escape provenance so consumers can preserve
+identifier spelling without treating the marker as part of the name. FSDB retains
+SDK-provided names without interpreting leading backslashes as escape markers.
+
 ## Time and observations
 
 Time uses absolute source ticks and an exact integer timescale factor/unit.

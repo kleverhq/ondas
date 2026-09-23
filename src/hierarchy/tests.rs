@@ -4,6 +4,7 @@ fn fixture() -> Hierarchy {
     let scopes = vec![
         ScopeData {
             name: "tb".into(),
+            name_was_escaped: false,
             parent: None,
             kind: "module".into(),
             definition_name: Some("testbench".into()),
@@ -12,6 +13,7 @@ fn fixture() -> Hierarchy {
         },
         ScopeData {
             name: "dut".into(),
+            name_was_escaped: false,
             parent: Some(0),
             kind: "struct".into(),
             definition_name: None,
@@ -32,6 +34,7 @@ fn fixture() -> Hierarchy {
     .into_iter()
     .map(|(name, signal)| VariableData {
         name: name.into(),
+        name_was_escaped: false,
         parent: Some(1),
         kind: "wire".into(),
         direction: Direction::Input,
@@ -98,6 +101,7 @@ fn indexed_paths_match_linear_lookup_across_duplicate_scope_paths() {
     for parent in [None, Some(2)] {
         data.scopes.push(ScopeData {
             name: if parent.is_none() { "tb" } else { "dut" }.into(),
+            name_was_escaped: false,
             parent,
             kind: "module".into(),
             definition_name: None,
@@ -249,6 +253,7 @@ fn interpretation_belongs_to_declarations_not_shared_histories() {
             .iter()
             .map(|&(name, signal, signedness, logic_domain)| VariableData {
                 name: name.into(),
+                name_was_escaped: false,
                 parent: None,
                 kind: "variable".into(),
                 direction: Direction::Unknown,
@@ -433,6 +438,7 @@ fn root_declarations_duplicate_scopes_and_extreme_ranges() {
                 definition_name: None,
                 packing: None,
                 is_hidden: false,
+                name_was_escaped: false,
             },
             ScopeData {
                 name: "same".into(),
@@ -441,10 +447,12 @@ fn root_declarations_duplicate_scopes_and_extreme_ranges() {
                 definition_name: None,
                 packing: None,
                 is_hidden: false,
+                name_was_escaped: false,
             },
         ],
         vec![VariableData {
             name: "root".into(),
+            name_was_escaped: false,
             parent: None,
             kind: "parameter".into(),
             direction: Direction::Unknown,
@@ -519,6 +527,7 @@ fn exact_unicode_paths_do_not_normalize_names() {
             .enumerate()
             .map(|(index, name)| VariableData {
                 name: (*name).into(),
+                name_was_escaped: false,
                 parent: None,
                 kind: "wire".into(),
                 direction: Direction::Unknown,

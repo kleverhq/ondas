@@ -170,7 +170,9 @@ impl Reader {
                 }
                 b"$scope" => {
                     let kind = scope_kind(&utf8(&tokens.required()?)?)?;
-                    let name = name(&tokens.required()?)?;
+                    let spelling = tokens.required()?;
+                    let name_was_escaped = spelling.starts_with(b"\\");
+                    let name = name(&spelling)?;
                     tokens.end()?;
                     let parent = stack.last().copied();
                     let key = (parent, name.clone());
@@ -183,6 +185,7 @@ impl Reader {
                         let index = scopes.len();
                         scopes.push(ScopeData {
                             name,
+                            name_was_escaped,
                             parent,
                             kind,
                             definition_name: None,
@@ -261,6 +264,7 @@ impl Reader {
                     )) {
                         variables.push(VariableData {
                             name,
+                            name_was_escaped: reference.starts_with(b"\\"),
                             parent,
                             is_constant: matches!(kind.as_str(), "parameter" | "real-parameter"),
                             kind,
@@ -503,7 +507,7 @@ impl Reader {
 }
 
 fn name(bytes: &[u8]) -> Result<String> {
-    utf8(bytes.strip_prefix(b"\\").unwrap_or(bytes))
+    Ok(crate::hierarchy::normalize_name(utf8(bytes)?).0)
 }
 
 fn scope_kind(raw: &str) -> Result<String> {

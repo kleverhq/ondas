@@ -193,6 +193,7 @@ pub struct Hierarchy {
 
 pub(crate) struct ScopeData {
     pub(crate) name: String,
+    pub(crate) name_was_escaped: bool,
     pub(crate) parent: Option<usize>,
     pub(crate) kind: String,
     pub(crate) definition_name: Option<String>,
@@ -202,6 +203,7 @@ pub(crate) struct ScopeData {
 
 pub(crate) struct VariableData {
     pub(crate) name: String,
+    pub(crate) name_was_escaped: bool,
     pub(crate) parent: Option<usize>,
     pub(crate) kind: String,
     pub(crate) direction: Direction,
@@ -513,6 +515,18 @@ impl<'h> Scope<'h> {
         &self.data().kind
     }
 
+    /// Returns whether the VCD or FST declaration used a leading Verilog escape marker.
+    ///
+    /// The marker is excluded from [`Self::name`] and path identity. Prepending
+    /// one backslash to the name recovers its reader-provided identifier spelling;
+    /// terminating whitespace is not retained. Merged scopes retain the first
+    /// declaration's spelling. This records input spelling, not whether the name
+    /// needs escaping when formatted as a path. FSDB retains SDK-provided names
+    /// without interpreting leading backslashes; this flag is `false` for FSDB.
+    pub fn name_was_escaped(&self) -> bool {
+        self.data().name_was_escaped
+    }
+
     /// Returns whether the source explicitly marks this scope as hidden.
     ///
     /// Hidden scopes and their contents remain accessible. This flag is local
@@ -533,14 +547,35 @@ impl<'h> Scope<'h> {
     }
 }
 
+/// Separates a reader-provided Verilog escape marker from logical identity.
+pub(crate) fn normalize_name(mut name: String) -> (String, bool) {
+    let escaped = name.starts_with('\\');
+    if escaped {
+        name.remove(0);
+    }
+    (name, escaped)
+}
+
 impl<'h> Variable<'h> {
     fn data(&self) -> &'h VariableData {
         &self.hierarchy.data.variables[self.index]
     }
 
-    /// Returns the declaration's exact local name.
+    /// Returns the declaration's exact local name, without a VCD/FST escape marker.
     pub fn name(&self) -> &'h str {
         &self.data().name
+    }
+
+    /// Returns whether the VCD or FST declaration used a leading Verilog escape marker.
+    ///
+    /// Prepending one backslash to [`Self::name`] recovers the reader-provided
+    /// identifier spelling, without terminating whitespace or declared ranges.
+    /// This flag does not affect identity or lookup. Coalesced repeated
+    /// declarations retain the first spelling; aliases retain their own flags.
+    /// FSDB retains SDK-provided names without interpreting leading backslashes;
+    /// this flag is `false` for FSDB.
+    pub fn name_was_escaped(&self) -> bool {
+        self.data().name_was_escaped
     }
 
     /// Returns the declaration's owned, root-based path.

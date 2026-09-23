@@ -264,6 +264,7 @@ impl Reader {
                             let id = scopes.len();
                             scopes.push(ScopeData {
                                 name,
+                                name_was_escaped: false,
                                 parent,
                                 kind,
                                 definition_name,
@@ -346,6 +347,7 @@ impl Reader {
                         };
                         variables.push(VariableData {
                             name,
+                            name_was_escaped: false,
                             parent: stack.last().copied(),
                             kind,
                             direction: match d.direction {
@@ -835,6 +837,7 @@ mod tests {
                 let (name, range) = declared_name(raw.into(), range, encodings[index]);
                 VariableData {
                     name,
+                    name_was_escaped: false,
                     parent: None,
                     kind: "wire".into(),
                     direction: Direction::Implicit,

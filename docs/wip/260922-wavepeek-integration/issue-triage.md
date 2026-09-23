@@ -196,8 +196,9 @@ investigates; subagents only review. Do not merge or publish.
 
 Use `./dev` for all project commands. SDK work uses the canonical ignored local
 profile and private lock copied from `ondas-private`, with any previous local
-profile backed up under `tmp/`. Never modify provider repositories. SDK-derived
-scratch and logs stay ignored. Run the smallest regression first; then the
+profile backed up under `tmp/`. Public provider v4.6.1 was updated with explicit
+permission; the private provider remains unchanged. SDK-derived scratch and logs
+stay ignored. Run the smallest regression first; then the
 relevant full gate (`just ci-fsdb` with required private fixtures for FSDB changes,
 `just ci` plus MSRV for shared/public changes). All commits must pass installed
 host hooks. Before the final handoff, run public CI, strict FSDB CI, MSRV,
@@ -227,12 +228,11 @@ actual before/after timings; no unverified speedup target is promised.
   width, kind, table and initial value. Strict SDK/private gate passed; `sol`
   high critic reported no substantive findings. Custom non-per-bit histories
   remain explicitly unsupported, not inferred from enum labels.
-- [ ] #24: implementation and `sol` high review complete; converter-backed
-  VCD/FST file+bytes regression passes. Diff saved in the stash named
-  `issue24: reviewed provenance implementation pending provider authorization`.
-  Public FST conformance exposed a locked oracle retaining an escape marker in
-  identity; strict private FSDB conformance also needs oracle path corrections.
-  Awaiting explicit permission for provider changes before completing this task.
+- [x] #24: VCD/FST names separate canonical identity from declaration escape
+  provenance, with scope and variable flags. Converter-backed file/bytes tests,
+  public conformance, strict private FSDB conformance, and `sol` high review passed.
+  FSDB SDK-provided names remain unchanged. Public provider v4.6.1 corrects four
+  escaped-name oracle paths and is installed from its published tag.
 - [x] #21: defer the full variable-path index with shared `OnceLock`; preserve
   exact lookup/ambiguity semantics. On the same public large FST, ten paired
   release measurements changed Ondas median open/open+drop from 133.91/233.58 ms
@@ -279,9 +279,10 @@ profile was changed. SDK-generated root logs were moved into ignored scratch.
 ### Outcomes & retrospective
 
 #20 (`ac2d471`), #23 (`9b97938`) and #19 (`8369f6c`) are pushed with validation
-comments on their respective issues. #24 has a newly discovered provider-boundary
-blocker, not a waiver of conformance. #21 avoids work that metadata-only consumers
-do not need rather than changing the lookup algorithm or claiming faster queries.
+comments on their respective issues. #24 (`2a00cc7`) uses a corrected public
+provider oracle rather than waiving conformance; the private provider needs no
+change. #21 avoids work that metadata-only consumers do not need rather than
+changing the lookup algorithm or claiming faster queries.
 
 The #22 implementation was also compiled against the installed Verdi 2021 SDK;
 its SDK demo enum regression passed. This supplements, but does not replace,
