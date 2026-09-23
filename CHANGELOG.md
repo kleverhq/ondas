@@ -68,12 +68,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - FST content detection includes the header length to avoid mistaking FSDB for FST.
 - Minimum supported Rust version is 1.88.0 to support `fst-reader` 0.17.0.
 - Hierarchy lookup avoids constructing paths for unrelated declaration names.
-- Fixture provider pin is 4.6.0; FST and VCD share oracle checks.
+- Fixture provider pin is 4.6.1; FST and VCD share oracle checks.
 
 ### Fixed
 
-- Preserve literal range suffixes in escaped FSDB scalar identifiers, including
-  ambiguous duplicate names, without losing separately declared scalar ranges.
+- Preserve attached literal range suffixes in escaped FSDB scalar and vector
+  identifiers, including ambiguous duplicate names, without losing separately
+  printed declaration ranges.
 - Preserve present-but-empty FST header text and canonical declaration kinds.
 
 [Unreleased]: https://github.com/kleverhq/ondas/compare/v1.0.0...HEAD

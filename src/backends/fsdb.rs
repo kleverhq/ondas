@@ -631,8 +631,9 @@ fn declared_name(
     range: Option<BitRange>,
     encoding: Encoding,
 ) -> (String, Option<BitRange>) {
-    // The SDK omits [0:0] bounds for scalars. A range after an escaped
-    // identifier needs separating whitespace; an attached suffix is literal.
+    // The SDK omits [0:0] bounds for scalars. An attached suffix on an
+    // escaped identifier is literal even when the SDK supplies matching bounds;
+    // a separately printed range has separating whitespace.
     let range = range.or_else(|| {
         (matches!(encoding, Encoding::Bits { .. })
             && name
@@ -642,7 +643,10 @@ fn declared_name(
     });
     if let Some(range) = range {
         let suffix = format!("[{}:{}]", range.msb(), range.lsb());
-        if let Some(base) = name.strip_suffix(&suffix) {
+        if let Some(base) = name
+            .strip_suffix(&suffix)
+            .filter(|base| !name.starts_with('\\') || base.ends_with(char::is_whitespace))
+        {
             return (base.trim_end().to_owned(), Some(range));
         }
     }
@@ -884,6 +888,24 @@ mod tests {
         );
         for (name, native_range, expected_name, expected_range) in [
             (r"\flags[0:0]", None, r"\flags[0:0]", None),
+            (
+                r"\range.dot[31:0]",
+                Some(BitRange::new(31, 0)),
+                r"\range.dot[31:0]",
+                Some(BitRange::new(31, 0)),
+            ),
+            (
+                r"\awaddr[0] [31:0]",
+                Some(BitRange::new(31, 0)),
+                r"\awaddr[0]",
+                Some(BitRange::new(31, 0)),
+            ),
+            (
+                "maprom[0][7:0]",
+                Some(BitRange::new(7, 0)),
+                "maprom[0]",
+                Some(BitRange::new(7, 0)),
+            ),
             (
                 r"\flags[0:0] [0:0]",
                 None,
