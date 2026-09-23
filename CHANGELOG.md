@@ -45,6 +45,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Validate logic bytes with a direct nine-state ASCII check, reducing cold
+  batched FST point-sample overhead without changing accepted values.
 - Seek cold FSDB bit-only point samples and prove their normalized projected
   change times from prior completed ticks, rather than replaying the whole prefix.
 - Build the shared variable-path index lazily, avoiding its allocation and teardown

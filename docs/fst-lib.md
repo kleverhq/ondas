@@ -109,7 +109,7 @@ artifact, workload and explicit reader under the
 
 | Value class | Behavior |
 |---|---|
-| Bits | Preserve nine logic states and validate decoded width against the declaration. |
+| Bits | Preserve nine logic states; reject invalid decoded digits or width mismatches. |
 | Reals | Real declarations receive the decoder's floating-point values; they are not inferred from byte lengths. |
 | Strings | Character bytes map reversibly to U+0000 through U+00FF (Latin-1), including NULs and padding. No UTF-8 inference. |
 | Events | Preserve decoder callbacks as occurrences, subject to the first-tick limitation below. |
