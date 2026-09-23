@@ -48,6 +48,7 @@ struct Declaration {
 struct Meta {
     first: u64,
     last: u64,
+    has_variables: u32,
     scale: *const c_char,
     writer: *const c_char,
     date: *const c_char,
@@ -70,6 +71,7 @@ unsafe extern "C" {
     ) -> c_int;
     fn ondas_fsdb_open(
         path: *const c_char,
+        metadata_only: c_int,
         out: *mut *mut c_void,
         error: *mut c_char,
         cap: usize,
@@ -180,6 +182,63 @@ impl Drop for Handle {
         unsafe { ondas_fsdb_close(self.0.as_ptr()) };
     }
 }
+fn open_handle(path: &Path, metadata_only: bool) -> Result<Handle> {
+    let path = filename(path)?;
+    let mut raw = std::ptr::null_mut();
+    let mut error = [0; 512];
+    {
+        let _lock = lock();
+        // SAFETY: pointers are valid for the call; the shim owns any retained data.
+        let code = unsafe {
+            ondas_fsdb_open(
+                path.as_ptr(),
+                metadata_only.into(),
+                &mut raw,
+                error.as_mut_ptr(),
+                error.len(),
+            )
+        };
+        status(code, &error)?;
+    }
+    Ok(Handle(
+        NonNull::new(raw).ok_or_else(|| backend_error("null FSDB reader"))?,
+    ))
+}
+
+// SAFETY: copied while the owner is alive and the SDK lock is held.
+unsafe fn copy_metadata(meta: &Meta, source_name: String, has_variables: bool) -> Result<Metadata> {
+    let scale = unsafe { string(meta.scale)? };
+    let timescale = match scale.as_deref() {
+        None | Some("") => None,
+        Some(text) => {
+            Some(timescale(text).ok_or_else(|| backend_error("unsupported FSDB timescale"))?)
+        }
+    };
+    Ok(Metadata {
+        source_name,
+        timescale,
+        time_span: has_variables
+            .then(|| TimeSpan::new(Time::from_ticks(meta.first), Time::from_ticks(meta.last))),
+        writer: unsafe { string(meta.writer)? },
+        date: unsafe { string(meta.date)? },
+        comments: Vec::new(),
+    })
+}
+
+pub(crate) fn read_metadata(path: &Path, source_name: String) -> Result<Metadata> {
+    let handle = open_handle(path, true)?;
+    // The lock is declared after Handle so errors unlock before Handle::drop.
+    let guard = lock();
+    let mut meta = Meta::default();
+    // SAFETY: live owner; SDK strings are copied before unlocking.
+    let result = unsafe {
+        ondas_fsdb_metadata(handle.0.as_ptr(), &mut meta);
+        copy_metadata(&meta, source_name, meta.has_variables != 0)
+    };
+    drop(guard);
+    result
+}
+
 struct Traversal<'a>(&'a mut Handle);
 impl Drop for Traversal<'_> {
     fn drop(&mut self) {
@@ -201,18 +260,8 @@ pub(crate) struct Reader {
 }
 impl Reader {
     pub(crate) fn open(path: &Path, source_name: String) -> Result<(Self, Hierarchy, Metadata)> {
-        let path = filename(path)?;
-        let mut raw = std::ptr::null_mut();
-        let mut error = [0; 512];
-        {
-            let _lock = lock();
-            // SAFETY: pointers are valid for the call, shim owns any retained data.
-            let code = unsafe {
-                ondas_fsdb_open(path.as_ptr(), &mut raw, error.as_mut_ptr(), error.len())
-            };
-            status(code, &error)?;
-        }
-        let handle = Handle(NonNull::new(raw).ok_or_else(|| backend_error("null FSDB reader"))?);
+        let handle = open_handle(path, false)?;
+        let raw = handle.0.as_ptr();
         let mut scopes: Vec<ScopeData> = Vec::new();
         let mut variables = Vec::new();
         let mut seen_variables = HashSet::new();
@@ -376,23 +425,7 @@ impl Reader {
             if !stack.is_empty() {
                 return Err(backend_error("unclosed FSDB scopes"));
             }
-            let scale = string(meta.scale)?;
-            let scale = match scale.as_deref() {
-                None | Some("") => None,
-                Some(text) => Some(
-                    timescale(text).ok_or_else(|| backend_error("unsupported FSDB timescale"))?,
-                ),
-            };
-            Metadata {
-                source_name,
-                timescale: scale,
-                time_span: (!variables.is_empty()).then(|| {
-                    TimeSpan::new(Time::from_ticks(meta.first), Time::from_ticks(meta.last))
-                }),
-                writer: string(meta.writer)?,
-                date: string(meta.date)?,
-                comments: Vec::new(),
-            }
+            copy_metadata(&meta, source_name, !variables.is_empty())?
         };
         drop(guard);
         let hierarchy = Hierarchy::new(scopes, variables, encodings.clone());

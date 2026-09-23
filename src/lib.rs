@@ -40,6 +40,7 @@ modules are private.
 
 Use [`open`] or [`open_bytes`] for automatic backend selection. Use [`open_with`]
 or [`open_bytes_with`] to select a backend explicitly, without fallback.
+[`read_metadata`] returns owned file metadata without a waveform or hierarchy.
 [`Format`] describes source contents, not the reader implementation.
 
 ## Read a signal
@@ -259,7 +260,9 @@ pub use time::{Time, TimeRange, TimeSpan, TimeUnit, Timescale};
 /// Owned and borrowed waveform signal values.
 pub use value::{Bits, BitsRef, Logic, Value, ValueRef};
 /// Waveform sources, metadata, formats, and opening functions.
-pub use waveform::{Format, Metadata, Waveform, open, open_bytes, open_bytes_with, open_with};
+pub use waveform::{
+    Format, Metadata, Waveform, open, open_bytes, open_bytes_with, open_with, read_metadata,
+};
 
 /// A result returned by waveform opening and query operations.
 pub type Result<T> = std::result::Result<T, Error>;

@@ -73,6 +73,10 @@ keeps the Reader object, identity/index maps and encodings; the shim retains
 hierarchy descriptors. Opening does not traverse
 all value histories or certify that every later record can be decoded.
 
+`read_metadata(path)` uses the same SDK file open and header queries but skips
+datatype and hierarchy callbacks. It closes the SDK object after copying the
+metadata. It does not validate declarations; `open(path)` still does.
+
 Actual Unix path bytes are passed to the SDK, including non-UTF-8 names;
 `source_name` is only a display string. Embedded NUL is rejected. There are no
 hidden temporary files or memory-file adapters. Keep the source unchanged while

@@ -14,6 +14,24 @@ fn open(declarations: &str, body: &[u8]) -> ondas::Waveform {
         .unwrap_or_else(|e| panic!("{e}"))
 }
 
+#[test]
+fn read_metadata_preserves_vcd_detection_and_values() {
+    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tmp")
+        .join(format!("read-metadata-vcd-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("input.fsdb");
+    std::fs::write(&path, source("$var wire 1 ! flag $end", b"#5 0! #8 1!")).unwrap();
+    let metadata = ondas::read_metadata(&path).unwrap();
+    let full = ondas::open(&path).unwrap();
+    assert_eq!(full.format(), Format::Vcd);
+    assert_eq!(metadata.source_name(), full.metadata().source_name());
+    assert_eq!(metadata.timescale(), full.metadata().timescale());
+    assert_eq!(metadata.time_span(), full.metadata().time_span());
+    std::fs::remove_file(path).unwrap();
+    std::fs::remove_dir(directory).unwrap();
+}
+
 fn value(sample: Sample) -> Value {
     match sample {
         Sample::Value { value, .. } => value,

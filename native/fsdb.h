@@ -26,6 +26,7 @@ typedef struct {
 
 typedef struct {
     uint64_t first, last;
+    uint32_t has_variables;
     const char *scale, *writer, *date;
 } ondas_fsdb_meta;
 
@@ -40,7 +41,7 @@ typedef struct {
  * begin return 0 on success, -1 on error. Next returns 1 for a record, 0 for EOF,
  * -1 on error. Closing also releases an active traversal. */
 int ondas_fsdb_probe(const char *, int *, char *, size_t);
-int ondas_fsdb_open(const char *, ondas_fsdb **, char *, size_t);
+int ondas_fsdb_open(const char *, int metadata_only, ondas_fsdb **, char *, size_t);
 void ondas_fsdb_close(ondas_fsdb *);
 void ondas_fsdb_metadata(ondas_fsdb *, ondas_fsdb_meta *);
 size_t ondas_fsdb_decl_count(ondas_fsdb *);

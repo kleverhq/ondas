@@ -1624,11 +1624,38 @@ fn callback_query_fst_reader() {
     }
 }
 
+fn metadata_matches_open(path: &Path) {
+    let fast = ondas::read_metadata(path).unwrap();
+    let full = ondas::open(path).unwrap();
+    assert_eq!(fast.source_name(), full.metadata().source_name());
+    assert_eq!(fast.timescale(), full.metadata().timescale());
+    assert_eq!(fast.time_span(), full.metadata().time_span());
+    assert_eq!(fast.writer(), full.metadata().writer());
+    assert_eq!(fast.date(), full.metadata().date());
+    assert_eq!(
+        fast.comments().collect::<Vec<_>>(),
+        full.metadata().comments().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+#[ignore = "requires ONDAS_FIXTURES; run just conformance"]
+fn fst_metadata_matches_open() {
+    metadata_matches_open(&load_fixture(&provider(), "fst0041-counter").path);
+}
+
 #[cfg(feature = "fsdb-lib")]
 #[test]
 #[ignore = "requires Verdi and ONDAS_FIXTURES; run just conformance-fsdb"]
 fn callback_query_fsdb_reader() {
     callback_query_reader_smoke(&load_fixture(&provider(), "fsdb0005-compare-xz"), false);
+}
+
+#[cfg(feature = "fsdb-lib")]
+#[test]
+#[ignore = "requires Verdi and ONDAS_FIXTURES; run just conformance-fsdb"]
+fn fsdb_metadata_without_hierarchy() {
+    metadata_matches_open(&load_fixture(&provider(), "fsdb0005-compare-xz").path);
 }
 
 #[cfg(feature = "fsdb-lib")]

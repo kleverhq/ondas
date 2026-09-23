@@ -177,7 +177,7 @@ struct ondas_fsdb {
     std::unordered_map<uint64_t, size_t> variables;
     std::unordered_map<unsigned, Datatype> datatypes;
     std::string path, scale, writer, date;
-    bool has_writer = false, has_date = false;
+    bool has_writer = false, has_date = false, has_variables = false;
     uint64_t first = 0, last = 0, start_tick = 0, end_tick = 0;
     std::exception_ptr tree_error;
     void end() noexcept {
@@ -320,7 +320,7 @@ extern "C" int ondas_fsdb_probe(const char *path, int *is_fsdb, char *error, siz
     }
     OFS_CATCH(error, cap)
 }
-extern "C" int ondas_fsdb_open(const char *path, ondas_fsdb **out, char *error, size_t cap) {
+extern "C" int ondas_fsdb_open(const char *path, int metadata_only, ondas_fsdb **out, char *error, size_t cap) {
     *out = nullptr;
     try {
         require(ondas_fsdb_dependencies[0] && ondas_fsdb_dependencies[1], "missing SDK dependencies");
@@ -335,16 +335,21 @@ extern "C" int ondas_fsdb_open(const char *path, ondas_fsdb **out, char *error, 
                               && info.is_view_window_available;
         require(file->ffrGetXTagType() == FSDB_XTAG_TYPE_L || file->ffrGetXTagType() == FSDB_XTAG_TYPE_HL,
                 "floating FSDB timestamps are unsupported");
-        file->ffrSetTreeCBFunc(tree, reader.get());
-        if (file->ffrHasDataTypeDef()) {
-            uint_T block = 0; // The SDK reads from this block through the last block.
-            const auto rc = file->ffrReadDataTypeDefByBlkIdx(block);
+        if (!metadata_only) {
+            file->ffrSetTreeCBFunc(tree, reader.get());
+            if (file->ffrHasDataTypeDef()) {
+                uint_T block = 0; // The SDK reads from this block through the last block.
+                const auto rc = file->ffrReadDataTypeDefByBlkIdx(block);
+                if (reader->tree_error) std::rethrow_exception(reader->tree_error);
+                success(rc, "read FSDB datatype definitions");
+            }
+            const auto rc = file->ffrReadScopeVarTree();
             if (reader->tree_error) std::rethrow_exception(reader->tree_error);
-            success(rc, "read FSDB datatype definitions");
+            success(rc, "read FSDB hierarchy");
         }
-        const auto rc = file->ffrReadScopeVarTree();
-        if (reader->tree_error) std::rethrow_exception(reader->tree_error);
-        success(rc, "read FSDB hierarchy");
+        // The SDK's maximum idcode is the unique-signal count, available before tree traversal.
+        reader->has_variables = metadata_only ? file->ffrGetMaxVarIdcode() != 0
+                                              : !reader->variables.empty();
         fsdbTag64 first{}, last{};
         success(file->ffrGetMinFsdbTag64(&first), "read first tick");
         success(file->ffrGetMaxFsdbTag64(&last), "read last tick");
@@ -361,8 +366,8 @@ extern "C" int ondas_fsdb_open(const char *path, ondas_fsdb **out, char *error, 
 }
 extern "C" void ondas_fsdb_close(ondas_fsdb *reader) { delete reader; }
 extern "C" void ondas_fsdb_metadata(ondas_fsdb *reader, ondas_fsdb_meta *out) {
-    *out = {reader->first, reader->last, reader->scale.c_str(),
-            reader->has_writer ? reader->writer.c_str() : nullptr,
+    *out = {reader->first, reader->last, reader->has_variables,
+            reader->scale.c_str(), reader->has_writer ? reader->writer.c_str() : nullptr,
             reader->has_date ? reader->date.c_str() : nullptr};
 }
 extern "C" size_t ondas_fsdb_decl_count(ondas_fsdb *reader) { return reader->declarations.size(); }

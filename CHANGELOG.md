@@ -6,6 +6,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `read_metadata(path)` reads FSDB header metadata without loading declarations;
+  FST and VCD retain their full-opening behavior. `open()` is unchanged.
+
 ## [1.0.0] - 2026-09-21
 
 ### Added
