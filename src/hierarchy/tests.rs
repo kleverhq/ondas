@@ -72,6 +72,8 @@ fn path_index_is_lazy_and_shared_between_hierarchy_clones() {
     }
     assert!(hierarchy.data.variables_by_path.get().is_none());
     assert_eq!(cloned.variable("tb.dut.data").unwrap().name(), "data");
+    assert!(hierarchy.data.variables_by_path.get().is_none());
+    assert_eq!(hierarchy.variable("tb.dut.alias").unwrap().name(), "alias");
     let index = hierarchy.data.variables_by_path.get().unwrap();
     assert!(std::ptr::eq(
         index,
@@ -79,8 +81,23 @@ fn path_index_is_lazy_and_shared_between_hierarchy_clones() {
     ));
     assert!(matches!(
         hierarchy.variable("tb.dut.duplicate"),
-        Err(LookupError::Ambiguous { .. })
+        Err(LookupError::Ambiguous { matches: 2, .. })
     ));
+    let ambiguous = fixture();
+    assert!(matches!(
+        ambiguous.variable("tb.dut.duplicate"),
+        Err(LookupError::Ambiguous { matches: 2, .. })
+    ));
+    assert!(ambiguous.data.variables_by_path.get().is_none());
+
+    let missing = fixture();
+    assert!(matches!(
+        missing.variable("tb.dut.absent"),
+        Err(LookupError::NotFound { .. })
+    ));
+    assert!(missing.data.variables_by_path.get().is_none());
+    assert_eq!(missing.variable("tb.dut.data").unwrap().name(), "data");
+    assert!(missing.data.variables_by_path.get().is_some());
 }
 
 #[test]

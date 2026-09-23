@@ -227,6 +227,7 @@ struct HierarchyData {
     scopes: Vec<ScopeData>,
     variables: Vec<VariableData>,
     encodings: Vec<Encoding>,
+    first_variable_lookup: OnceLock<()>,
     variables_by_path: OnceLock<HashMap<HierarchyPath, (usize, usize)>>,
 }
 
@@ -291,6 +292,7 @@ impl Hierarchy {
                 scopes,
                 variables,
                 encodings,
+                first_variable_lookup: OnceLock::new(),
                 variables_by_path: OnceLock::new(),
             }),
         }
@@ -432,6 +434,22 @@ impl Hierarchy {
         &self,
         path: &HierarchyPath,
     ) -> std::result::Result<Variable<'_>, LookupError> {
+        if self.data.variables_by_path.get().is_none()
+            && self.data.first_variable_lookup.set(()).is_ok()
+        {
+            let mut matches = self.variables().filter(|variable| {
+                Some(variable.name()) == path.name() && variable.path() == *path
+            });
+            let first = matches.next();
+            return match (first, matches.count()) {
+                (None, _) => Err(LookupError::NotFound { path: path.clone() }),
+                (Some(variable), 0) => Ok(variable),
+                (_, remaining) => Err(LookupError::Ambiguous {
+                    path: path.clone(),
+                    matches: remaining + 1,
+                }),
+            };
+        }
         let variables_by_path = self.data.variables_by_path.get_or_init(|| {
             let mut index = HashMap::with_capacity(self.data.variables.len());
             for variable in self.variables() {

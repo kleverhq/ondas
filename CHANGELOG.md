@@ -11,6 +11,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `read_metadata(path)` reads FSDB header metadata without loading declarations;
   FST and VCD retain their full-opening behavior. `open()` is unchanged.
 
+### Changed
+
+- A single exact variable-path lookup no longer builds the full hierarchy index;
+  repeated lookups still share it.
+
 ## [1.0.0] - 2026-09-21
 
 ### Added
