@@ -10,6 +10,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `Variable::reader_name` retains FSDB SDK declaration spelling before range
+  extraction, separately from lookup identity.
 - `Scope::name_was_escaped` and `Variable::name_was_escaped` preserve VCD/FST
   declaration escape provenance independently of canonical names.
 - FSDB enum datatype names, declared value/label tables and supported integral

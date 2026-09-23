@@ -34,6 +34,7 @@ fn fixture() -> Hierarchy {
     .into_iter()
     .map(|(name, signal)| VariableData {
         name: name.into(),
+        reader_name: None,
         name_was_escaped: false,
         parent: Some(1),
         kind: "wire".into(),
@@ -253,6 +254,7 @@ fn interpretation_belongs_to_declarations_not_shared_histories() {
             .iter()
             .map(|&(name, signal, signedness, logic_domain)| VariableData {
                 name: name.into(),
+                reader_name: None,
                 name_was_escaped: false,
                 parent: None,
                 kind: "variable".into(),
@@ -452,6 +454,7 @@ fn root_declarations_duplicate_scopes_and_extreme_ranges() {
         ],
         vec![VariableData {
             name: "root".into(),
+            reader_name: None,
             name_was_escaped: false,
             parent: None,
             kind: "parameter".into(),
@@ -527,6 +530,7 @@ fn exact_unicode_paths_do_not_normalize_names() {
             .enumerate()
             .map(|(index, name)| VariableData {
                 name: (*name).into(),
+                reader_name: None,
                 name_was_escaped: false,
                 parent: None,
                 kind: "wire".into(),

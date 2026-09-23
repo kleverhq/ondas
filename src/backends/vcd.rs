@@ -264,6 +264,7 @@ impl Reader {
                     )) {
                         variables.push(VariableData {
                             name,
+                            reader_name: None,
                             name_was_escaped: reference.starts_with(b"\\"),
                             parent,
                             is_constant: matches!(kind.as_str(), "parameter" | "real-parameter"),

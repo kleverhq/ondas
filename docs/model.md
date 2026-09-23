@@ -54,8 +54,9 @@ pay the one-time construction cost when they first resolve a variable.
 
 For VCD and FST, leading Verilog escape markers are separate from logical name
 identity. Scopes and variables retain escape provenance so consumers can preserve
-identifier spelling without treating the marker as part of the name. FSDB retains
-SDK-provided names without interpreting leading backslashes as escape markers.
+identifier spelling without treating the marker as part of the name. FSDB keeps
+leading SDK backslashes in identity and separately retains the SDK declaration
+spelling before extracting printed ranges.
 
 ## Time and observations
 

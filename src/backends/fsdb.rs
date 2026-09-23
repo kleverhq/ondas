@@ -303,6 +303,7 @@ impl Reader {
                             index
                         };
                         let range = (d.has_range != 0).then(|| BitRange::new(d.msb, d.lsb));
+                        let reader_name = name.clone();
                         let (name, range) = declared_name(name, range, encoding);
                         // A file can append hierarchy trees repeating an identical
                         // declaration. Coalesce repetitions, not distinct aliases.
@@ -347,6 +348,7 @@ impl Reader {
                         };
                         variables.push(VariableData {
                             name,
+                            reader_name: Some(reader_name),
                             name_was_escaped: false,
                             parent: stack.last().copied(),
                             kind,
@@ -832,15 +834,29 @@ mod tests {
             Encoding::Bits { width: 1 },
             Encoding::Bits { width: 1 },
             Encoding::Bits { width: 8 },
+            Encoding::Bits { width: 32 },
+            Encoding::Bits { width: 8 },
         ];
-        let variables = [r"\flags[0:0]", r"\flags[0:0]", "flags[7:0]"]
+        let raw_names = [
+            r"\flags[0:0]",
+            r"\flags[0:0]",
+            "flags[7:0]",
+            r"\awaddr[0] [31:0]",
+            "maprom[0][7:0]",
+        ];
+        let variables = raw_names
             .into_iter()
             .enumerate()
             .map(|(index, raw)| {
-                let range = (index == 2).then_some(BitRange::new(7, 0));
+                let range = match index {
+                    2 | 4 => Some(BitRange::new(7, 0)),
+                    3 => Some(BitRange::new(31, 0)),
+                    _ => None,
+                };
                 let (name, range) = declared_name(raw.into(), range, encodings[index]);
                 VariableData {
                     name,
+                    reader_name: Some(raw.into()),
                     name_was_escaped: false,
                     parent: None,
                     kind: "wire".into(),
@@ -862,6 +878,24 @@ mod tests {
             Err(crate::LookupError::Ambiguous { .. })
         ));
         assert_eq!(hierarchy.signal("flags").unwrap().width(), Some(8));
+        assert_eq!(
+            hierarchy
+                .variables()
+                .map(|var| var.reader_name().unwrap())
+                .collect::<Vec<_>>(),
+            raw_names
+        );
+        assert_eq!(
+            hierarchy
+                .variable_path(&crate::HierarchyPath::from_components([r"\awaddr[0]"]))
+                .unwrap()
+                .range(),
+            Some(BitRange::new(31, 0))
+        );
+        assert_eq!(
+            hierarchy.variable("maprom[0]").unwrap().reader_name(),
+            Some("maprom[0][7:0]")
+        );
         assert_eq!(
             hierarchy
                 .variables()

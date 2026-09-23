@@ -203,6 +203,7 @@ pub(crate) struct ScopeData {
 
 pub(crate) struct VariableData {
     pub(crate) name: String,
+    pub(crate) reader_name: Option<String>,
     pub(crate) name_was_escaped: bool,
     pub(crate) parent: Option<usize>,
     pub(crate) kind: String,
@@ -564,6 +565,16 @@ impl<'h> Variable<'h> {
     /// Returns the declaration's exact local name, without a VCD/FST escape marker.
     pub fn name(&self) -> &'h str {
         &self.data().name
+    }
+
+    /// Returns the reader-provided local declaration name before range extraction, if retained.
+    ///
+    /// FSDB returns the SDK callback spelling, including any leading backslash or
+    /// printed range suffix. Coalesced duplicate declarations retain the first
+    /// callback's spelling; aliases retain their own. This is not path identity:
+    /// use [`Self::name`] for lookup. Other backends return `None`.
+    pub fn reader_name(&self) -> Option<&'h str> {
+        self.data().reader_name.as_deref()
     }
 
     /// Returns whether the VCD or FST declaration used a leading Verilog escape marker.

@@ -180,8 +180,10 @@ under the [benchmarking policy](benchmarking.md), not inferred throughput claims
 - Explicit vector ranges, including `[0:0]`, become declaration metadata. A
   matching trailing range is removed from unescaped names or after whitespace
   terminating an escaped identifier. An attached suffix on an escaped name stays
-  literal even when the SDK supplies matching bounds. Memory indices remain names,
-  not query projections.
+  literal even when the SDK supplies matching bounds. `Variable::reader_name`
+  retains the pre-extraction SDK spelling, including the escape marker and any
+  printed range, for consumers that distinguish those source forms. Memory indices
+  remain names, not query projections.
 - Known scope and variable kinds map to canonical names; unknown kinds remain
   namespaced. Direction and constant flags are retained when supplied.
 - Record/struct members retain their containing scopes and available packing.

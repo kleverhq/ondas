@@ -41,6 +41,7 @@ fn escaped_names_preserve_spelling_without_changing_identity() {
         let path = HierarchyPath::from_components(["top", name]);
         let variable = wave.hierarchy().variable_path(&path).unwrap();
         assert_eq!(variable.name(), name);
+        assert_eq!(variable.reader_name(), None);
         assert!(variable.name_was_escaped());
     }
     let alias = wave.hierarchy().variable("top.alias").unwrap();
@@ -93,6 +94,7 @@ fn escaped_declaration_spelling_agrees_with_fst() {
                     .variable_path(&HierarchyPath::from_components(["top", name]))
                     .unwrap();
                 assert_eq!(variable.name(), name);
+                assert_eq!(variable.reader_name(), None);
                 assert_eq!(variable.name_was_escaped(), escaped);
             }
             assert_eq!(

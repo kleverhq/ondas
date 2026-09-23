@@ -231,6 +231,7 @@ impl Reader {
                             .map(|(name, variants)| EnumerationData { name, variants });
                         variables.push(VariableData {
                             name,
+                            reader_name: None,
                             name_was_escaped,
                             parent: stack.last().copied(),
                             kind,
