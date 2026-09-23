@@ -245,14 +245,17 @@ fn scan_tick<B>(
 }
 
 // Visit a finished tick before committing it, so both entering and final states
-// remain available to the same owner. Only selected, bounded state is retained.
+// remain available to the same owner. Only slots touched at this tick need work.
 fn complete_tick<B>(
     signals: &[Signal],
     slots: &mut [Slot],
+    active_slots: &mut Vec<usize>,
     time: Time,
+    visit_from: Option<Time>,
     visitor: &mut impl FnMut(Time, &[Signal], &[Slot]) -> Result<ControlFlow<B>>,
 ) -> Result<ControlFlow<B>> {
-    for slot in &mut *slots {
+    for &index in active_slots.iter() {
+        let slot = &mut slots[index];
         slot.changed = slot.pending.as_ref().is_some_and(|value| {
             !slot
                 .state
@@ -260,10 +263,13 @@ fn complete_tick<B>(
                 .is_some_and(|state| state.value.as_ref().same_value(value.as_ref()))
         });
     }
-    if let ControlFlow::Break(value) = visitor(time, signals, slots)? {
+    if visit_from.is_none_or(|start| time >= start)
+        && let ControlFlow::Break(value) = visitor(time, signals, slots)?
+    {
         return Ok(ControlFlow::Break(value));
     }
-    for slot in slots {
+    for index in active_slots.drain(..) {
+        let slot = &mut slots[index];
         if let Some(value) = slot.pending.take()
             && slot.changed
         {
@@ -273,6 +279,7 @@ fn complete_tick<B>(
             });
         }
         slot.events = 0;
+        slot.changed = false;
     }
     Ok(ControlFlow::Continue(()))
 }
@@ -831,6 +838,13 @@ impl<'w> Selection<'w> {
         if let Some(replay) = replay {
             slots.clone_from_slice(&replay.slots);
         }
+        let mut active_slots = slots
+            .iter()
+            .enumerate()
+            .filter_map(|(index, slot)| {
+                (slot.pending.is_some() || slot.events > 0).then_some(index)
+            })
+            .collect::<Vec<_>>();
         drop(retained);
         let backend = self.waveform.backend().to_owned();
         #[cfg(test)]
@@ -840,7 +854,14 @@ impl<'w> Selection<'w> {
             if let Some(previous) = pending_time
                 && previous != time
             {
-                match complete_tick(&self.signals, slots, previous, &mut visitor) {
+                match complete_tick(
+                    &self.signals,
+                    slots,
+                    &mut active_slots,
+                    previous,
+                    start,
+                    &mut visitor,
+                ) {
                     Ok(ControlFlow::Continue(())) => (),
                     outcome => return ControlFlow::Break(outcome),
                 }
@@ -864,6 +885,12 @@ impl<'w> Selection<'w> {
             pending_time = Some(time);
             for &index in &self.groups[&base] {
                 let slot = &mut slots[index];
+                if slot.pending.is_none()
+                    && slot.events == 0
+                    && !matches!(value, ValueRef::Event { occurrences: 0 })
+                {
+                    active_slots.push(index);
+                }
                 if let ValueRef::Event { occurrences } = value {
                     let Some(count) = slot.events.checked_add(occurrences) else {
                         return ControlFlow::Break(Err(Error::Backend {
@@ -877,6 +904,7 @@ impl<'w> Selection<'w> {
                     slot.pending = Some(project(value, self.retained_signals[index]).to_owned());
                 }
             }
+            debug_assert!(active_slots.len() <= slots.len());
             #[cfg(test)]
             streaming_tests::observe_pending(&probe, slots);
             ControlFlow::Continue(())
@@ -938,7 +966,14 @@ impl<'w> Selection<'w> {
         };
         // Only successful EOF completes the final pending tick.
         let result = if let Some(time) = pending_time {
-            complete_tick(&self.signals, slots, time, &mut visitor)?
+            complete_tick(
+                &self.signals,
+                slots,
+                &mut active_slots,
+                time,
+                start,
+                &mut visitor,
+            )?
         } else {
             ControlFlow::Continue(())
         };
@@ -1365,14 +1400,21 @@ mod tests {
             pending: Some(Value::String(pending)),
             ..Slot::default()
         }];
-        let _ = complete_tick(&[], &mut slots, Time::from_ticks(1), &mut |_, _, slots| {
-            assert!(matches!(
-                slots[0].state.as_ref().unwrap().value.as_ref(),
-                ValueRef::String("old")
-            ));
-            assert!(slots[0].changed);
-            Ok(ControlFlow::<()>::Continue(()))
-        })
+        let _ = complete_tick(
+            &[],
+            &mut slots,
+            &mut vec![0],
+            Time::from_ticks(1),
+            None,
+            &mut |_, _, slots| {
+                assert!(matches!(
+                    slots[0].state.as_ref().unwrap().value.as_ref(),
+                    ValueRef::String("old")
+                ));
+                assert!(slots[0].changed);
+                Ok(ControlFlow::<()>::Continue(()))
+            },
+        )
         .unwrap();
         let Value::String(retained) = &slots[0].state.as_ref().unwrap().value else {
             panic!("string")
@@ -1387,6 +1429,18 @@ mod tests {
             Some(Time::from_ticks(1))
         );
         assert!(slots[0].pending.is_none());
+    }
+
+    #[test]
+    fn zero_events_do_not_activate_duplicate_slots() {
+        let mut records = vec![(0, 0, Value::Event { occurrences: 0 }); 100];
+        records.push((0, 1, Value::Event { occurrences: 2 }));
+        let mut wave = Waveform::memory(vec![Encoding::Event], records, None);
+        let signal = wave.hierarchy().signals().next().unwrap();
+        assert!(matches!(
+            wave.sample(signal, Time::from_ticks(1)).unwrap(),
+            Sample::Event { occurrences: 2, .. }
+        ));
     }
 
     #[test]

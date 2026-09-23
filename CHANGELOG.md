@@ -15,6 +15,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - A single exact variable-path lookup no longer builds the full hierarchy index;
   repeated lookups still share it.
+- Sequential queries finalize only slots touched at each tick, reducing bulk FST
+  point-sampling work without changing observations.
 
 ## [1.0.0] - 2026-09-21
 
