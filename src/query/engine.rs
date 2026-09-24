@@ -820,9 +820,18 @@ impl<'w> Selection<'w> {
         slots: &mut [Slot],
         mut visitor: impl FnMut(Time, &[Signal], &[Slot]) -> Result<ControlFlow<B>>,
     ) -> Result<ControlFlow<B>> {
-        let mut checkpoint = self.checkpoint.take();
         let eligible =
             |replay: &Replay| start.is_some_and(|start| replay.start <= start) && replay.end <= end;
+        #[cfg(feature = "fsdb-lib")]
+        if let Some(start) = start.filter(|start| *start > Time::ZERO)
+            && !self.replay.as_ref().is_some_and(eligible)
+            && !self.checkpoint.as_ref().is_some_and(eligible)
+        {
+            // Seek the entering state, then traverse only the bounded window.
+            // Mixed values and events retain the chronological reference path.
+            self.fsdb_point_states(Time::from_ticks(start.ticks() - 1))?;
+        }
+        let mut checkpoint = self.checkpoint.take();
         let retained = self.replay.take().filter(&eligible);
         let replay = retained.as_ref().or_else(|| {
             checkpoint
@@ -1016,8 +1025,13 @@ mod tests {
             reader.records_read
         }
         let time = Time::from_ticks(4000);
-        // Exercise the chronological scan checkpoint, independently of the cold
-        // bit-only point fast path.
+        // Keep an earlier replay to exercise the chronological checkpoint path,
+        // independently of the cold bit-only seek.
+        let _ = selection
+            .scan(TimeRange::point(Time::ZERO), |_| {
+                ControlFlow::<()>::Continue(())
+            })
+            .unwrap();
         let _ = selection
             .scan(TimeRange::point(time), |_| ControlFlow::<()>::Continue(()))
             .unwrap();
@@ -1046,6 +1060,11 @@ mod tests {
             .scan(TimeRange::all(), |_| ControlFlow::Break(()))
             .unwrap();
         assert!(selection.checkpoint.is_none());
+        let _ = selection
+            .scan(TimeRange::point(Time::ZERO), |_| {
+                ControlFlow::<()>::Continue(())
+            })
+            .unwrap();
         let before = count(&selection);
         let _ = selection
             .scan(TimeRange::point(time), |_| ControlFlow::<()>::Continue(()))
@@ -1083,6 +1102,58 @@ mod tests {
             assert!(selection.checkpoint.is_none());
             assert!(selection.replay.is_none());
         }
+    }
+
+    #[cfg(feature = "fsdb-lib")]
+    #[test]
+    #[ignore = "requires real FSDB runtime and locked public fixtures"]
+    fn fsdb_cold_window_matches_chronological_reference() {
+        let root = std::path::PathBuf::from(std::env::var_os("ONDAS_FIXTURES").unwrap());
+        let path = root.join("kleverhq.ondas-fixtures/fsdb0010-history-short/waveform.fsdb");
+        let mut wave = crate::open_with(path, "fsdb-lib").unwrap();
+        let clock = wave.hierarchy().signal("top.clock").unwrap();
+        let word = wave.hierarchy().signal("top.word_00").unwrap();
+        let signals = [clock, word, word.slice(31, 16).unwrap(), word];
+        let range = TimeRange::closed(Time::from_ticks(4000), Time::from_ticks(4001));
+        let mut chronological = wave.select(&signals).unwrap();
+        let _ = chronological
+            .scan(TimeRange::point(Time::ZERO), |_| {
+                ControlFlow::<()>::Continue(())
+            })
+            .unwrap();
+        let mut expected = Vec::new();
+        let _ = chronological
+            .scan_each(range, |index, record| {
+                expected.push(format!("{index}:{record:?}"));
+                ControlFlow::<()>::Continue(())
+            })
+            .unwrap();
+        drop(chronological);
+        let crate::backends::Reader::Fsdb(reader) = &wave.reader else {
+            unreachable!()
+        };
+        let before = reader.records_read;
+        let mut cold = wave.select(&signals).unwrap();
+        let mut actual = Vec::new();
+        let _ = cold
+            .scan_each(range, |index, record| {
+                actual.push(format!("{index}:{record:?}"));
+                ControlFlow::<()>::Continue(())
+            })
+            .unwrap();
+        assert_eq!(actual, expected);
+        let crate::backends::Reader::Fsdb(reader) = &cold.waveform.reader else {
+            unreachable!()
+        };
+        assert!(
+            reader.point_queries > 0,
+            "cold window must seek entering state"
+        );
+        assert!(
+            reader.records_read - before < 100,
+            "cold window must not replay the prefix: {} records",
+            reader.records_read - before
+        );
     }
 
     #[cfg(feature = "fsdb-lib")]

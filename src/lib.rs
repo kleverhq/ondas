@@ -219,8 +219,11 @@ runtime SDK absence is not handled gracefully.
 
 Independent Reader objects and serialized SDK calls preserve `Waveform: Send + Sync`.
 The lock is released before Rust visitors, so a callback can query another
-waveform. Queries load selected histories and traverse from their beginning;
-vendor loading has its own memory cost. SDK diagnostics may appear on stdout/stderr.
+waveform. Queries load selected histories; cold bit-only bounded queries can
+seek their entering state and traverse only the requested window. Other cold
+queries traverse from the beginning. Records skipped by a seek are not decoded
+or validated by the sequential adapter. Vendor loading has its own memory cost.
+SDK diagnostics may appear on stdout/stderr.
 C++ exceptions become backend errors, but native crashes or aborts are not
 contained. SDK permissions and runtime dependencies remain the caller's
 responsibility. Ondas distributes no vendor files.

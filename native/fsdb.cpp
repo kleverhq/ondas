@@ -402,7 +402,7 @@ extern "C" int ondas_fsdb_begin(ondas_fsdb *reader, const uint64_t *ids, size_t 
                     "FSDB event queries with dump-off ranges are unsupported");
             success(reader->file->ffrAddToSignalList(id), "select FSDB signal");
         }
-        // A nonzero start requires the engine's exact normalized checkpoint.
+        // A nonzero start requires the engine's exact normalized entering state.
         // Without one, begin is zero. Loading remains flush-session granular.
         if (reader->view_window) {
             fsdbXTag start{}, close{};
