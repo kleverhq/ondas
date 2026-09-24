@@ -34,3 +34,14 @@ The provider installer downloads release assets and verifies sizes and SHA-256,
 including cached payloads. It does not bypass missing assets. `GITHUB_TOKEN` is
 optional for authenticated API access. `test_install_fixtures.py` checks clone,
 reuse, revision/catalog rejection and installer execution without network access.
+
+## Release metadata
+
+`check_release.py` reads `Cargo.toml`, `Cargo.lock` and `CHANGELOG.md` from the
+working directory. It requires matching stable versions and nonempty, dated
+release notes, and prints those notes without modifying files. `--tag vX.Y.Z`
+additionally checks the release tag. It uses only Python 3.11+'s standard library;
+`test_check_release.py` covers metadata rejection and note extraction.
+
+`./dev just release-check` also lists and verifies the crates.io package with
+`cargo publish --dry-run`; it needs registry access but no publishing token.

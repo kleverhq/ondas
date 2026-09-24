@@ -126,6 +126,7 @@ impl Reader {
                         name,
                         component,
                     } => {
+                        let (name, name_was_escaped) = crate::hierarchy::normalize_name(name);
                         let parent = stack.last().copied();
                         let kind = scope_kind(tpe);
                         let definition_name = (!component.is_empty()).then_some(component);
@@ -157,10 +158,12 @@ impl Reader {
                             let id = scopes.len();
                             scopes.push(ScopeData {
                                 name,
+                                name_was_escaped,
                                 parent,
                                 kind,
                                 definition_name,
                                 packing,
+                                is_hidden: false,
                             });
                             scope_ids.insert(key, id);
                             id
@@ -209,6 +212,7 @@ impl Reader {
                             index
                         };
                         let (name, range) = declared_name(name, encoding);
+                        let (name, name_was_escaped) = crate::hierarchy::normalize_name(name);
                         let (type_name, vhdl_kind, vhdl_type) =
                             pending_vhdl
                                 .take()
@@ -227,6 +231,8 @@ impl Reader {
                             .map(|(name, variants)| EnumerationData { name, variants });
                         variables.push(VariableData {
                             name,
+                            reader_name: None,
+                            name_was_escaped,
                             parent: stack.last().copied(),
                             kind,
                             direction: direction_metadata(direction),

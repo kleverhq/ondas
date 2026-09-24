@@ -245,14 +245,17 @@ fn scan_tick<B>(
 }
 
 // Visit a finished tick before committing it, so both entering and final states
-// remain available to the same owner. Only selected, bounded state is retained.
+// remain available to the same owner. Only slots touched at this tick need work.
 fn complete_tick<B>(
     signals: &[Signal],
     slots: &mut [Slot],
+    active_slots: &mut Vec<usize>,
     time: Time,
+    visit_from: Option<Time>,
     visitor: &mut impl FnMut(Time, &[Signal], &[Slot]) -> Result<ControlFlow<B>>,
 ) -> Result<ControlFlow<B>> {
-    for slot in &mut *slots {
+    for &index in active_slots.iter() {
+        let slot = &mut slots[index];
         slot.changed = slot.pending.as_ref().is_some_and(|value| {
             !slot
                 .state
@@ -260,10 +263,13 @@ fn complete_tick<B>(
                 .is_some_and(|state| state.value.as_ref().same_value(value.as_ref()))
         });
     }
-    if let ControlFlow::Break(value) = visitor(time, signals, slots)? {
+    if visit_from.is_none_or(|start| time >= start)
+        && let ControlFlow::Break(value) = visitor(time, signals, slots)?
+    {
         return Ok(ControlFlow::Break(value));
     }
-    for slot in slots {
+    for index in active_slots.drain(..) {
+        let slot = &mut slots[index];
         if let Some(value) = slot.pending.take()
             && slot.changed
         {
@@ -273,6 +279,7 @@ fn complete_tick<B>(
             });
         }
         slot.events = 0;
+        slot.changed = false;
     }
     Ok(ControlFlow::Continue(()))
 }
@@ -489,35 +496,112 @@ impl<'w> Selection<'w> {
         )
     }
 
+    #[cfg(feature = "fsdb-lib")]
+    fn fsdb_point_states(&mut self, time: Time) -> Result<Option<Vec<Option<State>>>> {
+        if self.signals.is_empty()
+            || !self
+                .bases
+                .iter()
+                .all(|signal| matches!(signal.encoding(), Encoding::Bits { .. }))
+            || !matches!(self.waveform.reader, crate::backends::Reader::Fsdb(_))
+        {
+            return Ok(None);
+        }
+        let next = time.ticks().checked_add(1).map(Time::from_ticks);
+        if let Some(replay) = self.replay.as_ref().filter(|replay| {
+            replay.time.is_none() && replay.end == time && Some(replay.start) == next
+        }) {
+            return Ok(Some(
+                self.slot_indices
+                    .iter()
+                    .map(|&index| replay.slots[index].state.clone())
+                    .collect(),
+            ));
+        }
+        // Keep existing chronological replay when it already supplies an exact
+        // entering state. Otherwise seek cold/backwards bit-only point reads.
+        let eligible = |replay: &Replay| replay.start <= time && replay.end <= time;
+        if self.replay.as_ref().is_some_and(eligible)
+            || self.checkpoint.as_ref().is_some_and(eligible)
+        {
+            return Ok(None);
+        }
+        self.replay = None;
+        self.checkpoint = None;
+        let crate::backends::Reader::Fsdb(reader) = &mut self.waveform.reader else {
+            unreachable!()
+        };
+        let samples = reader.sample_bits(&self.bases, &self.retained_signals, time)?;
+        let slots: Vec<_> = samples
+            .into_iter()
+            .map(|sample| Slot {
+                state: match sample {
+                    Sample::Value {
+                        value, changed_at, ..
+                    } => Some(State { value, changed_at }),
+                    Sample::Missing { .. } => None,
+                    Sample::Event { .. } => unreachable!("bit-only point selection"),
+                },
+                ..Slot::default()
+            })
+            .collect();
+        let states = self
+            .slot_indices
+            .iter()
+            .map(|&index| slots[index].state.clone())
+            .collect();
+        if let Some(next) = next.filter(|_| checkpoint_bytes(&slots) <= CHECKPOINT_BYTES) {
+            // This is state AFTER time, not entering time. Only later scans may
+            // reuse it; same-tick point reads are handled explicitly above.
+            self.replay = Some(Replay {
+                position: Position::Fsdb(next),
+                start: next,
+                end: time,
+                time: None,
+                slots,
+            });
+        }
+        Ok(Some(states))
+    }
+
     pub(super) fn sample_visit<B>(
         &mut self,
         time: Time,
         mut visitor: impl for<'v> FnMut(SampleRef<'v>) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>> {
-        let mut states = (0..self.signals.len())
-            .map(|_| None)
-            .collect::<Vec<Option<State>>>();
+        #[cfg(feature = "fsdb-lib")]
+        let (point_sampled, mut states) = {
+            let states = self.fsdb_point_states(time)?;
+            (
+                states.is_some(),
+                states.unwrap_or_else(|| vec![None; self.signals.len()]),
+            )
+        };
+        #[cfg(not(feature = "fsdb-lib"))]
+        let (point_sampled, mut states) = (false, vec![None; self.signals.len()]);
         let mut events = vec![0u64; self.signals.len()];
-        let _ = self.scan_each(TimeRange::point(time), |index, record| {
-            match record {
-                ScanRef::Initial {
-                    value, changed_at, ..
-                } => {
-                    states[index] = Some(State {
-                        value: value.to_owned(),
-                        changed_at,
-                    });
-                }
-                ScanRef::Change { time, value, .. } => {
-                    if let ValueRef::Event { occurrences } = value {
-                        events[index] = occurrences;
-                    } else {
-                        update(&mut states[index], value.to_owned(), time);
+        if !point_sampled {
+            let _ = self.scan_each(TimeRange::point(time), |index, record| {
+                match record {
+                    ScanRef::Initial {
+                        value, changed_at, ..
+                    } => {
+                        states[index] = Some(State {
+                            value: value.to_owned(),
+                            changed_at,
+                        });
+                    }
+                    ScanRef::Change { time, value, .. } => {
+                        if let ValueRef::Event { occurrences } = value {
+                            events[index] = occurrences;
+                        } else {
+                            update(&mut states[index], value.to_owned(), time);
+                        }
                     }
                 }
-            }
-            ControlFlow::<()>::Continue(())
-        })?;
+                ControlFlow::<()>::Continue(())
+            })?;
+        }
         // User callbacks also run after traversal has completed. Keep caches
         // provisional until they return, so unwinding cannot retain them.
         let replay = self.replay.take();
@@ -736,9 +820,18 @@ impl<'w> Selection<'w> {
         slots: &mut [Slot],
         mut visitor: impl FnMut(Time, &[Signal], &[Slot]) -> Result<ControlFlow<B>>,
     ) -> Result<ControlFlow<B>> {
-        let mut checkpoint = self.checkpoint.take();
         let eligible =
             |replay: &Replay| start.is_some_and(|start| replay.start <= start) && replay.end <= end;
+        #[cfg(feature = "fsdb-lib")]
+        if let Some(start) = start.filter(|start| *start > Time::ZERO)
+            && !self.replay.as_ref().is_some_and(eligible)
+            && !self.checkpoint.as_ref().is_some_and(eligible)
+        {
+            // Seek the entering state, then traverse only the bounded window.
+            // Mixed values and events retain the chronological reference path.
+            self.fsdb_point_states(Time::from_ticks(start.ticks() - 1))?;
+        }
+        let mut checkpoint = self.checkpoint.take();
         let retained = self.replay.take().filter(&eligible);
         let replay = retained.as_ref().or_else(|| {
             checkpoint
@@ -748,11 +841,19 @@ impl<'w> Selection<'w> {
         let mut checkpoint_considered = checkpoint
             .as_ref()
             .is_some_and(|checkpoint| Some(checkpoint.start) == start);
+        let replay_start = replay.map(|replay| replay.start).unwrap_or(Time::ZERO);
         let mut pending_time = replay.and_then(|replay| replay.time);
         let position = replay.map(|replay| replay.position);
         if let Some(replay) = replay {
             slots.clone_from_slice(&replay.slots);
         }
+        let mut active_slots = slots
+            .iter()
+            .enumerate()
+            .filter_map(|(index, slot)| {
+                (slot.pending.is_some() || slot.events > 0).then_some(index)
+            })
+            .collect::<Vec<_>>();
         drop(retained);
         let backend = self.waveform.backend().to_owned();
         #[cfg(test)]
@@ -762,7 +863,14 @@ impl<'w> Selection<'w> {
             if let Some(previous) = pending_time
                 && previous != time
             {
-                match complete_tick(&self.signals, slots, previous, &mut visitor) {
+                match complete_tick(
+                    &self.signals,
+                    slots,
+                    &mut active_slots,
+                    previous,
+                    start,
+                    &mut visitor,
+                ) {
                     Ok(ControlFlow::Continue(())) => (),
                     outcome => return ControlFlow::Break(outcome),
                 }
@@ -786,6 +894,12 @@ impl<'w> Selection<'w> {
             pending_time = Some(time);
             for &index in &self.groups[&base] {
                 let slot = &mut slots[index];
+                if slot.pending.is_none()
+                    && slot.events == 0
+                    && !matches!(value, ValueRef::Event { occurrences: 0 })
+                {
+                    active_slots.push(index);
+                }
                 if let ValueRef::Event { occurrences } = value {
                     let Some(count) = slot.events.checked_add(occurrences) else {
                         return ControlFlow::Break(Err(Error::Backend {
@@ -799,6 +913,7 @@ impl<'w> Selection<'w> {
                     slot.pending = Some(project(value, self.retained_signals[index]).to_owned());
                 }
             }
+            debug_assert!(active_slots.len() <= slots.len());
             #[cfg(test)]
             streaming_tests::observe_pending(&probe, slots);
             ControlFlow::Continue(())
@@ -839,7 +954,7 @@ impl<'w> Selection<'w> {
         let replay = match &self.waveform.reader {
             crate::backends::Reader::Vcd(reader) => reader.position().map(|position| Replay {
                 position: Position::Vcd(position),
-                start: pending_time.unwrap_or(Time::ZERO),
+                start: pending_time.unwrap_or(replay_start),
                 end,
                 time: pending_time,
                 slots: slots.to_vec(),
@@ -850,7 +965,7 @@ impl<'w> Selection<'w> {
             {
                 end.ticks().checked_add(1).map(|next| Replay {
                     position: Position::Fsdb(Time::from_ticks(next)),
-                    start: pending_time.unwrap_or(Time::ZERO),
+                    start: pending_time.unwrap_or(replay_start),
                     end,
                     time: pending_time,
                     slots: slots.to_vec(),
@@ -860,7 +975,14 @@ impl<'w> Selection<'w> {
         };
         // Only successful EOF completes the final pending tick.
         let result = if let Some(time) = pending_time {
-            complete_tick(&self.signals, slots, time, &mut visitor)?
+            complete_tick(
+                &self.signals,
+                slots,
+                &mut active_slots,
+                time,
+                start,
+                &mut visitor,
+            )?
         } else {
             ControlFlow::Continue(())
         };
@@ -903,6 +1025,16 @@ mod tests {
             reader.records_read
         }
         let time = Time::from_ticks(4000);
+        // Keep an earlier replay to exercise the chronological checkpoint path,
+        // independently of the cold bit-only seek.
+        let _ = selection
+            .scan(TimeRange::point(Time::ZERO), |_| {
+                ControlFlow::<()>::Continue(())
+            })
+            .unwrap();
+        let _ = selection
+            .scan(TimeRange::point(time), |_| ControlFlow::<()>::Continue(()))
+            .unwrap();
         let expected = format!("{:?}", selection.samples(time).unwrap());
         let cold = count(&selection);
         assert!(cold > 4000);
@@ -928,7 +1060,15 @@ mod tests {
             .scan(TimeRange::all(), |_| ControlFlow::Break(()))
             .unwrap();
         assert!(selection.checkpoint.is_none());
+        let _ = selection
+            .scan(TimeRange::point(Time::ZERO), |_| {
+                ControlFlow::<()>::Continue(())
+            })
+            .unwrap();
         let before = count(&selection);
+        let _ = selection
+            .scan(TimeRange::point(time), |_| ControlFlow::<()>::Continue(()))
+            .unwrap();
         assert_eq!(format!("{:?}", selection.samples(time).unwrap()), expected);
         assert!(count(&selection) - before > 4000);
         let error = selection.query(TimeRange::all(), &[0], |_| -> Result<ControlFlow<()>> {
@@ -941,6 +1081,9 @@ mod tests {
         assert!(error.is_err());
         assert!(selection.checkpoint.is_none());
         for sample_callback in [true, false] {
+            let _ = selection
+                .scan(TimeRange::point(time), |_| ControlFlow::<()>::Continue(()))
+                .unwrap();
             selection.samples(time).unwrap();
             assert!(selection.checkpoint.is_some());
             let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -958,6 +1101,148 @@ mod tests {
             assert!(panic.is_err());
             assert!(selection.checkpoint.is_none());
             assert!(selection.replay.is_none());
+        }
+    }
+
+    #[cfg(feature = "fsdb-lib")]
+    #[test]
+    #[ignore = "requires real FSDB runtime and locked public fixtures"]
+    fn fsdb_cold_window_matches_chronological_reference() {
+        let root = std::path::PathBuf::from(std::env::var_os("ONDAS_FIXTURES").unwrap());
+        let path = root.join("kleverhq.ondas-fixtures/fsdb0010-history-short/waveform.fsdb");
+        let mut wave = crate::open_with(path, "fsdb-lib").unwrap();
+        let clock = wave.hierarchy().signal("top.clock").unwrap();
+        let word = wave.hierarchy().signal("top.word_00").unwrap();
+        let signals = [clock, word, word.slice(31, 16).unwrap(), word];
+        let range = TimeRange::closed(Time::from_ticks(4000), Time::from_ticks(4001));
+        let mut chronological = wave.select(&signals).unwrap();
+        let _ = chronological
+            .scan(TimeRange::point(Time::ZERO), |_| {
+                ControlFlow::<()>::Continue(())
+            })
+            .unwrap();
+        let mut expected = Vec::new();
+        let _ = chronological
+            .scan_each(range, |index, record| {
+                expected.push(format!("{index}:{record:?}"));
+                ControlFlow::<()>::Continue(())
+            })
+            .unwrap();
+        drop(chronological);
+        let crate::backends::Reader::Fsdb(reader) = &wave.reader else {
+            unreachable!()
+        };
+        let before = reader.records_read;
+        let mut cold = wave.select(&signals).unwrap();
+        let mut actual = Vec::new();
+        let _ = cold
+            .scan_each(range, |index, record| {
+                actual.push(format!("{index}:{record:?}"));
+                ControlFlow::<()>::Continue(())
+            })
+            .unwrap();
+        assert_eq!(actual, expected);
+        let crate::backends::Reader::Fsdb(reader) = &cold.waveform.reader else {
+            unreachable!()
+        };
+        assert!(
+            reader.point_queries > 0,
+            "cold window must seek entering state"
+        );
+        assert!(
+            reader.records_read - before < 100,
+            "cold window must not replay the prefix: {} records",
+            reader.records_read - before
+        );
+    }
+
+    #[cfg(feature = "fsdb-lib")]
+    #[test]
+    #[ignore = "requires real FSDB runtime and locked public fixtures"]
+    fn fsdb_cold_points_match_chronological_reference() {
+        let root = std::path::PathBuf::from(std::env::var_os("ONDAS_FIXTURES").unwrap());
+        for fixture in [
+            "fsdb0010-history-short",
+            "fsdb0017-typed-records",
+            "fsdb0019-typed-values",
+            "fsdb0020-nine-state-ranges",
+        ] {
+            let mut wave = crate::open(
+                root.join("kleverhq.ondas-fixtures")
+                    .join(fixture)
+                    .join("waveform.fsdb"),
+            )
+            .unwrap();
+            let mut signals = Vec::new();
+            for variable in wave.hierarchy().variables() {
+                if let Some(signal) = variable.signal()
+                    && let Encoding::Bits { width } = signal.encoding()
+                {
+                    signals.push(signal);
+                    signals.push(signal.slice(0, 0).unwrap());
+                    signals.push(signal.slice(width - 1, width - 1).unwrap());
+                    signals.push(signal);
+                }
+            }
+            assert!(!signals.is_empty());
+            for tick in [0, 1, 3, 4, 5, 16, 2048, 4000, 4001, u64::MAX] {
+                let time = Time::from_ticks(tick);
+                let mut expected: Vec<_> = signals
+                    .iter()
+                    .map(|&signal| Sample::Missing { signal })
+                    .collect();
+                let _ = wave
+                    .select(&signals)
+                    .unwrap()
+                    .scan_each(TimeRange::point(time), |index, record| {
+                        let (value, changed_at) = match record {
+                            ScanRef::Initial {
+                                value, changed_at, ..
+                            } => (value, changed_at),
+                            ScanRef::Change { value, time, .. } => (
+                                value,
+                                matches!(expected[index], Sample::Value { .. }).then_some(time),
+                            ),
+                        };
+                        expected[index] = Sample::Value {
+                            signal: signals[index],
+                            value: value.to_owned(),
+                            changed_at,
+                        };
+                        ControlFlow::<()>::Continue(())
+                    })
+                    .unwrap();
+                let actual = wave.samples(&signals, time).unwrap();
+                assert_eq!(
+                    format!("{actual:?}"),
+                    format!("{expected:?}"),
+                    "{fixture} tick {tick}"
+                );
+            }
+            let range = TimeRange::closed(Time::ZERO, Time::from_ticks(6001));
+            let mut expected = Vec::new();
+            let _ = wave
+                .select(&signals)
+                .unwrap()
+                .scan_each(range, |index, record| {
+                    expected.push(format!("{index}:{record:?}"));
+                    ControlFlow::<()>::Continue(())
+                })
+                .unwrap();
+            let mut selection = wave.select(&signals).unwrap();
+            selection.samples(Time::from_ticks(6000)).unwrap();
+            selection.samples(Time::from_ticks(6001)).unwrap();
+            let mut actual = Vec::new();
+            let _ = selection
+                .scan_each(range, |index, record| {
+                    actual.push(format!("{index}:{record:?}"));
+                    ControlFlow::<()>::Continue(())
+                })
+                .unwrap();
+            assert_eq!(
+                actual, expected,
+                "quiet point cache must not be reused as earlier entering state"
+            );
         }
     }
 
@@ -1186,14 +1471,21 @@ mod tests {
             pending: Some(Value::String(pending)),
             ..Slot::default()
         }];
-        let _ = complete_tick(&[], &mut slots, Time::from_ticks(1), &mut |_, _, slots| {
-            assert!(matches!(
-                slots[0].state.as_ref().unwrap().value.as_ref(),
-                ValueRef::String("old")
-            ));
-            assert!(slots[0].changed);
-            Ok(ControlFlow::<()>::Continue(()))
-        })
+        let _ = complete_tick(
+            &[],
+            &mut slots,
+            &mut vec![0],
+            Time::from_ticks(1),
+            None,
+            &mut |_, _, slots| {
+                assert!(matches!(
+                    slots[0].state.as_ref().unwrap().value.as_ref(),
+                    ValueRef::String("old")
+                ));
+                assert!(slots[0].changed);
+                Ok(ControlFlow::<()>::Continue(()))
+            },
+        )
         .unwrap();
         let Value::String(retained) = &slots[0].state.as_ref().unwrap().value else {
             panic!("string")
@@ -1208,6 +1500,18 @@ mod tests {
             Some(Time::from_ticks(1))
         );
         assert!(slots[0].pending.is_none());
+    }
+
+    #[test]
+    fn zero_events_do_not_activate_duplicate_slots() {
+        let mut records = vec![(0, 0, Value::Event { occurrences: 0 }); 100];
+        records.push((0, 1, Value::Event { occurrences: 2 }));
+        let mut wave = Waveform::memory(vec![Encoding::Event], records, None);
+        let signal = wave.hierarchy().signals().next().unwrap();
+        assert!(matches!(
+            wave.sample(signal, Time::from_ticks(1)).unwrap(),
+            Sample::Event { occurrences: 2, .. }
+        ));
     }
 
     #[test]

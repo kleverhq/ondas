@@ -8,7 +8,7 @@ use std::{
     fmt,
     str::FromStr,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -193,14 +193,18 @@ pub struct Hierarchy {
 
 pub(crate) struct ScopeData {
     pub(crate) name: String,
+    pub(crate) name_was_escaped: bool,
     pub(crate) parent: Option<usize>,
     pub(crate) kind: String,
     pub(crate) definition_name: Option<String>,
     pub(crate) packing: Option<Packing>,
+    pub(crate) is_hidden: bool,
 }
 
 pub(crate) struct VariableData {
     pub(crate) name: String,
+    pub(crate) reader_name: Option<String>,
+    pub(crate) name_was_escaped: bool,
     pub(crate) parent: Option<usize>,
     pub(crate) kind: String,
     pub(crate) direction: Direction,
@@ -223,7 +227,8 @@ struct HierarchyData {
     scopes: Vec<ScopeData>,
     variables: Vec<VariableData>,
     encodings: Vec<Encoding>,
-    variables_by_path: HashMap<HierarchyPath, (usize, usize)>,
+    first_variable_lookup: OnceLock<()>,
+    variables_by_path: OnceLock<HashMap<HierarchyPath, (usize, usize)>>,
 }
 
 static NEXT_SOURCE: AtomicU64 = AtomicU64::new(1);
@@ -281,26 +286,16 @@ impl Hierarchy {
         let source = NEXT_SOURCE
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
             .expect("hierarchy source IDs exhausted");
-        let mut hierarchy = Self {
+        Self {
             data: Arc::new(HierarchyData {
                 source,
                 scopes,
                 variables,
                 encodings,
-                variables_by_path: HashMap::new(),
+                first_variable_lookup: OnceLock::new(),
+                variables_by_path: OnceLock::new(),
             }),
-        };
-        let mut variables_by_path = HashMap::with_capacity(hierarchy.data.variables.len());
-        for variable in hierarchy.variables() {
-            let entry = variables_by_path
-                .entry(variable.path())
-                .or_insert((variable.index, 0));
-            entry.1 += 1;
         }
-        Arc::get_mut(&mut hierarchy.data)
-            .expect("new hierarchy has one owner")
-            .variables_by_path = variables_by_path;
-        hierarchy
     }
 
     pub(crate) fn signal_at(&self, index: usize) -> Signal {
@@ -439,7 +434,31 @@ impl Hierarchy {
         &self,
         path: &HierarchyPath,
     ) -> std::result::Result<Variable<'_>, LookupError> {
-        match self.data.variables_by_path.get(path) {
+        if self.data.variables_by_path.get().is_none()
+            && self.data.first_variable_lookup.set(()).is_ok()
+        {
+            let mut matches = self.variables().filter(|variable| {
+                Some(variable.name()) == path.name() && variable.path() == *path
+            });
+            let first = matches.next();
+            return match (first, matches.count()) {
+                (None, _) => Err(LookupError::NotFound { path: path.clone() }),
+                (Some(variable), 0) => Ok(variable),
+                (_, remaining) => Err(LookupError::Ambiguous {
+                    path: path.clone(),
+                    matches: remaining + 1,
+                }),
+            };
+        }
+        let variables_by_path = self.data.variables_by_path.get_or_init(|| {
+            let mut index = HashMap::with_capacity(self.data.variables.len());
+            for variable in self.variables() {
+                let entry = index.entry(variable.path()).or_insert((variable.index, 0));
+                entry.1 += 1;
+            }
+            index
+        });
+        match variables_by_path.get(path) {
             None => Err(LookupError::NotFound { path: path.clone() }),
             Some(&(index, 1)) => Ok(Variable {
                 hierarchy: self,
@@ -515,6 +534,27 @@ impl<'h> Scope<'h> {
         &self.data().kind
     }
 
+    /// Returns whether the VCD or FST declaration used a leading Verilog escape marker.
+    ///
+    /// The marker is excluded from [`Self::name`] and path identity. Prepending
+    /// one backslash to the name recovers its reader-provided identifier spelling;
+    /// terminating whitespace is not retained. Merged scopes retain the first
+    /// declaration's spelling. This records input spelling, not whether the name
+    /// needs escaping when formatted as a path. FSDB retains SDK-provided names
+    /// without interpreting leading backslashes; this flag is `false` for FSDB.
+    pub fn name_was_escaped(&self) -> bool {
+        self.data().name_was_escaped
+    }
+
+    /// Returns whether the source explicitly marks this scope as hidden.
+    ///
+    /// Hidden scopes and their contents remain accessible. This flag is local
+    /// to the scope, not inherited: to hide a subtree, callers must also check
+    /// its ancestors. Returns `false` when the backend has no hidden-scope flag.
+    pub fn is_hidden(&self) -> bool {
+        self.data().is_hidden
+    }
+
     /// Returns the defining module, entity, or equivalent name when available.
     pub fn definition_name(&self) -> Option<&'h str> {
         self.data().definition_name.as_deref()
@@ -526,14 +566,45 @@ impl<'h> Scope<'h> {
     }
 }
 
+/// Separates a reader-provided Verilog escape marker from logical identity.
+pub(crate) fn normalize_name(mut name: String) -> (String, bool) {
+    let escaped = name.starts_with('\\');
+    if escaped {
+        name.remove(0);
+    }
+    (name, escaped)
+}
+
 impl<'h> Variable<'h> {
     fn data(&self) -> &'h VariableData {
         &self.hierarchy.data.variables[self.index]
     }
 
-    /// Returns the declaration's exact local name.
+    /// Returns the declaration's exact local name, without a VCD/FST escape marker.
     pub fn name(&self) -> &'h str {
         &self.data().name
+    }
+
+    /// Returns the reader-provided local declaration name before range extraction, if retained.
+    ///
+    /// FSDB returns the SDK callback spelling, including any leading backslash or
+    /// printed range suffix. Coalesced duplicate declarations retain the first
+    /// callback's spelling; aliases retain their own. This is not path identity:
+    /// use [`Self::name`] for lookup. Other backends return `None`.
+    pub fn reader_name(&self) -> Option<&'h str> {
+        self.data().reader_name.as_deref()
+    }
+
+    /// Returns whether the VCD or FST declaration used a leading Verilog escape marker.
+    ///
+    /// Prepending one backslash to [`Self::name`] recovers the reader-provided
+    /// identifier spelling, without terminating whitespace or declared ranges.
+    /// This flag does not affect identity or lookup. Coalesced repeated
+    /// declarations retain the first spelling; aliases retain their own flags.
+    /// FSDB retains SDK-provided names without interpreting leading backslashes;
+    /// this flag is `false` for FSDB.
+    pub fn name_was_escaped(&self) -> bool {
+        self.data().name_was_escaped
     }
 
     /// Returns the declaration's owned, root-based path.

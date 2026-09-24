@@ -40,6 +40,7 @@ modules are private.
 
 Use [`open`] or [`open_bytes`] for automatic backend selection. Use [`open_with`]
 or [`open_bytes_with`] to select a backend explicitly, without fallback.
+[`read_metadata`] returns owned file metadata without a waveform or hierarchy.
 [`Format`] describes source contents, not the reader implementation.
 
 ## Read a signal
@@ -218,8 +219,11 @@ runtime SDK absence is not handled gracefully.
 
 Independent Reader objects and serialized SDK calls preserve `Waveform: Send + Sync`.
 The lock is released before Rust visitors, so a callback can query another
-waveform. Queries load selected histories and traverse from their beginning;
-vendor loading has its own memory cost. SDK diagnostics may appear on stdout/stderr.
+waveform. Queries load selected histories; cold bit-only bounded queries can
+seek their entering state and traverse only the requested window. Other cold
+queries traverse from the beginning. Records skipped by a seek are not decoded
+or validated by the sequential adapter. Vendor loading has its own memory cost.
+SDK diagnostics may appear on stdout/stderr.
 C++ exceptions become backend errors, but native crashes or aborts are not
 contained. SDK permissions and runtime dependencies remain the caller's
 responsibility. Ondas distributes no vendor files.
@@ -259,7 +263,9 @@ pub use time::{Time, TimeRange, TimeSpan, TimeUnit, Timescale};
 /// Owned and borrowed waveform signal values.
 pub use value::{Bits, BitsRef, Logic, Value, ValueRef};
 /// Waveform sources, metadata, formats, and opening functions.
-pub use waveform::{Format, Metadata, Waveform, open, open_bytes, open_bytes_with, open_with};
+pub use waveform::{
+    Format, Metadata, Waveform, open, open_bytes, open_bytes_with, open_with, read_metadata,
+};
 
 /// A result returned by waveform opening and query operations.
 pub type Result<T> = std::result::Result<T, Error>;

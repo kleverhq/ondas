@@ -4,17 +4,21 @@ fn fixture() -> Hierarchy {
     let scopes = vec![
         ScopeData {
             name: "tb".into(),
+            name_was_escaped: false,
             parent: None,
             kind: "module".into(),
             definition_name: Some("testbench".into()),
             packing: None,
+            is_hidden: false,
         },
         ScopeData {
             name: "dut".into(),
+            name_was_escaped: false,
             parent: Some(0),
             kind: "struct".into(),
             definition_name: None,
             packing: Some(Packing::Packed),
+            is_hidden: false,
         },
     ];
     let variables = [
@@ -30,6 +34,8 @@ fn fixture() -> Hierarchy {
     .into_iter()
     .map(|(name, signal)| VariableData {
         name: name.into(),
+        reader_name: None,
+        name_was_escaped: false,
         parent: Some(1),
         kind: "wire".into(),
         direction: Direction::Input,
@@ -57,15 +63,68 @@ fn fixture() -> Hierarchy {
 }
 
 #[test]
+fn path_index_is_lazy_and_shared_between_hierarchy_clones() {
+    let hierarchy = fixture();
+    let cloned = hierarchy.clone();
+    assert!(hierarchy.data.variables_by_path.get().is_none());
+    for variable in hierarchy.variables() {
+        let _ = variable.path();
+    }
+    assert!(hierarchy.data.variables_by_path.get().is_none());
+    assert_eq!(cloned.variable("tb.dut.data").unwrap().name(), "data");
+    assert!(hierarchy.data.variables_by_path.get().is_none());
+    assert_eq!(hierarchy.variable("tb.dut.alias").unwrap().name(), "alias");
+    let index = hierarchy.data.variables_by_path.get().unwrap();
+    assert!(std::ptr::eq(
+        index,
+        cloned.data.variables_by_path.get().unwrap()
+    ));
+    assert!(matches!(
+        hierarchy.variable("tb.dut.duplicate"),
+        Err(LookupError::Ambiguous { matches: 2, .. })
+    ));
+    let ambiguous = fixture();
+    assert!(matches!(
+        ambiguous.variable("tb.dut.duplicate"),
+        Err(LookupError::Ambiguous { matches: 2, .. })
+    ));
+    assert!(ambiguous.data.variables_by_path.get().is_none());
+
+    let missing = fixture();
+    assert!(matches!(
+        missing.variable("tb.dut.absent"),
+        Err(LookupError::NotFound { .. })
+    ));
+    assert!(missing.data.variables_by_path.get().is_none());
+    assert_eq!(missing.variable("tb.dut.data").unwrap().name(), "data");
+    assert!(missing.data.variables_by_path.get().is_some());
+}
+
+#[test]
+fn hidden_flag_is_local_and_does_not_filter_hierarchy() {
+    let mut hierarchy = fixture();
+    Arc::get_mut(&mut hierarchy.data).unwrap().scopes[0].is_hidden = true;
+    let parent = hierarchy.scope("tb").unwrap();
+    let child = hierarchy.scope("tb.dut").unwrap();
+    assert!(parent.is_hidden());
+    assert!(!child.is_hidden());
+    assert!(child.parent().unwrap().is_hidden());
+    assert!(parent.children().next().is_some());
+    assert!(hierarchy.variable("tb.dut.data").is_ok());
+}
+
+#[test]
 fn indexed_paths_match_linear_lookup_across_duplicate_scope_paths() {
     let mut data = Arc::try_unwrap(fixture().data).ok().unwrap();
     for parent in [None, Some(2)] {
         data.scopes.push(ScopeData {
             name: if parent.is_none() { "tb" } else { "dut" }.into(),
+            name_was_escaped: false,
             parent,
             kind: "module".into(),
             definition_name: None,
             packing: None,
+            is_hidden: false,
         });
     }
     let variable = data.variables.last_mut().unwrap();
@@ -212,6 +271,8 @@ fn interpretation_belongs_to_declarations_not_shared_histories() {
             .iter()
             .map(|&(name, signal, signedness, logic_domain)| VariableData {
                 name: name.into(),
+                reader_name: None,
+                name_was_escaped: false,
                 parent: None,
                 kind: "variable".into(),
                 direction: Direction::Unknown,
@@ -395,6 +456,8 @@ fn root_declarations_duplicate_scopes_and_extreme_ranges() {
                 kind: "module".into(),
                 definition_name: None,
                 packing: None,
+                is_hidden: false,
+                name_was_escaped: false,
             },
             ScopeData {
                 name: "same".into(),
@@ -402,10 +465,14 @@ fn root_declarations_duplicate_scopes_and_extreme_ranges() {
                 kind: "module".into(),
                 definition_name: None,
                 packing: None,
+                is_hidden: false,
+                name_was_escaped: false,
             },
         ],
         vec![VariableData {
             name: "root".into(),
+            reader_name: None,
+            name_was_escaped: false,
             parent: None,
             kind: "parameter".into(),
             direction: Direction::Unknown,
@@ -480,6 +547,8 @@ fn exact_unicode_paths_do_not_normalize_names() {
             .enumerate()
             .map(|(index, name)| VariableData {
                 name: (*name).into(),
+                reader_name: None,
+                name_was_escaped: false,
                 parent: None,
                 kind: "wire".into(),
                 direction: Direction::Unknown,

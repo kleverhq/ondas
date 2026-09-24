@@ -26,6 +26,29 @@ pub fn open(path: impl AsRef<Path>) -> Result<Waveform> {
     open_file(path.as_ref(), None)
 }
 
+/// Reads owned source metadata without retaining a waveform or hierarchy.
+///
+/// FSDB reads the SDK's file metadata without materializing declarations. FST and
+/// VCD currently use their regular readers, so this is not a fast path for those
+/// formats. Format detection matches [`open`], as do metadata values for files
+/// that open successfully. Unlike [`open`], it does not validate an FSDB
+/// declaration tree; use [`open`] for validated hierarchy or signal access.
+///
+/// This function accepts file paths, not byte inputs.
+pub fn read_metadata(path: impl AsRef<Path>) -> Result<Metadata> {
+    let path = path.as_ref();
+    let name = path.to_string_lossy().into_owned();
+    let mut input: Box<dyn Input> = Box::new(BufReader::new(File::open(path)?));
+    let format = detect_format(&mut *input, &name, Some(path))?;
+    match format {
+        Format::Fst => fst::Reader::open(input, name).map(|(_, _, metadata)| metadata),
+        Format::Vcd => vcd::Reader::open(input, name).map(|(_, _, metadata)| metadata),
+        #[cfg(feature = "fsdb-lib")]
+        Format::Fsdb => crate::backends::fsdb::read_metadata(path, name),
+        _ => Err(Error::NoBackend { format }),
+    }
+}
+
 /// Opens a waveform file with only the named backend, without fallback.
 ///
 /// Available names are `fst-lib`, `vcd-native`, and feature-enabled `fsdb-lib`.
@@ -102,6 +125,41 @@ fn open_input(
             input: crate::InputKind::Bytes,
         });
     }
+    let format = detect_format(&mut *input, &name, _path)?;
+    let (reader, hierarchy, metadata) = match (format, backend) {
+        (Format::Fst, None | Some("fst-lib")) => {
+            let (reader, hierarchy, metadata) = fst::Reader::open(input, name)?;
+            (Reader::Fst(Box::new(reader)), hierarchy, metadata)
+        }
+        (Format::Vcd, None | Some("vcd-native")) => {
+            let (reader, hierarchy, metadata) = vcd::Reader::open(input, name)?;
+            (Reader::Vcd(Box::new(reader)), hierarchy, metadata)
+        }
+        #[cfg(feature = "fsdb-lib")]
+        (Format::Fsdb, None | Some("fsdb-lib")) => {
+            let path = _path.ok_or_else(|| Error::UnsupportedInput {
+                backend: "fsdb-lib".into(),
+                input: crate::InputKind::Bytes,
+            })?;
+            let (reader, hierarchy, metadata) = crate::backends::fsdb::Reader::open(path, name)?;
+            (Reader::Fsdb(Box::new(reader)), hierarchy, metadata)
+        }
+        (_, Some(backend)) => {
+            return Err(Error::BackendDoesNotSupport {
+                backend: backend.into(),
+                format,
+            });
+        }
+        (_, None) => return Err(Error::NoBackend { format }),
+    };
+    Ok(Waveform {
+        reader,
+        hierarchy,
+        metadata,
+    })
+}
+
+fn detect_format(input: &mut dyn Input, name: &str, _path: Option<&Path>) -> Result<Format> {
     let prefix = input.fill_buf()?;
     // The uncompressed FST header section is 329 bytes (fst-reader 0.17).
     // Its first zero byte alone also matches FSDB and is not a signature.
@@ -140,54 +198,23 @@ fn open_input(
     {
         detected = Some(Format::Fsdb);
     }
-    let extension = Path::new(&name)
+    let extension = Path::new(name)
         .extension()
         .and_then(|s| s.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    let format = if let Some(format) = detected {
-        format
+    if let Some(format) = detected {
+        Ok(format)
     } else {
         match extension.as_str() {
-            "fst" => Format::Fst,
-            "vcd" => Format::Vcd,
-            "ghw" => Format::Ghw,
-            "fsdb" => Format::Fsdb,
-            "wlf" => Format::Wlf,
-            _ => return Err(Error::UnknownFormat),
+            "fst" => Ok(Format::Fst),
+            "vcd" => Ok(Format::Vcd),
+            "ghw" => Ok(Format::Ghw),
+            "fsdb" => Ok(Format::Fsdb),
+            "wlf" => Ok(Format::Wlf),
+            _ => Err(Error::UnknownFormat),
         }
-    };
-    let (reader, hierarchy, metadata) = match (format, backend) {
-        (Format::Fst, None | Some("fst-lib")) => {
-            let (reader, hierarchy, metadata) = fst::Reader::open(input, name)?;
-            (Reader::Fst(Box::new(reader)), hierarchy, metadata)
-        }
-        (Format::Vcd, None | Some("vcd-native")) => {
-            let (reader, hierarchy, metadata) = vcd::Reader::open(input, name)?;
-            (Reader::Vcd(Box::new(reader)), hierarchy, metadata)
-        }
-        #[cfg(feature = "fsdb-lib")]
-        (Format::Fsdb, None | Some("fsdb-lib")) => {
-            let path = _path.ok_or_else(|| Error::UnsupportedInput {
-                backend: "fsdb-lib".into(),
-                input: crate::InputKind::Bytes,
-            })?;
-            let (reader, hierarchy, metadata) = crate::backends::fsdb::Reader::open(path, name)?;
-            (Reader::Fsdb(Box::new(reader)), hierarchy, metadata)
-        }
-        (_, Some(backend)) => {
-            return Err(Error::BackendDoesNotSupport {
-                backend: backend.into(),
-                format,
-            });
-        }
-        (_, None) => return Err(Error::NoBackend { format }),
-    };
-    Ok(Waveform {
-        reader,
-        hierarchy,
-        metadata,
-    })
+    }
 }
 
 /// A source format, distinct from the reader implementation.

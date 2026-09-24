@@ -145,15 +145,18 @@ Materialization must never happen implicitly during a query or fixture test.
 ## CI and Rust versions
 
 GitHub Actions uses the public devcontainer and contributor `just ci`, without
-local `.env` or private profiles. It runs on pushes to `main` and pull requests.
+local `.env` or private profiles. It runs on pushes to `main`, pull requests and
+`v*` tags. Tag builds require a stable `vX.Y.Z` matching the package version and a
+commit already merged into `main`.
 BuildKit's GitHub Actions cache reuses Dockerfile layers. The runtime config uses
 the loaded image with the public settings; no registry publication credentials
 are needed.
 
 The fixture cache key contains the OS and lock-file hash. CI sets
 `ONDAS_FIXTURES`, runs `just fixtures-install` even on cache hits, then
-`just ci && just msrv`. Installation clones the exact `v<version>` tag from
-`kleverhq/ondas-fixtures`, checks checkout/catalog identity and invokes its
+`just ci && just msrv`. CI also validates release metadata and verifies the
+crates.io package without publishing. Installation clones the exact `v<version>`
+tag from `kleverhq/ondas-fixtures`, checks checkout/catalog identity and invokes its
 installer without `--ignore-missing`. It verifies cached payload sizes and hashes.
 Missing assets and corrupt downloads fail; there is no latest-tag fallback or
 cross-version cache restore. GitHub's read-only token supplies API access, and
@@ -204,12 +207,15 @@ version, tag, publish or authorize a release.
 
 A release consists of a crates.io package, `vX.Y.Z` tag and GitHub Release, without
 a binary matrix, release assets or Pages site. Preparation updates the package
-version, affected lockfile entries and changelog. Checks must not publish: run
-public CI, MSRV, docs, version/changelog checks, `cargo package --list` and
-`cargo publish --dry-run`. Available commands remain defined by `justfile` and
-`.github/workflows/`.
+version, affected lockfile entries and dated changelog section. `just ci` includes
+`just release-check`: version/changelog validation, `cargo package --list` and
+`cargo publish --dry-run`. Run MSRV and SDK-backed checks separately before
+release. These local commands never publish.
 
-Publish from a version tag after merge and verification. Publish the crate before
-creating the GitHub Release from its changelog. Prefer Actions OIDC Trusted
-Publishing, once configured, over a long-lived registry token. docs.rs builds
-asynchronously; the release does not wait for it.
+After the release PR is merged and verified, push its `vX.Y.Z` tag. The CI
+workflow repeats the public checks, then publishes the crate using the repository
+secret `CRATES_IO_TOKEN`. Only tag builds receive this token. A dependent job
+creates the GitHub Release from that version's changelog notes, without binary
+assets. If only GitHub Release creation fails, rerun the failed job rather than
+the successful crate publication. docs.rs builds asynchronously; the release
+does not wait for it.

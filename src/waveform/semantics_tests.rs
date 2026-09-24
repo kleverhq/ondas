@@ -90,6 +90,8 @@ fn fixture(reverse: bool, extra: bool) -> (Waveform, Vec<Signal>, Vec<History>) 
     .into_iter()
     .map(|(name, signal)| crate::hierarchy::VariableData {
         name: name.into(),
+        reader_name: None,
+        name_was_escaped: false,
         parent: None,
         kind: "variable".into(),
         direction: crate::Direction::Unknown,

@@ -8,6 +8,32 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `read_metadata(path)` reads FSDB header metadata without loading declarations;
+  FST and VCD retain their full-opening behavior. `open()` is unchanged.
+
+### Changed
+
+- A single exact variable-path lookup no longer builds the full hierarchy index;
+  repeated lookups still share it.
+- Sequential queries finalize only slots touched at each tick, reducing bulk FST
+  point-sampling work without changing observations.
+- Cold bit-only FSDB interval queries seek their entering state instead of
+  replaying the selected history from zero.
+- Conflicting repeated FSDB scopes report the offending path and differing
+  attributes instead of an unqualified error.
+
+## [1.0.0] - 2026-09-21
+
+### Added
+
+- `Variable::reader_name` retains FSDB SDK declaration spelling before range
+  extraction, separately from lookup identity.
+- `Scope::name_was_escaped` and `Variable::name_was_escaped` preserve VCD/FST
+  declaration escape provenance independently of canonical names.
+- FSDB enum datatype names, declared value/label tables and supported integral
+  logic histories, including datatype-specific variable callbacks.
+- `Scope::is_hidden` preserves explicit FSDB visibility metadata without filtering
+  the hierarchy; callers can inspect ancestors when suppressing hidden subtrees.
 - Optional declaration signedness and logic-domain metadata, independent of
   shared signal histories; unavailable interpretation remains absent.
 - Indexed borrowed scans with selection-position identity for aliases,
@@ -37,6 +63,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Validate logic bytes with a direct nine-state ASCII check, reducing cold
+  batched FST point-sample overhead without changing accepted values.
+- Seek cold FSDB bit-only point samples and prove their normalized projected
+  change times from prior completed ticks, rather than replaying the whole prefix.
+- Build the shared variable-path index lazily, avoiding its allocation and teardown
+  for metadata-only opening and hierarchy traversal.
 - Rename the FST backend from `fst-native` to `fst-lib` to reflect its external
   reader dependency. Explicit backend selection and reported names use `fst-lib`.
 
@@ -56,10 +88,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - FST content detection includes the header length to avoid mistaking FSDB for FST.
 - Minimum supported Rust version is 1.88.0 to support `fst-reader` 0.17.0.
 - Hierarchy lookup avoids constructing paths for unrelated declaration names.
-- Fixture provider pin is 4.6.0; FST and VCD share oracle checks.
+- Fixture provider pin is 4.6.1; FST and VCD share oracle checks.
 
 ### Fixed
 
+- Preserve attached literal range suffixes in escaped FSDB scalar and vector
+  identifiers, including ambiguous duplicate names, without losing separately
+  printed declaration ranges.
 - Preserve present-but-empty FST header text and canonical declaration kinds.
 
-[Unreleased]: https://github.com/kleverhq/ondas/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/kleverhq/ondas/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/kleverhq/ondas/releases/tag/v1.0.0

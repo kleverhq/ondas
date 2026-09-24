@@ -12,7 +12,7 @@ use std::{
 use crate::{
     BitRange, BitsRef, Direction, Encoding, Error, Hierarchy, Metadata, Result, Signal, Time,
     TimeSpan, TimeUnit, Timescale, ValueRef,
-    hierarchy::{ScopeData, VariableData},
+    hierarchy::{EnumerationData, ScopeData, VariableData},
 };
 
 const BACKEND: &str = "fsdb-lib";
@@ -34,17 +34,21 @@ struct Declaration {
     is_constant: u32,
     has_range: u32,
     packing: u32,
+    is_hidden: u32,
     msb: i64,
     lsb: i64,
     name: *const c_char,
     kind: *const c_char,
     definition: *const c_char,
+    type_name: *const c_char,
+    enum_count: usize,
 }
 #[repr(C)]
 #[derive(Default)]
 struct Meta {
     first: u64,
     last: u64,
+    has_variables: u32,
     scale: *const c_char,
     writer: *const c_char,
     date: *const c_char,
@@ -67,6 +71,7 @@ unsafe extern "C" {
     ) -> c_int;
     fn ondas_fsdb_open(
         path: *const c_char,
+        metadata_only: c_int,
         out: *mut *mut c_void,
         error: *mut c_char,
         cap: usize,
@@ -75,6 +80,13 @@ unsafe extern "C" {
     fn ondas_fsdb_metadata(reader: *mut c_void, out: *mut Meta);
     fn ondas_fsdb_decl_count(reader: *mut c_void) -> usize;
     fn ondas_fsdb_declaration(reader: *mut c_void, index: usize, out: *mut Declaration);
+    fn ondas_fsdb_enum_variant(
+        reader: *mut c_void,
+        declaration: usize,
+        variant: usize,
+        bits: *mut *const c_char,
+        label: *mut *const c_char,
+    );
     fn ondas_fsdb_begin(
         reader: *mut c_void,
         ids: *const u64,
@@ -89,6 +101,17 @@ unsafe extern "C" {
         out: *mut Record,
         bits: *mut u8,
         bits_cap: usize,
+        error: *mut c_char,
+        cap: usize,
+    ) -> c_int;
+    fn ondas_fsdb_sample_bits(
+        reader: *mut c_void,
+        id: u64,
+        time: u64,
+        lsb: u32,
+        width: u32,
+        out: *mut Record,
+        changed: *mut c_int,
         error: *mut c_char,
         cap: usize,
     ) -> c_int;
@@ -159,6 +182,63 @@ impl Drop for Handle {
         unsafe { ondas_fsdb_close(self.0.as_ptr()) };
     }
 }
+fn open_handle(path: &Path, metadata_only: bool) -> Result<Handle> {
+    let path = filename(path)?;
+    let mut raw = std::ptr::null_mut();
+    let mut error = [0; 512];
+    {
+        let _lock = lock();
+        // SAFETY: pointers are valid for the call; the shim owns any retained data.
+        let code = unsafe {
+            ondas_fsdb_open(
+                path.as_ptr(),
+                metadata_only.into(),
+                &mut raw,
+                error.as_mut_ptr(),
+                error.len(),
+            )
+        };
+        status(code, &error)?;
+    }
+    Ok(Handle(
+        NonNull::new(raw).ok_or_else(|| backend_error("null FSDB reader"))?,
+    ))
+}
+
+// SAFETY: copied while the owner is alive and the SDK lock is held.
+unsafe fn copy_metadata(meta: &Meta, source_name: String, has_variables: bool) -> Result<Metadata> {
+    let scale = unsafe { string(meta.scale)? };
+    let timescale = match scale.as_deref() {
+        None | Some("") => None,
+        Some(text) => {
+            Some(timescale(text).ok_or_else(|| backend_error("unsupported FSDB timescale"))?)
+        }
+    };
+    Ok(Metadata {
+        source_name,
+        timescale,
+        time_span: has_variables
+            .then(|| TimeSpan::new(Time::from_ticks(meta.first), Time::from_ticks(meta.last))),
+        writer: unsafe { string(meta.writer)? },
+        date: unsafe { string(meta.date)? },
+        comments: Vec::new(),
+    })
+}
+
+pub(crate) fn read_metadata(path: &Path, source_name: String) -> Result<Metadata> {
+    let handle = open_handle(path, true)?;
+    // The lock is declared after Handle so errors unlock before Handle::drop.
+    let guard = lock();
+    let mut meta = Meta::default();
+    // SAFETY: live owner; SDK strings are copied before unlocking.
+    let result = unsafe {
+        ondas_fsdb_metadata(handle.0.as_ptr(), &mut meta);
+        copy_metadata(&meta, source_name, meta.has_variables != 0)
+    };
+    drop(guard);
+    result
+}
+
 struct Traversal<'a>(&'a mut Handle);
 impl Drop for Traversal<'_> {
     fn drop(&mut self) {
@@ -175,26 +255,18 @@ pub(crate) struct Reader {
     encodings: Vec<Encoding>,
     #[cfg(test)]
     pub(crate) records_read: usize,
+    #[cfg(test)]
+    pub(crate) point_queries: usize,
 }
 impl Reader {
     pub(crate) fn open(path: &Path, source_name: String) -> Result<(Self, Hierarchy, Metadata)> {
-        let path = filename(path)?;
-        let mut raw = std::ptr::null_mut();
-        let mut error = [0; 512];
-        {
-            let _lock = lock();
-            // SAFETY: pointers are valid for the call, shim owns any retained data.
-            let code = unsafe {
-                ondas_fsdb_open(path.as_ptr(), &mut raw, error.as_mut_ptr(), error.len())
-            };
-            status(code, &error)?;
-        }
-        let handle = Handle(NonNull::new(raw).ok_or_else(|| backend_error("null FSDB reader"))?);
+        let handle = open_handle(path, false)?;
+        let raw = handle.0.as_ptr();
         let mut scopes: Vec<ScopeData> = Vec::new();
         let mut variables = Vec::new();
         let mut seen_variables = HashSet::new();
         let mut stack = Vec::new();
-        let mut scope_ids = HashMap::new();
+        let mut scope_ids: HashMap<(Option<usize>, String), usize> = HashMap::new();
         let mut ids = Vec::new();
         let mut indices = HashMap::new();
         let mut encodings = Vec::new();
@@ -205,9 +277,9 @@ impl Reader {
         let metadata = unsafe {
             let mut meta = Meta::default();
             ondas_fsdb_metadata(raw, &mut meta);
-            for index in 0..ondas_fsdb_decl_count(raw) {
+            for declaration_index in 0..ondas_fsdb_decl_count(raw) {
                 let mut d = Declaration::default();
-                ondas_fsdb_declaration(raw, index, &mut d);
+                ondas_fsdb_declaration(raw, declaration_index, &mut d);
                 let name = string(d.name)?.unwrap_or_default();
                 let kind = string(d.kind)?.unwrap_or_default();
                 match d.entry {
@@ -223,27 +295,54 @@ impl Reader {
                         };
                         let key = (parent, name.clone());
                         let id = if let Some(&id) = scope_ids.get(&key) {
-                            let old: &mut ScopeData = &mut scopes[id];
-                            if old.kind != kind
-                                || old.packing != packing
-                                || (old.definition_name.is_some()
+                            let old = &scopes[id];
+                            let differences = [
+                                (old.kind != kind)
+                                    .then(|| format!("kind {:?} vs {:?}", old.kind, kind)),
+                                (old.is_hidden != (d.is_hidden != 0)).then(|| {
+                                    format!("hidden {} vs {}", old.is_hidden, d.is_hidden != 0)
+                                }),
+                                (old.packing != packing)
+                                    .then(|| format!("packing {:?} vs {:?}", old.packing, packing)),
+                                (old.definition_name.is_some()
                                     && definition_name.is_some()
                                     && old.definition_name != definition_name)
-                            {
-                                return Err(backend_error("conflicting FSDB scopes"));
+                                    .then(|| {
+                                        format!(
+                                            "definition {:?} vs {:?}",
+                                            old.definition_name, definition_name
+                                        )
+                                    }),
+                            ]
+                            .into_iter()
+                            .flatten()
+                            .collect::<Vec<_>>();
+                            if !differences.is_empty() {
+                                let path = crate::HierarchyPath::from_components(
+                                    stack
+                                        .iter()
+                                        .map(|&parent| scopes[parent].name.as_str())
+                                        .chain(std::iter::once(name.as_str())),
+                                );
+                                return Err(backend_error(format!(
+                                    "conflicting FSDB scope {path}: {}",
+                                    differences.join(", ")
+                                )));
                             }
                             if old.definition_name.is_none() {
-                                old.definition_name = definition_name;
+                                scopes[id].definition_name = definition_name;
                             }
                             id
                         } else {
                             let id = scopes.len();
                             scopes.push(ScopeData {
                                 name,
+                                name_was_escaped: false,
                                 parent,
                                 kind,
                                 definition_name,
                                 packing,
+                                is_hidden: d.is_hidden != 0,
                             });
                             scope_ids.insert(key, id);
                             id
@@ -276,11 +375,9 @@ impl Reader {
                             encodings.push(encoding);
                             index
                         };
-                        let range = (d.has_range != 0
-                            || (matches!(encoding, Encoding::Bits { .. })
-                                && name.ends_with("[0:0]")))
-                        .then(|| BitRange::new(d.msb, d.lsb));
-                        let name = declared_name(name, range);
+                        let range = (d.has_range != 0).then(|| BitRange::new(d.msb, d.lsb));
+                        let reader_name = name.clone();
+                        let (name, range) = declared_name(name, range, encoding);
                         // A file can append hierarchy trees repeating an identical
                         // declaration. Coalesce repetitions, not distinct aliases.
                         if !seen_variables.insert((
@@ -294,8 +391,38 @@ impl Reader {
                         )) {
                             continue;
                         }
+                        let type_name = string(d.type_name)?;
+                        let enumeration = if d.enum_count == 0 {
+                            None
+                        } else {
+                            let mut variants = Vec::with_capacity(d.enum_count);
+                            for variant in 0..d.enum_count {
+                                let (mut bits, mut label) = (std::ptr::null(), std::ptr::null());
+                                // Indices originate from this immutable native hierarchy;
+                                // borrowed strings are copied while the SDK lock is held.
+                                ondas_fsdb_enum_variant(
+                                    raw,
+                                    declaration_index,
+                                    variant,
+                                    &mut bits,
+                                    &mut label,
+                                );
+                                variants.push((
+                                    string(bits)?
+                                        .ok_or_else(|| backend_error("missing enum bits"))?,
+                                    string(label)?
+                                        .ok_or_else(|| backend_error("missing enum label"))?,
+                                ));
+                            }
+                            Some(EnumerationData {
+                                name: type_name.clone(),
+                                variants,
+                            })
+                        };
                         variables.push(VariableData {
                             name,
+                            reader_name: Some(reader_name),
+                            name_was_escaped: false,
                             parent: stack.last().copied(),
                             kind,
                             direction: match d.direction {
@@ -309,10 +436,10 @@ impl Reader {
                             },
                             range,
                             is_constant: d.is_constant != 0,
-                            type_name: None,
+                            type_name,
                             signedness: None,
                             logic_domain: None,
-                            enumeration: None,
+                            enumeration,
                             signal: Some(index),
                         });
                     }
@@ -322,23 +449,7 @@ impl Reader {
             if !stack.is_empty() {
                 return Err(backend_error("unclosed FSDB scopes"));
             }
-            let scale = string(meta.scale)?;
-            let scale = match scale.as_deref() {
-                None | Some("") => None,
-                Some(text) => Some(
-                    timescale(text).ok_or_else(|| backend_error("unsupported FSDB timescale"))?,
-                ),
-            };
-            Metadata {
-                source_name,
-                timescale: scale,
-                time_span: (!variables.is_empty()).then(|| {
-                    TimeSpan::new(Time::from_ticks(meta.first), Time::from_ticks(meta.last))
-                }),
-                writer: string(meta.writer)?,
-                date: string(meta.date)?,
-                comments: Vec::new(),
-            }
+            copy_metadata(&meta, source_name, !variables.is_empty())?
         };
         drop(guard);
         let hierarchy = Hierarchy::new(scopes, variables, encodings.clone());
@@ -350,10 +461,85 @@ impl Reader {
                 encodings,
                 #[cfg(test)]
                 records_read: 0,
+                #[cfg(test)]
+                point_queries: 0,
             },
             hierarchy,
             metadata,
         ))
+    }
+
+    pub(crate) fn sample_bits(
+        &mut self,
+        bases: &[Signal],
+        signals: &[Signal],
+        time: Time,
+    ) -> Result<Vec<crate::Sample>> {
+        let ids: Vec<_> = bases
+            .iter()
+            .map(|signal| self.ids[signal.index()])
+            .collect();
+        let traversal = Traversal(&mut self.handle);
+        let mut error = [0; 512];
+        let _lock = lock();
+        // SAFETY: live exclusive reader, validated base handles and writable
+        // error buffer. Traversal releases loaded signals on all exits.
+        let code = unsafe {
+            ondas_fsdb_begin(
+                traversal.0.0.as_ptr(),
+                ids.as_ptr(),
+                ids.len(),
+                0,
+                time.ticks(),
+                error.as_mut_ptr(),
+                error.len(),
+            )
+        };
+        status(code, &error)?;
+        let mut samples = Vec::with_capacity(signals.len());
+        for &signal in signals {
+            let mut record = Record::default();
+            let mut changed = 0;
+            let width = signal
+                .width()
+                .ok_or_else(|| backend_error("point sample requires bits"))?;
+            // SAFETY: selected, validated signal/projection and caller-owned
+            // output descriptors. Borrowed bytes are copied before another call.
+            let code = unsafe {
+                ondas_fsdb_sample_bits(
+                    traversal.0.0.as_ptr(),
+                    self.ids[signal.index()],
+                    time.ticks(),
+                    signal.lsb(),
+                    width,
+                    &mut record,
+                    &mut changed,
+                    error.as_mut_ptr(),
+                    error.len(),
+                )
+            };
+            status(code, &error)?;
+            #[cfg(test)]
+            {
+                self.point_queries += 1;
+            }
+            samples.push(if code == 0 {
+                crate::Sample::Missing { signal }
+            } else {
+                if record.encoding != 1 || record.len != width as usize || record.data.is_null() {
+                    return Err(backend_error("invalid FSDB point bit buffer"));
+                }
+                // SAFETY: the native descriptor supplies exactly width validated
+                // bytes, retained on the live owner until its next operation.
+                let bytes = unsafe { std::slice::from_raw_parts(record.data, record.len) };
+                crate::Sample::Value {
+                    signal,
+                    value: crate::Value::Bits(BitsRef::from_validated_ascii(bytes).to_owned()),
+                    changed_at: (changed != 0).then_some(Time::from_ticks(record.tick)),
+                }
+            });
+        }
+        Ok(samples)
     }
 
     pub(crate) fn read<B>(
@@ -499,14 +685,31 @@ fn real(bytes: &[u8]) -> Result<f64> {
     }
 }
 
-fn declared_name(name: String, range: Option<BitRange>) -> String {
+fn declared_name(
+    name: String,
+    range: Option<BitRange>,
+    encoding: Encoding,
+) -> (String, Option<BitRange>) {
+    // The SDK omits [0:0] bounds for scalars. An attached suffix on an
+    // escaped identifier is literal even when the SDK supplies matching bounds;
+    // a separately printed range has separating whitespace.
+    let range = range.or_else(|| {
+        (matches!(encoding, Encoding::Bits { .. })
+            && name
+                .strip_suffix("[0:0]")
+                .is_some_and(|base| !base.starts_with('\\') || base.ends_with(char::is_whitespace)))
+        .then_some(BitRange::new(0, 0))
+    });
     if let Some(range) = range {
         let suffix = format!("[{}:{}]", range.msb(), range.lsb());
-        if let Some(base) = name.strip_suffix(&suffix) {
-            return base.trim_end().to_owned();
+        if let Some(base) = name
+            .strip_suffix(&suffix)
+            .filter(|base| !name.starts_with('\\') || base.ends_with(char::is_whitespace))
+        {
+            return (base.trim_end().to_owned(), Some(range));
         }
     }
-    name
+    (name, range)
 }
 fn timescale(text: &str) -> Option<Timescale> {
     let text = text.trim();
@@ -547,6 +750,21 @@ mod tests {
         for invalid in [0, 1, 3, 5, 9] {
             assert!(real(&vec![0; invalid]).is_err());
         }
+    }
+
+    #[test]
+    #[ignore = "requires ONDAS_FSDB_CONFLICT_FIXTURE converted from issue #29 VCD"]
+    fn conflicting_scope_reports_path_and_kind() {
+        let path = std::env::var_os("ONDAS_FSDB_CONFLICT_FIXTURE").unwrap();
+        let error = crate::open(path)
+            .err()
+            .expect("conflicting scopes must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("conflicting FSDB scope top: kind \"module\" vs \"task\""),
+            "{error}"
+        );
     }
 
     #[test]
@@ -631,6 +849,135 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires installed SDK demo FSDB"]
+    fn fsdb_datatype_enum_is_queryable() {
+        let sdk = std::path::PathBuf::from(std::env::var_os("VERDI_HOME").unwrap());
+        let mut wave = crate::open(sdk.join("share/VIA/demo/waveform/cpu.fsdb")).unwrap();
+        let variable = wave
+            .hierarchy()
+            .variables()
+            .find(|var| var.name() == "assertControlType")
+            .unwrap();
+        assert_eq!(variable.kind(), "enum");
+        assert_eq!(variable.range(), Some(BitRange::new(1, 0)));
+        assert!(variable.type_name().is_some());
+        let enumeration = variable.enumeration().unwrap();
+        assert_eq!(enumeration.name(), variable.type_name());
+        let variants: Vec<_> = enumeration.variants().collect();
+        assert_eq!(variants.len(), 4);
+        assert!(
+            variants
+                .iter()
+                .all(|variant| variant.encoded.len() == 2 && !variant.label.is_empty())
+        );
+        assert!(variants.iter().any(|variant| variant.encoded == "00"));
+        let signal = variable.signal().unwrap();
+        assert_eq!(signal.encoding(), Encoding::Bits { width: 2 });
+        let sample = wave.sample(signal, Time::ZERO).unwrap();
+        let crate::Sample::Value {
+            value: crate::Value::Bits(bits),
+            ..
+        } = sample
+        else {
+            panic!("expected integral enum sample");
+        };
+        assert_eq!(
+            bits.as_ref().iter_msb().collect::<Vec<_>>(),
+            vec![crate::Logic::Zero; 2]
+        );
+    }
+
+    #[test]
+    #[ignore = "requires installed SDK demo FSDB"]
+    fn fsdb_hidden_scopes_remain_accessible() {
+        let sdk = std::path::PathBuf::from(std::env::var_os("VERDI_HOME").unwrap());
+        let wave = crate::open(sdk.join("share/VIA/demo/waveform/cpu.fsdb")).unwrap();
+        let hierarchy = wave.hierarchy();
+        assert!(hierarchy.scopes().any(|scope| scope.is_hidden()));
+        assert!(hierarchy.scopes().any(|scope| !scope.is_hidden()));
+        for scope in hierarchy.scopes().filter(|scope| scope.is_hidden()) {
+            assert!(hierarchy.scope_path(&scope.path()).unwrap().is_hidden());
+        }
+    }
+
+    #[test]
+    fn escaped_scalar_suffix_preserves_ambiguous_lookup() {
+        let encodings = vec![
+            Encoding::Bits { width: 1 },
+            Encoding::Bits { width: 1 },
+            Encoding::Bits { width: 8 },
+            Encoding::Bits { width: 32 },
+            Encoding::Bits { width: 8 },
+        ];
+        let raw_names = [
+            r"\flags[0:0]",
+            r"\flags[0:0]",
+            "flags[7:0]",
+            r"\awaddr[0] [31:0]",
+            "maprom[0][7:0]",
+        ];
+        let variables = raw_names
+            .into_iter()
+            .enumerate()
+            .map(|(index, raw)| {
+                let range = match index {
+                    2 | 4 => Some(BitRange::new(7, 0)),
+                    3 => Some(BitRange::new(31, 0)),
+                    _ => None,
+                };
+                let (name, range) = declared_name(raw.into(), range, encodings[index]);
+                VariableData {
+                    name,
+                    reader_name: Some(raw.into()),
+                    name_was_escaped: false,
+                    parent: None,
+                    kind: "wire".into(),
+                    direction: Direction::Implicit,
+                    range,
+                    is_constant: false,
+                    type_name: None,
+                    signedness: None,
+                    logic_domain: None,
+                    enumeration: None,
+                    signal: Some(index),
+                }
+            })
+            .collect();
+        let hierarchy = Hierarchy::new(Vec::new(), variables, encodings);
+        let path = crate::HierarchyPath::from_components([r"\flags[0:0]"]);
+        assert!(matches!(
+            hierarchy.signal(&path.to_string()),
+            Err(crate::LookupError::Ambiguous { .. })
+        ));
+        assert_eq!(hierarchy.signal("flags").unwrap().width(), Some(8));
+        assert_eq!(
+            hierarchy
+                .variables()
+                .map(|var| var.reader_name().unwrap())
+                .collect::<Vec<_>>(),
+            raw_names
+        );
+        assert_eq!(
+            hierarchy
+                .variable_path(&crate::HierarchyPath::from_components([r"\awaddr[0]"]))
+                .unwrap()
+                .range(),
+            Some(BitRange::new(31, 0))
+        );
+        assert_eq!(
+            hierarchy.variable("maprom[0]").unwrap().reader_name(),
+            Some("maprom[0][7:0]")
+        );
+        assert_eq!(
+            hierarchy
+                .variables()
+                .filter(|var| var.range().is_none())
+                .count(),
+            2
+        );
+    }
+
+    #[test]
     fn exact_scale_and_declared_ranges() {
         let scale = timescale("100fs").unwrap();
         assert_eq!((scale.factor(), scale.unit()), (100, TimeUnit::Femtosecond));
@@ -638,10 +985,60 @@ mod tests {
             assert!(timescale(bad).is_none());
         }
         assert_eq!(
-            declared_name("bus [-2:-9]".into(), Some(BitRange::new(-2, -9))),
-            "bus"
+            declared_name(
+                "bus [-2:-9]".into(),
+                Some(BitRange::new(-2, -9)),
+                Encoding::Bits { width: 8 }
+            ),
+            ("bus".into(), Some(BitRange::new(-2, -9)))
         );
-        assert_eq!(declared_name("mem[3]".into(), None), "mem[3]");
+        for (name, native_range, expected_name, expected_range) in [
+            (r"\flags[0:0]", None, r"\flags[0:0]", None),
+            (
+                r"\range.dot[31:0]",
+                Some(BitRange::new(31, 0)),
+                r"\range.dot[31:0]",
+                Some(BitRange::new(31, 0)),
+            ),
+            (
+                r"\awaddr[0] [31:0]",
+                Some(BitRange::new(31, 0)),
+                r"\awaddr[0]",
+                Some(BitRange::new(31, 0)),
+            ),
+            (
+                "maprom[0][7:0]",
+                Some(BitRange::new(7, 0)),
+                "maprom[0]",
+                Some(BitRange::new(7, 0)),
+            ),
+            (
+                r"\flags[0:0] [0:0]",
+                None,
+                r"\flags[0:0]",
+                Some(BitRange::new(0, 0)),
+            ),
+            ("\\flags\t[0:0]", None, r"\flags", Some(BitRange::new(0, 0))),
+            ("flags[0:0]", None, "flags", Some(BitRange::new(0, 0))),
+            (
+                "flags[7:0]",
+                Some(BitRange::new(7, 0)),
+                "flags",
+                Some(BitRange::new(7, 0)),
+            ),
+            (
+                r"\flags[0:0] [7:0]",
+                Some(BitRange::new(7, 0)),
+                r"\flags[0:0]",
+                Some(BitRange::new(7, 0)),
+            ),
+            ("mem[3]", None, "mem[3]", None),
+        ] {
+            assert_eq!(
+                declared_name(name.into(), native_range, Encoding::Bits { width: 1 }),
+                (expected_name.into(), expected_range),
+            );
+        }
         assert!(filename(Path::new("a\0b.fsdb")).is_err());
     }
 }
