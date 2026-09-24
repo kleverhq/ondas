@@ -266,7 +266,7 @@ impl Reader {
         let mut variables = Vec::new();
         let mut seen_variables = HashSet::new();
         let mut stack = Vec::new();
-        let mut scope_ids = HashMap::new();
+        let mut scope_ids: HashMap<(Option<usize>, String), usize> = HashMap::new();
         let mut ids = Vec::new();
         let mut indices = HashMap::new();
         let mut encodings = Vec::new();
@@ -295,18 +295,42 @@ impl Reader {
                         };
                         let key = (parent, name.clone());
                         let id = if let Some(&id) = scope_ids.get(&key) {
-                            let old: &mut ScopeData = &mut scopes[id];
-                            if old.kind != kind
-                                || old.is_hidden != (d.is_hidden != 0)
-                                || old.packing != packing
-                                || (old.definition_name.is_some()
+                            let old = &scopes[id];
+                            let differences = [
+                                (old.kind != kind)
+                                    .then(|| format!("kind {:?} vs {:?}", old.kind, kind)),
+                                (old.is_hidden != (d.is_hidden != 0)).then(|| {
+                                    format!("hidden {} vs {}", old.is_hidden, d.is_hidden != 0)
+                                }),
+                                (old.packing != packing)
+                                    .then(|| format!("packing {:?} vs {:?}", old.packing, packing)),
+                                (old.definition_name.is_some()
                                     && definition_name.is_some()
                                     && old.definition_name != definition_name)
-                            {
-                                return Err(backend_error("conflicting FSDB scopes"));
+                                    .then(|| {
+                                        format!(
+                                            "definition {:?} vs {:?}",
+                                            old.definition_name, definition_name
+                                        )
+                                    }),
+                            ]
+                            .into_iter()
+                            .flatten()
+                            .collect::<Vec<_>>();
+                            if !differences.is_empty() {
+                                let path = crate::HierarchyPath::from_components(
+                                    stack
+                                        .iter()
+                                        .map(|&parent| scopes[parent].name.as_str())
+                                        .chain(std::iter::once(name.as_str())),
+                                );
+                                return Err(backend_error(format!(
+                                    "conflicting FSDB scope {path}: {}",
+                                    differences.join(", ")
+                                )));
                             }
                             if old.definition_name.is_none() {
-                                old.definition_name = definition_name;
+                                scopes[id].definition_name = definition_name;
                             }
                             id
                         } else {
@@ -726,6 +750,21 @@ mod tests {
         for invalid in [0, 1, 3, 5, 9] {
             assert!(real(&vec![0; invalid]).is_err());
         }
+    }
+
+    #[test]
+    #[ignore = "requires ONDAS_FSDB_CONFLICT_FIXTURE converted from issue #29 VCD"]
+    fn conflicting_scope_reports_path_and_kind() {
+        let path = std::env::var_os("ONDAS_FSDB_CONFLICT_FIXTURE").unwrap();
+        let error = crate::open(path)
+            .err()
+            .expect("conflicting scopes must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("conflicting FSDB scope top: kind \"module\" vs \"task\""),
+            "{error}"
+        );
     }
 
     #[test]

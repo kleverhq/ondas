@@ -19,6 +19,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   point-sampling work without changing observations.
 - Cold bit-only FSDB interval queries seek their entering state instead of
   replaying the selected history from zero.
+- Conflicting repeated FSDB scopes report the offending path and differing
+  attributes instead of an unqualified error.
 
 ## [1.0.0] - 2026-09-21
 
