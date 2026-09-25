@@ -1,6 +1,6 @@
 use std::{collections::HashSet, hint::black_box, ops::ControlFlow};
 
-use criterion::{BenchmarkId, Criterion, Throughput};
+use criterion::{BatchSize, BenchmarkId, Criterion, Throughput};
 use ondas::{Time, TimeRange};
 
 use super::{BACKEND, candidate_count, first_change, fixtures, scan_count};
@@ -148,6 +148,65 @@ pub(super) fn history(c: &mut Criterion, fixture: &str, end: u64) {
         );
     }
     group.finish();
+    drop(selection);
+
+    let mut group = c.benchmark_group(format!("{name}/regression"));
+    group.sample_size(10);
+    for (label, start, stop) in [
+        ("early", 17, 48),
+        ("late", end - 31, end),
+        ("short-nonzero", 17, 18),
+    ] {
+        let window = TimeRange::closed(Time::from_ticks(start), Time::from_ticks(stop));
+        group.bench_function(
+            BenchmarkId::new(
+                format!("scan/fresh-selection/clock/{label}/{start}..={stop}"),
+                BACKEND,
+            ),
+            |b| {
+                b.iter(|| {
+                    let mut selection = wave.select(&[clock]).unwrap();
+                    black_box(scan_count(&mut selection, black_box(window)));
+                })
+            },
+        );
+        if label == "late" {
+            group.bench_function(
+                BenchmarkId::new(
+                    format!("trace/fresh-selection/clock/{label}/{start}..={stop}"),
+                    BACKEND,
+                ),
+                |b| {
+                    b.iter(|| {
+                        let mut selection = wave.select(&[clock]).unwrap();
+                        black_box(selection.traces(black_box(window)).unwrap());
+                    })
+                },
+            );
+            group.bench_function(
+                BenchmarkId::new(
+                    format!("candidate/fresh-selection/clock/{label}/{start}..={stop}"),
+                    BACKEND,
+                ),
+                |b| {
+                    b.iter(|| {
+                        let mut selection = wave.select(&[clock]).unwrap();
+                        black_box(candidate_count(&mut selection, black_box(window)));
+                    })
+                },
+            );
+            let mut warm = wave.select(&[clock]).unwrap();
+            scan_count(&mut warm, window);
+            group.bench_function(
+                BenchmarkId::new(
+                    format!("scan/warm-repeat/clock/{label}/{start}..={stop}"),
+                    BACKEND,
+                ),
+                |b| b.iter(|| black_box(scan_count(&mut warm, black_box(window)))),
+            );
+        }
+    }
+    group.finish();
 }
 
 pub(super) fn topology(c: &mut Criterion, fixture: &str, histories: usize) {
@@ -165,6 +224,35 @@ pub(super) fn topology(c: &mut Criterion, fixture: &str, histories: usize) {
             ))
         });
     });
+    if fixture != "fsdb0014-topology-many-times" && fixture != "fsdb0016-topology-many-aliases" {
+        group.bench_function(
+            BenchmarkId::new("regression/metadata-only/open-drop", BACKEND),
+            |b| {
+                b.iter(|| drop(black_box(ondas::read_metadata(black_box(&path)).unwrap())));
+            },
+        );
+        let lookup = ondas::HierarchyPath::parse("top.probe_sparse").unwrap();
+        for (name, prime) in [("first-exact", false), ("second-build-index", true)] {
+            group.bench_function(
+                BenchmarkId::new(format!("regression/lookup/{name}"), BACKEND),
+                |b| {
+                    b.iter_batched_ref(
+                        || {
+                            let fresh = ondas::open_with(&path, BACKEND).unwrap();
+                            if prime {
+                                black_box(fresh.hierarchy().variable_path(&lookup).unwrap());
+                            }
+                            fresh
+                        },
+                        |fresh| {
+                            black_box(fresh.hierarchy().variable_path(black_box(&lookup)).unwrap());
+                        },
+                        BatchSize::SmallInput,
+                    )
+                },
+            );
+        }
+    }
     group.bench_function(BenchmarkId::new("hierarchy/variable-names", BACKEND), |b| {
         b.iter(|| {
             for v in wave.hierarchy().variables() {
@@ -295,6 +383,29 @@ pub(super) fn wide(c: &mut Criterion, fixture: &str) {
             );
         }
     }
+    group.finish();
+
+    let mut group = c.benchmark_group(format!(
+        "fsdb/{}/{fixture}/file/regression",
+        fixtures::PROVIDER
+    ));
+    group.sample_size(10);
+    for (name, signal) in [
+        ("whole4096", lsb),
+        ("stable-high4095", lsb.slice(4095, 1).unwrap()),
+        ("scalar", control),
+    ] {
+        group.bench_function(
+            BenchmarkId::new(format!("sample/cold-one-shot/{name}/t2056"), BACKEND),
+            |b| b.iter(|| black_box(wave.sample(black_box(signal), black_box(time)).unwrap())),
+        );
+    }
+    let mut warm = wave.select(&[lsb]).unwrap();
+    warm.samples(time).unwrap();
+    group.bench_function(
+        BenchmarkId::new("sample/warm-repeat/whole4096/t2056", BACKEND),
+        |b| b.iter(|| black_box(warm.samples(black_box(time)).unwrap())),
+    );
     group.finish();
 }
 

@@ -47,6 +47,15 @@ conformance-fsdb: _inside
     cargo test --locked --features fsdb-lib --test conformance fsdb_ -- --ignored --nocapture
     cargo test --locked --features fsdb-lib --lib fsdb_ -- --ignored
 
+# Execute public Criterion workloads without timing thresholds.
+bench-smoke: _inside
+    cargo bench --locked --bench vcd -- --test
+    cargo bench --locked --bench fst -- --test
+
+# Execute vendor Criterion workloads against public fixtures.
+bench-smoke-fsdb: _inside
+    cargo bench --locked --features fsdb-lib --bench fsdb -- --test
+
 # Verify actual downstream linking, independent of Cargo's runtime environment.
 fsdb-consumer: _inside
     python3 tools/repo/check_fsdb_consumer.py
@@ -58,6 +67,7 @@ ci-fsdb: _inside
     cargo +{{msrv}} check --locked --lib --features fsdb-lib
     RUSTDOCFLAGS="-D warnings" cargo doc --locked --lib --features fsdb-lib --no-deps
     just conformance-fsdb
+    just bench-smoke-fsdb
     just fsdb-consumer
     RUSTUP_TOOLCHAIN={{msrv}} just fsdb-consumer
 
@@ -83,4 +93,4 @@ release-check: _inside
     cargo publish --dry-run --locked
 
 # Run the full quality gate; fixtures must already be installed.
-ci: check-local conformance release-check
+ci: check-local conformance bench-smoke release-check

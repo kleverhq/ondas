@@ -30,7 +30,10 @@ positions, not production slicing or normalization.
 
 The generated reader retains no history. Logical counters observe actual pending
 slot values after each raw record, read starts, requested bases and resource
-leases. Fixed-width runs and an early-stop advance budget check bounded state and
+leases. A separate test-only tick-work counter counts comparison/commit loop
+body visits on a sparse 66-slot VCD schedule; one setup pass over all slots is
+counted separately. The counter does not measure scan delivery, SDK work or
+other selection-wide loops. Fixed-width runs and an early-stop advance budget check bounded state and
 lazy delivery without timing or RSS assertions. Repeated adjacent-tick reads must
 not advance or restart the reader. These counters exclude caller-owned results
 and reader/SDK residency; they are not a public metrics API. They observe the
@@ -122,6 +125,16 @@ ignored `fixtures.private.lock.toml`; set `ONDAS_REQUIRE_PRIVATE_FIXTURES=1` to
 require that provider and every selected payload. Missing public inputs always
 fail. The runner validates installed metadata even when an optional payload is
 absent, and reports passed, failed and skipped cases separately.
+
+The fixture-backed public gate executes `just bench-smoke` after conformance;
+the vendor gate runs `just bench-smoke-fsdb` after its conformance. Criterion
+`--test` checks that registered workloads execute, without timing thresholds or
+proof of a speedup. New sparse/dense file/bytes and adapter diagnostic tests
+require the locked public release; a local matching-version snapshot is only
+development evidence. The conflict fixture has an empty oracle, so discovery in
+the full pool is not diagnostic coverage. The focused
+`fsdb_conflicting_scope_diagnostic_and_metadata_bypass` test must be selected
+by the vendor gate.
 
 `./dev just ci-fsdb` adds vendor-enabled static, unit, documentation and MSRV
 checks. Focused FSDB regressions cover path/bytes routing, reentrant callbacks,

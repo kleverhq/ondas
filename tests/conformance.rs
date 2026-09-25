@@ -1651,6 +1651,96 @@ fn callback_query_fsdb_reader() {
     callback_query_reader_smoke(&load_fixture(&provider(), "fsdb0005-compare-xz"), false);
 }
 
+#[test]
+#[ignore = "requires locked public fixtures; run just conformance"]
+fn fst_sparse_dense_identity_and_parity() {
+    let (path, _) = fixture_catalog::load_artifact(&provider(), "fst0087-sparse-dense-active");
+    for mut wave in [
+        ondas::open_with(&path, "fst-lib").unwrap(),
+        ondas::open_bytes_with("waveform.fst", fs::read(&path).unwrap().into(), "fst-lib").unwrap(),
+    ] {
+        for (name, escaped) in [
+            ("plain", true),
+            ("foo.bar", true),
+            ("foo/bar", true),
+            ("alias", false),
+        ] {
+            let var = wave
+                .hierarchy()
+                .variable_path(&ondas::HierarchyPath::from_components(["top", name]))
+                .unwrap();
+            assert_eq!(var.name_was_escaped(), escaped, "{name}");
+        }
+        assert_eq!(
+            wave.hierarchy().signal("top.plain").unwrap(),
+            wave.hierarchy().signal("top.alias").unwrap()
+        );
+        for (bank, toggles) in [("sparse", false), ("dense", true)] {
+            let signals = (0..64)
+                .map(|i| {
+                    wave.hierarchy()
+                        .signal(&format!("top.{bank}.bit_{i:02}"))
+                        .unwrap()
+                })
+                .collect::<Vec<_>>();
+            for size in [1, 16, 64] {
+                for tick in [0, 1, 255, 256, 4095, 4096] {
+                    for (index, sample) in wave
+                        .samples(&signals[..size], Time::from_ticks(tick))
+                        .unwrap()
+                        .iter()
+                        .enumerate()
+                    {
+                        let ondas::Sample::Value { value, .. } = sample else {
+                            panic!("initialized bank")
+                        };
+                        let ondas::ValueRef::Bits(bits) = value.as_ref() else {
+                            panic!("bit bank")
+                        };
+                        assert_eq!(
+                            bits.to_string(),
+                            if (toggles || index == 0) && tick % 2 == 1 {
+                                "1"
+                            } else {
+                                "0"
+                            }
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(feature = "fsdb-lib")]
+#[test]
+#[ignore = "requires Verdi and ONDAS_FIXTURES; run just conformance-fsdb"]
+fn fsdb_conflicting_scope_diagnostic_and_metadata_bypass() {
+    let (path, _) = fixture_catalog::load_artifact(&provider(), "fsdb0021-conflicting-scope");
+    let metadata = ondas::read_metadata(&path).unwrap();
+    let span = metadata.time_span().unwrap();
+    assert_eq!((span.first().ticks(), span.last().ticks()), (0, 0));
+    let scale = metadata.timescale().unwrap();
+    assert_eq!(
+        (scale.factor(), scale.unit()),
+        (1, ondas::TimeUnit::Nanosecond)
+    );
+    let Err(Error::Backend {
+        backend,
+        operation,
+        message,
+    }) = ondas::open_with(path, "fsdb-lib")
+    else {
+        panic!("conflicting declarations must reject full open")
+    };
+    assert_eq!(backend, "fsdb-lib");
+    assert_eq!(operation, "read FSDB");
+    assert!(
+        message.contains("conflicting FSDB scope top: kind \"module\" vs \"task\""),
+        "{message}"
+    );
+}
+
 #[cfg(feature = "fsdb-lib")]
 #[test]
 #[ignore = "requires Verdi and ONDAS_FIXTURES; run just conformance-fsdb"]

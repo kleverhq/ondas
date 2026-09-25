@@ -753,21 +753,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires ONDAS_FSDB_CONFLICT_FIXTURE converted from issue #29 VCD"]
-    fn conflicting_scope_reports_path_and_kind() {
-        let path = std::env::var_os("ONDAS_FSDB_CONFLICT_FIXTURE").unwrap();
-        let error = crate::open(path)
-            .err()
-            .expect("conflicting scopes must fail");
-        assert!(
-            error
-                .to_string()
-                .contains("conflicting FSDB scope top: kind \"module\" vs \"task\""),
-            "{error}"
-        );
-    }
-
-    #[test]
     #[ignore = "requires real FSDB runtime and locked public fixtures"]
     fn fsdb_bits_use_caller_storage() {
         let root = std::path::PathBuf::from(std::env::var_os("ONDAS_FIXTURES").unwrap());

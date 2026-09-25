@@ -277,6 +277,35 @@ fn swerv(c: &mut Criterion) {
         );
     }
     group.finish();
+
+    let window = TimeRange::closed(Time::from_ticks(12000), Time::from_ticks(13000));
+    let mut group = c.benchmark_group(format!("{group_name}/regression"));
+    group.sample_size(10);
+    for repeats in [1, 4] {
+        group.throughput(Throughput::Elements(repeats));
+        group.bench_function(
+            BenchmarkId::new(
+                format!("scan/fresh-selection/clk/12000..=13000/{repeats}x"),
+                BACKEND,
+            ),
+            |b| {
+                b.iter(|| {
+                    let mut selection = wave.select(&signals[..1]).unwrap();
+                    let mut count = 0_u64;
+                    for _ in 0..repeats {
+                        let _ = selection
+                            .scan(black_box(window), |_| {
+                                count += 1;
+                                ControlFlow::<()>::Continue(())
+                            })
+                            .unwrap();
+                    }
+                    black_box(count)
+                })
+            },
+        );
+    }
+    group.finish();
 }
 
 fn compact_wide(c: &mut Criterion) {

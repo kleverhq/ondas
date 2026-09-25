@@ -71,60 +71,6 @@ fn escaped_names_preserve_spelling_without_changing_identity() {
 }
 
 #[test]
-#[ignore = "requires GTKWave vcd2fst on PATH"]
-fn escaped_declaration_spelling_agrees_with_fst() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tmp")
-        .join(format!("spelling-{}", std::process::id()));
-    std::fs::create_dir_all(&root).unwrap();
-    let vcd = root.join("input.vcd");
-    let fst = root.join("input.fst");
-    std::fs::write(
-        &vcd,
-        b"$timescale 1ns $end\n$scope module \\top $end\n\
-        $var wire 1 ! \\plain $end\n$var wire 1 \" \\foo.bar $end\n\
-        $var wire 1 # \\foo/bar $end\n$var wire 8 $ word [7:0] $end\n\
-        $upscope $end\n$enddefinitions $end\n#0\n0!\n1\"\n1#\nb10100101 $\n",
-    )
-    .unwrap();
-    assert!(
-        std::process::Command::new("vcd2fst")
-            .arg(&vcd)
-            .arg(&fst)
-            .status()
-            .unwrap()
-            .success()
-    );
-    for path in [&vcd, &fst] {
-        for wave in [
-            ondas::open(path).unwrap(),
-            ondas::open_bytes(path.to_str().unwrap(), std::fs::read(path).unwrap().into()).unwrap(),
-        ] {
-            assert!(wave.hierarchy().scope("top").unwrap().name_was_escaped());
-            for (name, escaped) in [
-                ("plain", true),
-                ("foo.bar", true),
-                ("foo/bar", true),
-                ("word", false),
-            ] {
-                let variable = wave
-                    .hierarchy()
-                    .variable_path(&HierarchyPath::from_components(["top", name]))
-                    .unwrap();
-                assert_eq!(variable.name(), name);
-                assert_eq!(variable.reader_name(), None);
-                assert_eq!(variable.name_was_escaped(), escaped);
-            }
-            assert_eq!(
-                wave.hierarchy().variable("top.word").unwrap().range(),
-                Some(ondas::BitRange::new(7, 0))
-            );
-        }
-    }
-    std::fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
 fn reused_selection_matches_fresh_replay() {
     let mut wave = open(
         "$var wire 4 ! bus $end $var event 1 e ev $end $var real 64 r real $end $var string 1 s text $end $var wire 1 m missing $end",

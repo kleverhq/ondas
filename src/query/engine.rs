@@ -1143,6 +1143,67 @@ mod tests {
         let mut actual = Vec::new();
         let _ = cold
             .scan_each(range, |index, record| {
+                // The authored source toggles clock every tick and word_00 every
+                // 16 ticks; these checks do not derive expectations from Ondas.
+                match (index, record) {
+                    (
+                        0,
+                        ScanRef::Initial {
+                            value: ValueRef::Bits(bits),
+                            changed_at,
+                            ..
+                        },
+                    ) => {
+                        assert_eq!(bits.to_string(), "1");
+                        assert_eq!(changed_at, Some(Time::from_ticks(3999)));
+                    }
+                    (
+                        1 | 3,
+                        ScanRef::Initial {
+                            value: ValueRef::Bits(bits),
+                            changed_at,
+                            ..
+                        },
+                    ) => {
+                        assert_eq!(bits.to_string(), format!("{:032b}", 249));
+                        assert_eq!(changed_at, Some(Time::from_ticks(3984)));
+                    }
+                    (
+                        2,
+                        ScanRef::Initial {
+                            value: ValueRef::Bits(bits),
+                            changed_at: None,
+                            ..
+                        },
+                    ) => {
+                        assert_eq!(bits.to_string(), "0000000000000000");
+                    }
+                    (
+                        1 | 3,
+                        ScanRef::Change {
+                            time,
+                            value: ValueRef::Bits(bits),
+                            ..
+                        },
+                    ) => {
+                        assert_eq!(time, Time::from_ticks(4000));
+                        assert_eq!(bits.to_string(), format!("{:032b}", 250));
+                    }
+                    (
+                        0,
+                        ScanRef::Change {
+                            time,
+                            value: ValueRef::Bits(bits),
+                            ..
+                        },
+                    ) => {
+                        assert_eq!(
+                            bits.to_string(),
+                            if time.ticks() % 2 == 0 { "0" } else { "1" }
+                        );
+                    }
+                    _ => panic!("unexpected independent window record {index}: {record:?}"),
+                }
                 actual.push(format!("{index}:{record:?}"));
                 ControlFlow::<()>::Continue(())
             })

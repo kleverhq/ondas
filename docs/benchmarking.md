@@ -60,7 +60,12 @@ Each case states what its timed region includes:
 | Trace a whole or projected signal | Materialize and consume the trace | Open, resolve projection, prepare range and selection |
 | Candidate times | Collect and consume candidates | Open and prepare the selection and range |
 
-Prepared-query cases reuse the waveform and selection. Do not accidentally
+A `fresh-selection` case creates, queries and drops a new selection inside each
+iteration while keeping the waveform and resolved handles outside timing. A
+`warm-repeat` case primes a dedicated selection outside timing. The latter may
+measure a checkpoint or completed-state cache hit, not native traversal. First
+and second exact-lookup cases open a fresh waveform outside timing; the second
+primes exactly one lookup before timing the index build. Do not accidentally
 include path resolution or selection creation unless that is the operation under
 study. Use `black_box` on inputs and results; for callback scans, consume a minimal
 counter or equivalent observable output through `black_box`.
@@ -130,6 +135,11 @@ shared owned storage before timing; opening includes cloning that shared handle
 but not reading the file into memory. Both modes include waveform destruction in
 open measurements and reuse their selections in prepared-query measurements.
 
+A 64-bit sparse bank and a 64-bit dense bank in one public FST distinguish
+selected-slot activity at unique selection sizes 1, 16 and 64, and 256 versus
+4096 ticks at fixed cardinality. Their point cases create fresh selections on
+each iteration. This is a selected-query cost, not cold disk or full file opening.
+
 The controlled workloads in `benches/fst/hotpaths.rs` separate selected activity
 from full-design overhead. Three recordings retain identical sparse and constant
 probe histories while varying either unselected handle count or global time-table
@@ -172,8 +182,13 @@ handle and unloads afterward. Persistent-only selections can reuse a bounded
 normalized checkpoint to start a compatible traversal at its saved boundary
 when the file supports view windows. Other files retain full SDK loading and
 prefix traversal, suppressing pre-boundary records before value decoding.
-Cold or incompatible requests still replay the prefix. Prepared-query warmup
-can establish that checkpoint, so prepared results are not cold late-entry
+Cold bit-only points can seek entering state using native point queries; cold
+positive-start windows can seek immediately before their start. These paths
+still load the selected SDK data and may walk backwards to establish a stable
+projection's last change; they do not promise constant work or validation of
+skipped prefix records. Mixed/event selections, incompatible reuse and files
+without a usable view window retain chronological traversal. Prepared-query
+warmup can establish a checkpoint, so prepared results are not cold late-entry
 measurements. A final selected-state snapshot can also avoid SDK traversal for
 repeated point reads or resume forward reads. Measurements include SDK work
 whenever a traversal is needed; warmed prepared samples can avoid it entirely. Early callback termination
@@ -202,8 +217,13 @@ just two post-initial changes. Controlled public recordings supplement them in
 | `fsdb0017-typed-records` | Four-state logic, events, real values and fixed-length short/long byte strings |
 | `fsdb0018-native-real32` | Verified four-byte real storage and scalar control |
 
-The history pair separates an unused suffix from an increasingly long traversed
-prefix without assuming how much the SDK decompresses internally. Output-heavy
+The history pair separates an unused suffix from an increasingly long selected
+prefix without assuming how much the SDK decompresses internally. Fresh-selection
+early/late scans and a short nonzero window test seek/setup cost; bounded late
+traces and candidates test different output boundaries, and a primed scan
+controls for retained-state reuse. Topology cases measure metadata-only open
+and first/second exact lookup with fresh setup. The wide recording also compares
+cold one-shot whole, stable projection and scalar points against a primed repeat. Output-heavy
 operations use bounded windows even on the long recording. Wide LSB/MSB cases
 have matching widths and change counts but different first differing positions
 in the shared MSB-first value comparison. Duplicate whole vectors exercise
@@ -279,10 +299,12 @@ can install it from a release.
 ## Automation
 
 The existing `just check` compiles benchmark targets with `cargo check --all-targets`.
-For a local fixture-backed smoke run, use
-`./dev cargo bench --locked --bench vcd -- --test` or
-`./dev cargo bench --locked --bench fst -- --test`. For FSDB, first run public
-conformance, then smoke the feature-gated target:
+The fixture-backed `./dev just ci` gate runs `just bench-smoke` (VCD and FST)
+after conformance; `./dev just ci-fsdb` runs `just bench-smoke-fsdb` after vendor
+conformance. For a focused local run, use `./dev cargo bench --locked --bench
+fst -- regression --test`, or the corresponding format and feature flags.
+The vendor recipe executes only public benchmark inputs. For FSDB, first run
+public conformance, then smoke the feature-gated target:
 
 ```sh
 ./dev cargo test --locked --features fsdb-lib --test conformance full_fsdb_pool -- --ignored --nocapture

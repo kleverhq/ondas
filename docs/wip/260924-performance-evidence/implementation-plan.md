@@ -27,8 +27,8 @@ Do not import private recordings, metadata or derived evidence into public artif
 - [x] (2026-09-24) Audit release snapshot `4b75d96`, public issues #18–#30, relevant PRs #5–#17, test/benchmark sources, and public provider/oracle contracts; incorporate adversarial review.
 - [x] Revise scope under KISS/YAGNI: four milestones, scenario-family comparisons, existing fixtures first, one new performance artifact, conditional Picorv32 conversion, no blanket per-mechanism ablation.
 - [ ] Milestone 1: repair references, close focused test gaps, and connect required tests to their gates. Chronological zero-start FSDB point reference, cold/warm counters, sparse-active loop-visit regression and exact/fallback lookup checks now run; conflict fixture/gate remains.
-- [ ] Milestone 2: reuse public data and supply only missing discriminating artifacts/observations.
-- [ ] Milestone 3: add minimal benchmark cases, smoke execution, and accurate coverage documentation.
+- [ ] Milestone 2: reuse public data and supply only missing discriminating artifacts/observations. Local provider 4.7.0 has the sparse/dense FST and diagnostic FSDB with validated bytes, native inspection and oracle; FST 88-entry generate/repeat passed. Publication and a matching locked installation are still outstanding (no remote push authorized).
+- [x] Milestone 3: add minimal benchmark cases, smoke execution, and accurate coverage documentation. New hierarchy/metadata, sparse/dense, VCD replay, FSDB point/interval families passed focused Criterion `--test`; full public (196 cases) and vendor (256 cases) smoke passed against the local snapshot. Durable methodology/test mapping was updated.
 - [ ] Milestone 4: run family-level before/after comparisons and complete the evidence ledger.
 
 The unchecked items are implementation work. No new timing result is claimed by this plan.
@@ -51,6 +51,9 @@ Durable conclusions belong in `docs/testing.md`, `docs/api-coverage.md`, `docs/b
 ## Surprises & Discoveries
 
 
+- Public `just ci` with the local snapshot passed self-contained checks, FST/VCD conformance and public smoke; `release-check` correctly refused uncommitted changes. Re-run after committing. Full FST pool observed 88 fixtures/176 mode cases passed; full FSDB pool observed 22 fixtures, 21 positive and one empty-oracle diagnostic skip; the focused diagnostic test passed separately.
+- The existing public FSDB oracle-factory verify baseline already failed for changed metadata/hashes on 0000–0018 and absent 0019/0020 recipes. New 0021 now has an explicit hashed, empty-oracle diagnostic exclusion with a producer test; the broader producer gate is still not green. A plan command temporarily generated 0019/0020 recipes; those generated files were removed without committing them, as restoration is out of scope.
+- Locally regenerated sparse/dense VCD/FST bytes are identical across two neutral workspaces; all 224 public fixture hashes/sizes are unique and valid. Full FST producer generate/repeat reported 84 positive and 4 negative over 88 entries. Focused FST parity/escaped-identity and FSDB diagnostic/metadata tests passed with a two-fixture development snapshot.
 - On the locked 4.6.1 provider, `just conformance-fsdb` passed 10 selected integration tests (public 45/45, optional private pool completed; no private evidence recorded here); seven ignored FSDB library tests were selected and passed. The rewritten chronological point test executes and asserts point-query route isolation.
 - Existing FSDB one-shot `wave.samples` benchmarks already create fresh selections. Prepared `Selection::samples` and late scans can instead become cache/checkpoint hits during Criterion warm-up. Do not classify all existing point benchmarks as missing cold coverage.
 - `fsdb_cold_points_match_chronological_reference` constructs expected values through a fresh positive-start point scan. After `46ca36c`, that reference can also seek entering state. Reference independence must be repaired.

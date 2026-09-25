@@ -1,6 +1,6 @@
 use std::{hint::black_box, ops::ControlFlow};
 
-use criterion::{BenchmarkId, Criterion};
+use criterion::{BatchSize, BenchmarkId, Criterion};
 use ondas::{Encoding, Selection, Time, TimeRange};
 
 use super::{BACKEND, first_change, fixtures, scan_count};
@@ -66,6 +66,26 @@ pub(super) fn topology(c: &mut Criterion) {
         let mut group = c.benchmark_group(format!("fst/{}/{fixture}/file", fixtures::PROVIDER));
         group.sample_size(20);
         let lookup = ondas::HierarchyPath::parse("top.probe_sparse").unwrap();
+        for (name, prime) in [("first-exact", false), ("second-build-index", true)] {
+            group.bench_function(
+                BenchmarkId::new(format!("regression/lookup/{name}"), BACKEND),
+                |b| {
+                    b.iter_batched_ref(
+                        || {
+                            let fresh = ondas::open_with(&path, BACKEND).unwrap();
+                            if prime {
+                                black_box(fresh.hierarchy().variable_path(&lookup).unwrap());
+                            }
+                            fresh
+                        },
+                        |fresh| {
+                            black_box(fresh.hierarchy().variable_path(black_box(&lookup)).unwrap());
+                        },
+                        BatchSize::SmallInput,
+                    )
+                },
+            );
+        }
         group.bench_function(BenchmarkId::new("hierarchy/variable-path", BACKEND), |b| {
             b.iter(|| black_box(wave.hierarchy().variable_path(black_box(&lookup)).unwrap()));
         });
@@ -123,6 +143,50 @@ pub(super) fn topology(c: &mut Criterion) {
         });
         group.finish();
     }
+}
+
+pub(super) fn sparse_dense(c: &mut Criterion) {
+    let fixture = "fst0087-sparse-dense-active";
+    let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
+    let mut wave = ondas::open_with(&path, BACKEND).unwrap();
+    let mut group = c.benchmark_group(format!(
+        "fst/{}/{fixture}/file/regression",
+        fixtures::PROVIDER
+    ));
+    group.sample_size(10);
+    for bank in ["sparse", "dense"] {
+        let signals = (0..64)
+            .map(|i| {
+                wave.hierarchy()
+                    .signal(&format!("top.{bank}.bit_{i:02}"))
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            signals
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            64
+        );
+        for (size, tick) in [(1, 4096), (16, 4096), (64, 4096), (16, 256)] {
+            let time = Time::from_ticks(tick);
+            wave.samples(&signals[..size], time).unwrap();
+            group.bench_function(
+                BenchmarkId::new(
+                    format!("sample/fresh-selection/{bank}/unique{size}/t{tick}"),
+                    BACKEND,
+                ),
+                |b| {
+                    b.iter(|| {
+                        let mut selection = wave.select(black_box(&signals[..size])).unwrap();
+                        black_box(selection.samples(black_box(time)).unwrap());
+                    })
+                },
+            );
+        }
+    }
+    group.finish();
 }
 
 pub(super) fn wide(c: &mut Criterion) {

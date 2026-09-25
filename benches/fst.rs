@@ -359,6 +359,7 @@ criterion_group!(
     chipyard,
     picorv32,
     hotpaths::topology,
+    hotpaths::sparse_dense,
     hotpaths::wide,
     hotpaths::boundaries,
     hotpaths::strings,
