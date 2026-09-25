@@ -70,6 +70,41 @@ fn escaped_names_preserve_spelling_without_changing_identity() {
     );
 }
 
+// No installed public FST currently contains an escaped scope; keep the optional
+// converter check for the scope case while the locked FST tests cover variables.
+#[test]
+#[ignore = "requires GTKWave vcd2fst on PATH"]
+fn fst_escaped_scope_spelling() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tmp")
+        .join(format!("escaped-scope-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let vcd = root.join("input.vcd");
+    let fst = root.join("input.fst");
+    std::fs::write(
+        &vcd,
+        b"$timescale 1ns $end\n$scope module \\top $end\n\
+          $var wire 1 ! flag $end\n$upscope $end\n$enddefinitions $end\n\
+          #0\n0!\n#1\n1!\n",
+    )
+    .unwrap();
+    assert!(
+        std::process::Command::new("vcd2fst")
+            .arg(&vcd)
+            .arg(&fst)
+            .status()
+            .unwrap()
+            .success()
+    );
+    for wave in [
+        ondas::open(&fst).unwrap(),
+        ondas::open_bytes(fst.to_str().unwrap(), std::fs::read(&fst).unwrap().into()).unwrap(),
+    ] {
+        assert!(wave.hierarchy().scope("top").unwrap().name_was_escaped());
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn reused_selection_matches_fresh_replay() {
     let mut wave = open(

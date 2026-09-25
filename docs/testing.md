@@ -134,7 +134,10 @@ require the locked public release; a local matching-version snapshot is only
 development evidence. The conflict fixture has an empty oracle, so discovery in
 the full pool is not diagnostic coverage. The focused
 `fsdb_conflicting_scope_diagnostic_and_metadata_bypass` test must be selected
-by the vendor gate.
+by the vendor gate. The installed FST checks escaped variable spelling and
+alias identity in file/bytes mode. No public FST has an escaped scope, so an
+optional ignored converter test retains that separate scope-provenance check;
+it is not a release gate.
 
 `./dev just ci-fsdb` adds vendor-enabled static, unit, documentation and MSRV
 checks. Focused FSDB regressions cover path/bytes routing, reentrant callbacks,
