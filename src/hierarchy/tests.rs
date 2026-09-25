@@ -98,6 +98,16 @@ fn path_index_is_lazy_and_shared_between_hierarchy_clones() {
     assert!(missing.data.variables_by_path.get().is_none());
     assert_eq!(missing.variable("tb.dut.data").unwrap().name(), "data");
     assert!(missing.data.variables_by_path.get().is_some());
+
+    let exact = fixture();
+    assert_eq!(exact.signal("tb.dut.data[7:0]").unwrap().width(), Some(8));
+    assert!(exact.data.variables_by_path.get().is_none());
+    let fallback = fixture();
+    assert_eq!(
+        fallback.signal("tb.dut.data[1:0]").unwrap().width(),
+        Some(2)
+    );
+    assert!(fallback.data.variables_by_path.get().is_some());
 }
 
 #[test]

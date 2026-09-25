@@ -255,6 +255,8 @@ fn complete_tick<B>(
     visitor: &mut impl FnMut(Time, &[Signal], &[Slot]) -> Result<ControlFlow<B>>,
 ) -> Result<ControlFlow<B>> {
     for &index in active_slots.iter() {
+        #[cfg(test)]
+        streaming_tests::comparison_visit();
         let slot = &mut slots[index];
         slot.changed = slot.pending.as_ref().is_some_and(|value| {
             !slot
@@ -269,6 +271,8 @@ fn complete_tick<B>(
         return Ok(ControlFlow::Break(value));
     }
     for index in active_slots.drain(..) {
+        #[cfg(test)]
+        streaming_tests::commit_visit();
         let slot = &mut slots[index];
         if let Some(value) = slot.pending.take()
             && slot.changed
@@ -847,6 +851,8 @@ impl<'w> Selection<'w> {
         if let Some(replay) = replay {
             slots.clone_from_slice(&replay.slots);
         }
+        #[cfg(test)]
+        streaming_tests::setup_visits(slots.len());
         let mut active_slots = slots
             .iter()
             .enumerate()
@@ -1132,7 +1138,7 @@ mod tests {
         let crate::backends::Reader::Fsdb(reader) = &wave.reader else {
             unreachable!()
         };
-        let before = reader.records_read;
+        let before = (reader.records_read, reader.point_queries);
         let mut cold = wave.select(&signals).unwrap();
         let mut actual = Vec::new();
         let _ = cold
@@ -1146,13 +1152,13 @@ mod tests {
             unreachable!()
         };
         assert!(
-            reader.point_queries > 0,
+            reader.point_queries > before.1,
             "cold window must seek entering state"
         );
         assert!(
-            reader.records_read - before < 100,
+            reader.records_read - before.0 < 100,
             "cold window must not replay the prefix: {} records",
-            reader.records_read - before
+            reader.records_read - before.0
         );
     }
 
@@ -1191,10 +1197,14 @@ mod tests {
                     .iter()
                     .map(|&signal| Sample::Missing { signal })
                     .collect();
+                let before = match &wave.reader {
+                    crate::backends::Reader::Fsdb(reader) => reader.point_queries,
+                    _ => unreachable!(),
+                };
                 let _ = wave
                     .select(&signals)
                     .unwrap()
-                    .scan_each(TimeRange::point(time), |index, record| {
+                    .scan_each(TimeRange::closed(Time::ZERO, time), |index, record| {
                         let (value, changed_at) = match record {
                             ScanRef::Initial {
                                 value, changed_at, ..
@@ -1212,11 +1222,34 @@ mod tests {
                         ControlFlow::<()>::Continue(())
                     })
                     .unwrap();
+                let chronological_points = match &wave.reader {
+                    crate::backends::Reader::Fsdb(reader) => reader.point_queries,
+                    _ => unreachable!(),
+                };
+                assert_eq!(chronological_points, before, "reference must not seek");
                 let actual = wave.samples(&signals, time).unwrap();
                 assert_eq!(
                     format!("{actual:?}"),
                     format!("{expected:?}"),
                     "{fixture} tick {tick}"
+                );
+                if tick > 0 && tick < 6001 {
+                    let crate::backends::Reader::Fsdb(reader) = &wave.reader else {
+                        unreachable!()
+                    };
+                    assert!(
+                        reader.point_queries > chronological_points,
+                        "cold point must seek"
+                    );
+                }
+            }
+            if fixture == "fsdb0017-typed-records" {
+                let glitch = wave.hierarchy().signal("top.glitch").unwrap();
+                let sample = wave.sample(glitch, Time::from_ticks(1024)).unwrap();
+                assert!(
+                    matches!(sample, Sample::Value { changed_at: None, ref value, .. }
+                    if matches!(value.as_ref(), ValueRef::Bits(bits) if bits.to_string() == "0")),
+                    "independent fixture history returns to the initial zero at tick 1024"
                 );
             }
             let range = TimeRange::closed(Time::ZERO, Time::from_ticks(6001));
@@ -1261,11 +1294,11 @@ mod tests {
             word.slice(31, 16).unwrap(),
         ];
         let mut selection = wave.select(&signals).unwrap();
-        fn count(selection: &Selection<'_>) -> usize {
+        fn count(selection: &Selection<'_>) -> (usize, usize) {
             let crate::backends::Reader::Fsdb(reader) = &selection.waveform.reader else {
                 unreachable!()
             };
-            reader.records_read
+            (reader.records_read, reader.point_queries)
         }
         let expected = format!("{:?}", selection.samples(Time::from_ticks(4000)).unwrap());
         let before = count(&selection);
@@ -1280,7 +1313,7 @@ mod tests {
         );
         let next = selection.samples(Time::from_ticks(4001)).unwrap();
         // The SDK can synthesize an unchanged word at the new window start.
-        assert!(count(&selection) - before <= 2);
+        assert!(count(&selection).0 - before.0 <= 2);
         assert!(
             matches!(next[1], Sample::Value { changed_at: Some(time), .. } if time == Time::from_ticks(4000))
         );

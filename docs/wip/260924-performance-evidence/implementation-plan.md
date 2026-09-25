@@ -26,7 +26,7 @@ Do not import private recordings, metadata or derived evidence into public artif
 
 - [x] (2026-09-24) Audit release snapshot `4b75d96`, public issues #18–#30, relevant PRs #5–#17, test/benchmark sources, and public provider/oracle contracts; incorporate adversarial review.
 - [x] Revise scope under KISS/YAGNI: four milestones, scenario-family comparisons, existing fixtures first, one new performance artifact, conditional Picorv32 conversion, no blanket per-mechanism ablation.
-- [ ] Milestone 1: repair references, close focused test gaps, and connect required tests to their gates.
+- [ ] Milestone 1: repair references, close focused test gaps, and connect required tests to their gates. Chronological zero-start FSDB point reference, cold/warm counters, sparse-active loop-visit regression and exact/fallback lookup checks now run; conflict fixture/gate remains.
 - [ ] Milestone 2: reuse public data and supply only missing discriminating artifacts/observations.
 - [ ] Milestone 3: add minimal benchmark cases, smoke execution, and accurate coverage documentation.
 - [ ] Milestone 4: run family-level before/after comparisons and complete the evidence ledger.
@@ -51,6 +51,7 @@ Durable conclusions belong in `docs/testing.md`, `docs/api-coverage.md`, `docs/b
 ## Surprises & Discoveries
 
 
+- On the locked 4.6.1 provider, `just conformance-fsdb` passed 10 selected integration tests (public 45/45, optional private pool completed; no private evidence recorded here); seven ignored FSDB library tests were selected and passed. The rewritten chronological point test executes and asserts point-query route isolation.
 - Existing FSDB one-shot `wave.samples` benchmarks already create fresh selections. Prepared `Selection::samples` and late scans can instead become cache/checkpoint hits during Criterion warm-up. Do not classify all existing point benchmarks as missing cold coverage.
 - `fsdb_cold_points_match_chronological_reference` constructs expected values through a fresh positive-start point scan. After `46ca36c`, that reference can also seek entering state. Reference independence must be repaired.
 - Hierarchy clones share the index. The first exact attempt consumes the linear-lookup opportunity even on a miss; a single sliced `signal()` request can make an exact miss followed by a second lookup/index build.
