@@ -520,6 +520,20 @@ fn scr1(c: &mut Criterion) {
         "TOP.scr1_top_tb_ahb.i_top.i_core_top.i_pipe_top.i_pipe_ifu.imem_addr_ff",
     ];
     let signals = paths.map(|path| wave.hierarchy().signal(path).expect("SCR1 workload signal"));
+    // Full-history control on the locked SCR1 AHB VCD, not issue #33's AXI VCD.
+    let full_paths = [
+        "TOP.scr1_top_tb_ahb.i_top.clk",
+        "TOP.scr1_top_tb_ahb.i_top.timer_val",
+        "TOP.scr1_top_tb_ahb.i_top.imem_hburst",
+        "TOP.scr1_top_tb_ahb.i_top.dmem_hburst",
+        "TOP.scr1_top_tb_ahb.i_top.irq_lines",
+        "TOP.scr1_top_tb_ahb.i_top.i_core_top.i_pipe_top.i_pipe_exu.i_ialu.main_sum_res",
+        "TOP.scr1_top_tb_ahb.i_top.i_core_top.i_pipe_top.i_pipe_ifu.imem_addr_ff",
+        "TOP.scr1_top_tb_ahb.i_top.i_timer.mtime_reg",
+        "TOP.scr1_top_tb_ahb.i_top.i_timer.dmem_req_valid",
+    ];
+    let full_signals =
+        full_paths.map(|path| wave.hierarchy().signal(path).expect("full-history signal"));
     let mut group = c.benchmark_group(format!("vcd/{}/{fixture}/file", fixtures::PROVIDER));
     // Late queries parse almost a gigabyte per iteration.
     group.sample_size(10);
@@ -587,6 +601,55 @@ fn scr1(c: &mut Criterion) {
             BACKEND,
         ),
         |b| b.iter(|| black_box(selection.samples(black_box(time)).unwrap())),
+    );
+    drop(selection);
+
+    // Fresh one-shot selections per iteration; the already-open waveform is
+    // outside the timer. These cases include the entire selected VCD history.
+    let full = TimeRange::closed(Time::ZERO, Time::from_ticks(6_244_302));
+    assert!(
+        wave.traces(&full_signals, full)
+            .unwrap()
+            .iter()
+            .map(|trace| trace.changes().len())
+            .sum::<usize>()
+            > 1_000_000,
+        "full-history workload must remain active"
+    );
+    group.bench_function(BenchmarkId::new("cold-full-traces/9", BACKEND), |b| {
+        b.iter(|| {
+            black_box(
+                wave.traces(black_box(&full_signals), black_box(full))
+                    .unwrap(),
+            )
+        })
+    });
+    group.bench_function(BenchmarkId::new("cold-full-scan/9", BACKEND), |b| {
+        b.iter(|| {
+            let mut records = 0_usize;
+            let _ = wave
+                .scan(black_box(&full_signals), black_box(full), |_| {
+                    records += 1;
+                    ControlFlow::<()>::Continue(())
+                })
+                .unwrap();
+            black_box(records)
+        })
+    });
+    group.bench_function(
+        BenchmarkId::new("cold-full-candidate-times/9", BACKEND),
+        |b| {
+            b.iter(|| {
+                let mut candidates = 0_usize;
+                let _ = wave
+                    .scan_candidate_times(black_box(&full_signals), black_box(full), |_| {
+                        candidates += 1;
+                        ControlFlow::<()>::Continue(())
+                    })
+                    .unwrap();
+                black_box(candidates)
+            })
+        },
     );
     group.finish();
 }
