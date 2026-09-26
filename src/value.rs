@@ -200,6 +200,11 @@ impl<'a> BitsRef<'a> {
         Self { data: bytes }
     }
 
+    #[cfg(unix)]
+    pub(crate) fn ascii(self) -> &'a [u8] {
+        self.data
+    }
+
     /// Borrows an inclusive slice whose normalized bounds are already validated.
     pub(crate) fn slice(self, msb: u32, lsb: u32) -> Self {
         let end = self.data.len() - lsb as usize;

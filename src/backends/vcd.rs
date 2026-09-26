@@ -10,6 +10,10 @@ use std::{
 use std::{
     io::{self, BufReader, Read, Seek},
     os::unix::fs::FileExt,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     thread,
 };
 
@@ -212,16 +216,62 @@ struct ChunkSamples {
 }
 
 #[cfg(unix)]
+enum FullValue {
+    Bit(u8),
+    Other(Value),
+}
+
+#[cfg(unix)]
+impl FullValue {
+    fn from_ref(value: ValueRef<'_>) -> Self {
+        match value {
+            ValueRef::Bits(bits) if bits.width() == 1 => {
+                Self::Bit(bits.ascii()[0].to_ascii_lowercase())
+            }
+            _ => Self::Other(value.to_owned()),
+        }
+    }
+
+    fn as_ref(&self) -> ValueRef<'_> {
+        match self {
+            Self::Bit(byte) => {
+                ValueRef::Bits(BitsRef::from_validated_ascii(std::slice::from_ref(byte)))
+            }
+            Self::Other(value) => value.as_ref(),
+        }
+    }
+}
+
+#[cfg(unix)]
+struct FullRecord {
+    index: usize,
+    time: Time,
+    value: FullValue,
+    position: Position,
+}
+
+#[cfg(unix)]
 struct RangeReader {
     file: Arc<File>,
     start: u64,
     len: u64,
     cursor: u64,
+    canceled: Option<Arc<AtomicBool>>,
 }
 
 #[cfg(unix)]
 impl Read for RangeReader {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        if bytes.is_empty() {
+            return Ok(0);
+        }
+        if self
+            .canceled
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Relaxed))
+        {
+            return Err(io::Error::other("VCD query canceled"));
+        }
         let remaining = self.len - self.cursor;
         let count = bytes.len().min(remaining as usize);
         let read = self
@@ -543,6 +593,7 @@ impl Reader {
                             start: range[0] as u64,
                             len: (range[1] - range[0]) as u64,
                             cursor: 0,
+                            canceled: None,
                         },
                     );
                     let offset = range[0] as u64;
@@ -677,6 +728,7 @@ impl Reader {
                             start: range[0] as u64,
                             len: (range[1] - range[0]) as u64,
                             cursor: 0,
+                            canceled: None,
                         },
                     );
                     let offset = range[0] as u64;
@@ -837,8 +889,14 @@ impl Reader {
         signals: &[Signal],
         end: Time,
         position: Option<Position>,
-        visitor: impl for<'v> FnMut(usize, Time, ValueRef<'v>, Position) -> ControlFlow<B>,
+        mut visitor: impl for<'v> FnMut(usize, Time, ValueRef<'v>, Position) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>> {
+        #[cfg(unix)]
+        if position.is_none()
+            && let Some(result) = self.parallel_full(signals, end, &mut visitor)
+        {
+            return result;
+        }
         let position = position.unwrap_or(Position {
             offset: self.body,
             time: 0,
@@ -854,6 +912,184 @@ impl Reader {
             self.position = None;
         }
         result.map(|(flow, _, _)| flow)
+    }
+
+    #[cfg(unix)]
+    fn parallel_full<B>(
+        &mut self,
+        signals: &[Signal],
+        end: Time,
+        visitor: &mut impl for<'v> FnMut(usize, Time, ValueRef<'v>, Position) -> ControlFlow<B>,
+    ) -> Option<Result<ControlFlow<B>>> {
+        let source = self.parallel.as_ref()?;
+        if signals.is_empty() || end.ticks() < source.last_time {
+            return None;
+        }
+        // Fixed budget across channel slots, active batches and the consumer.
+        // Declared widths bound payloads; strings have no such bound.
+        let width = signals.iter().try_fold(0_usize, |width, signal| {
+            let bytes = match signal.encoding() {
+                Encoding::Bits { width } => width as usize,
+                Encoding::Real => std::mem::size_of::<f64>(),
+                Encoding::Event | Encoding::Unsupported => 0,
+                Encoding::String => return None,
+            };
+            Some(width.max(bytes))
+        })?;
+        let workers = source.cuts.len() - 1;
+        let bytes = std::mem::size_of::<FullRecord>().checked_add(width)?;
+        const QUEUED_BATCHES: usize = 24;
+        let batch_len = (192 * 1024 * 1024 / workers / (QUEUED_BATCHES + 2) / bytes).min(4096);
+        if batch_len == 0 {
+            return None;
+        }
+        let selected = Arc::new(signals.iter().map(|s| s.index()).collect::<HashSet<_>>());
+        let canceled = Arc::new(AtomicBool::new(false));
+        let result = thread::scope(|scope| {
+            let mut receivers = Vec::with_capacity(workers);
+            let mut handles = Vec::with_capacity(workers);
+            for range in source.cuts.windows(2) {
+                let (tx, rx) = mpsc::sync_channel::<Result<Vec<FullRecord>>>(QUEUED_BATCHES);
+                let input = BufReader::with_capacity(
+                    256 * 1024,
+                    RangeReader {
+                        file: Arc::clone(&source.file),
+                        start: range[0] as u64,
+                        len: (range[1] - range[0]) as u64,
+                        cursor: 0,
+                        canceled: Some(Arc::clone(&canceled)),
+                    },
+                );
+                let mut reader = Self {
+                    tokens: Tokens {
+                        input: Box::new(input),
+                        offset: range[0] as u64,
+                        #[cfg(test)]
+                        growths: 0,
+                    },
+                    position: None,
+                    #[cfg(test)]
+                    records_read: 0,
+                    body: self.body,
+                    ids: Arc::clone(&self.ids),
+                    dense_ids: Arc::clone(&self.dense_ids),
+                    encodings: self.encodings.clone(),
+                    parallel: None,
+                };
+                let stop = range[1] as u64;
+                let selected = Arc::clone(&selected);
+                let handle = thread::Builder::new().spawn_scoped(scope, move || {
+                    let mut batch = Vec::with_capacity(batch_len);
+                    let mut early = 0;
+                    let read = reader.walk(
+                        u64::MAX,
+                        Some(&selected),
+                        None,
+                        |index, time, value, position| {
+                            batch.push(FullRecord {
+                                index,
+                                time,
+                                value: FullValue::from_ref(value),
+                                position,
+                            });
+                            // Do not make an early Break wait for a full batch
+                            // when selected records are sparse.
+                            if batch.len() == batch_len || early < 2 {
+                                if early < 2 {
+                                    early += 1;
+                                }
+                                if tx
+                                    .send(Ok(std::mem::replace(
+                                        &mut batch,
+                                        Vec::with_capacity(batch_len),
+                                    )))
+                                    .is_err()
+                                {
+                                    return ControlFlow::Break(());
+                                }
+                            }
+                            ControlFlow::Continue(())
+                        },
+                    );
+                    let error = match read {
+                        Ok((ControlFlow::Continue(()), _, _)) if reader.tokens.offset == stop => {
+                            None
+                        }
+                        Ok((ControlFlow::Continue(()), _, _)) => {
+                            Some(malformed("unexpected EOF in VCD chunk"))
+                        }
+                        Err(error) => Some(error),
+                        Ok((ControlFlow::Break(()), _, _)) => return,
+                    };
+                    if !batch.is_empty() && tx.send(Ok(batch)).is_err() {
+                        return;
+                    }
+                    if let Some(error) = error {
+                        let _ = tx.send(Err(error));
+                    }
+                });
+                match handle {
+                    Ok(handle) => {
+                        receivers.push(rx);
+                        handles.push(handle);
+                    }
+                    Err(_) => {
+                        canceled.store(true, Ordering::Relaxed);
+                        drop(receivers);
+                        for handle in handles {
+                            let _ = handle.join();
+                        }
+                        return None;
+                    }
+                }
+            }
+            let mut output = Ok(ControlFlow::Continue(()));
+            'chunks: for rx in &receivers {
+                while let Ok(batch) = rx.recv() {
+                    match batch {
+                        Ok(batch) => {
+                            for record in batch {
+                                if let ControlFlow::Break(value) = visitor(
+                                    record.index,
+                                    record.time,
+                                    record.value.as_ref(),
+                                    record.position,
+                                ) {
+                                    output = Ok(ControlFlow::Break(value));
+                                    break 'chunks;
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            output = Err(error);
+                            break 'chunks;
+                        }
+                    }
+                }
+            }
+            if !matches!(&output, Ok(ControlFlow::Continue(()))) {
+                canceled.store(true, Ordering::Relaxed);
+            }
+            drop(receivers);
+            for handle in handles {
+                if handle.join().is_err() && output.is_ok() {
+                    output = Err(malformed("VCD query worker panicked"));
+                }
+            }
+            Some(output)
+        });
+        self.position = result.as_ref().and_then(|output| {
+            output
+                .as_ref()
+                .ok()
+                .filter(|flow| flow.is_continue())
+                .map(|_| Position {
+                    offset: *source.cuts.last().unwrap() as u64,
+                    time: source.last_time,
+                    block: false,
+                })
+        });
+        result
     }
 
     fn walk<B>(
@@ -1444,12 +1680,80 @@ mod replay_tests {
 
     #[cfg(unix)]
     #[test]
-    fn parallel_prefix_falls_back_before_wide_value_allocation() {
+    fn canceled_chunk_stops_reading_before_eof() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tmp")
+            .join(format!("canceled-chunk-{}.vcd", std::process::id()));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"0123456789").unwrap();
+        let canceled = Arc::new(AtomicBool::new(false));
+        let mut reader = RangeReader {
+            file: Arc::new(File::open(&path).unwrap()),
+            start: 0,
+            len: 10,
+            cursor: 0,
+            canceled: Some(Arc::clone(&canceled)),
+        };
+        let mut buf = [0; 2];
+        assert_eq!(reader.read(&mut buf).unwrap(), 2);
+        canceled.store(true, Ordering::Relaxed);
+        assert_eq!(
+            reader.read(&mut buf).unwrap_err().kind(),
+            io::ErrorKind::Other
+        );
+        assert_eq!(reader.cursor, 2);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parallel_full_keeps_strings_serial() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tmp")
+            .join(format!("parallel-string-{}.vcd", std::process::id()));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let source = b"$var real 1 ! text $end $enddefinitions $end #0 sHello !\n#1 sWorld !\n";
+        std::fs::write(&path, source).unwrap();
+        let (mut reader, hierarchy, _) = Reader::open(
+            Box::new(BufReader::new(File::open(&path).unwrap())),
+            "strings.vcd".into(),
+            None,
+        )
+        .unwrap();
+        let signal = hierarchy.signal("text").unwrap();
+        assert_eq!(signal.encoding(), Encoding::String);
+        let cut = source
+            .windows(3)
+            .position(|bytes| bytes == b"\n#1")
+            .unwrap()
+            + 1;
+        reader.force_parallel_for_test(File::open(&path).unwrap(), vec![cut, source.len()], 1);
+        assert!(
+            reader
+                .parallel_full(&[signal], Time::from_ticks(1), &mut |_, _, _, _| {
+                    ControlFlow::<()>::Continue(())
+                })
+                .is_none()
+        );
+        let mut observed = Vec::new();
+        let _ = reader
+            .read(&[signal], Time::from_ticks(1), |_, time, value| {
+                observed.push(format!("{}:{value:?}", time.ticks()));
+                ControlFlow::<()>::Continue(())
+            })
+            .unwrap();
+        assert_eq!(observed, ["0:String(\"Hello\")", "1:String(\"World\")"]);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parallel_paths_fall_back_before_wide_value_allocation() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tmp")
             .join(format!("wide-prefix-{}.vcd", std::process::id()));
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let source = b"$var wire 1000000 ! wide $end $enddefinitions $end #0 b0 !\n#1 b1 !\n";
+        let source = b"$var wire 8000000 ! wide $end $enddefinitions $end #0 b0 !\n#1 b1 !\n";
         std::fs::write(&path, source).unwrap();
         let (mut reader, hierarchy, _) = Reader::open(
             Box::new(BufReader::new(File::open(&path).unwrap())),
@@ -1467,6 +1771,13 @@ mod replay_tests {
         assert!(
             reader
                 .parallel_prefix(&[signal], Time::from_ticks(1))
+                .is_none()
+        );
+        assert!(
+            reader
+                .parallel_full(&[signal], Time::from_ticks(1), &mut |_, _, _, _| {
+                    ControlFlow::<()>::Continue(())
+                })
                 .is_none()
         );
         std::fs::remove_file(path).unwrap();

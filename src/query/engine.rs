@@ -1125,6 +1125,238 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn vcd_parallel_full_preserves_order_events_slices_and_early_break() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tmp")
+            .join(format!("parallel-full-{}.vcd", std::process::id()));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let source = b"$var wire 4 ! a $end $var event 1 # e $end \
+            $var wire 1 % b $end $enddefinitions $end $dumpvars b0000 ! 1# 0% $end\n\
+            #0 b0010 ! 1%\n#1 b0011 ! 1# x%\n#2 b0100 ! 1# 0%\n\
+            #2 b1111 ! 1# 1# 1%\n#3 b1111 !\n#4 b0001 ! 1# z%\n#5 b0011 !\n";
+        std::fs::write(&path, source).unwrap();
+        let mut wave = crate::open_with(&path, "vcd-native").unwrap();
+        let mut serial =
+            crate::open_bytes_with("reference.vcd", source.as_slice().into(), "vcd-native")
+                .unwrap();
+        let cuts = source
+            .windows(3)
+            .enumerate()
+            .filter_map(|(offset, bytes)| (bytes == b"\n#2").then_some(offset + 1))
+            .collect::<Vec<_>>();
+        assert_eq!(cuts.len(), 2);
+        let crate::backends::Reader::Vcd(reader) = &mut wave.reader else {
+            unreachable!()
+        };
+        reader.force_parallel_for_test(
+            std::fs::File::open(&path).unwrap(),
+            vec![cuts[0], cuts[1], source.len()],
+            5,
+        );
+        reader.records_read = 0;
+        let select = |wave: &crate::Waveform| {
+            let a = wave.hierarchy().signal("a").unwrap();
+            [
+                a,
+                a.slice(1, 0).unwrap(),
+                wave.hierarchy().signal("e").unwrap(),
+                a,
+                wave.hierarchy().signal("b").unwrap(),
+            ]
+        };
+        let selected = select(&wave);
+        let reference = select(&serial);
+        let summarize = |traces: Vec<crate::Trace>| {
+            traces
+                .into_iter()
+                .map(|trace| {
+                    (
+                        trace.initial().map(|initial| {
+                            format!("{:?}@{:?}", initial.value(), initial.changed_at())
+                        }),
+                        trace
+                            .changes()
+                            .iter()
+                            .map(|change| format!("{:?}:{:?}", change.time(), change.value()))
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        for (index, range) in [
+            TimeRange::all(),
+            TimeRange::closed(Time::ZERO, Time::from_ticks(5)),
+            TimeRange::closed(Time::from_ticks(2), Time::from_ticks(5)),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let observed = wave.traces(&selected, range).unwrap();
+            if index == 0 {
+                let crate::backends::Reader::Vcd(reader) = &wave.reader else {
+                    unreachable!()
+                };
+                assert_eq!(
+                    reader.records_read, 0,
+                    "full-range query must use the parallel reader"
+                );
+            }
+            assert_eq!(
+                summarize(observed),
+                summarize(serial.traces(&reference, range).unwrap()),
+                "trace {range:?}",
+            );
+            let scan = |wave: &mut crate::Waveform, signals: &[crate::Signal]| {
+                let mut records = Vec::new();
+                let _ = wave
+                    .select(signals)
+                    .unwrap()
+                    .scan_each(range, |index, record| {
+                        records.push(match record {
+                            ScanRef::Initial {
+                                value, changed_at, ..
+                            } => {
+                                format!("{index}:initial:{value:?}@{changed_at:?}")
+                            }
+                            ScanRef::Change { time, value, .. } => {
+                                format!("{index}:{time:?}:{value:?}")
+                            }
+                        });
+                        ControlFlow::<()>::Continue(())
+                    })
+                    .unwrap();
+                records
+            };
+            assert_eq!(scan(&mut wave, &selected), scan(&mut serial, &reference));
+        }
+        let collect = |wave: &mut crate::Waveform, signals: &[crate::Signal]| {
+            let mut times = Vec::new();
+            let _ = wave
+                .scan_candidate_times(signals, TimeRange::all(), |time| {
+                    times.push(time);
+                    ControlFlow::<()>::Continue(())
+                })
+                .unwrap();
+            times
+        };
+        assert_eq!(
+            collect(&mut wave, &selected),
+            collect(&mut serial, &reference)
+        );
+        let first = |wave: &mut crate::Waveform, signals: &[crate::Signal]| {
+            wave.scan(signals, TimeRange::all(), |record| match record {
+                ScanRef::Change { time, .. } => ControlFlow::Break(time),
+                _ => ControlFlow::Continue(()),
+            })
+            .unwrap()
+        };
+        assert_eq!(first(&mut wave, &selected), first(&mut serial, &reference));
+        {
+            let mut prepared = wave.select(&selected).unwrap();
+            let mut baseline = serial.select(&reference).unwrap();
+            for range in [
+                TimeRange::all(),
+                TimeRange::closed(Time::from_ticks(2), Time::from_ticks(3)),
+                TimeRange::all(),
+            ] {
+                assert_eq!(
+                    summarize(prepared.traces(range).unwrap()),
+                    summarize(baseline.traces(range).unwrap()),
+                    "prepared trace {range:?}",
+                );
+            }
+        }
+
+        // A changed source must still report malformed selected values in both
+        // paths rather than turning a completed chunk into a partial success.
+        let mut serial_file = crate::open_with(&path, "vcd-native").unwrap();
+        let mut changed = source.to_vec();
+        let position = changed
+            .windows(b"#4 b0001 !".len())
+            .position(|bytes| bytes == b"#4 b0001 !")
+            .unwrap();
+        changed[position + 4] = b'q';
+        std::fs::write(&path, changed).unwrap();
+        let invalid_range = TimeRange::all();
+        let serial_selected = select(&serial_file);
+        let error = wave
+            .traces(&selected, invalid_range)
+            .err()
+            .expect("invalid value");
+        let expected = serial_file
+            .traces(&serial_selected, invalid_range)
+            .err()
+            .expect("invalid value");
+        assert_eq!(format!("{error:?}"), format!("{expected:?}"));
+
+        // The first chunk fails after several selected records but before a
+        // full batch: scans must emit that prefix, and a Break there beats the
+        // subsequent malformed record just as it does in serial replay.
+        let mut changed = source.to_vec();
+        let position = changed.windows(2).position(|bytes| bytes == b"x%").unwrap();
+        changed[position] = b'q';
+        std::fs::write(&path, changed).unwrap();
+        let partial = |wave: &mut crate::Waveform, signals: &[crate::Signal]| {
+            let mut records = Vec::new();
+            let error = wave
+                .scan(signals, TimeRange::all(), |record| {
+                    if let ScanRef::Change { time, value, .. } = record {
+                        records.push(format!("{time:?}:{value:?}"));
+                    }
+                    ControlFlow::<()>::Continue(())
+                })
+                .expect_err("invalid value");
+            (records, format!("{error:?}"))
+        };
+        assert_eq!(
+            partial(&mut wave, &selected),
+            partial(&mut serial_file, &serial_selected)
+        );
+        assert_eq!(
+            first(&mut wave, &selected),
+            first(&mut serial_file, &serial_selected)
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn vcd_full_scan_breaks_with_sparse_selected_activity() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tmp")
+            .join(format!("sparse-break-{}.vcd", std::process::id()));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut source = b"$var wire 1 ! selected $end $var wire 1 \" noise $end \
+            $enddefinitions $end #0 0! #1 1! "
+            .to_vec();
+        source.extend_from_slice(b"0\" ".repeat(100_000).as_slice());
+        let cut = source.len() + 1;
+        source.extend_from_slice(b"\n#2 ");
+        source.extend_from_slice(b"1\" ".repeat(100_000).as_slice());
+        std::fs::write(&path, &source).unwrap();
+        let mut wave = crate::open_with(&path, "vcd-native").unwrap();
+        let signal = wave.hierarchy().signal("selected").unwrap();
+        let crate::backends::Reader::Vcd(reader) = &mut wave.reader else {
+            unreachable!()
+        };
+        reader.force_parallel_for_test(
+            std::fs::File::open(&path).unwrap(),
+            vec![cut, source.len()],
+            2,
+        );
+        assert_eq!(
+            wave.scan(&[signal], TimeRange::all(), |record| match record {
+                ScanRef::Change { time, .. } => ControlFlow::Break(time),
+                _ => ControlFlow::Continue(()),
+            })
+            .unwrap(),
+            ControlFlow::Break(Time::ZERO)
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
     #[cfg(feature = "fsdb-lib")]
     #[test]
     #[ignore = "requires real FSDB runtime and locked public fixtures"]

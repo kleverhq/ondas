@@ -32,15 +32,21 @@ establish entering state; records inside the window produce changes. A sample
 likewise needs every record at its requested tick for final state or event count.
 On large Unix files that passed split validation at opening, eligible cold
 bit/real selections can summarize only their selected prefix concurrently
-and resume sequential replay at the next timestamp. Small inputs, bytes,
-events, slices, strings, oversized selections, ambiguous boundaries and failed
-parallel work use serial replay
-from the body. The query engine handles both paths with the same normalization.
+and resume sequential replay at the next timestamp. Events, slices, strings,
+oversized selections and ambiguous boundaries use serial prefix replay. For a
+full-range file query, the same validated chunk boundaries can instead parse
+selected records concurrently, delivering bounded batches in source order to
+the existing query engine. Strings, small files, byte inputs, other platforms
+and failed worker startup use serial full-range replay. Opening does not retain
+histories or precompute query state.
 
 The query engine applies projections and final-tick normalization, including
-per-tick event aggregates, and keeps entering state separate from changes. Scans emit callbacks without retaining
-an entire trace; owned trace requests collect their output. `Break` stops a scan,
-and invalidates the selection's replay state.
+per-tick event aggregates, and keeps entering state separate from changes. Scans
+emit callbacks without an unbounded history cache; eligible full-range file
+scans may temporarily buffer selected records in bounded parallel batches.
+Owned trace requests also collect their output. `Break` stops further callbacks,
+discards queued batches, interrupts remaining worker reads and invalidates the
+selection's replay state.
 
 A reusable selection retains one private parser position and the entering/final
 selected state at its last completed tick. Repeated and forward reads can resume
@@ -73,11 +79,12 @@ Shared observation logic is in [`src/query/engine.rs`](../src/query/engine.rs).
 | Choice | Consequence |
 |---|---|
 | Full validation at opening | Opening reads the whole source before any query can run. Large Unix files can split this work across cores without retaining value histories; encodings, comments and time bounds are merged in source order. |
-| On-demand selected prefix summaries | Large Unix files can process independent prefix chunks concurrently for eligible cold point or window queries; the target window is still replayed in order. Other queries replay from the body when no reusable state exists. |
+| On-demand selected prefix summaries | Large Unix files can process independent prefix chunks concurrently for eligible cold point or window queries; the target window is still replayed in order. Ineligible queries replay from the body. |
+| Bounded full-range batch replay | Large Unix files can parse selected records in parallel from the original file handle and send batches in source order. Up to approximately 192 MiB of selected records may be in flight across workers (excluding allocator overhead), even for a streaming scan; strings and oversized declared widths fall back to serial replay. The parser still reads the full text, and the opening pass is unchanged. |
 | Batch selected signals | One traversal serves the batch. A reusable selection also retains bounded projected values and event counts for replay reuse. |
 | No history cache or time index | A selection retains the last replay window and at most one bounded range-boundary snapshot. The identifier map alone cannot seek to a tick. |
 | Buffered file input and reusable body token buffers | Whitespace and its following token are read together. Dense printable identifier codes use a bounded direct table; sparse codes use the identifier map. The reader does not load the entire file into memory. Bytes input retains the caller's shared source allocation. |
-| Streaming observations | Working storage includes declarations, identifier maps, parser buffers and bounded entering/pending values and event counts per selection entry, not the complete history. Wide values still need space. Owned traces also retain their requested output. |
+| Streaming observations | Working storage includes declarations, identifier maps, parser buffers, bounded transient full-range batches, and entering/pending values and event counts per selection entry. Wide values still need space. Owned traces also retain their requested output. |
 
 Source bit digits are validated before selection filtering, including high digits
 that will be truncated. Padding/truncation then constructs the selected vector
@@ -90,8 +97,8 @@ than parsing. Fresh-selection benchmark cases include the first prefix and
 snapshot construction; opening remains a separate operation.
 
 The reader uses no persistent checkpoint database, mmap or complete value
-history. Its large-file parallel passes hold only bounded chunk-local selected
-state, not a reusable global time index; they are not a throughput claim. Measure changes using the [benchmarking policy](benchmarking.md).
+history. Its large-file parallel passes hold bounded transient selected state,
+not a reusable global time index. Measure changes using the [benchmarking policy](benchmarking.md).
 Sources must remain unchanged while open.
 
 ## Supported data
