@@ -15,10 +15,11 @@ Do not defer VCD body validation or `metadata().time_span()` to the first query,
 - [x] (2026-09-26) Publish `kleverhq.ondas-fixtures` v4.8.0 (`919f671`) with `vcd0098-picorv32-test-vcd`, converted from public `fst0013`, alongside existing `vcd0097-scr1-max-ahb-coremark`. The new VCD has an empty oracle, so its benchmark validates the artifact and successful opens but is not a positive oracle-conformance case.
 - [x] (2026-09-26) Add direct Wellen/default and Wellen/single-thread open controls to the SCR1 benchmark, add PicoRV32 controls, and measure before modifying the parser. The pre-change AHB Criterion open estimates were Ondas 3.071 s, Wellen 0.781 s, Wellen single-thread 3.230 s. The PicoRV32 historical estimate was Ondas 1.670 s, Wellen 0.535 s, Wellen single-thread 2.021 s.
 - [x] (2026-09-26) Prove a first, insufficient serial improvement: combined whitespace/token reading and a bounded direct identifier-code lookup reduced AHB to 1.964 s (about 36%) and PicoRV32 to 1.168 s (about 30%). Synthetic dense/sparse identifier tests, existing VCD tests, public FST/VCD conformance and benchmark smoke passed. An initial `just ci` reached only the final clean-tree-only package check; `cargo publish --dry-run --locked --allow-dirty` passed. Do not call this a near-Wellen fix.
-- [x] (2026-09-26) Prototype safe parallel file-body validation using independent positional reads from the original file handle, with a serial fallback and byte-input compatibility. AHB measured 0.472 s versus default Wellen 0.817 s; PicoRV32 measured 0.279 s versus 0.569 s. Focused chunk-join tests and the 99-fixture VCD pool (196 positive file/bytes cases; the new empty-oracle VCD skipped) passed. These are encouraging but not yet a reviewed or committed fix.
+- [x] (2026-09-26) Prototype safe parallel file-body validation using independent positional reads from the original file handle, with a serial fallback and byte-input compatibility. AHB measured 0.472 s versus default Wellen 0.817 s; PicoRV32 measured 0.279 s versus 0.569 s. Focused chunk-join tests and the 99-fixture VCD pool (196 positive file/bytes cases; the new empty-oracle VCD skipped) passed. Final clean-tree CI and review later confirmed the result.
 - [x] (2026-09-26) Address both preliminary Astra Medium findings: fallible worker creation now returns to the serial pass instead of panicking under thread exhaustion, and the fixture-free boundary test creates its ignored scratch directory. Focused tests, Clippy and both same-file open controls passed after those changes.
-- [ ] (2026-09-26) Commit the #31 fix, pass the clean-tree `just ci` gate, then obtain the final read-only Astra Medium review and address any new substantive findings.
-- [ ] For #32, first add and time a fixture-backed **cold first query** benchmark after `open()` on PicoRV32: roughly 73 distinct public physical handles from the issue's 100 selectors at ticks 0, 1,225,000,000 and 2,455,330,000, plus a narrow late trace if useful. Keep `open` outside the timed query while measuring an independent end-to-end open-plus-query control.
+- [x] (2026-09-26) Commit the #31 fix as `506f372`; clean-tree `./dev just ci` passed (FST 176/176, VCD 196/196, bench smoke and packaging). Independent final Astra Medium correctness and performance reviews reported no substantive findings.
+- [x] (2026-09-26) Extract the exact 100 public selectors from Wavepeek v3.0.1's `bench/e2e/tests.json`; a scratch #31-complete run resolves them to 73 physical handles. With a fresh open per query, early/mid/late cold queries took 0.00013/0.411/0.843 s, with opening around 0.24 s. This is orientation, not the repository benchmark or a before-fix Criterion baseline.
+- [x] (2026-09-26) Add the full Wavepeek 100-selector (73 unique physical signals) fixture-backed PicoRV32 benchmark at ticks 0, 1,225,000,000 and 2,455,330,000. Each timed one-shot `samples()` creates a fresh selection with no retained replay; the waveform is opened outside the query timer. The separate end-to-end control opens and queries inside each iteration. Before a #32 query change, Criterion estimated 0.046 ms early, 428 ms mid, 862 ms late and 1.096 s end-to-end (10 samples each). A narrow trace is unnecessary to establish the reported point-query bottleneck.
 - [ ] Improve the cold late point/range path without trading away the #31 opening gain or storing an unbounded signal-history cache; verify entering values, final-tick normalization, event counts, invalidation and repeated/early/backward queries. Re-run both #31 and #32 benchmarks on matched bytes and reverse the revision order when measuring noisy differences.
 - [ ] Run `./dev just fixtures-install`, `./dev just ci`, `./dev just msrv`, and `./dev cargo test --doc --locked` after final commits; request an Astra Medium review of the #32 commit. Report remaining tradeoffs explicitly and leave the library unpushed.
 
@@ -39,7 +40,7 @@ Do not defer VCD body validation or `metadata().time_span()` to the first query,
 
 ## Outcomes & Retrospective
 
-Not complete. Both large VCDs currently meet the near-Wellen opening target in a prototype that still needs final review, gates and a commit; #32 remains untouched. The provider's new VCD has no independently generated VCD oracle; existing conformance and focused tests protect the shared parser, not a claimed new oracle for that asset.
+Issue #31 is complete at local commit `506f372`: on both public dumps the validated eager opening pass is faster than Wellen's default file reader, clean-tree CI passed, and two final Astra Medium reviews found no substantive issue. Issue #32 remains open: its cold late query still costs about 0.84 s after a separate 0.24 s open on PicoRV32. The provider's new VCD has no independently generated VCD oracle; existing conformance and focused tests protect the shared parser, not a claimed new oracle for that asset.
 
 ## Context and Orientation
 
@@ -49,7 +50,7 @@ Wellen controls in `benches/vcd.rs` use exactly `wellen = "=0.25.6"` as a develo
 
 ## Open Questions
 
-The prototype splits at newline-prefixed timestamp markers, validates every chunk through the same parser, joins timestamps, comments and real/string observations, and falls back to the original serial reader on an invalid or ambiguous join. An adversarial review must still check that no other legal or malformed cross-chunk state can silently evade that fallback. Once #31 is reviewed and committed, measure how much of #32's cold query remains and whether a bounded position/state index, reusing opening work or a different strategy can fix it without increasing open cost.
+The prototype splits at newline-prefixed timestamp markers, validates every chunk through the same parser, joins timestamps, comments and real/string observations, and falls back to the original serial reader on an invalid or ambiguous join. Preliminary and final adversarial reviews found no remaining substantive chunk-join problem. Issue #32 now has a reproducible prefix-scaling workload; measure it in a committed benchmark before deciding whether an index, reusing opening work or a different query strategy can fix it without increasing open cost.
 
 ## Plan of Work
 
@@ -79,6 +80,7 @@ Observed before/serial-after Criterion estimates, in seconds:
     PicoRV32: Ondas 1.670 -> 1.168; Wellen default 0.535 -> 0.537; Wellen single 2.021 -> 2.017.
     Preliminary parallel AHB: Ondas 0.472; Wellen default 0.817; Wellen single 3.298.
     Preliminary parallel PicoRV32: Ondas 0.279; Wellen default 0.569; Wellen single 2.092.
+    #32 baseline, 100 selectors/73 unique handles: cold one-shot samples at 0/1225000000/2455330000: 0.046 ms / 427.79 ms / 861.80 ms; fresh open plus late samples 1.096 s. The query cases re-use an open waveform across iterations, but each one-shot call starts an uncached selection and seeks the body anew; the end-to-end case opens afresh.
 
 The actual published waveform IDs and SHA-256 values are `vcd0097-scr1-max-ahb-coremark` (`6ffd3f85a383e0f3910dfbb6977b4abb6d8ca26b5ad2a969a160f8f70546522f`) and `vcd0098-picorv32-test-vcd` (`e8f39947f6406c2f10d6ff0b1826af7ce11d67828ebfd431e165348d6be7246f`). No private artifacts are used.
 
@@ -92,4 +94,6 @@ Change note (2026-09-26): Replaced the memory-map hypothesis with measured, safe
 
 Change note (2026-09-26): Replaced the unresolved chunk-join question with its testable prototype and noted the remaining adversarial-review gate; added the measured parallel controls without claiming final success.
 
-Change note (2026-09-26): Recorded the two preliminary Astra Medium findings and their fixes, while leaving the clean-tree CI and final commit review as open gates.
+Change note (2026-09-26): Recorded the two preliminary Astra Medium findings and their fixes. Commit `506f372`, clean-tree CI and two final Astra Medium reviews closed #31; Wavepeek's public selectors and a scratch early/mid/late measurement established the #32 workload without altering its query path.
+
+Change note (2026-09-26): Replaced the #32 benchmark to-do with measured pre-fix Criterion evidence, including the first-query timing boundary and separate end-to-end cost. No #32 query optimization has been applied.

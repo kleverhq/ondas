@@ -86,6 +86,110 @@ const WIDE_SIGNALS: [&str; 64] = [
     "ifu_axi_arqos",
 ];
 
+// Wavepeek v3.0.1 bench/e2e/tests.json: value_picorv32_signals_100.
+const PICORV32_SELECTORS: [&str; 100] = [
+    "testbench.clk",
+    "testbench.resetn",
+    "testbench.trace_data",
+    "testbench.trace_file",
+    "testbench.trace_valid",
+    "testbench.trap",
+    "testbench.top.clk",
+    "testbench.top.count_cycle",
+    "testbench.top.cycle_counter",
+    "testbench.top.firmware_file",
+    "testbench.top.irq",
+    "testbench.top.mem_axi_araddr",
+    "testbench.top.mem_axi_arprot",
+    "testbench.top.mem_axi_arready",
+    "testbench.top.mem_axi_arvalid",
+    "testbench.top.mem_axi_awaddr",
+    "testbench.top.mem_axi_awprot",
+    "testbench.top.mem_axi_awready",
+    "testbench.top.mem_axi_awvalid",
+    "testbench.top.mem_axi_bready",
+    "testbench.top.mem_axi_bvalid",
+    "testbench.top.mem_axi_rdata",
+    "testbench.top.mem_axi_rready",
+    "testbench.top.mem_axi_rvalid",
+    "testbench.top.mem_axi_wdata",
+    "testbench.top.mem_axi_wready",
+    "testbench.top.mem_axi_wstrb",
+    "testbench.top.mem_axi_wvalid",
+    "testbench.top.resetn",
+    "testbench.top.tests_passed",
+    "testbench.top.trace_data",
+    "testbench.top.trace_valid",
+    "testbench.top.trap",
+    "testbench.top.mem.async_axi_transaction",
+    "testbench.top.mem.axi_test",
+    "testbench.top.mem.clk",
+    "testbench.top.mem.delay_axi_transaction",
+    "testbench.top.mem.fast_axi_transaction",
+    "testbench.top.mem.fast_raddr",
+    "testbench.top.mem.fast_waddr",
+    "testbench.top.mem.fast_wdata",
+    "testbench.top.mem.latched_raddr",
+    "testbench.top.mem.latched_raddr_en",
+    "testbench.top.mem.latched_rinsn",
+    "testbench.top.mem.latched_waddr",
+    "testbench.top.mem.latched_waddr_en",
+    "testbench.top.mem.latched_wdata",
+    "testbench.top.mem.latched_wdata_en",
+    "testbench.top.mem.latched_wstrb",
+    "testbench.top.mem.mem_axi_araddr",
+    "testbench.top.mem.mem_axi_arprot",
+    "testbench.top.mem.mem_axi_arready",
+    "testbench.top.mem.mem_axi_arvalid",
+    "testbench.top.mem.mem_axi_awaddr",
+    "testbench.top.mem.mem_axi_awprot",
+    "testbench.top.mem.mem_axi_awready",
+    "testbench.top.mem.mem_axi_awvalid",
+    "testbench.top.mem.mem_axi_bready",
+    "testbench.top.mem.mem_axi_bvalid",
+    "testbench.top.mem.mem_axi_rdata",
+    "testbench.top.mem.mem_axi_rready",
+    "testbench.top.mem.mem_axi_rvalid",
+    "testbench.top.mem.mem_axi_wdata",
+    "testbench.top.mem.mem_axi_wready",
+    "testbench.top.mem.mem_axi_wstrb",
+    "testbench.top.mem.mem_axi_wvalid",
+    "testbench.top.mem.tests_passed",
+    "testbench.top.mem.verbose",
+    "testbench.top.mem.xorshift64_state",
+    "testbench.top.uut.clk",
+    "testbench.top.uut.eoi",
+    "testbench.top.uut.irq",
+    "testbench.top.uut.mem_addr",
+    "testbench.top.uut.mem_axi_araddr",
+    "testbench.top.uut.mem_axi_arprot",
+    "testbench.top.uut.mem_axi_arready",
+    "testbench.top.uut.mem_axi_arvalid",
+    "testbench.top.uut.mem_axi_awaddr",
+    "testbench.top.uut.mem_axi_awprot",
+    "testbench.top.uut.mem_axi_awready",
+    "testbench.top.uut.mem_axi_awvalid",
+    "testbench.top.uut.mem_axi_bready",
+    "testbench.top.uut.mem_axi_bvalid",
+    "testbench.top.uut.mem_axi_rdata",
+    "testbench.top.uut.mem_axi_rready",
+    "testbench.top.uut.mem_axi_rvalid",
+    "testbench.top.uut.mem_axi_wdata",
+    "testbench.top.uut.mem_axi_wready",
+    "testbench.top.uut.mem_axi_wstrb",
+    "testbench.top.uut.mem_axi_wvalid",
+    "testbench.top.uut.mem_instr",
+    "testbench.top.uut.mem_rdata",
+    "testbench.top.uut.mem_ready",
+    "testbench.top.uut.mem_valid",
+    "testbench.top.uut.mem_wdata",
+    "testbench.top.uut.mem_wstrb",
+    "testbench.top.uut.pcpi_insn",
+    "testbench.top.uut.pcpi_rd",
+    "testbench.top.uut.pcpi_ready",
+    "testbench.top.uut.pcpi_rs1",
+];
+
 fn swerv(c: &mut Criterion) {
     let (path, _) = fixtures::load_artifact(&fixtures::provider(), FIXTURE);
     let mut wave = ondas::open_with(&path, BACKEND).expect("open VCD workload");
@@ -721,6 +825,39 @@ fn picorv32_open(c: &mut Criterion) {
             ))
         });
     });
+    let prepare = || {
+        let wave = ondas::open_with(&path, BACKEND).expect("open PicoRV32 VCD");
+        let signals = PICORV32_SELECTORS
+            .map(|name| wave.hierarchy().signal(name).expect("PicoRV32 selector"));
+        (wave, signals)
+    };
+    let (mut check, signals) = prepare();
+    assert_eq!(signals.iter().collect::<HashSet<_>>().len(), 73);
+    let times = [0, 1_225_000_000, 2_455_330_000].map(Time::from_ticks);
+    for time in times {
+        assert_eq!(check.samples(&signals, time).unwrap().len(), 100);
+    }
+    drop(check);
+
+    for time in times {
+        let (mut wave, signals) = prepare();
+        // Each one-shot call creates a fresh selection without retained query state.
+        // Reuse the open waveform to exclude its substantial opening cost.
+        group.bench_function(
+            BenchmarkId::new(format!("cold-samples/fixed100/t{}", time.ticks()), BACKEND),
+            |b| b.iter(|| black_box(wave.samples(black_box(&signals), black_box(time)).unwrap())),
+        );
+    }
+    let late = times[2];
+    group.bench_function(
+        BenchmarkId::new("end-to-end/open+samples/fixed100/t2455330000", BACKEND),
+        |b| {
+            b.iter(|| {
+                let (mut wave, signals) = prepare();
+                black_box(wave.samples(&signals, late).unwrap())
+            });
+        },
+    );
     group.finish();
 }
 
