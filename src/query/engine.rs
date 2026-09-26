@@ -1329,11 +1329,11 @@ mod tests {
             .join(format!("sparse-break-{}.vcd", std::process::id()));
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let mut source = b"$var wire 1 ! selected $end $var wire 1 \" noise $end \
-            $enddefinitions $end #0 0! #1 1! "
+            $enddefinitions $end #0 0! 1! 0! 1! 0! 1! 0! 1! 0! "
             .to_vec();
         source.extend_from_slice(b"0\" ".repeat(100_000).as_slice());
         let cut = source.len() + 1;
-        source.extend_from_slice(b"\n#2 ");
+        source.extend_from_slice(b"\n#1 1! ");
         source.extend_from_slice(b"1\" ".repeat(100_000).as_slice());
         std::fs::write(&path, &source).unwrap();
         let mut wave = crate::open_with(&path, "vcd-native").unwrap();
@@ -1344,7 +1344,7 @@ mod tests {
         reader.force_parallel_for_test(
             std::fs::File::open(&path).unwrap(),
             vec![cut, source.len()],
-            2,
+            1,
         );
         assert_eq!(
             wave.scan(&[signal], TimeRange::all(), |record| match record {

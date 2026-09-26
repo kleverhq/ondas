@@ -251,6 +251,15 @@ struct FullRecord {
 }
 
 #[cfg(unix)]
+fn flush_startup(first_time: &mut Option<Time>, first_transition: &mut bool, time: Time) -> bool {
+    let first_record = first_time.is_none();
+    let next_tick = !*first_transition && first_time.is_some_and(|first| first != time);
+    first_time.get_or_insert(time);
+    *first_transition |= next_tick;
+    first_record || next_tick
+}
+
+#[cfg(unix)]
 struct RangeReader {
     file: Arc<File>,
     start: u64,
@@ -980,33 +989,31 @@ impl Reader {
                 let selected = Arc::clone(&selected);
                 let handle = thread::Builder::new().spawn_scoped(scope, move || {
                     let mut batch = Vec::with_capacity(batch_len);
-                    let mut early = 0;
+                    let mut first_time = None;
+                    let mut first_transition = false;
                     let read = reader.walk(
                         u64::MAX,
                         Some(&selected),
                         None,
                         |index, time, value, position| {
+                            let flush = flush_startup(&mut first_time, &mut first_transition, time);
                             batch.push(FullRecord {
                                 index,
                                 time,
                                 value: FullValue::from_ref(value),
                                 position,
                             });
-                            // Do not make an early Break wait for a full batch
-                            // when selected records are sparse.
-                            if batch.len() == batch_len || early < 2 {
-                                if early < 2 {
-                                    early += 1;
-                                }
-                                if tx
+                            // The first record may finish a tick from the previous chunk;
+                            // the next selected tick can finish this chunk's first tick.
+                            if (batch.len() == batch_len || flush)
+                                && tx
                                     .send(Ok(std::mem::replace(
                                         &mut batch,
                                         Vec::with_capacity(batch_len),
                                     )))
                                     .is_err()
-                                {
-                                    return ControlFlow::Break(());
-                                }
+                            {
+                                return ControlFlow::Break(());
                             }
                             ControlFlow::Continue(())
                         },
@@ -1485,6 +1492,24 @@ mod replay_tests {
         assert_ne!(identifier_number(b"~!"), identifier_number(b"!~"));
         assert_eq!(identifier_number(b" "), None);
         assert_eq!(identifier_number(&[b'~'; 32]), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn full_batches_flush_first_record_and_first_transition() {
+        let mut first_time = None;
+        let mut first_transition = false;
+        let mut flush = |tick| {
+            flush_startup(
+                &mut first_time,
+                &mut first_transition,
+                Time::from_ticks(tick),
+            )
+        };
+        assert!(flush(0));
+        assert!(!flush(0));
+        assert!(flush(1));
+        assert!(!flush(2));
     }
 
     #[cfg(unix)]
