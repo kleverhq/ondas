@@ -38,11 +38,13 @@ pub fn open(path: impl AsRef<Path>) -> Result<Waveform> {
 pub fn read_metadata(path: impl AsRef<Path>) -> Result<Metadata> {
     let path = path.as_ref();
     let name = path.to_string_lossy().into_owned();
-    let mut input: Box<dyn Input> = Box::new(BufReader::new(File::open(path)?));
+    let file = File::open(path)?;
+    let vcd_file = file.try_clone().ok();
+    let mut input: Box<dyn Input> = Box::new(BufReader::new(file));
     let format = detect_format(&mut *input, &name, Some(path))?;
     match format {
         Format::Fst => fst::Reader::open(input, name).map(|(_, _, metadata)| metadata),
-        Format::Vcd => vcd::Reader::open(input, name).map(|(_, _, metadata)| metadata),
+        Format::Vcd => vcd::Reader::open(input, name, vcd_file).map(|(_, _, metadata)| metadata),
         #[cfg(feature = "fsdb-lib")]
         Format::Fsdb => crate::backends::fsdb::read_metadata(path, name),
         _ => Err(Error::NoBackend { format }),
@@ -68,7 +70,7 @@ pub fn open_with(path: impl AsRef<Path>, backend: &str) -> Result<Waveform> {
 /// filename hint returns [`Error::UnsupportedInput`] when that feature is enabled.
 /// The SDK's content probe is only available for file paths.
 pub fn open_bytes(name: impl Into<String>, bytes: Arc<[u8]>) -> Result<Waveform> {
-    open_input(name.into(), Box::new(Cursor::new(bytes)), None, None)
+    open_input(name.into(), Box::new(Cursor::new(bytes)), None, None, None)
 }
 
 /// Opens shared in-memory bytes with only the named backend, without fallback.
@@ -85,6 +87,7 @@ pub fn open_bytes_with(
         name.into(),
         Box::new(Cursor::new(bytes)),
         Some(backend),
+        None,
         None,
     )
 }
@@ -103,11 +106,14 @@ fn check_backend(backend: Option<&str>) -> Result<()> {
 
 fn open_file(path: &Path, backend: Option<&str>) -> Result<Waveform> {
     check_backend(backend)?;
+    let file = File::open(path)?;
+    let vcd_file = file.try_clone().ok();
     open_input(
         path.to_string_lossy().into_owned(),
-        Box::new(BufReader::new(File::open(path)?)),
+        Box::new(BufReader::new(file)),
         backend,
         Some(path),
+        vcd_file,
     )
 }
 
@@ -116,6 +122,7 @@ fn open_input(
     mut input: Box<dyn Input>,
     backend: Option<&str>,
     _path: Option<&Path>,
+    vcd_file: Option<File>,
 ) -> Result<Waveform> {
     check_backend(backend)?;
     #[cfg(feature = "fsdb-lib")]
@@ -132,7 +139,7 @@ fn open_input(
             (Reader::Fst(Box::new(reader)), hierarchy, metadata)
         }
         (Format::Vcd, None | Some("vcd-native")) => {
-            let (reader, hierarchy, metadata) = vcd::Reader::open(input, name)?;
+            let (reader, hierarchy, metadata) = vcd::Reader::open(input, name, vcd_file)?;
             (Reader::Vcd(Box::new(reader)), hierarchy, metadata)
         }
         #[cfg(feature = "fsdb-lib")]

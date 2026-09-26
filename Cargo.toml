@@ -28,6 +28,7 @@ thiserror = "2"
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 sha2 = "0.10"
 toml = "0.9"
+wellen = "=0.25.6"
 
 [[bench]]
 name = "vcd"

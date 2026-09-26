@@ -19,8 +19,11 @@ The header provides scopes, declarations and aliases. The reader builds a
 hierarchy, maps identifier codes to shared signal storage and records the body
 start offset. It then reads every body record to validate the source, determine
 time bounds and settle encodings, including real declarations carrying strings.
-Only then does it return a `Waveform`. The declarations and mappings survive;
-the sequence of value records does not.
+Only then does it return a `Waveform`. On sufficiently large Unix file inputs,
+the opening pass validates independent timestamp-delimited chunks with positional
+reads from the same file; ambiguous boundaries or inconsistent chunks fall back
+to the serial pass. Bytes inputs use the serial pass. The declarations and
+mappings survive; the sequence of value records does not.
 
 ### Queries
 
@@ -64,11 +67,11 @@ Shared observation logic is in [`src/query/engine.rs`](../src/query/engine.rs).
 
 | Choice | Consequence |
 |---|---|
-| Full validation at opening | Opening reads the whole source before any query can run. Encodings and time bounds are then fixed. |
+| Full validation at opening | Opening reads the whole source before any query can run. Large Unix files can split this work across cores without retaining value histories; encodings, comments and time bounds are merged in source order. |
 | Replay from the body start when no reusable state exists | First reads and backward requests pay for the prefix through their end tick. A narrow late window is not a random-access read. |
 | Batch selected signals | One traversal serves the batch. A reusable selection also retains bounded projected values and event counts for replay reuse. |
 | No history cache or time index | A selection retains the last replay window and at most one bounded range-boundary snapshot. The identifier map alone cannot seek to a tick. |
-| Buffered file input and reusable body token buffers | The reader traverses every intervening token, but reuses token/identifier storage and borrows scalar identifiers. It does not load the entire file into memory. Bytes input retains the caller's shared source allocation. |
+| Buffered file input and reusable body token buffers | Whitespace and its following token are read together. Dense printable identifier codes use a bounded direct table; sparse codes use the identifier map. The reader does not load the entire file into memory. Bytes input retains the caller's shared source allocation. |
 | Streaming observations | Working storage includes declarations, identifier maps, parser buffers and bounded entering/pending values and event counts per selection entry, not the complete history. Wide values still need space. Owned traces also retain their requested output. |
 
 Source bit digits are validated before selection filtering, including high digits

@@ -32,6 +32,33 @@ fn read_metadata_preserves_vcd_detection_and_values() {
     std::fs::remove_dir(directory).unwrap();
 }
 
+#[test]
+fn dense_and_sparse_identifier_codes_preserve_values_and_validation() {
+    for (declarations, body, name) in [
+        (
+            "$var wire 1 ! a $end $var wire 1 \" b $end $var wire 1 # c $end",
+            b"#1 0! 1\" 0# #2 1#".as_slice(),
+            "top.c",
+        ),
+        (
+            "$var wire 1 ~~~~~~ a $end",
+            b"#1 0~~~~~~ #2 1~~~~~~".as_slice(),
+            "top.a",
+        ),
+    ] {
+        let mut wave = open(declarations, body);
+        let signal = wave.hierarchy().signal(name).unwrap();
+        match value(wave.sample(signal, Time::from_ticks(2)).unwrap()) {
+            Value::Bits(bits) => assert_eq!(bits.as_ref().to_string(), "1"),
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(
+            ondas::open_bytes("bad.vcd", source(declarations, b"#1 1?").into()),
+            Err(Error::Malformed { .. })
+        ));
+    }
+}
+
 fn value(sample: Sample) -> Value {
     match sample {
         Sample::Value { value, .. } => value,

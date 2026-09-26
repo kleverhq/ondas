@@ -426,6 +426,21 @@ fn scr1(c: &mut Criterion) {
             ))
         });
     });
+    // Wellen reads the body too; the single-thread case controls for its default parallelism.
+    group.bench_function(BenchmarkId::new("open", "wellen"), |b| {
+        b.iter(|| drop(black_box(wellen::simple::read(black_box(&path)).unwrap())));
+    });
+    let single_thread = wellen::LoadOptions {
+        multi_thread: false,
+        ..wellen::LoadOptions::default()
+    };
+    group.bench_function(BenchmarkId::new("open", "wellen-single"), |b| {
+        b.iter(|| {
+            drop(black_box(
+                wellen::simple::read_with_options(black_box(&path), &single_thread).unwrap(),
+            ))
+        });
+    });
     {
         let mut selection = wave.select(&signals[..1]).unwrap();
         for ticks in [62444, 6244000] {
@@ -680,5 +695,34 @@ fn composed(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, composed, swerv, compact_wide, scr1);
+fn picorv32_open(c: &mut Criterion) {
+    let fixture = "vcd0098-picorv32-test-vcd";
+    let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
+    let mut group = c.benchmark_group(format!("vcd/{}/{fixture}/file", fixtures::PROVIDER));
+    group.sample_size(10);
+    group.bench_function(BenchmarkId::new("open", BACKEND), |b| {
+        b.iter(|| {
+            drop(black_box(
+                ondas::open_with(black_box(&path), BACKEND).unwrap(),
+            ))
+        });
+    });
+    group.bench_function(BenchmarkId::new("open", "wellen"), |b| {
+        b.iter(|| drop(black_box(wellen::simple::read(black_box(&path)).unwrap())));
+    });
+    let single_thread = wellen::LoadOptions {
+        multi_thread: false,
+        ..wellen::LoadOptions::default()
+    };
+    group.bench_function(BenchmarkId::new("open", "wellen-single"), |b| {
+        b.iter(|| {
+            drop(black_box(
+                wellen::simple::read_with_options(black_box(&path), &single_thread).unwrap(),
+            ))
+        });
+    });
+    group.finish();
+}
+
+criterion_group!(benches, composed, swerv, compact_wide, scr1, picorv32_open);
 criterion_main!(benches);
