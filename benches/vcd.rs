@@ -848,6 +848,18 @@ fn picorv32_open(c: &mut Criterion) {
             |b| b.iter(|| black_box(wave.samples(black_box(&signals), black_box(time)).unwrap())),
         );
     }
+    let range = TimeRange::closed(
+        Time::from_ticks(2_449_999_999),
+        Time::from_ticks(2_452_000_000),
+    );
+    let (mut wave, signals) = prepare();
+    let clock = signals[0];
+    assert!(!wave.trace(clock, range).unwrap().changes().is_empty());
+    group.bench_function(
+        BenchmarkId::new("cold-trace/testbench.clk/2449999999..=2452000000", BACKEND),
+        |b| b.iter(|| black_box(wave.trace(clock, black_box(range)).unwrap())),
+    );
+
     let late = times[2];
     group.bench_function(
         BenchmarkId::new("end-to-end/open+samples/fixed100/t2455330000", BACKEND),

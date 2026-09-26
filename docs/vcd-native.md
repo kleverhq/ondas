@@ -11,7 +11,7 @@ data flow, storage and limits.
 
 ## How it works
 
-![VCD opening scans the whole source and retains declarations and identifier mappings. Each query seeks back to the body, replays its prefix and produces observations through the shared query engine.](images/vcd-native-flow.drawio.svg)
+![VCD opening validates the whole source and retains declarations and identifier mappings. The shared query engine reconstructs selected state before delivering observations.](images/vcd-native-flow.drawio.svg)
 
 ### Opening
 
@@ -27,12 +27,15 @@ mappings survive; the sequence of value records does not.
 
 ### Queries
 
-Without reusable selected state, a window `[start, end]` does not cause a seek
-to `start`: the reader seeks to the body offset saved during opening. It parses every intervening record through
-`end`, forwarding selected signals to the shared query engine. Records before
-`start` establish entering state; records inside the window produce changes.
-A sample likewise needs all records at its requested tick to obtain the final
-state or event count.
+Without reusable selected state, records before a window `[start, end]`
+establish entering state; records inside the window produce changes. A sample
+likewise needs every record at its requested tick for final state or event count.
+On large Unix files that passed split validation at opening, eligible cold
+bit/real selections can summarize only their selected prefix concurrently
+and resume sequential replay at the next timestamp. Small inputs, bytes,
+events, slices, strings, oversized selections, ambiguous boundaries and failed
+parallel work use serial replay
+from the body. The query engine handles both paths with the same normalization.
 
 The query engine applies projections and final-tick normalization, including
 per-tick event aggregates, and keeps entering state separate from changes. Scans emit callbacks without retaining
@@ -51,14 +54,16 @@ A selection also retains at most one query-boundary checkpoint: normalized
 selected state strictly before the requested range, together with the position
 before its next selected record. Sessions place this boundary at `start - 1`
 to preserve preceding-tick events. Repeating a late window can then avoid its
-prefix, while its first use still traverses the prefix. A changed boundary
-replaces the checkpoint; requests before it fall back to sequential replay.
+prefix; an eligible first use summarizes that prefix in bounded parallel chunks.
+A changed boundary replaces the checkpoint; requests before it may replay
+sequentially.
 The checkpoint includes dump-block context, not merely a timestamp/offset.
 
 Checkpoint storage is capped at 4 MiB, counting the snapshot, slot array and
 owned value bytes (excluding allocator overhead). An oversized snapshot is not
 retained. This cap is additional to the working selection and last replay window;
-there is no index built during opening. The diagram above shows the uncached path.
+there is no time or value index built during opening. The diagram above shows
+the serial uncached path.
 
 The parser and replay loop are in [`src/backends/vcd.rs`](../src/backends/vcd.rs).
 Shared observation logic is in [`src/query/engine.rs`](../src/query/engine.rs).
@@ -68,7 +73,7 @@ Shared observation logic is in [`src/query/engine.rs`](../src/query/engine.rs).
 | Choice | Consequence |
 |---|---|
 | Full validation at opening | Opening reads the whole source before any query can run. Large Unix files can split this work across cores without retaining value histories; encodings, comments and time bounds are merged in source order. |
-| Replay from the body start when no reusable state exists | First reads and backward requests pay for the prefix through their end tick. A narrow late window is not a random-access read. |
+| On-demand selected prefix summaries | Large Unix files can process independent prefix chunks concurrently for eligible cold point or window queries; the target window is still replayed in order. Other queries replay from the body when no reusable state exists. |
 | Batch selected signals | One traversal serves the batch. A reusable selection also retains bounded projected values and event counts for replay reuse. |
 | No history cache or time index | A selection retains the last replay window and at most one bounded range-boundary snapshot. The identifier map alone cannot seek to a tick. |
 | Buffered file input and reusable body token buffers | Whitespace and its following token are read together. Dense printable identifier codes use a bounded direct table; sparse codes use the identifier map. The reader does not load the entire file into memory. Bytes input retains the caller's shared source allocation. |
@@ -84,9 +89,9 @@ Prepared repeated samples and windows can measure retained-state reuse rather
 than parsing. Fresh-selection benchmark cases include the first prefix and
 snapshot construction; opening remains a separate operation.
 
-The reader uses no persistent checkpoint database, mmap or parallel parser. These choices
-favor avoiding retained histories over fast repeated seeks; they are not a
-throughput claim. Measure changes using the [benchmarking policy](benchmarking.md).
+The reader uses no persistent checkpoint database, mmap or complete value
+history. Its large-file parallel passes hold only bounded chunk-local selected
+state, not a reusable global time index; they are not a throughput claim. Measure changes using the [benchmarking policy](benchmarking.md).
 Sources must remain unchanged while open.
 
 ## Supported data

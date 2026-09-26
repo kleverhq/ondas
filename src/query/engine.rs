@@ -835,6 +835,41 @@ impl<'w> Selection<'w> {
             // Mixed values and events retain the chronological reference path.
             self.fsdb_point_states(Time::from_ticks(start.ticks() - 1))?;
         }
+        #[cfg(unix)]
+        if self.replay.is_none()
+            && self.checkpoint.is_none()
+            && let Some(start) = start.filter(|start| *start > Time::ZERO)
+            && !self.retained_signals.iter().any(|signal| signal.is_slice())
+            && let crate::backends::Reader::Vcd(reader) = &self.waveform.reader
+            && let Some((samples, position)) =
+                reader.parallel_prefix(&self.bases, Time::from_ticks(start.ticks() - 1))
+        {
+            let mut initial = vec![Slot::default(); self.retained_signals.len()];
+            for sample in samples {
+                if let Sample::Value {
+                    signal,
+                    value,
+                    changed_at,
+                } = sample
+                {
+                    for &index in &self.groups[&signal.index()] {
+                        initial[index].state = Some(State {
+                            value: value.clone(),
+                            changed_at,
+                        });
+                    }
+                }
+            }
+            if checkpoint_bytes(&initial) <= CHECKPOINT_BYTES {
+                self.checkpoint = Some(Replay {
+                    position: Position::Vcd(position),
+                    start,
+                    end: Time::from_ticks(start.ticks() - 1),
+                    time: None,
+                    slots: initial,
+                });
+            }
+        }
         let mut checkpoint = self.checkpoint.take();
         let retained = self.replay.take().filter(&eligible);
         let replay = retained.as_ref().or_else(|| {
@@ -1006,6 +1041,89 @@ mod streaming_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn vcd_parallel_prefix_preserves_points_and_narrow_traces() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tmp")
+            .join(format!("parallel-query-{}.vcd", std::process::id()));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let source = b"$var wire 4 ! a $end $var wire 1 \" b $end $var event 1 # e $end \
+            $enddefinitions $end #0 b0000 ! 0\" 1#\n#1 b1000 !\n#2 b1100 ! 1\"\n\
+            #3 b1101 ! 1#\n#4 b1111 !\n#5 b0011 ! 0\" 1#\n#6 b0101 !\n";
+        std::fs::write(&path, source).unwrap();
+        let mut wave = crate::open_with(&path, "vcd-native").unwrap();
+        let mut serial =
+            crate::open_bytes_with("reference.vcd", source.as_slice().into(), "vcd-native")
+                .unwrap();
+        let cut = |marker: &[u8]| {
+            source
+                .windows(marker.len())
+                .position(|bytes| bytes == marker)
+                .unwrap()
+                + 1
+        };
+        let crate::backends::Reader::Vcd(reader) = &mut wave.reader else {
+            unreachable!()
+        };
+        reader.force_parallel_for_test(
+            std::fs::File::open(&path).unwrap(),
+            vec![cut(b"\n#2"), cut(b"\n#4"), source.len()],
+            6,
+        );
+        let names = ["a", "b", "e"];
+        let selected = names.map(|name| wave.hierarchy().signal(name).unwrap());
+        let reference = names.map(|name| serial.hierarchy().signal(name).unwrap());
+        let observe = |samples: Vec<Sample>| {
+            samples
+                .into_iter()
+                .map(|sample| match sample {
+                    Sample::Value {
+                        value, changed_at, ..
+                    } => format!("{value:?}@{changed_at:?}"),
+                    Sample::Event { occurrences, .. } => format!("event:{occurrences}"),
+                    Sample::Missing { .. } => "missing".into(),
+                })
+                .collect::<Vec<String>>()
+        };
+        for tick in [0, 1, 2, 3, 4, 5, 6, 10] {
+            let time = Time::from_ticks(tick);
+            assert_eq!(
+                observe(wave.samples(&selected[..2], time).unwrap()),
+                observe(serial.samples(&reference[..2], time).unwrap()),
+                "point at {tick}",
+            );
+            assert_eq!(
+                observe(wave.samples(&selected, time).unwrap()),
+                observe(serial.samples(&reference, time).unwrap()),
+                "mixed event at {tick}",
+            );
+        }
+        let range = TimeRange::closed(Time::from_ticks(4), Time::from_ticks(5));
+        let observed_trace = |traces: Vec<crate::Trace>| {
+            traces
+                .into_iter()
+                .map(|trace| {
+                    (
+                        trace.initial().map(|initial| {
+                            format!("{:?}@{:?}", initial.value(), initial.changed_at())
+                        }),
+                        trace
+                            .changes()
+                            .iter()
+                            .map(|change| format!("{:?}:{:?}", change.time(), change.value()))
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            observed_trace(wave.traces(&selected[..2], range).unwrap()),
+            observed_trace(serial.traces(&reference[..2], range).unwrap()),
+        );
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[cfg(feature = "fsdb-lib")]
     #[test]
