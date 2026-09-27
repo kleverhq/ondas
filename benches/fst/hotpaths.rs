@@ -81,7 +81,7 @@ pub(super) fn topology(c: &mut Criterion) {
                         |fresh| {
                             black_box(fresh.hierarchy().variable_path(black_box(&lookup)).unwrap());
                         },
-                        BatchSize::SmallInput,
+                        BatchSize::PerIteration,
                     )
                 },
             );

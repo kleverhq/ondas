@@ -247,7 +247,7 @@ pub(super) fn topology(c: &mut Criterion, fixture: &str, histories: usize) {
                         |fresh| {
                             black_box(fresh.hierarchy().variable_path(black_box(&lookup)).unwrap());
                         },
-                        BatchSize::SmallInput,
+                        BatchSize::PerIteration,
                     )
                 },
             );

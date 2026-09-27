@@ -8,6 +8,7 @@ use std::{
 
 #[cfg(unix)]
 use std::{
+    cell::RefCell,
     io::{self, BufReader, Read, Seek},
     os::unix::fs::FileExt,
     sync::{
@@ -988,15 +989,27 @@ impl Reader {
                 let stop = range[1] as u64;
                 let selected = Arc::clone(&selected);
                 let handle = thread::Builder::new().spawn_scoped(scope, move || {
-                    let mut batch = Vec::with_capacity(batch_len);
+                    let batch = RefCell::new(Vec::with_capacity(batch_len));
                     let mut first_time = None;
                     let mut first_transition = false;
-                    let read = reader.walk(
+                    let send = |batch: &mut Vec<FullRecord>| {
+                        if !batch.is_empty()
+                            && tx
+                                .send(Ok(std::mem::replace(batch, Vec::with_capacity(batch_len))))
+                                .is_err()
+                        {
+                            ControlFlow::Break(())
+                        } else {
+                            ControlFlow::Continue(())
+                        }
+                    };
+                    let read = reader.walk_with_progress(
                         u64::MAX,
                         Some(&selected),
                         None,
                         |index, time, value, position| {
                             let flush = flush_startup(&mut first_time, &mut first_transition, time);
+                            let mut batch = batch.borrow_mut();
                             batch.push(FullRecord {
                                 index,
                                 time,
@@ -1005,19 +1018,15 @@ impl Reader {
                             });
                             // The first record may finish a tick from the previous chunk;
                             // the next selected tick can finish this chunk's first tick.
-                            if (batch.len() == batch_len || flush)
-                                && tx
-                                    .send(Ok(std::mem::replace(
-                                        &mut batch,
-                                        Vec::with_capacity(batch_len),
-                                    )))
-                                    .is_err()
-                            {
-                                return ControlFlow::Break(());
+                            if batch.len() == batch_len || flush {
+                                send(&mut batch)
+                            } else {
+                                ControlFlow::Continue(())
                             }
-                            ControlFlow::Continue(())
                         },
+                        || send(&mut batch.borrow_mut()),
                     );
+                    let batch = batch.into_inner();
                     let error = match read {
                         Ok((ControlFlow::Continue(()), _, _)) if reader.tokens.offset == stop => {
                             None
@@ -1103,9 +1112,43 @@ impl Reader {
         &mut self,
         end: u64,
         selected: Option<&HashSet<usize>>,
+        comments: Option<&mut Vec<String>>,
+        visitor: impl for<'v> FnMut(usize, Time, ValueRef<'v>, Position) -> ControlFlow<B>,
+    ) -> Result<(ControlFlow<B>, Option<TimeSpan>, Vec<bool>)> {
+        self.walk_inner(end, selected, comments, visitor, None, || {
+            ControlFlow::Continue(())
+        })
+    }
+
+    #[cfg(unix)]
+    fn walk_with_progress<B>(
+        &mut self,
+        end: u64,
+        selected: Option<&HashSet<usize>>,
+        comments: Option<&mut Vec<String>>,
+        visitor: impl for<'v> FnMut(usize, Time, ValueRef<'v>, Position) -> ControlFlow<B>,
+        progress: impl FnMut() -> ControlFlow<B>,
+    ) -> Result<(ControlFlow<B>, Option<TimeSpan>, Vec<bool>)> {
+        self.walk_inner(
+            end,
+            selected,
+            comments,
+            visitor,
+            Some(1024 * 1024),
+            progress,
+        )
+    }
+
+    fn walk_inner<B>(
+        &mut self,
+        end: u64,
+        selected: Option<&HashSet<usize>>,
         mut comments: Option<&mut Vec<String>>,
         mut visitor: impl for<'v> FnMut(usize, Time, ValueRef<'v>, Position) -> ControlFlow<B>,
+        progress_bytes: Option<u64>,
+        mut progress: impl FnMut() -> ControlFlow<B>,
     ) -> Result<(ControlFlow<B>, Option<TimeSpan>, Vec<bool>)> {
+        let mut last_progress = self.tokens.offset;
         let position = self.position.take();
         let mut time = position.map_or(0, |position| position.time);
         let mut span = None::<TimeSpan>;
@@ -1121,6 +1164,12 @@ impl Reader {
         };
         loop {
             let offset = self.tokens.offset;
+            if progress_bytes.is_some_and(|limit| offset - last_progress >= limit) {
+                if let ControlFlow::Break(value) = progress() {
+                    return Ok((ControlFlow::Break(value), span, seen));
+                }
+                last_progress = offset;
+            }
             if !self.tokens.next_into(&mut word)? {
                 break;
             }
@@ -1510,6 +1559,48 @@ mod replay_tests {
         assert!(!flush(0));
         assert!(flush(1));
         assert!(!flush(2));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn full_batches_flush_before_a_large_unselected_suffix() {
+        let mut source = b"$var wire 1 ! selected $end $var wire 1 \" other $end $enddefinitions $end #0 0! #1 1! #2 0! ".to_vec();
+        for _ in 0..300_000 {
+            source.extend_from_slice(b"#3 0\" ");
+        }
+        let length = source.len() as u64;
+        let (mut reader, hierarchy, _) = Reader::open(
+            Box::new(BufReader::new(Cursor::new(source))),
+            "sparse.vcd".into(),
+            None,
+        )
+        .unwrap();
+        reader
+            .tokens
+            .input
+            .seek(SeekFrom::Start(reader.body))
+            .unwrap();
+        reader.tokens.offset = reader.body;
+        reader.position = None;
+        reader.records_read = 0;
+        let selected = HashSet::from([hierarchy.signal("selected").unwrap().index()]);
+        let mut times = Vec::new();
+        let (flow, _, _) = reader
+            .walk_with_progress(
+                u64::MAX,
+                Some(&selected),
+                None,
+                |_, time, _, _| {
+                    times.push(time.ticks());
+                    ControlFlow::<()>::Continue(())
+                },
+                || ControlFlow::Break(()),
+            )
+            .unwrap();
+        assert_eq!(flow, ControlFlow::Break(()));
+        assert_eq!(times, [0, 1, 2]);
+        assert!(reader.tokens.offset < length);
+        assert!(reader.records_read < 300_003);
     }
 
     #[cfg(unix)]
