@@ -47,10 +47,10 @@ build contexts.
 
 ## How it works
 
-The diagram shows the cold-query path; compatible repeated selections can use
-the normalized checkpoint described below.
+The diagram shows the chronological cold-query path for mixed values and events;
+bit-only queries can seek the entering state as described below.
 
-![FSDB opening reads hierarchy and metadata into an owned model. A cold query loads selected SDK identities, traverses from the beginning through the inclusive end, copies values under the SDK lock and feeds the shared query engine outside that lock.](images/fsdb-lib-flow.drawio.svg)
+![FSDB opening reads hierarchy and metadata into an owned model. A chronological cold query loads selected SDK identities, traverses from the beginning through the inclusive end, copies values under the SDK lock and feeds the shared query engine outside that lock.](images/fsdb-lib-flow.drawio.svg)
 
 ### Opening
 
@@ -61,7 +61,9 @@ case-insensitive extensions provide the fallback. Explicit selection never
 switches backends after an opening failure.
 
 The shim opens one `ffrOpenNonSharedObj` per waveform and calls
-`ffrReadScopeVarTree`. Tree callbacks collect scope and variable descriptors;
+`ffrReadScopeVarTree`. When present, datatype blocks are read first so enumeration
+definitions are available to declaration callbacks. Tree callbacks collect scope
+and variable descriptors;
 Rust builds the hierarchy and maps SDK identities to common base signals.
 Aliases retain separate declarations but share a base identity. Header queries
 supply bounds, timescale, writer and date.
@@ -71,6 +73,10 @@ keeps the Reader object, identity/index maps and encodings; the shim retains
 hierarchy descriptors. Opening does not traverse
 all value histories or certify that every later record can be decoded.
 
+`read_metadata(path)` uses the same SDK file open and header queries but skips
+datatype and hierarchy callbacks. It closes the SDK object after copying the
+metadata. It does not validate declarations; `open(path)` still does.
+
 Actual Unix path bytes are passed to the SDK, including non-UTF-8 names;
 `source_name` is only a display string. Embedded NUL is rejected. There are no
 hidden temporary files or memory-file adapters. Keep the source unchanged while
@@ -78,23 +84,38 @@ open.
 
 ### Queries
 
+Cold bit-only point samples use per-signal SDK seeks after loading the deduplicated
+base selection. Each seek finishes its aligned tick. The reader walks earlier
+completed ticks until the selected projection differs, establishing its exact
+normalized `changed_at`; an initial or constant projected state retains `None`.
+This also handles same-tick excursions and redundant writes. A constant projection
+can still require walking its full history. Mixed-value and event selections keep
+the chronological reference path.
+
+The resulting bounded point snapshot represents state after the requested tick.
+It can serve the same point again or seed later windows, never the entering state
+of a window beginning at that tick or earlier. Point snapshots use the existing
+selection cache budget and are discarded on break, error or panic.
+
 For a window `[start, end]`, the shared query layer resolves aliases and
 projections into selected base signals. The shim adds their SDK identities with
 `ffrAddToSignalList`, calls `ffrLoadSignals`, and creates a chronological cursor
 with `ffrCreateTimeBasedVCTrvsHdl`.
 
-Cold traversal starts at the beginning, not at `start`. Earlier selected records
-establish entering values for late windows. A persistent-only selection can retain
-one normalized boundary checkpoint, using the query engine's existing 4 MiB
-checkpoint budget. Compatible later requests restore exact values and projected
-change times and position the SDK view at the saved boundary. Earlier requests,
-event selections and oversized checkpoints use the full-prefix path. Break,
-error and panic discard the checkpoint.
+For a cold bit-only window with a nonzero start, the existing point seek obtains
+exact projected state and change times at `start - 1`. Chronological traversal
+then begins at `start`; records at that tick are still normalized in full. Mixed
+values and events instead start at zero so earlier selected records establish
+entering values and event counts. A persistent-only selection can retain one
+normalized boundary checkpoint within the query engine's 4 MiB budget.
+Compatible later requests restore exact values and projected change times and
+position the SDK view at the saved boundary. Oversized snapshots fall back to
+the full-prefix path. Break, error and panic discard the checkpoint.
 
 A successful persistent-only query also retains its final bounded slot state
 and next unread tick. Repeated point reads need no SDK traversal; forward reads
-can resume from that state. Requests before it use the boundary checkpoint or
-full replay. Neither snapshot accumulates requested times or retains SDK
+can resume from that state. Earlier windows use the boundary checkpoint or
+full replay; cold bit-only points can seek independently. Neither snapshot accumulates requested times or retains SDK
 histories. Both snapshots are discarded on break, error or panic; a new selection
 starts without them and never shares another selection's state. Event selections
 use the reference path for exact preceding-tick counts, and `u64::MAX` has no
@@ -116,8 +137,8 @@ query engine. That engine applies projections, tracks entering state, and emits
 final persistent tick changes and per-tick event aggregates. Samples consume all observations
 at their requested tick; scans can stop with `Break`; owned traces collect output.
 
-When the file supports view windows, loading uses the checkpoint boundary (or
-zero without a checkpoint) through the inclusive query end. The retained state
+When the file supports view windows, loading uses the checkpoint or bit-only
+seek boundary (otherwise zero) through the inclusive query end. The retained state
 preserves exact normalized change times; SDK values preceding the boundary are
 not emitted again. The
 SDK loads complete flush sessions intersecting that window, not precisely the
@@ -139,9 +160,10 @@ in [`native/fsdb.cpp`](../native/fsdb.cpp), and linking in
 |---|---|
 | Hierarchy at opening | Opening retains declarations and identity maps, not decoded histories. Value errors can first appear during queries. |
 | Load selected SDK signals through the query end | Loading precedes callbacks and is flush-session granular. The SDK may allocate substantial selected-history storage even for a short window or an early `Break`. |
-| Bounded normalized checkpoint | A cold late window walks earlier selected records. Compatible repeated windows on the same persistent-only selection can skip that prefix; there is no multi-time index. |
-| Batch base identities | Aliases and projections share base reads. The query engine preserves separate output entries and slice histories. |
-| Caller-owned logic buffer | Each traversal sizes one buffer to the widest selected base bit signal, even when no bit record is reached. Logic is validated/normalized directly into it; a separate reusable buffer copies non-bit records without clearing or resizing the bit destination. SDK pointers never reach visitors. |
+| Bounded normalized checkpoint | A cold bit-only window seeks entering state and reads its bounded interval; mixed values and events replay earlier selected records. Compatible repeated persistent-only windows can reuse one checkpoint; there is no multi-time index. |
+| Batch base identities | Aliases and projections share SDK selection/loading. Chronological scans share base replay; cold points seek each distinct projection. Output order and duplicates are preserved. |
+| Cold bit-only point seeks | Skip unrelated prefix records while proving the selected projection's change time. Native point bytes are copied under the SDK lock; no handle or SDK buffer escapes. Constant projections may still walk the prefix. |
+| Caller-owned chronological logic buffer | Each traversal sizes one buffer to the widest selected base bit signal, even when no bit record is reached. Logic is validated/normalized directly into it; a separate reusable buffer copies non-bit records without clearing or resizing the bit destination. SDK pointers never reach visitors. |
 | Selected-state reuse, no SDK history cache | One final snapshot and one bounded boundary checkpoint belong to the selection. Repeated points can avoid traversal; an actual traversal still performs SDK selection/loading and creates a new cursor. Neither cache grows with query history. |
 | Serialized SDK calls | Independent waveform readers do not execute SDK operations concurrently through this adapter. Rust visitors run outside the lock. |
 | Streaming observations | Shared query state retains bounded entering/pending values and event counts per selection entry. Owned traces additionally retain their output. |
@@ -158,14 +180,24 @@ under the [benchmarking policy](benchmarking.md), not inferred throughput claims
 - Identical declarations in appended hierarchy trees are coalesced. Distinct
   aliases retain their paths and share compatible SDK storage identities.
 - Compatible repeated scopes merge and may supply an absent definition name.
-  Conflicting definitions or scope metadata fail.
+  Conflicting definitions or scope metadata fail with the scope path and differing
+  attributes.
+- The SDK's hidden-scope flag is retained. Hidden scopes and their descendants
+  stay accessible; consumers choose whether to suppress them during traversal.
 - Explicit vector ranges, including `[0:0]`, become declaration metadata. A
-  matching trailing range is removed from the name. Memory indices remain names,
-  not query projections.
+  matching trailing range is removed from unescaped names or after whitespace
+  terminating an escaped identifier. An attached suffix on an escaped name stays
+  literal even when the SDK supplies matching bounds. `Variable::reader_name`
+  retains the pre-extraction SDK spelling, including the escape marker and any
+  printed range, for consumers that distinguish those source forms. Memory indices
+  remain names, not query projections.
 - Known scope and variable kinds map to canonical names; unknown kinds remain
   namespaced. Direction and constant flags are retained when supplied.
-- Record/struct members retain their containing scopes. Language type names,
-  enumeration tables and scope packing are not populated by this adapter.
+- Record/struct members retain their containing scopes and available packing.
+  Enum datatype definitions supply type names and encoded value/label tables.
+  Typed enum and packed-variable callbacks remain visible. Enum histories with
+  supported per-bit Verilog/VHDL logic storage are queryable as bits; other custom
+  storage remains unsupported rather than guessed from labels or observed values.
 - Unsupported declarations remain visible but fail query validation before
   visiting values. Not every composite or user-defined SDK type has a decoder.
 

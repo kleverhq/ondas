@@ -86,6 +86,110 @@ const WIDE_SIGNALS: [&str; 64] = [
     "ifu_axi_arqos",
 ];
 
+// Wavepeek v3.0.1 bench/e2e/tests.json: value_picorv32_signals_100.
+const PICORV32_SELECTORS: [&str; 100] = [
+    "testbench.clk",
+    "testbench.resetn",
+    "testbench.trace_data",
+    "testbench.trace_file",
+    "testbench.trace_valid",
+    "testbench.trap",
+    "testbench.top.clk",
+    "testbench.top.count_cycle",
+    "testbench.top.cycle_counter",
+    "testbench.top.firmware_file",
+    "testbench.top.irq",
+    "testbench.top.mem_axi_araddr",
+    "testbench.top.mem_axi_arprot",
+    "testbench.top.mem_axi_arready",
+    "testbench.top.mem_axi_arvalid",
+    "testbench.top.mem_axi_awaddr",
+    "testbench.top.mem_axi_awprot",
+    "testbench.top.mem_axi_awready",
+    "testbench.top.mem_axi_awvalid",
+    "testbench.top.mem_axi_bready",
+    "testbench.top.mem_axi_bvalid",
+    "testbench.top.mem_axi_rdata",
+    "testbench.top.mem_axi_rready",
+    "testbench.top.mem_axi_rvalid",
+    "testbench.top.mem_axi_wdata",
+    "testbench.top.mem_axi_wready",
+    "testbench.top.mem_axi_wstrb",
+    "testbench.top.mem_axi_wvalid",
+    "testbench.top.resetn",
+    "testbench.top.tests_passed",
+    "testbench.top.trace_data",
+    "testbench.top.trace_valid",
+    "testbench.top.trap",
+    "testbench.top.mem.async_axi_transaction",
+    "testbench.top.mem.axi_test",
+    "testbench.top.mem.clk",
+    "testbench.top.mem.delay_axi_transaction",
+    "testbench.top.mem.fast_axi_transaction",
+    "testbench.top.mem.fast_raddr",
+    "testbench.top.mem.fast_waddr",
+    "testbench.top.mem.fast_wdata",
+    "testbench.top.mem.latched_raddr",
+    "testbench.top.mem.latched_raddr_en",
+    "testbench.top.mem.latched_rinsn",
+    "testbench.top.mem.latched_waddr",
+    "testbench.top.mem.latched_waddr_en",
+    "testbench.top.mem.latched_wdata",
+    "testbench.top.mem.latched_wdata_en",
+    "testbench.top.mem.latched_wstrb",
+    "testbench.top.mem.mem_axi_araddr",
+    "testbench.top.mem.mem_axi_arprot",
+    "testbench.top.mem.mem_axi_arready",
+    "testbench.top.mem.mem_axi_arvalid",
+    "testbench.top.mem.mem_axi_awaddr",
+    "testbench.top.mem.mem_axi_awprot",
+    "testbench.top.mem.mem_axi_awready",
+    "testbench.top.mem.mem_axi_awvalid",
+    "testbench.top.mem.mem_axi_bready",
+    "testbench.top.mem.mem_axi_bvalid",
+    "testbench.top.mem.mem_axi_rdata",
+    "testbench.top.mem.mem_axi_rready",
+    "testbench.top.mem.mem_axi_rvalid",
+    "testbench.top.mem.mem_axi_wdata",
+    "testbench.top.mem.mem_axi_wready",
+    "testbench.top.mem.mem_axi_wstrb",
+    "testbench.top.mem.mem_axi_wvalid",
+    "testbench.top.mem.tests_passed",
+    "testbench.top.mem.verbose",
+    "testbench.top.mem.xorshift64_state",
+    "testbench.top.uut.clk",
+    "testbench.top.uut.eoi",
+    "testbench.top.uut.irq",
+    "testbench.top.uut.mem_addr",
+    "testbench.top.uut.mem_axi_araddr",
+    "testbench.top.uut.mem_axi_arprot",
+    "testbench.top.uut.mem_axi_arready",
+    "testbench.top.uut.mem_axi_arvalid",
+    "testbench.top.uut.mem_axi_awaddr",
+    "testbench.top.uut.mem_axi_awprot",
+    "testbench.top.uut.mem_axi_awready",
+    "testbench.top.uut.mem_axi_awvalid",
+    "testbench.top.uut.mem_axi_bready",
+    "testbench.top.uut.mem_axi_bvalid",
+    "testbench.top.uut.mem_axi_rdata",
+    "testbench.top.uut.mem_axi_rready",
+    "testbench.top.uut.mem_axi_rvalid",
+    "testbench.top.uut.mem_axi_wdata",
+    "testbench.top.uut.mem_axi_wready",
+    "testbench.top.uut.mem_axi_wstrb",
+    "testbench.top.uut.mem_axi_wvalid",
+    "testbench.top.uut.mem_instr",
+    "testbench.top.uut.mem_rdata",
+    "testbench.top.uut.mem_ready",
+    "testbench.top.uut.mem_valid",
+    "testbench.top.uut.mem_wdata",
+    "testbench.top.uut.mem_wstrb",
+    "testbench.top.uut.pcpi_insn",
+    "testbench.top.uut.pcpi_rd",
+    "testbench.top.uut.pcpi_ready",
+    "testbench.top.uut.pcpi_rs1",
+];
+
 fn swerv(c: &mut Criterion) {
     let (path, _) = fixtures::load_artifact(&fixtures::provider(), FIXTURE);
     let mut wave = ondas::open_with(&path, BACKEND).expect("open VCD workload");
@@ -277,6 +381,35 @@ fn swerv(c: &mut Criterion) {
         );
     }
     group.finish();
+
+    let window = TimeRange::closed(Time::from_ticks(12000), Time::from_ticks(13000));
+    let mut group = c.benchmark_group(format!("{group_name}/regression"));
+    group.sample_size(10);
+    for repeats in [1, 4] {
+        group.throughput(Throughput::Elements(repeats));
+        group.bench_function(
+            BenchmarkId::new(
+                format!("scan/fresh-selection/clk/12000..=13000/{repeats}x"),
+                BACKEND,
+            ),
+            |b| {
+                b.iter(|| {
+                    let mut selection = wave.select(&signals[..1]).unwrap();
+                    let mut count = 0_u64;
+                    for _ in 0..repeats {
+                        let _ = selection
+                            .scan(black_box(window), |_| {
+                                count += 1;
+                                ControlFlow::<()>::Continue(())
+                            })
+                            .unwrap();
+                    }
+                    black_box(count)
+                })
+            },
+        );
+    }
+    group.finish();
 }
 
 fn compact_wide(c: &mut Criterion) {
@@ -387,6 +520,20 @@ fn scr1(c: &mut Criterion) {
         "TOP.scr1_top_tb_ahb.i_top.i_core_top.i_pipe_top.i_pipe_ifu.imem_addr_ff",
     ];
     let signals = paths.map(|path| wave.hierarchy().signal(path).expect("SCR1 workload signal"));
+    // Full-history control on the locked SCR1 AHB VCD, not issue #33's AXI VCD.
+    let full_paths = [
+        "TOP.scr1_top_tb_ahb.i_top.clk",
+        "TOP.scr1_top_tb_ahb.i_top.timer_val",
+        "TOP.scr1_top_tb_ahb.i_top.imem_hburst",
+        "TOP.scr1_top_tb_ahb.i_top.dmem_hburst",
+        "TOP.scr1_top_tb_ahb.i_top.irq_lines",
+        "TOP.scr1_top_tb_ahb.i_top.i_core_top.i_pipe_top.i_pipe_exu.i_ialu.main_sum_res",
+        "TOP.scr1_top_tb_ahb.i_top.i_core_top.i_pipe_top.i_pipe_ifu.imem_addr_ff",
+        "TOP.scr1_top_tb_ahb.i_top.i_timer.mtime_reg",
+        "TOP.scr1_top_tb_ahb.i_top.i_timer.dmem_req_valid",
+    ];
+    let full_signals =
+        full_paths.map(|path| wave.hierarchy().signal(path).expect("full-history signal"));
     let mut group = c.benchmark_group(format!("vcd/{}/{fixture}/file", fixtures::PROVIDER));
     // Late queries parse almost a gigabyte per iteration.
     group.sample_size(10);
@@ -394,6 +541,21 @@ fn scr1(c: &mut Criterion) {
         b.iter(|| {
             drop(black_box(
                 ondas::open_with(black_box(&path), BACKEND).unwrap(),
+            ))
+        });
+    });
+    // Wellen reads the body too; the single-thread case controls for its default parallelism.
+    group.bench_function(BenchmarkId::new("open", "wellen"), |b| {
+        b.iter(|| drop(black_box(wellen::simple::read(black_box(&path)).unwrap())));
+    });
+    let single_thread = wellen::LoadOptions {
+        multi_thread: false,
+        ..wellen::LoadOptions::default()
+    };
+    group.bench_function(BenchmarkId::new("open", "wellen-single"), |b| {
+        b.iter(|| {
+            drop(black_box(
+                wellen::simple::read_with_options(black_box(&path), &single_thread).unwrap(),
             ))
         });
     });
@@ -439,6 +601,55 @@ fn scr1(c: &mut Criterion) {
             BACKEND,
         ),
         |b| b.iter(|| black_box(selection.samples(black_box(time)).unwrap())),
+    );
+    drop(selection);
+
+    // Fresh one-shot selections per iteration; the already-open waveform is
+    // outside the timer. These cases include the entire selected VCD history.
+    let full = TimeRange::closed(Time::ZERO, Time::from_ticks(6_244_302));
+    assert!(
+        wave.traces(&full_signals, full)
+            .unwrap()
+            .iter()
+            .map(|trace| trace.changes().len())
+            .sum::<usize>()
+            > 1_000_000,
+        "full-history workload must remain active"
+    );
+    group.bench_function(BenchmarkId::new("cold-full-traces/9", BACKEND), |b| {
+        b.iter(|| {
+            black_box(
+                wave.traces(black_box(&full_signals), black_box(full))
+                    .unwrap(),
+            )
+        })
+    });
+    group.bench_function(BenchmarkId::new("cold-full-scan/9", BACKEND), |b| {
+        b.iter(|| {
+            let mut records = 0_usize;
+            let _ = wave
+                .scan(black_box(&full_signals), black_box(full), |_| {
+                    records += 1;
+                    ControlFlow::<()>::Continue(())
+                })
+                .unwrap();
+            black_box(records)
+        })
+    });
+    group.bench_function(
+        BenchmarkId::new("cold-full-candidate-times/9", BACKEND),
+        |b| {
+            b.iter(|| {
+                let mut candidates = 0_usize;
+                let _ = wave
+                    .scan_candidate_times(black_box(&full_signals), black_box(full), |_| {
+                        candidates += 1;
+                        ControlFlow::<()>::Continue(())
+                    })
+                    .unwrap();
+                black_box(candidates)
+            })
+        },
     );
     group.finish();
 }
@@ -651,5 +862,79 @@ fn composed(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, composed, swerv, compact_wide, scr1);
+fn picorv32_open(c: &mut Criterion) {
+    let fixture = "vcd0098-picorv32-test-vcd";
+    let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
+    let mut group = c.benchmark_group(format!("vcd/{}/{fixture}/file", fixtures::PROVIDER));
+    group.sample_size(10);
+    group.bench_function(BenchmarkId::new("open", BACKEND), |b| {
+        b.iter(|| {
+            drop(black_box(
+                ondas::open_with(black_box(&path), BACKEND).unwrap(),
+            ))
+        });
+    });
+    group.bench_function(BenchmarkId::new("open", "wellen"), |b| {
+        b.iter(|| drop(black_box(wellen::simple::read(black_box(&path)).unwrap())));
+    });
+    let single_thread = wellen::LoadOptions {
+        multi_thread: false,
+        ..wellen::LoadOptions::default()
+    };
+    group.bench_function(BenchmarkId::new("open", "wellen-single"), |b| {
+        b.iter(|| {
+            drop(black_box(
+                wellen::simple::read_with_options(black_box(&path), &single_thread).unwrap(),
+            ))
+        });
+    });
+    let prepare = || {
+        let wave = ondas::open_with(&path, BACKEND).expect("open PicoRV32 VCD");
+        let signals = PICORV32_SELECTORS
+            .map(|name| wave.hierarchy().signal(name).expect("PicoRV32 selector"));
+        (wave, signals)
+    };
+    let (mut check, signals) = prepare();
+    assert_eq!(signals.iter().collect::<HashSet<_>>().len(), 73);
+    let times = [0, 1_225_000_000, 2_455_330_000].map(Time::from_ticks);
+    for time in times {
+        assert_eq!(check.samples(&signals, time).unwrap().len(), 100);
+    }
+    drop(check);
+
+    for time in times {
+        let (mut wave, signals) = prepare();
+        // Each one-shot call creates a fresh selection without retained query state.
+        // Reuse the open waveform to exclude its substantial opening cost.
+        group.bench_function(
+            BenchmarkId::new(format!("cold-samples/fixed100/t{}", time.ticks()), BACKEND),
+            |b| b.iter(|| black_box(wave.samples(black_box(&signals), black_box(time)).unwrap())),
+        );
+    }
+    let range = TimeRange::closed(
+        Time::from_ticks(2_449_999_999),
+        Time::from_ticks(2_452_000_000),
+    );
+    let (mut wave, signals) = prepare();
+    let clock = signals[0];
+    assert!(!wave.trace(clock, range).unwrap().changes().is_empty());
+    group.bench_function(
+        BenchmarkId::new("cold-trace/testbench.clk/2449999999..=2452000000", BACKEND),
+        |b| b.iter(|| black_box(wave.trace(clock, black_box(range)).unwrap())),
+    );
+
+    let late = times[2];
+    group.bench_function(
+        BenchmarkId::new("end-to-end/open+samples/fixed100/t2455330000", BACKEND),
+        |b| {
+            b.iter(|| {
+                let (mut wave, signals) = prepare();
+                black_box(wave.samples(&signals, late).unwrap())
+            });
+        },
+    );
+    group.finish();
+}
+
+criterion_group!(benches, composed, swerv, compact_wide, scr1, picorv32_open);
 criterion_main!(benches);

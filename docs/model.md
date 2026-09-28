@@ -48,6 +48,15 @@ handle cannot accidentally select a local signal.
 Hierarchy paths contain exact components. Escaping affects display, not identity.
 Brackets, dots and whitespace inside source names are not traversal syntax.
 Public hierarchy contracts define lookup spelling and slice-selector precedence.
+A single variable lookup scans declarations without allocating a path index.
+Subsequent lookups build a full index shared by hierarchy clones. Opening and
+traversal do not allocate it; lookup-heavy consumers pay the one-time cost.
+
+For VCD and FST, leading Verilog escape markers are separate from logical name
+identity. Scopes and variables retain escape provenance so consumers can preserve
+identifier spelling without treating the marker as part of the name. FSDB keeps
+leading SDK backslashes in identity and separately retains the SDK declaration
+spelling before extracting printed ranges.
 
 ## Time and observations
 
@@ -107,9 +116,10 @@ Shared code owns path identity, projections, selection ordering and normalized
 observations. Adapters decode sources, manage resources, convert metadata and
 translate reader failures. The shared sequential traversal keeps an entering
 state, a pending final value and an event count per selected entry, visiting a
-completed tick before committing that state. It traverses the prefix once, not
-once per operand. This additional state excludes input, decoder/index and SDK
-residency, and variable-sized values contribute their own size. Test pure
+completed tick before committing that state. It finalizes only entries touched
+at that tick and traverses the prefix once, not once per operand. This additional
+state excludes input, decoder/index and SDK residency; variable-sized values
+contribute their own size. Test pure
 conversions locally and adapters against real artifacts.
 
 Keep known metadata and represent absent or unsupported information explicitly.

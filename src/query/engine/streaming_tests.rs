@@ -3,7 +3,28 @@ use crate::backends::{
     Reader,
     generated::{self, Counts, PAYLOAD, Probe},
 };
+use std::cell::Cell;
 use std::collections::BTreeSet;
+
+thread_local! {
+    static TICK_WORK: Cell<(usize, usize, usize)> = const { Cell::new((0, 0, 0)) };
+}
+
+pub(super) fn setup_visits(n: usize) {
+    TICK_WORK.with(|work| work.update(|(setup, compare, commit)| (setup + n, compare, commit)));
+}
+
+pub(super) fn comparison_visit() {
+    TICK_WORK.with(|work| work.update(|(setup, compare, commit)| (setup, compare + 1, commit)));
+}
+
+pub(super) fn commit_visit() {
+    TICK_WORK.with(|work| work.update(|(setup, compare, commit)| (setup, compare, commit + 1)));
+}
+
+fn tick_work() -> (usize, usize, usize) {
+    TICK_WORK.with(Cell::get)
+}
 
 pub(super) fn probe(reader: &Reader) -> Option<Probe> {
     if let Reader::Generated(reader) = reader {
@@ -64,6 +85,86 @@ fn fixture(ticks: u64, fail_at: Option<(u64, usize)>) -> (Waveform, Vec<Signal>,
 
 fn counts(probe: &Probe) -> Counts {
     probe.lock().unwrap().clone()
+}
+
+#[test]
+fn sparse_active_finalization_visits_only_touched_slots() {
+    let mut text = String::new();
+    for i in 0..64 {
+        text.push_str(&format!(
+            "$var wire {} v{i} n{i} $end ",
+            if i == 0 { 2 } else { 1 }
+        ));
+    }
+    text.push_str("$var event 1 e trigger $end $enddefinitions $end #0 ");
+    for i in 0..64 {
+        text.push_str(&format!("{}v{i} ", if i == 0 { "b00 " } else { "0" }));
+    }
+    text.push_str("#1 b01 v0 #2 b00 v0 b01 v0 1e 1e #3 1v63 ");
+    let mut wave =
+        crate::open_bytes_with("sparse.vcd", text.into_bytes().into(), "vcd-native").unwrap();
+    let signals = (0..64)
+        .map(|i| wave.hierarchy().signal(&format!("n{i}")).unwrap())
+        .collect::<Vec<_>>();
+    let event = wave.hierarchy().signal("trigger").unwrap();
+    let mut selected = vec![signals[0], signals[0].slice(0, 0).unwrap(), signals[0]];
+    selected.extend_from_slice(&signals[1..]);
+    selected.push(event);
+    let event_index = selected.len() - 1;
+    let quiet_index = event_index - 1;
+    let mut selection = wave.select(&selected).unwrap();
+    TICK_WORK.with(|work| work.set((0, 0, 0)));
+    let mut changes = Vec::new();
+    let _ = selection
+        .scan_each(TimeRange::all(), |index, record| {
+            if let ScanRef::Change { time, value, .. } = record {
+                changes.push((
+                    index,
+                    time.ticks(),
+                    matches!(value, ValueRef::Event { occurrences: 2 }),
+                ));
+            }
+            ControlFlow::<()>::Continue(())
+        })
+        .unwrap();
+    assert_eq!(
+        tick_work(),
+        (66, 71, 71),
+        "setup, compare and commit visits"
+    );
+    assert!(changes.contains(&(event_index, 2, true)));
+    assert!(changes.contains(&(quiet_index, 3, false)));
+    assert!(
+        !changes
+            .iter()
+            .any(|&(index, tick, _)| tick == 2 && index < 3)
+    );
+    let samples = selection.samples(Time::from_ticks(3)).unwrap();
+    assert!(matches!(
+        samples[event_index],
+        Sample::Event { occurrences: 0, .. }
+    ));
+    assert!(
+        matches!(samples[quiet_index], Sample::Value { changed_at: Some(t), .. } if t == Time::from_ticks(3))
+    );
+    assert_eq!(format!("{:?}", samples[0]), format!("{:?}", samples[2]));
+    let mut previous_events = 0;
+    let _ = selection
+        .query(
+            TimeRange::point(Time::from_ticks(3)),
+            &[quiet_index],
+            |ctx| {
+                ctx.visit_samples(Time::from_ticks(2), &[event_index], |_, sample| {
+                    let SampleRef::Event { occurrences, .. } = sample else {
+                        panic!("previous event")
+                    };
+                    previous_events = occurrences;
+                    Ok(ControlFlow::<()>::Continue(()))
+                })
+            },
+        )
+        .unwrap();
+    assert_eq!(previous_events, 2);
 }
 
 #[test]

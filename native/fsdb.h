@@ -18,13 +18,15 @@ enum { OFS_SCOPE, OFS_UPSCOPE, OFS_VAR };
 
 typedef struct {
     uint64_t id;
-    uint32_t entry, encoding, width, direction, is_constant, has_range, packing;
+    uint32_t entry, encoding, width, direction, is_constant, has_range, packing, is_hidden;
     int64_t msb, lsb;
-    const char *name, *kind, *definition;
+    const char *name, *kind, *definition, *type_name;
+    size_t enum_count;
 } ondas_fsdb_decl;
 
 typedef struct {
     uint64_t first, last;
+    uint32_t has_variables;
     const char *scale, *writer, *date;
 } ondas_fsdb_meta;
 
@@ -39,15 +41,21 @@ typedef struct {
  * begin return 0 on success, -1 on error. Next returns 1 for a record, 0 for EOF,
  * -1 on error. Closing also releases an active traversal. */
 int ondas_fsdb_probe(const char *, int *, char *, size_t);
-int ondas_fsdb_open(const char *, ondas_fsdb **, char *, size_t);
+int ondas_fsdb_open(const char *, int metadata_only, ondas_fsdb **, char *, size_t);
 void ondas_fsdb_close(ondas_fsdb *);
 void ondas_fsdb_metadata(ondas_fsdb *, ondas_fsdb_meta *);
 size_t ondas_fsdb_decl_count(ondas_fsdb *);
 void ondas_fsdb_declaration(ondas_fsdb *, size_t, ondas_fsdb_decl *);
+void ondas_fsdb_enum_variant(ondas_fsdb *, size_t, size_t, const char **, const char **);
 int ondas_fsdb_begin(ondas_fsdb *, const uint64_t *, size_t, uint64_t, uint64_t, char *, size_t);
 /* Bit records are validated/normalized directly into caller-owned storage.
  * Other record bytes are borrowed until the next SDK call. */
 int ondas_fsdb_next(ondas_fsdb *, ondas_fsdb_value *, uint8_t *, size_t, char *, size_t);
+/* Selected signals must already be loaded by begin. Returns 1 for a value,
+ * 0 before the first state, -1 on error. tick is meaningful only when changed
+ * is set. Bit bytes are borrowed until the next call on the reader. */
+int ondas_fsdb_sample_bits(ondas_fsdb *, uint64_t, uint64_t, uint32_t, uint32_t,
+                           ondas_fsdb_value *, int *, char *, size_t);
 void ondas_fsdb_end(ondas_fsdb *);
 
 #ifdef __cplusplus

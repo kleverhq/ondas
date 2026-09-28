@@ -1,7 +1,5 @@
 # ondas
 
-> Under development. Expect changes to the code and API.
-
 A read-only Rust library for waveform analysis. The goal is to support more
 waveform formats than any other library, including proprietary formats, through
 one API with consistent query semantics.
@@ -10,6 +8,16 @@ one API with consistent query semantics.
 
 [API documentation](https://docs.rs/ondas) · [Library model](docs/model.md)
 
+## Usage
+
+```toml
+[dependencies]
+ondas = "1"
+```
+
+See the [API examples](https://docs.rs/ondas/latest/ondas/#read-a-signal) for
+opening waveforms, resolving signals and querying values. VCD and FST readers
+are included by default; FSDB requires the optional feature and a local SDK.
 
 ## Backends
 

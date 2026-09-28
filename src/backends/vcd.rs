@@ -1,7 +1,21 @@
 use std::{
     collections::{HashMap, HashSet},
+    fs::File,
     io::SeekFrom,
     ops::ControlFlow,
+    sync::Arc,
+};
+
+#[cfg(unix)]
+use std::{
+    cell::RefCell,
+    io::{self, BufReader, Read, Seek},
+    os::unix::fs::FileExt,
+    sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        mpsc,
+    },
+    thread,
 };
 
 use super::Input;
@@ -10,6 +24,9 @@ use crate::{
     Time, TimeSpan, TimeUnit, Timescale, ValueRef,
     hierarchy::{ScopeData, VariableData},
 };
+
+#[cfg(unix)]
+use crate::{Sample, Value};
 
 fn malformed(message: impl Into<String>) -> Error {
     Error::Malformed {
@@ -52,9 +69,33 @@ impl Tokens {
 
     fn next_into(&mut self, word: &mut Vec<u8>) -> Result<bool> {
         word.clear();
-        self.take(true, None)?;
-        self.take(false, Some(word))?;
-        Ok(!word.is_empty())
+        loop {
+            let bytes = self.input.fill_buf()?;
+            if bytes.is_empty() {
+                return Ok(!word.is_empty());
+            }
+            let skip = if word.is_empty() {
+                bytes.iter().take_while(|b| b.is_ascii_whitespace()).count()
+            } else {
+                0
+            };
+            let len = bytes[skip..]
+                .iter()
+                .take_while(|b| !b.is_ascii_whitespace())
+                .count();
+            #[cfg(test)]
+            if word.len() + len > word.capacity() {
+                self.growths += 1;
+            }
+            word.extend_from_slice(&bytes[skip..skip + len]);
+            let consumed = skip + len;
+            let done = consumed < bytes.len();
+            self.input.consume(consumed);
+            self.offset += consumed as u64;
+            if done {
+                return Ok(true);
+            }
+        }
     }
 
     fn next(&mut self) -> Result<Option<Vec<u8>>> {
@@ -96,6 +137,20 @@ fn utf8(bytes: &[u8]) -> Result<String> {
         .map_err(|_| malformed("invalid UTF-8 declaration or metadata"))
 }
 
+// Printable identifier codes are reversible base-94 numbers, with the first byte least significant.
+fn identifier_number(id: &[u8]) -> Option<usize> {
+    let mut number = 0_usize;
+    for &byte in id.iter().rev() {
+        if !(33..=126).contains(&byte) {
+            return None;
+        }
+        number = number
+            .checked_mul(94)?
+            .checked_add(usize::from(byte - 32))?;
+    }
+    Some(number)
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct Position {
     offset: u64,
@@ -109,14 +164,166 @@ pub(crate) struct Reader {
     #[cfg(test)]
     pub(crate) records_read: usize,
     body: u64,
-    ids: HashMap<Vec<u8>, usize>,
+    ids: Arc<HashMap<Vec<u8>, usize>>,
+    dense_ids: Arc<Vec<Option<usize>>>,
     encodings: Vec<Encoding>,
+    #[cfg(unix)]
+    parallel: Option<ParallelSource>,
+}
+
+#[cfg(unix)]
+struct ParallelSource {
+    file: Arc<File>,
+    cuts: Vec<usize>,
+    last_time: u64,
+}
+
+#[cfg(unix)]
+struct ChunkValue {
+    first: Option<Value>,
+    first_time: Time,
+    last: Value,
+    last_change: Option<Time>,
+    tick: Time,
+    pending: Value,
+}
+
+#[cfg(unix)]
+impl ChunkValue {
+    fn record(&mut self, time: Time, value: Value) {
+        if time != self.tick {
+            self.finish_tick();
+            self.tick = time;
+        }
+        self.pending = value;
+    }
+
+    fn finish_tick(&mut self) {
+        if self.first.is_none() {
+            self.first = Some(self.pending.clone());
+            self.last = self.pending.clone();
+        } else if !self.last.as_ref().same_value(self.pending.as_ref()) {
+            self.last = self.pending.clone();
+            self.last_change = Some(self.tick);
+        }
+    }
+}
+
+#[cfg(unix)]
+struct ChunkSamples {
+    span: Option<TimeSpan>,
+    values: HashMap<usize, ChunkValue>,
+    position: Position,
+}
+
+#[cfg(unix)]
+enum FullValue {
+    Bit(u8),
+    Other(Value),
+}
+
+#[cfg(unix)]
+impl FullValue {
+    fn from_ref(value: ValueRef<'_>) -> Self {
+        match value {
+            ValueRef::Bits(bits) if bits.width() == 1 => {
+                Self::Bit(bits.ascii()[0].to_ascii_lowercase())
+            }
+            _ => Self::Other(value.to_owned()),
+        }
+    }
+
+    fn as_ref(&self) -> ValueRef<'_> {
+        match self {
+            Self::Bit(byte) => {
+                ValueRef::Bits(BitsRef::from_validated_ascii(std::slice::from_ref(byte)))
+            }
+            Self::Other(value) => value.as_ref(),
+        }
+    }
+}
+
+#[cfg(unix)]
+struct FullRecord {
+    index: usize,
+    time: Time,
+    value: FullValue,
+    position: Position,
+}
+
+#[cfg(unix)]
+fn flush_startup(first_time: &mut Option<Time>, first_transition: &mut bool, time: Time) -> bool {
+    let first_record = first_time.is_none();
+    let next_tick = !*first_transition && first_time.is_some_and(|first| first != time);
+    first_time.get_or_insert(time);
+    *first_transition |= next_tick;
+    first_record || next_tick
+}
+
+#[cfg(unix)]
+struct RangeReader {
+    file: Arc<File>,
+    start: u64,
+    len: u64,
+    cursor: u64,
+    canceled: Option<Arc<AtomicBool>>,
+}
+
+#[cfg(unix)]
+impl Read for RangeReader {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        if bytes.is_empty() {
+            return Ok(0);
+        }
+        if self
+            .canceled
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Relaxed))
+        {
+            return Err(io::Error::other("VCD query canceled"));
+        }
+        let remaining = self.len - self.cursor;
+        let count = bytes.len().min(remaining as usize);
+        let read = self
+            .file
+            .read_at(&mut bytes[..count], self.start + self.cursor)?;
+        self.cursor += read as u64;
+        Ok(read)
+    }
+}
+
+#[cfg(unix)]
+impl Seek for RangeReader {
+    fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+        let next = match position {
+            SeekFrom::Start(value) => i128::from(value),
+            SeekFrom::Current(value) => i128::from(self.cursor) + i128::from(value),
+            SeekFrom::End(value) => i128::from(self.len) + i128::from(value),
+        };
+        if !(0..=i128::from(self.len)).contains(&next) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "seek outside VCD chunk",
+            ));
+        }
+        self.cursor = next as u64;
+        Ok(self.cursor)
+    }
+}
+
+#[cfg(unix)]
+struct OpeningChunk {
+    span: Option<TimeSpan>,
+    seen: Vec<bool>,
+    encodings: Vec<Encoding>,
+    comments: Vec<String>,
 }
 
 impl Reader {
     pub(crate) fn open(
         input: Box<dyn Input>,
         source_name: String,
+        file: Option<File>,
     ) -> Result<(Self, Hierarchy, Metadata)> {
         let mut tokens = Tokens {
             input,
@@ -170,7 +377,9 @@ impl Reader {
                 }
                 b"$scope" => {
                     let kind = scope_kind(&utf8(&tokens.required()?)?)?;
-                    let name = name(&tokens.required()?)?;
+                    let spelling = tokens.required()?;
+                    let name_was_escaped = spelling.starts_with(b"\\");
+                    let name = name(&spelling)?;
                     tokens.end()?;
                     let parent = stack.last().copied();
                     let key = (parent, name.clone());
@@ -183,10 +392,12 @@ impl Reader {
                         let index = scopes.len();
                         scopes.push(ScopeData {
                             name,
+                            name_was_escaped,
                             parent,
                             kind,
                             definition_name: None,
                             packing: None,
+                            is_hidden: false,
                         });
                         scope_ids.insert(key, index);
                         index
@@ -260,6 +471,8 @@ impl Reader {
                     )) {
                         variables.push(VariableData {
                             name,
+                            reader_name: None,
+                            name_was_escaped: reference.starts_with(b"\\"),
                             parent,
                             is_constant: matches!(kind.as_str(), "parameter" | "real-parameter"),
                             kind,
@@ -286,24 +499,384 @@ impl Reader {
         if variables.is_empty() {
             return Err(tokens.error("no variable declarations"));
         }
+        // Arbitrary sparse codes still use the map; bound the direct table by the declared IDs.
+        let mut dense_ids = Vec::new();
+        let max_id = ids.keys().try_fold(0, |max, id| {
+            identifier_number(id).map(|number| max.max(number))
+        });
+        if let Some(max_id) = max_id
+            && max_id < ids.len().saturating_mul(2)
+        {
+            dense_ids.resize(max_id + 1, None);
+            for (id, &index) in &ids {
+                dense_ids[identifier_number(id).unwrap()] = Some(index);
+            }
+        }
         let mut reader = Self {
             tokens,
             position: None,
             #[cfg(test)]
             records_read: 0,
             body,
-            ids,
+            ids: Arc::new(ids),
+            dense_ids: Arc::new(dense_ids),
             encodings,
+            #[cfg(unix)]
+            parallel: None,
         };
-        let (_, span) = reader.walk(
-            u64::MAX,
-            None,
-            Some(&mut metadata.comments),
-            |_, _, _, _| ControlFlow::<()>::Continue(()),
-        )?;
-        metadata.time_span = span;
+        metadata.time_span = if let Some((span, comments, encodings)) =
+            file.and_then(|file| reader.parallel_open(file))
+        {
+            metadata.comments.extend(comments);
+            reader.encodings = encodings;
+            span
+        } else {
+            let (_, span, _) = reader.walk(
+                u64::MAX,
+                None,
+                Some(&mut metadata.comments),
+                |_, _, _, _| ControlFlow::<()>::Continue(()),
+            )?;
+            span
+        };
         let hierarchy = Hierarchy::new(scopes, variables, reader.encodings.clone());
         Ok((reader, hierarchy, metadata))
+    }
+
+    #[cfg(unix)]
+    fn parallel_open(
+        &mut self,
+        file: File,
+    ) -> Option<(Option<TimeSpan>, Vec<String>, Vec<Encoding>)> {
+        let end = usize::try_from(file.metadata().ok()?.len()).ok()?;
+        let start = usize::try_from(self.body).ok()?;
+        let length = end.checked_sub(start)?;
+        let workers = thread::available_parallelism()
+            .ok()?
+            .get()
+            .min(length / (32 * 1024 * 1024));
+        if workers < 2 {
+            return None;
+        }
+        let mut cuts = vec![start];
+        let mut probe = vec![0; 1024 * 1024];
+        for index in 1..workers {
+            let target = start + (length / workers) * index;
+            let limit = (end - target).min(probe.len());
+            let count = file.read_at(&mut probe[..limit], target as u64).ok()?;
+            let newline = probe[..count].windows(2).position(|pair| pair == b"\n#")?;
+            let cut = target + newline + 1;
+            if cut <= *cuts.last().unwrap() {
+                return None;
+            }
+            cuts.push(cut);
+        }
+        cuts.push(end);
+        let result = self.parallel_open_with_cuts(file.try_clone().ok()?, &cuts)?;
+        self.parallel = Some(ParallelSource {
+            file: Arc::new(file),
+            cuts,
+            last_time: result.0.map_or(0, |span| span.last().ticks()),
+        });
+        Some(result)
+    }
+
+    #[cfg(unix)]
+    fn parallel_open_with_cuts(
+        &self,
+        file: File,
+        cuts: &[usize],
+    ) -> Option<(Option<TimeSpan>, Vec<String>, Vec<Encoding>)> {
+        let file = Arc::new(file);
+        let parts = thread::scope(|scope| {
+            let handles = cuts
+                .windows(2)
+                .map(|range| {
+                    let ids = self.ids.clone();
+                    let dense_ids = self.dense_ids.clone();
+                    let encodings = self.encodings.clone();
+                    let body = self.body;
+                    let input = BufReader::with_capacity(
+                        256 * 1024,
+                        RangeReader {
+                            file: Arc::clone(&file),
+                            start: range[0] as u64,
+                            len: (range[1] - range[0]) as u64,
+                            cursor: 0,
+                            canceled: None,
+                        },
+                    );
+                    let offset = range[0] as u64;
+                    thread::Builder::new().spawn_scoped(scope, move || {
+                        let mut reader = Self {
+                            tokens: Tokens {
+                                input: Box::new(input),
+                                offset,
+                                #[cfg(test)]
+                                growths: 0,
+                            },
+                            position: None,
+                            #[cfg(test)]
+                            records_read: 0,
+                            body,
+                            ids,
+                            dense_ids,
+                            encodings,
+                            parallel: None,
+                        };
+                        let mut comments = Vec::new();
+                        let (_, span, seen) =
+                            reader.walk(u64::MAX, None, Some(&mut comments), |_, _, _, _| {
+                                ControlFlow::<()>::Continue(())
+                            })?;
+                        Ok::<_, Error>(OpeningChunk {
+                            span,
+                            seen,
+                            encodings: reader.encodings,
+                            comments,
+                        })
+                    })
+                })
+                .collect::<io::Result<Vec<_>>>()
+                .ok()?;
+            Some(
+                handles
+                    .into_iter()
+                    .map(|handle| handle.join().expect("VCD opening worker panicked"))
+                    .collect::<Vec<_>>(),
+            )
+        })?;
+        let mut span: Option<TimeSpan> = None;
+        let mut comments = Vec::new();
+        let mut saw_real = vec![false; self.encodings.len()];
+        let mut saw_string = vec![false; self.encodings.len()];
+        for (index, part) in parts.into_iter().enumerate() {
+            let part = part.ok()?;
+            if index > 0 && part.span.is_none() {
+                return None;
+            }
+            if let Some(next) = part.span {
+                if span.is_some_and(|previous| previous.last() > next.first()) {
+                    return None;
+                }
+                span = Some(TimeSpan::new(
+                    span.map_or(next.first(), |previous| previous.first()),
+                    next.last(),
+                ));
+            }
+            for (index, &seen) in part.seen.iter().enumerate() {
+                if seen && self.encodings[index] == Encoding::Real {
+                    saw_real[index] |= part.encodings[index] == Encoding::Real;
+                    saw_string[index] |= part.encodings[index] == Encoding::String;
+                }
+            }
+            comments.extend(part.comments);
+        }
+        if saw_real
+            .iter()
+            .zip(&saw_string)
+            .any(|(real, string)| *real && *string)
+        {
+            return None;
+        }
+        let mut encodings = self.encodings.clone();
+        for (index, &string) in saw_string.iter().enumerate() {
+            if string {
+                encodings[index] = Encoding::String;
+            }
+        }
+        Some((span, comments, encodings))
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn parallel_prefix(
+        &self,
+        signals: &[Signal],
+        end: Time,
+    ) -> Option<(Vec<Sample>, Position)> {
+        let source = self.parallel.as_ref()?;
+        if signals.is_empty() || end == Time::ZERO || end.ticks() < source.last_time.div_ceil(8) {
+            return None;
+        }
+        // A chunk keeps up to three owned values per signal. Account for the
+        // parser's current value and a replacement copy before spawning workers.
+        // Variable-length strings cannot be bounded from their declarations.
+        let mut selected = HashSet::new();
+        let mut bytes = 0_usize;
+        for signal in signals {
+            if signal.is_slice() {
+                return None;
+            }
+            if selected.insert(signal.index()) {
+                let width = match signal.encoding() {
+                    Encoding::Bits { width } => width as usize,
+                    Encoding::Real => std::mem::size_of::<f64>(),
+                    _ => return None,
+                };
+                bytes = bytes.checked_add(
+                    width
+                        .checked_mul(5)?
+                        .checked_add(std::mem::size_of::<ChunkValue>() + 64)?,
+                )?;
+            }
+        }
+        if bytes.checked_mul(source.cuts.len() - 1)? > 4 * 1024 * 1024 {
+            return None;
+        }
+        let selected = Arc::new(selected);
+        let file = Arc::clone(&source.file);
+        let body = self.body;
+        let chunks = thread::scope(|scope| {
+            let handles = source
+                .cuts
+                .windows(2)
+                .map(|range| {
+                    let input = BufReader::with_capacity(
+                        256 * 1024,
+                        RangeReader {
+                            file: Arc::clone(&file),
+                            start: range[0] as u64,
+                            len: (range[1] - range[0]) as u64,
+                            cursor: 0,
+                            canceled: None,
+                        },
+                    );
+                    let offset = range[0] as u64;
+                    let ids = Arc::clone(&self.ids);
+                    let dense_ids = Arc::clone(&self.dense_ids);
+                    let encodings = self.encodings.clone();
+                    let selected = Arc::clone(&selected);
+                    thread::Builder::new().spawn_scoped(scope, move || {
+                        let mut reader = Self {
+                            tokens: Tokens {
+                                input: Box::new(input),
+                                offset,
+                                #[cfg(test)]
+                                growths: 0,
+                            },
+                            position: None,
+                            #[cfg(test)]
+                            records_read: 0,
+                            body,
+                            ids,
+                            dense_ids,
+                            encodings,
+                            parallel: None,
+                        };
+                        let mut values = HashMap::<usize, ChunkValue>::new();
+                        let (_, span, _) = reader.walk(
+                            end.ticks(),
+                            Some(&selected),
+                            None,
+                            |index, time, value, _| {
+                                let value = value.to_owned();
+                                if let Some(previous) = values.get_mut(&index) {
+                                    previous.record(time, value);
+                                } else {
+                                    values.insert(
+                                        index,
+                                        ChunkValue {
+                                            first: None,
+                                            first_time: time,
+                                            last: value.clone(),
+                                            last_change: None,
+                                            tick: time,
+                                            pending: value,
+                                        },
+                                    );
+                                }
+                                ControlFlow::<()>::Continue(())
+                            },
+                        )?;
+                        for value in values.values_mut() {
+                            value.finish_tick();
+                        }
+                        Ok::<_, Error>(ChunkSamples {
+                            span,
+                            values,
+                            position: reader.position.unwrap(),
+                        })
+                    })
+                })
+                .collect::<io::Result<Vec<_>>>()
+                .ok()?;
+            Some(
+                handles
+                    .into_iter()
+                    .map(|handle| handle.join().expect("VCD sample worker panicked"))
+                    .collect::<Vec<_>>(),
+            )
+        })?;
+        let mut previous = None;
+        let mut resume = None;
+        let mut last_position = None;
+        let mut values = HashMap::<usize, (Value, Option<Time>)>::new();
+        for (chunk, &boundary) in chunks.iter().zip(source.cuts.iter().skip(1)) {
+            let chunk = chunk.as_ref().ok()?;
+            last_position = Some(chunk.position);
+            if resume.is_none() && chunk.position.offset < boundary as u64 {
+                resume = Some(chunk.position);
+            }
+            if let Some(span) = chunk.span {
+                // A cut through the same tick needs serial normalization.
+                if previous.is_some_and(|time| time >= span.first()) {
+                    return None;
+                }
+                previous = Some(span.last());
+            }
+            for (&index, part) in &chunk.values {
+                let first = part.first.as_ref()?;
+                let change = if let Some((last, changed_at)) = values.get(&index) {
+                    part.last_change.or_else(|| {
+                        if last.as_ref().same_value(first.as_ref()) {
+                            *changed_at
+                        } else {
+                            Some(part.first_time)
+                        }
+                    })
+                } else {
+                    part.last_change
+                };
+                values.insert(index, (part.last.clone(), change));
+            }
+        }
+        Some((
+            signals
+                .iter()
+                .map(|&signal| {
+                    if let Some((value, changed_at)) = values.get(&signal.index()) {
+                        Sample::Value {
+                            signal,
+                            value: value.clone(),
+                            changed_at: *changed_at,
+                        }
+                    } else {
+                        Sample::Missing { signal }
+                    }
+                })
+                .collect(),
+            resume.or(last_position)?,
+        ))
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn force_parallel_for_test(
+        &mut self,
+        file: File,
+        mut cuts: Vec<usize>,
+        last_time: u64,
+    ) {
+        cuts.insert(0, self.body as usize);
+        self.parallel = Some(ParallelSource {
+            file: Arc::new(file),
+            cuts,
+            last_time,
+        });
+    }
+
+    #[cfg(not(unix))]
+    fn parallel_open(&self, _: File) -> Option<(Option<TimeSpan>, Vec<String>, Vec<Encoding>)> {
+        None
     }
 
     pub(crate) fn read<B>(
@@ -326,8 +899,14 @@ impl Reader {
         signals: &[Signal],
         end: Time,
         position: Option<Position>,
-        visitor: impl for<'v> FnMut(usize, Time, ValueRef<'v>, Position) -> ControlFlow<B>,
+        mut visitor: impl for<'v> FnMut(usize, Time, ValueRef<'v>, Position) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>> {
+        #[cfg(unix)]
+        if position.is_none()
+            && let Some(result) = self.parallel_full(signals, end, &mut visitor)
+        {
+            return result;
+        }
         let position = position.unwrap_or(Position {
             offset: self.body,
             time: 0,
@@ -339,19 +918,247 @@ impl Reader {
         self.position = Some(position);
         let selected = signals.iter().map(|s| s.index()).collect();
         let result = self.walk(end.ticks(), Some(&selected), None, visitor);
-        if !matches!(result, Ok((ControlFlow::Continue(()), _))) {
+        if !matches!(result, Ok((ControlFlow::Continue(()), _, _))) {
             self.position = None;
         }
-        result.map(|(flow, _)| flow)
+        result.map(|(flow, _, _)| flow)
+    }
+
+    #[cfg(unix)]
+    fn parallel_full<B>(
+        &mut self,
+        signals: &[Signal],
+        end: Time,
+        visitor: &mut impl for<'v> FnMut(usize, Time, ValueRef<'v>, Position) -> ControlFlow<B>,
+    ) -> Option<Result<ControlFlow<B>>> {
+        let source = self.parallel.as_ref()?;
+        if signals.is_empty() || end.ticks() < source.last_time {
+            return None;
+        }
+        // Fixed budget across channel slots, active batches and the consumer.
+        // Declared widths bound payloads; strings have no such bound.
+        let width = signals.iter().try_fold(0_usize, |width, signal| {
+            let bytes = match signal.encoding() {
+                Encoding::Bits { width } => width as usize,
+                Encoding::Real => std::mem::size_of::<f64>(),
+                Encoding::Event | Encoding::Unsupported => 0,
+                Encoding::String => return None,
+            };
+            Some(width.max(bytes))
+        })?;
+        let workers = source.cuts.len() - 1;
+        let bytes = std::mem::size_of::<FullRecord>().checked_add(width)?;
+        const QUEUED_BATCHES: usize = 24;
+        let batch_len = (192 * 1024 * 1024 / workers / (QUEUED_BATCHES + 2) / bytes).min(4096);
+        if batch_len == 0 {
+            return None;
+        }
+        let selected = Arc::new(signals.iter().map(|s| s.index()).collect::<HashSet<_>>());
+        let canceled = Arc::new(AtomicBool::new(false));
+        let active_chunk = Arc::new(AtomicUsize::new(0));
+        let result = thread::scope(|scope| {
+            let mut receivers = Vec::with_capacity(workers);
+            let mut handles = Vec::with_capacity(workers);
+            for (index, range) in source.cuts.windows(2).enumerate() {
+                let (tx, rx) = mpsc::sync_channel::<Result<Vec<FullRecord>>>(QUEUED_BATCHES);
+                let input = BufReader::with_capacity(
+                    256 * 1024,
+                    RangeReader {
+                        file: Arc::clone(&source.file),
+                        start: range[0] as u64,
+                        len: (range[1] - range[0]) as u64,
+                        cursor: 0,
+                        canceled: Some(Arc::clone(&canceled)),
+                    },
+                );
+                let mut reader = Self {
+                    tokens: Tokens {
+                        input: Box::new(input),
+                        offset: range[0] as u64,
+                        #[cfg(test)]
+                        growths: 0,
+                    },
+                    position: None,
+                    #[cfg(test)]
+                    records_read: 0,
+                    body: self.body,
+                    ids: Arc::clone(&self.ids),
+                    dense_ids: Arc::clone(&self.dense_ids),
+                    encodings: self.encodings.clone(),
+                    parallel: None,
+                };
+                let stop = range[1] as u64;
+                let selected = Arc::clone(&selected);
+                let active_chunk = Arc::clone(&active_chunk);
+                let handle = thread::Builder::new().spawn_scoped(scope, move || {
+                    let batch = RefCell::new(Vec::with_capacity(batch_len));
+                    let mut first_time = None;
+                    let mut first_transition = false;
+                    let send = |batch: &mut Vec<FullRecord>| {
+                        if !batch.is_empty()
+                            && tx
+                                .send(Ok(std::mem::replace(batch, Vec::with_capacity(batch_len))))
+                                .is_err()
+                        {
+                            ControlFlow::Break(())
+                        } else {
+                            ControlFlow::Continue(())
+                        }
+                    };
+                    let read = reader.walk_with_progress(
+                        u64::MAX,
+                        Some(&selected),
+                        None,
+                        |index, time, value, position| {
+                            let flush = flush_startup(&mut first_time, &mut first_transition, time);
+                            let mut batch = batch.borrow_mut();
+                            batch.push(FullRecord {
+                                index,
+                                time,
+                                value: FullValue::from_ref(value),
+                                position,
+                            });
+                            // The first record may finish a tick from the previous chunk;
+                            // the next selected tick can finish this chunk's first tick.
+                            if batch.len() == batch_len || flush {
+                                send(&mut batch)
+                            } else {
+                                ControlFlow::Continue(())
+                            }
+                        },
+                        || {
+                            // Future chunks must not fill their queues with small batches.
+                            if active_chunk.load(Ordering::Acquire) == index {
+                                send(&mut batch.borrow_mut())
+                            } else {
+                                ControlFlow::Continue(())
+                            }
+                        },
+                    );
+                    let batch = batch.into_inner();
+                    let error = match read {
+                        Ok((ControlFlow::Continue(()), _, _)) if reader.tokens.offset == stop => {
+                            None
+                        }
+                        Ok((ControlFlow::Continue(()), _, _)) => {
+                            Some(malformed("unexpected EOF in VCD chunk"))
+                        }
+                        Err(error) => Some(error),
+                        Ok((ControlFlow::Break(()), _, _)) => return,
+                    };
+                    if !batch.is_empty() && tx.send(Ok(batch)).is_err() {
+                        return;
+                    }
+                    if let Some(error) = error {
+                        let _ = tx.send(Err(error));
+                    }
+                });
+                match handle {
+                    Ok(handle) => {
+                        receivers.push(rx);
+                        handles.push(handle);
+                    }
+                    Err(_) => {
+                        canceled.store(true, Ordering::Relaxed);
+                        drop(receivers);
+                        for handle in handles {
+                            let _ = handle.join();
+                        }
+                        return None;
+                    }
+                }
+            }
+            let mut output = Ok(ControlFlow::Continue(()));
+            'chunks: for (index, rx) in receivers.iter().enumerate() {
+                active_chunk.store(index, Ordering::Release);
+                while let Ok(batch) = rx.recv() {
+                    match batch {
+                        Ok(batch) => {
+                            for record in batch {
+                                if let ControlFlow::Break(value) = visitor(
+                                    record.index,
+                                    record.time,
+                                    record.value.as_ref(),
+                                    record.position,
+                                ) {
+                                    output = Ok(ControlFlow::Break(value));
+                                    break 'chunks;
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            output = Err(error);
+                            break 'chunks;
+                        }
+                    }
+                }
+            }
+            if !matches!(&output, Ok(ControlFlow::Continue(()))) {
+                canceled.store(true, Ordering::Relaxed);
+            }
+            drop(receivers);
+            for handle in handles {
+                if handle.join().is_err() && output.is_ok() {
+                    output = Err(malformed("VCD query worker panicked"));
+                }
+            }
+            Some(output)
+        });
+        self.position = result.as_ref().and_then(|output| {
+            output
+                .as_ref()
+                .ok()
+                .filter(|flow| flow.is_continue())
+                .map(|_| Position {
+                    offset: *source.cuts.last().unwrap() as u64,
+                    time: source.last_time,
+                    block: false,
+                })
+        });
+        result
     }
 
     fn walk<B>(
         &mut self,
         end: u64,
         selected: Option<&HashSet<usize>>,
+        comments: Option<&mut Vec<String>>,
+        visitor: impl for<'v> FnMut(usize, Time, ValueRef<'v>, Position) -> ControlFlow<B>,
+    ) -> Result<(ControlFlow<B>, Option<TimeSpan>, Vec<bool>)> {
+        self.walk_inner(end, selected, comments, visitor, None, || {
+            ControlFlow::Continue(())
+        })
+    }
+
+    #[cfg(unix)]
+    fn walk_with_progress<B>(
+        &mut self,
+        end: u64,
+        selected: Option<&HashSet<usize>>,
+        comments: Option<&mut Vec<String>>,
+        visitor: impl for<'v> FnMut(usize, Time, ValueRef<'v>, Position) -> ControlFlow<B>,
+        progress: impl FnMut() -> ControlFlow<B>,
+    ) -> Result<(ControlFlow<B>, Option<TimeSpan>, Vec<bool>)> {
+        self.walk_inner(
+            end,
+            selected,
+            comments,
+            visitor,
+            Some(1024 * 1024),
+            progress,
+        )
+    }
+
+    fn walk_inner<B>(
+        &mut self,
+        end: u64,
+        selected: Option<&HashSet<usize>>,
         mut comments: Option<&mut Vec<String>>,
         mut visitor: impl for<'v> FnMut(usize, Time, ValueRef<'v>, Position) -> ControlFlow<B>,
-    ) -> Result<(ControlFlow<B>, Option<TimeSpan>)> {
+        progress_bytes: Option<u64>,
+        mut progress: impl FnMut() -> ControlFlow<B>,
+    ) -> Result<(ControlFlow<B>, Option<TimeSpan>, Vec<bool>)> {
+        let mut last_progress = self.tokens.offset;
         let position = self.position.take();
         let mut time = position.map_or(0, |position| position.time);
         let mut span = None::<TimeSpan>;
@@ -367,6 +1174,12 @@ impl Reader {
         };
         loop {
             let offset = self.tokens.offset;
+            if progress_bytes.is_some_and(|limit| offset - last_progress >= limit) {
+                if let ControlFlow::Break(value) = progress() {
+                    return Ok((ControlFlow::Break(value), span, seen));
+                }
+                last_progress = offset;
+            }
             if !self.tokens.next_into(&mut word)? {
                 break;
             }
@@ -420,10 +1233,14 @@ impl Reader {
             } else {
                 (&word[..1], &word[1..])
             };
-            let index = *self
-                .ids
-                .get(id)
-                .ok_or_else(|| self.tokens.error("unknown identifier code"))?;
+            let index = if self.dense_ids.is_empty() {
+                self.ids.get(id).copied()
+            } else {
+                identifier_number(id)
+                    .and_then(|number| self.dense_ids.get(number).copied().flatten())
+                    .or_else(|| self.ids.get(id).copied())
+            }
+            .ok_or_else(|| self.tokens.error("unknown identifier code"))?;
             if selected.is_none() {
                 if prefix == b's' && self.encodings[index] == Encoding::Real && !seen[index] {
                     self.encodings[index] = Encoding::String;
@@ -486,7 +1303,7 @@ impl Reader {
                     },
                 )
             {
-                return Ok((ControlFlow::Break(value), span));
+                return Ok((ControlFlow::Break(value), span, seen));
             }
         }
         if block {
@@ -497,12 +1314,12 @@ impl Reader {
             time,
             block,
         });
-        Ok((ControlFlow::Continue(()), span))
+        Ok((ControlFlow::Continue(()), span, seen))
     }
 }
 
 fn name(bytes: &[u8]) -> Result<String> {
-    utf8(bytes.strip_prefix(b"\\").unwrap_or(bytes))
+    Ok(crate::hierarchy::normalize_name(utf8(bytes)?).0)
 }
 
 fn scope_kind(raw: &str) -> Result<String> {
@@ -729,6 +1546,370 @@ mod replay_tests {
     use std::io::{BufReader, Cursor};
 
     #[test]
+    fn identifier_numbers_do_not_alias_or_overflow() {
+        assert_ne!(identifier_number(b"!"), identifier_number(b"!!"));
+        assert_ne!(identifier_number(b"~!"), identifier_number(b"!~"));
+        assert_eq!(identifier_number(b" "), None);
+        assert_eq!(identifier_number(&[b'~'; 32]), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn full_batches_flush_first_record_and_first_transition() {
+        let mut first_time = None;
+        let mut first_transition = false;
+        let mut flush = |tick| {
+            flush_startup(
+                &mut first_time,
+                &mut first_transition,
+                Time::from_ticks(tick),
+            )
+        };
+        assert!(flush(0));
+        assert!(!flush(0));
+        assert!(flush(1));
+        assert!(!flush(2));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn full_batches_flush_before_a_large_unselected_suffix() {
+        let mut source = b"$var wire 1 ! selected $end $var wire 1 \" other $end $enddefinitions $end #0 0! #1 1! #2 0! ".to_vec();
+        for _ in 0..300_000 {
+            source.extend_from_slice(b"#3 0\" ");
+        }
+        let length = source.len() as u64;
+        let (mut reader, hierarchy, _) = Reader::open(
+            Box::new(BufReader::new(Cursor::new(source))),
+            "sparse.vcd".into(),
+            None,
+        )
+        .unwrap();
+        reader
+            .tokens
+            .input
+            .seek(SeekFrom::Start(reader.body))
+            .unwrap();
+        reader.tokens.offset = reader.body;
+        reader.position = None;
+        reader.records_read = 0;
+        let selected = HashSet::from([hierarchy.signal("selected").unwrap().index()]);
+        let mut times = Vec::new();
+        let (flow, _, _) = reader
+            .walk_with_progress(
+                u64::MAX,
+                Some(&selected),
+                None,
+                |_, time, _, _| {
+                    times.push(time.ticks());
+                    ControlFlow::<()>::Continue(())
+                },
+                || ControlFlow::Break(()),
+            )
+            .unwrap();
+        assert_eq!(flow, ControlFlow::Break(()));
+        assert_eq!(times, [0, 1, 2]);
+        assert!(reader.tokens.offset < length);
+        assert!(reader.records_read < 300_003);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parallel_open_keeps_chunk_boundaries_and_rejects_invalid_joins() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tmp")
+            .join(format!("parallel-vcd-{}.vcd", std::process::id()));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let header = b"$var real 1 ! label $end $enddefinitions $end ";
+        let valid = b"#0 sOne ! $comment first $end\n#1 sTwo !\n$comment note $end\n#2 sThree !\n";
+        let mut source = header.to_vec();
+        source.extend_from_slice(valid);
+        std::fs::write(&path, &source).unwrap();
+        let (reader, _, metadata) = Reader::open(
+            Box::new(BufReader::new(File::open(&path).unwrap())),
+            "valid.vcd".into(),
+            None,
+        )
+        .unwrap();
+        let cut = source
+            .windows(3)
+            .position(|bytes| bytes == b"\n#1")
+            .unwrap()
+            + 1;
+        let (span, comments, encodings) = reader
+            .parallel_open_with_cuts(
+                File::open(&path).unwrap(),
+                &[reader.body as usize, cut, source.len()],
+            )
+            .unwrap();
+        assert_eq!(span, metadata.time_span);
+        assert_eq!(comments, ["first", "note"]);
+        assert_eq!(encodings, reader.encodings);
+
+        let mut real_source = header.to_vec();
+        real_source.extend_from_slice(b"#0 r1 !");
+        std::fs::write(&path, real_source).unwrap();
+        let (real_reader, _, _) = Reader::open(
+            Box::new(BufReader::new(File::open(&path).unwrap())),
+            "real.vcd".into(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(real_reader.encodings[0], Encoding::Real);
+
+        for (body, split) in [
+            (b"#0 r1 !\n#1 sTwo !".as_slice(), b"\n#1".as_slice()),
+            (b"#3 sOne !\n#2 sTwo !".as_slice(), b"\n#2".as_slice()),
+            (b"#0 sOne !\n#1 sTwo ?".as_slice(), b"\n#1".as_slice()),
+        ] {
+            let mut source = header.to_vec();
+            source.extend_from_slice(body);
+            std::fs::write(&path, &source).unwrap();
+            let cut = source
+                .windows(split.len())
+                .position(|bytes| bytes == split)
+                .unwrap()
+                + 1;
+            assert!(
+                real_reader
+                    .parallel_open_with_cuts(
+                        File::open(&path).unwrap(),
+                        &[real_reader.body as usize, cut, source.len()]
+                    )
+                    .is_none()
+            );
+            assert!(
+                Reader::open(
+                    Box::new(BufReader::new(File::open(&path).unwrap())),
+                    "invalid.vcd".into(),
+                    None,
+                )
+                .is_err()
+            );
+        }
+
+        let mut source = header.to_vec();
+        source.extend_from_slice(b"#0 sOne !\n$comment text\n#777 inside $end\n#1 sTwo !");
+        std::fs::write(&path, &source).unwrap();
+        let cut = source
+            .windows(5)
+            .position(|bytes| bytes == b"\n#777")
+            .unwrap()
+            + 1;
+        assert!(
+            reader
+                .parallel_open_with_cuts(
+                    File::open(&path).unwrap(),
+                    &[reader.body as usize, cut, source.len()]
+                )
+                .is_none()
+        );
+        assert!(
+            Reader::open(
+                Box::new(BufReader::new(File::open(&path).unwrap())),
+                "comment.vcd".into(),
+                None,
+            )
+            .is_ok()
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parallel_samples_match_serial_tick_normalization() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tmp")
+            .join(format!("parallel-samples-{}.vcd", std::process::id()));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let source = b"$var wire 1 ! a $end $var wire 1 \" b $end $enddefinitions $end \
+            #0 1! 0! 0\"\n#1 0! 1\"\n#2 0! 1! 1\"\n#2 1! 0\"\n#3 0! 1!\n#4 1! 0\"\n#5 0!\n#6 1\"\n";
+        std::fs::write(&path, source).unwrap();
+        let (mut reader, hierarchy, _) = Reader::open(
+            Box::new(BufReader::new(File::open(&path).unwrap())),
+            "parallel.vcd".into(),
+            None,
+        )
+        .unwrap();
+        let signals = [
+            hierarchy.signal("a").unwrap(),
+            hierarchy.signal("b").unwrap(),
+        ];
+        let cut = |marker: &[u8]| {
+            source
+                .windows(marker.len())
+                .position(|bytes| bytes == marker)
+                .unwrap()
+                + 1
+        };
+        reader.parallel = Some(ParallelSource {
+            file: Arc::new(File::open(&path).unwrap()),
+            cuts: vec![
+                reader.body as usize,
+                cut(b"\n#2"),
+                cut(b"\n#4"),
+                source.len(),
+            ],
+            last_time: 6,
+        });
+        let mut serial =
+            crate::open_bytes_with("serial.vcd", source.as_slice().into(), "vcd-native").unwrap();
+        let serial_signals = [
+            serial.hierarchy().signal("a").unwrap(),
+            serial.hierarchy().signal("b").unwrap(),
+        ];
+        assert!(reader.parallel_prefix(&signals, Time::ZERO).is_none());
+        for tick in [1, 2, 3, 4, 5, 6, 10] {
+            let time = Time::from_ticks(tick);
+            let (actual, position) = reader.parallel_prefix(&signals, time).unwrap();
+            assert!(position.offset >= reader.body);
+            let expected = serial.samples(&serial_signals, time).unwrap();
+            for (actual, expected) in actual.iter().zip(&expected) {
+                match (actual, expected) {
+                    (
+                        Sample::Value {
+                            value: a,
+                            changed_at: at,
+                            ..
+                        },
+                        Sample::Value {
+                            value: b,
+                            changed_at: bt,
+                            ..
+                        },
+                    ) => {
+                        assert!(a.as_ref().same_value(b.as_ref()), "tick {tick}");
+                        assert_eq!(at, bt, "tick {tick}");
+                    }
+                    (Sample::Missing { .. }, Sample::Missing { .. }) => {}
+                    _ => panic!("parallel sample disagrees at tick {tick}"),
+                }
+            }
+        }
+        let second_same_tick = source
+            .windows(3)
+            .enumerate()
+            .filter(|(_, bytes)| *bytes == b"\n#2")
+            .nth(1)
+            .unwrap()
+            .0
+            + 1;
+        reader.parallel.as_mut().unwrap().cuts =
+            vec![reader.body as usize, second_same_tick, source.len()];
+        assert!(
+            reader
+                .parallel_prefix(&signals, Time::from_ticks(3))
+                .is_none()
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn canceled_chunk_stops_reading_before_eof() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tmp")
+            .join(format!("canceled-chunk-{}.vcd", std::process::id()));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"0123456789").unwrap();
+        let canceled = Arc::new(AtomicBool::new(false));
+        let mut reader = RangeReader {
+            file: Arc::new(File::open(&path).unwrap()),
+            start: 0,
+            len: 10,
+            cursor: 0,
+            canceled: Some(Arc::clone(&canceled)),
+        };
+        let mut buf = [0; 2];
+        assert_eq!(reader.read(&mut buf).unwrap(), 2);
+        canceled.store(true, Ordering::Relaxed);
+        assert_eq!(
+            reader.read(&mut buf).unwrap_err().kind(),
+            io::ErrorKind::Other
+        );
+        assert_eq!(reader.cursor, 2);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parallel_full_keeps_strings_serial() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tmp")
+            .join(format!("parallel-string-{}.vcd", std::process::id()));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let source = b"$var real 1 ! text $end $enddefinitions $end #0 sHello !\n#1 sWorld !\n";
+        std::fs::write(&path, source).unwrap();
+        let (mut reader, hierarchy, _) = Reader::open(
+            Box::new(BufReader::new(File::open(&path).unwrap())),
+            "strings.vcd".into(),
+            None,
+        )
+        .unwrap();
+        let signal = hierarchy.signal("text").unwrap();
+        assert_eq!(signal.encoding(), Encoding::String);
+        let cut = source
+            .windows(3)
+            .position(|bytes| bytes == b"\n#1")
+            .unwrap()
+            + 1;
+        reader.force_parallel_for_test(File::open(&path).unwrap(), vec![cut, source.len()], 1);
+        assert!(
+            reader
+                .parallel_full(&[signal], Time::from_ticks(1), &mut |_, _, _, _| {
+                    ControlFlow::<()>::Continue(())
+                })
+                .is_none()
+        );
+        let mut observed = Vec::new();
+        let _ = reader
+            .read(&[signal], Time::from_ticks(1), |_, time, value| {
+                observed.push(format!("{}:{value:?}", time.ticks()));
+                ControlFlow::<()>::Continue(())
+            })
+            .unwrap();
+        assert_eq!(observed, ["0:String(\"Hello\")", "1:String(\"World\")"]);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parallel_paths_fall_back_before_wide_value_allocation() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tmp")
+            .join(format!("wide-prefix-{}.vcd", std::process::id()));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let source = b"$var wire 8000000 ! wide $end $enddefinitions $end #0 b0 !\n#1 b1 !\n";
+        std::fs::write(&path, source).unwrap();
+        let (mut reader, hierarchy, _) = Reader::open(
+            Box::new(BufReader::new(File::open(&path).unwrap())),
+            "wide.vcd".into(),
+            None,
+        )
+        .unwrap();
+        let cut = source
+            .windows(3)
+            .position(|bytes| bytes == b"\n#1")
+            .unwrap()
+            + 1;
+        reader.force_parallel_for_test(File::open(&path).unwrap(), vec![cut, source.len()], 1);
+        let signal = hierarchy.signal("wide").unwrap();
+        assert!(
+            reader
+                .parallel_prefix(&[signal], Time::from_ticks(1))
+                .is_none()
+        );
+        assert!(
+            reader
+                .parallel_full(&[signal], Time::from_ticks(1), &mut |_, _, _, _| {
+                    ControlFlow::<()>::Continue(())
+                })
+                .is_none()
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn body_token_buffers_grow_with_token_size_not_record_count() {
         let mut text =
             String::from("$var wire 4 ! bus $end $var wire 1 s scalar $end $enddefinitions $end ");
@@ -738,7 +1919,7 @@ mod replay_tests {
         // Every multi-byte token crosses this reader's buffer boundaries.
         let input = BufReader::with_capacity(2, Cursor::new(text.into_bytes()));
         let (mut reader, hierarchy, _) =
-            Reader::open(Box::new(input), "tokens.vcd".into()).unwrap();
+            Reader::open(Box::new(input), "tokens.vcd".into(), None).unwrap();
         let signals = [
             hierarchy.signal("bus").unwrap(),
             hierarchy.signal("scalar").unwrap(),

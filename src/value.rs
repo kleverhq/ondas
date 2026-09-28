@@ -185,7 +185,12 @@ impl<'a> BitsRef<'a> {
         u32::try_from(bytes.len()).ok()?;
         bytes
             .iter()
-            .all(|&byte| Logic::from_ascii(byte).is_some())
+            .all(|&byte| {
+                matches!(
+                    byte.to_ascii_lowercase(),
+                    b'0' | b'1' | b'x' | b'z' | b'h' | b'u' | b'w' | b'l' | b'-'
+                )
+            })
             .then_some(Self { data: bytes })
     }
 
@@ -193,6 +198,11 @@ impl<'a> BitsRef<'a> {
     pub(crate) fn from_validated_ascii(bytes: &'a [u8]) -> Self {
         debug_assert!(Self::from_ascii(bytes).is_some());
         Self { data: bytes }
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn ascii(self) -> &'a [u8] {
+        self.data
     }
 
     /// Borrows an inclusive slice whose normalized bounds are already validated.
@@ -311,6 +321,13 @@ mod tests {
         assert_eq!(bits.bit(u32::MAX), None);
         assert!(BitsRef::from_ascii(b"10?").is_none());
         assert!(Bits::from_ascii(b"\xff").is_none());
+        for byte in u8::MIN..=u8::MAX {
+            assert_eq!(
+                BitsRef::from_ascii(&[byte]).is_some(),
+                Logic::from_ascii(byte).is_some(),
+                "byte {byte}"
+            );
+        }
         let empty = BitsRef::from_ascii(b"").unwrap();
         assert_eq!(empty.width(), 0);
         assert_eq!(empty.bit(0), None);
