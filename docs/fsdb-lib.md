@@ -214,8 +214,10 @@ under the [benchmarking policy](benchmarking.md), not inferred throughput claims
 
 - Time is absolute unsigned integer ticks. Floating timestamp formats are
   rejected, not rounded; backwards traversal timestamps fail.
-- Timescale factors are exact positive integers with supported units. An absent
-  or empty scale remains absent; an unsupported nonempty scale fails opening.
+- Timescales with decimal factors and SDK-abbreviated SI units normalize exactly
+  to positive integer factors with supported units (for example, `0.1n` is
+  `100ps`). Source tick counts are unchanged. An absent or empty scale remains
+  absent; an unsupported nonempty scale fails opening.
 - Recorded bounds come from the file, not the selected histories. Reversed bounds
   fail; a source without variable declarations has no recorded span in Ondas.
 - Writer and date preserve present-empty strings. Comments are not populated.

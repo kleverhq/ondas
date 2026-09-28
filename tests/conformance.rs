@@ -1751,6 +1751,30 @@ fn fsdb_metadata_without_hierarchy() {
 #[cfg(feature = "fsdb-lib")]
 #[test]
 #[ignore = "requires Verdi and ONDAS_FIXTURES; run just conformance-fsdb"]
+fn fsdb_sdk_decimal_timescales() {
+    for (name, factor, unit) in [
+        ("fsdb0022-scale-1n", 1, ondas::TimeUnit::Nanosecond),
+        ("fsdb0023-scale-0p1n", 100, ondas::TimeUnit::Picosecond),
+        ("fsdb0024-scale-0p01n", 10, ondas::TimeUnit::Picosecond),
+        ("fsdb0025-scale-2p5n", 2500, ondas::TimeUnit::Picosecond),
+    ] {
+        let (path, _) = fixture_catalog::load_artifact(&provider(), name);
+        metadata_matches_open(&path);
+        let metadata = ondas::read_metadata(&path).unwrap();
+        let scale = metadata.timescale().unwrap();
+        assert_eq!((scale.factor(), scale.unit()), (factor, unit), "{name}");
+        let span = metadata.time_span().unwrap();
+        assert_eq!(
+            (span.first().ticks(), span.last().ticks()),
+            (0, 10),
+            "{name}"
+        );
+    }
+}
+
+#[cfg(feature = "fsdb-lib")]
+#[test]
+#[ignore = "requires Verdi and ONDAS_FIXTURES; run just conformance-fsdb"]
 fn fsdb_queries_routing_and_lifecycle() {
     use std::{ffi::OsString, os::unix::ffi::OsStringExt, sync::Arc};
     let fixture = load_fixture(&provider(), "fsdb0005-compare-xz");

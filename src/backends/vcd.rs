@@ -1481,7 +1481,7 @@ fn decode_string(bytes: &[u8], output: &mut String, materialize: bool) -> Result
     Ok(())
 }
 
-fn timescale(text: &str) -> Result<Timescale> {
+pub(crate) fn timescale(text: &str) -> Result<Timescale> {
     let text: String = text.chars().filter(|c| !c.is_ascii_whitespace()).collect();
     let split = text
         .find(|c: char| c.is_ascii_alphabetic())
