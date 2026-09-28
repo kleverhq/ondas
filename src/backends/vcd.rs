@@ -12,7 +12,7 @@ use std::{
     io::{self, BufReader, Read, Seek},
     os::unix::fs::FileExt,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc,
     },
     thread,
@@ -955,10 +955,11 @@ impl Reader {
         }
         let selected = Arc::new(signals.iter().map(|s| s.index()).collect::<HashSet<_>>());
         let canceled = Arc::new(AtomicBool::new(false));
+        let active_chunk = Arc::new(AtomicUsize::new(0));
         let result = thread::scope(|scope| {
             let mut receivers = Vec::with_capacity(workers);
             let mut handles = Vec::with_capacity(workers);
-            for range in source.cuts.windows(2) {
+            for (index, range) in source.cuts.windows(2).enumerate() {
                 let (tx, rx) = mpsc::sync_channel::<Result<Vec<FullRecord>>>(QUEUED_BATCHES);
                 let input = BufReader::with_capacity(
                     256 * 1024,
@@ -988,6 +989,7 @@ impl Reader {
                 };
                 let stop = range[1] as u64;
                 let selected = Arc::clone(&selected);
+                let active_chunk = Arc::clone(&active_chunk);
                 let handle = thread::Builder::new().spawn_scoped(scope, move || {
                     let batch = RefCell::new(Vec::with_capacity(batch_len));
                     let mut first_time = None;
@@ -1024,7 +1026,14 @@ impl Reader {
                                 ControlFlow::Continue(())
                             }
                         },
-                        || send(&mut batch.borrow_mut()),
+                        || {
+                            // Future chunks must not fill their queues with small batches.
+                            if active_chunk.load(Ordering::Acquire) == index {
+                                send(&mut batch.borrow_mut())
+                            } else {
+                                ControlFlow::Continue(())
+                            }
+                        },
                     );
                     let batch = batch.into_inner();
                     let error = match read {
@@ -1060,7 +1069,8 @@ impl Reader {
                 }
             }
             let mut output = Ok(ControlFlow::Continue(()));
-            'chunks: for rx in &receivers {
+            'chunks: for (index, rx) in receivers.iter().enumerate() {
+                active_chunk.store(index, Ordering::Release);
                 while let Ok(batch) = rx.recv() {
                     match batch {
                         Ok(batch) => {
