@@ -11,7 +11,7 @@ use std::{
 
 use crate::{
     BitRange, BitsRef, Direction, Encoding, Error, Hierarchy, Metadata, Result, Signal, Time,
-    TimeSpan, TimeUnit, Timescale, ValueRef,
+    TimeSpan, Timescale, ValueRef,
     hierarchy::{EnumerationData, ScopeData, VariableData},
 };
 
@@ -713,28 +713,21 @@ fn declared_name(
 }
 fn timescale(text: &str) -> Option<Timescale> {
     let text = text.trim();
-    let digits = text.bytes().take_while(u8::is_ascii_digit).count();
-    let factor = text[..digits].parse::<u32>().ok()?;
-    if factor == 0 {
-        return None;
+    // The SDK also emits SI prefixes without the trailing "s".
+    if matches!(
+        text.as_bytes().last(),
+        Some(b'm' | b'u' | b'n' | b'p' | b'f' | b'a' | b'z')
+    ) {
+        super::vcd::timescale(&format!("{text}s")).ok()
+    } else {
+        super::vcd::timescale(text).ok()
     }
-    let unit = match text[digits..].trim() {
-        "s" => TimeUnit::Second,
-        "ms" => TimeUnit::Millisecond,
-        "us" => TimeUnit::Microsecond,
-        "ns" => TimeUnit::Nanosecond,
-        "ps" => TimeUnit::Picosecond,
-        "fs" => TimeUnit::Femtosecond,
-        "as" => TimeUnit::Attosecond,
-        "zs" => TimeUnit::Zeptosecond,
-        _ => return None,
-    };
-    Some(Timescale::new(factor, unit))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TimeUnit;
     #[test]
     fn real_storage_preserves_binary_values() {
         for value in [0.0_f32, -0.0, -3.25, f32::INFINITY, f32::NEG_INFINITY] {
@@ -964,10 +957,26 @@ mod tests {
 
     #[test]
     fn exact_scale_and_declared_ranges() {
-        let scale = timescale("100fs").unwrap();
-        assert_eq!((scale.factor(), scale.unit()), (100, TimeUnit::Femtosecond));
-        for bad in ["0ns", "4294967296ns", "1e-13s", "0.1ns", "1unknown"] {
-            assert!(timescale(bad).is_none());
+        for (text, factor, unit) in [
+            ("100fs", 100, TimeUnit::Femtosecond),
+            ("1n", 1, TimeUnit::Nanosecond),
+            ("0.1n", 100, TimeUnit::Picosecond),
+            ("0.01n", 10, TimeUnit::Picosecond),
+            ("2.5n", 2500, TimeUnit::Picosecond),
+            ("0.001n", 1, TimeUnit::Picosecond),
+            ("1p", 1, TimeUnit::Picosecond),
+        ] {
+            let scale = timescale(text).unwrap();
+            assert_eq!((scale.factor(), scale.unit()), (factor, unit), "{text}");
+        }
+        for bad in [
+            "0ns",
+            "4294967296ns",
+            "1e-13s",
+            "0.00000000000001z",
+            "1unknown",
+        ] {
+            assert!(timescale(bad).is_none(), "{bad}");
         }
         assert_eq!(
             declared_name(
