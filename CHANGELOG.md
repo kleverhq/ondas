@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-09-29
+
 ### Fixed
 
 - Accept exact decimal and abbreviated FSDB SDK timescales without changing source tick counts.
@@ -22,5 +24,6 @@ Initial release of Ondas, a read-only Rust library for waveform analysis.
 - Final-tick state normalization and event occurrence counts, with documented reader limits.
 - Fixture-backed conformance tests, performance benchmarks, and automated release checks.
 
-[Unreleased]: https://github.com/kleverhq/ondas/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/kleverhq/ondas/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/kleverhq/ondas/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/kleverhq/ondas/releases/tag/v1.0.0
