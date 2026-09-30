@@ -16,8 +16,20 @@ ondas = "1"
 ```
 
 See the [API examples](https://docs.rs/ondas/latest/ondas/#read-a-signal) for
-opening waveforms, resolving signals and querying values. VCD and FST readers
-are included by default; FSDB requires the optional feature and a local SDK.
+opening waveforms, resolving signals and querying values.
+
+## Cargo features
+
+No Cargo features are enabled by default. VCD and FST readers are always
+included, even with `default-features = false`.
+
+- `fsdb-lib`: adds the FSDB reader. Requires a local Verdi FSDB Reader SDK
+  selected by `VERDI_HOME`; see [SDK requirements](docs/fsdb-lib.md#dependencies-and-deployment).
+
+```toml
+[dependencies]
+ondas = { version = "1", features = ["fsdb-lib"] }
+```
 
 ## Backends
 
