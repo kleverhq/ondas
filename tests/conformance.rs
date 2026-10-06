@@ -15,7 +15,7 @@ use ondas::{
 };
 use serde_json::{Value as Json, json};
 #[path = "support/fixtures.rs"]
-mod fixture_catalog;
+mod fixture_support;
 #[cfg(feature = "fsdb-lib")]
 #[path = "support/fsdb_workload_tests.rs"]
 mod fsdb_workload_tests;
@@ -29,7 +29,7 @@ mod normalized_oracle;
 mod vcd_workload_checks;
 #[path = "support/vcd_workloads.rs"]
 mod vcd_workloads;
-use fixture_catalog::provider;
+use fixture_support::root;
 use normalized_oracle::{changes, legacy_value as normalized};
 const CASES: [&str; 7] = [
     "fst/fst0041-counter",
@@ -117,21 +117,15 @@ fn value_json(value: ValueRef<'_>) -> Json {
     }
 }
 
-fn validate_value(value: &Json, encoding: &Json) {
+fn check_value_support(value: &Json, encoding: &Json) {
     assert_eq!(value.as_object().unwrap().len(), 1, "oracle value variant");
     match encoding["kind"].as_str().unwrap() {
         "bits" => {
             let text = value["bits"].as_str().unwrap();
             assert_eq!(text.len() as u64, encoding["width"].as_u64().unwrap());
-            assert!(text.bytes().all(|b| b"01xzhuwl-".contains(&b)));
         }
         "real" => {
-            let text = value["real_bits"].as_str().unwrap();
-            assert_eq!(text.len(), 16);
-            assert!(
-                text.bytes()
-                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-            );
+            value["real_bits"].as_str().unwrap();
         }
         "string" => {
             value["string"].as_str().unwrap();
@@ -141,10 +135,10 @@ fn validate_value(value: &Json, encoding: &Json) {
     }
 }
 
-fn validate_state(state: &Json, encoding: &Json, bound: u64, strict: bool) {
+fn check_state_support(state: &Json, encoding: &Json, bound: u64, strict: bool) {
     fields(state, &["value", "changed_at"]);
     assert_ne!(encoding["kind"], "event");
-    validate_value(&state["value"], encoding);
+    check_value_support(&state["value"], encoding);
     if let Some(changed) = state.get("changed_at").filter(|v| !v.is_null()) {
         let changed = tick(changed);
         assert!(if strict {
@@ -155,7 +149,7 @@ fn validate_state(state: &Json, encoding: &Json, bound: u64, strict: bool) {
     }
 }
 
-fn validate_oracle(oracle: &Json, positive: bool) {
+fn check_oracle_support(oracle: &Json, positive: bool) {
     fields(
         oracle,
         &["schema", "open", "metadata", "hierarchy", "signals"],
@@ -217,13 +211,10 @@ fn validate_oracle(oracle: &Json, positive: bool) {
         for item in list(hierarchy, key) {
             fields(item, allowed);
             let components = item["path"].as_array().unwrap();
-            assert!(!components.is_empty());
             let components: Vec<_> = components.iter().map(|c| c.as_str().unwrap()).collect();
             assert!(paths.insert(components), "duplicate {key} path");
             if let Some(range) = item.get("range").filter(|v| !v.is_null()) {
                 fields(range, &["msb", "lsb"]);
-                range["msb"].as_i64().unwrap();
-                range["lsb"].as_i64().unwrap();
             }
             if let Some(id) = item.get("signal").and_then(Json::as_str) {
                 assert!(signals.contains_key(id), "unresolved oracle signal {id}");
@@ -233,7 +224,6 @@ fn validate_oracle(oracle: &Json, positive: bool) {
     }
     assert_eq!(referenced, signals.keys().map(String::as_str).collect());
     for (id, signal) in signals {
-        assert!(!id.is_empty());
         fields(signal, &["encoding", "samples", "windows"]);
         let encoding = &signal["encoding"];
         fields(encoding, &["kind", "width"]);
@@ -252,7 +242,7 @@ fn validate_oracle(oracle: &Json, positive: bool) {
             if sample.get("value").is_some() {
                 let mut state = sample.clone();
                 state.as_object_mut().unwrap().remove("time");
-                validate_state(&state, encoding, time, false);
+                check_state_support(&state, encoding, time, false);
             } else if sample.get("occurrences").is_some() {
                 assert_eq!(encoding["kind"], "event");
                 tick(&sample["occurrences"]);
@@ -266,7 +256,7 @@ fn validate_oracle(oracle: &Json, positive: bool) {
             let (start, end) = (tick(&window["start"]), tick(&window["end"]));
             let initial = window.get("initial").expect("window initial required");
             if !initial.is_null() {
-                validate_state(initial, encoding, start, true);
+                check_state_support(initial, encoding, start, true);
             }
             if encoding["kind"] == "event" {
                 assert!(initial.is_null());
@@ -280,7 +270,7 @@ fn validate_oracle(oracle: &Json, positive: bool) {
                     "{id}: unordered/out-of-window change"
                 );
                 previous = time;
-                validate_value(&change["value"], encoding);
+                check_value_support(&change["value"], encoding);
             }
             if start > end {
                 assert!(initial.is_null() && list(window, "changes").is_empty());
@@ -290,87 +280,22 @@ fn validate_oracle(oracle: &Json, positive: bool) {
     }
 }
 
-fn load_fixture(provider: &Path, name: &str) -> Fixture {
-    load_conformance_fixture(provider, name).unwrap()
+fn load_fixture(root: &Path, name: &str) -> Fixture {
+    load_conformance_fixture(root, name).unwrap()
 }
 
-fn fixture_sidecar(provider: &Path, name: &str) -> (PathBuf, Json) {
-    let directory = provider
-        .join(name)
-        .canonicalize()
-        .unwrap_or_else(|e| panic!("{name}: fixture directory: {e}"));
-    assert!(
-        directory.starts_with(provider),
-        "{name}: fixture escapes provider"
-    );
-    let sidecar_path = directory
-        .join("fixture.json")
-        .canonicalize()
-        .expect("fixture sidecar path");
-    assert!(
-        sidecar_path.starts_with(&directory) && sidecar_path.is_file(),
-        "{name}: sidecar containment/type"
-    );
-    let sidecar: Json = serde_json::from_slice(
-        &fs::read(sidecar_path).unwrap_or_else(|e| panic!("{name}: sidecar: {e}")),
-    )
-    .expect("fixture JSON");
-    assert_eq!(sidecar["schema"], 1, "{name}: sidecar schema");
-    let artifact = &sidecar["artifact"];
-    let extension = artifact["format"].as_str().unwrap();
-    assert!(
-        matches!(extension, "fst" | "vcd" | "fsdb" | "ghw" | "wlf"),
-        "{name}: invalid artifact format"
-    );
-    let filename = format!("waveform.{extension}");
-    assert_eq!(artifact["file"], filename, "{name}: artifact filename");
-    let provenance = &sidecar["provenance"];
-    assert!(
-        !provenance["license"]
-            .as_str()
-            .expect("provenance license")
-            .is_empty()
-    );
-    match provenance["kind"].as_str().unwrap() {
-        "authored" => (),
-        "imported" | "converted" => {
-            assert!(!provenance["source"].as_str().unwrap().is_empty());
-            if provenance["kind"] == "converted" {
-                match &provenance["transform"] {
-                    Json::String(text) => assert!(!text.is_empty()),
-                    Json::Object(fields) => assert!(!fields.is_empty()),
-                    _ => panic!("{name}: invalid provenance transform"),
-                }
-            }
-        }
-        kind => panic!("{name}: invalid provenance {kind}"),
-    }
-    let mut tags = HashSet::new();
-    for tag in list(&sidecar, "tags") {
-        let tag = tag.as_str().expect("fixture tag string");
-        assert!(
-            !tag.is_empty() && tags.insert(tag),
-            "{name}: empty/duplicate tag {tag}"
-        );
-    }
+fn fixture_sidecar(root: &Path, name: &str) -> (PathBuf, Json) {
+    let (directory, sidecar) = fixture_support::read_sidecar(root, name);
     if let Some(oracle) = sidecar.get("oracle")
         && !oracle.as_object().expect("oracle object").is_empty()
     {
-        validate_oracle(oracle, oracle["open"]["result"] == "ok");
+        check_oracle_support(oracle, oracle["open"]["result"] == "ok");
     }
-    artifact["size"].as_u64().expect("artifact size");
-    let hash = artifact["sha256"].as_str().expect("artifact SHA256");
-    assert!(
-        hash.len() == 64
-            && hash
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    );
     (directory, sidecar)
 }
 
-fn load_conformance_fixture(provider: &Path, name: &str) -> Option<Fixture> {
-    let (directory, sidecar) = fixture_sidecar(provider, name);
+fn load_conformance_fixture(root: &Path, name: &str) -> Option<Fixture> {
+    let (directory, sidecar) = fixture_sidecar(root, name);
     let artifact = &sidecar["artifact"];
     let format = match artifact["format"].as_str().unwrap() {
         "fst" => Format::Fst,
@@ -380,15 +305,7 @@ fn load_conformance_fixture(provider: &Path, name: &str) -> Option<Fixture> {
     };
     let oracle = sidecar.get("oracle").cloned().unwrap_or_else(|| json!({}));
     eprintln!("validating {name}");
-    let path = directory.join(artifact["file"].as_str().unwrap());
-    let path = path
-        .canonicalize()
-        .expect("artifact must resolve inside fixture");
-    assert!(
-        path.starts_with(&directory) && path.is_file(),
-        "{name}: artifact containment/type"
-    );
-    fixture_catalog::check_artifact(&path, artifact, name);
+    let path = fixture_support::verify_artifact(&directory, artifact, name);
     if oracle.as_object().unwrap().is_empty() {
         eprintln!("SKIP {name}: no oracle observations");
         return None;
@@ -403,11 +320,8 @@ fn load_conformance_fixture(provider: &Path, name: &str) -> Option<Fixture> {
 fn fixtures() -> &'static [Fixture] {
     static FIXTURES: OnceLock<Vec<Fixture>> = OnceLock::new();
     FIXTURES.get_or_init(|| {
-        let provider = provider();
-        CASES
-            .iter()
-            .map(|name| load_fixture(&provider, name))
-            .collect()
+        let root = root();
+        CASES.iter().map(|name| load_fixture(&root, name)).collect()
     })
 }
 
@@ -1283,22 +1197,22 @@ fn run_case(index: usize, bytes: bool) {
     );
 }
 
-fn discover(provider: &Path, extension: &str) -> Vec<String> {
-    let provider = provider.canonicalize().expect("provider directory");
-    let directory = provider
+fn discover(root: &Path, extension: &str) -> Vec<String> {
+    let root = root.canonicalize().expect("fixture root");
+    let directory = root
         .join(extension)
         .canonicalize()
         .expect("fixture format directory");
     assert!(
-        directory.starts_with(&provider),
-        "format directory escapes provider"
+        directory.starts_with(&root),
+        "format directory escapes root"
     );
     let mut names = Vec::new();
     for entry in fs::read_dir(&directory).expect("fixture format directory") {
         let entry = entry.unwrap();
         let directory = entry.path();
         if !fs::metadata(&directory)
-            .expect("provider entry metadata")
+            .expect("fixture entry metadata")
             .is_dir()
         {
             continue;
@@ -1310,7 +1224,7 @@ fn discover(provider: &Path, extension: &str) -> Vec<String> {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
             Err(e) => panic!("{}: {e}", sidecar.display()),
             Ok(_) => {
-                let (_, sidecar) = fixture_sidecar(&provider, &name);
+                let (_, sidecar) = fixture_sidecar(&root, &name);
                 assert!(
                     sidecar["artifact"]["format"] == extension,
                     "{name}: format directory mismatch"
@@ -1506,22 +1420,22 @@ fn panic_message(error: Box<dyn std::any::Any + Send>) -> String {
 }
 
 #[test]
-#[ignore = "requires ONDAS_FIXTURES; run just conformance"]
+#[ignore = "requires installed fixtures; run just conformance"]
 fn full_fst_pool() {
     full_pool("fst");
 }
 
 #[test]
-#[ignore = "requires ONDAS_FIXTURES; run just conformance"]
+#[ignore = "requires installed fixtures; run just conformance"]
 fn full_vcd_pool() {
     full_pool("vcd");
 }
 
 #[cfg(not(feature = "fsdb-lib"))]
 #[test]
-#[ignore = "requires ONDAS_FIXTURES; run just conformance"]
+#[ignore = "requires installed fixtures; run just conformance"]
 fn fsdb_disabled_routing() {
-    let path = provider().join("fsdb/fsdb0005-compare-xz/waveform.fsdb");
+    let path = root().join("fsdb/fsdb0005-compare-xz/waveform.fsdb");
     assert!(matches!(
         ondas::open(&path),
         Err(Error::NoBackend {
@@ -1542,7 +1456,7 @@ fn fsdb_disabled_routing() {
 
 #[cfg(feature = "fsdb-lib")]
 #[test]
-#[ignore = "requires Verdi and ONDAS_FIXTURES; run just conformance-fsdb"]
+#[ignore = "requires Verdi and installed fixtures; run just conformance-fsdb"]
 fn full_fsdb_pool() {
     full_pool("fsdb");
 }
@@ -1584,9 +1498,9 @@ fn callback_query_reader_smoke(fixture: &Fixture, bytes: bool) {
 }
 
 #[test]
-#[ignore = "requires ONDAS_FIXTURES; run just conformance"]
+#[ignore = "requires installed fixtures; run just conformance"]
 fn callback_query_fst_reader() {
-    let fixture = load_fixture(&provider(), "fst/fst0041-counter");
+    let fixture = load_fixture(&root(), "fst/fst0041-counter");
     for bytes in [false, true] {
         callback_query_reader_smoke(&fixture, bytes);
     }
@@ -1607,25 +1521,22 @@ fn metadata_matches_open(path: &Path) {
 }
 
 #[test]
-#[ignore = "requires ONDAS_FIXTURES; run just conformance"]
+#[ignore = "requires installed fixtures; run just conformance"]
 fn fst_metadata_matches_open() {
-    metadata_matches_open(&load_fixture(&provider(), "fst/fst0041-counter").path);
+    metadata_matches_open(&load_fixture(&root(), "fst/fst0041-counter").path);
 }
 
 #[cfg(feature = "fsdb-lib")]
 #[test]
-#[ignore = "requires Verdi and ONDAS_FIXTURES; run just conformance-fsdb"]
+#[ignore = "requires Verdi and installed fixtures; run just conformance-fsdb"]
 fn callback_query_fsdb_reader() {
-    callback_query_reader_smoke(
-        &load_fixture(&provider(), "fsdb/fsdb0005-compare-xz"),
-        false,
-    );
+    callback_query_reader_smoke(&load_fixture(&root(), "fsdb/fsdb0005-compare-xz"), false);
 }
 
 #[test]
 #[ignore = "requires locked fixtures; run just conformance"]
 fn fst_sparse_dense_identity_and_parity() {
-    let (path, _) = fixture_catalog::load_artifact(&provider(), "fst/fst0087-sparse-dense-active");
+    let (path, _) = fixture_support::load_artifact(&root(), "fst/fst0087-sparse-dense-active");
     for mut wave in [
         ondas::open_with(&path, "fst-lib").unwrap(),
         ondas::open_bytes_with("waveform.fst", fs::read(&path).unwrap().into(), "fst-lib").unwrap(),
@@ -1685,9 +1596,9 @@ fn fst_sparse_dense_identity_and_parity() {
 
 #[cfg(feature = "fsdb-lib")]
 #[test]
-#[ignore = "requires Verdi and ONDAS_FIXTURES; run just conformance-fsdb"]
+#[ignore = "requires Verdi and installed fixtures; run just conformance-fsdb"]
 fn fsdb_conflicting_scope_diagnostic_and_metadata_bypass() {
-    let (path, _) = fixture_catalog::load_artifact(&provider(), "fsdb/fsdb0021-conflicting-scope");
+    let (path, _) = fixture_support::load_artifact(&root(), "fsdb/fsdb0021-conflicting-scope");
     let metadata = ondas::read_metadata(&path).unwrap();
     let span = metadata.time_span().unwrap();
     assert_eq!((span.first().ticks(), span.last().ticks()), (0, 0));
@@ -1714,10 +1625,9 @@ fn fsdb_conflicting_scope_diagnostic_and_metadata_bypass() {
 
 #[cfg(feature = "fsdb-lib")]
 #[test]
-#[ignore = "requires Verdi and ONDAS_FIXTURES; run just conformance-fsdb"]
+#[ignore = "requires Verdi and installed fixtures; run just conformance-fsdb"]
 fn fsdb_same_path_module_and_struct_remain_accessible() {
-    let (file, _) =
-        fixture_catalog::load_artifact(&provider(), "fsdb/fsdb0027-rocket-tile-small-1561");
+    let (file, _) = fixture_support::load_artifact(&root(), "fsdb/fsdb0027-rocket-tile-small-1561");
     let wave = ondas::open_with(file, "fsdb-lib").unwrap();
     let hierarchy = wave.hierarchy();
     let root = hierarchy.scope("RocketTile").unwrap();
@@ -1778,14 +1688,14 @@ fn fsdb_same_path_module_and_struct_remain_accessible() {
 
 #[cfg(feature = "fsdb-lib")]
 #[test]
-#[ignore = "requires Verdi and ONDAS_FIXTURES; run just conformance-fsdb"]
+#[ignore = "requires Verdi and installed fixtures; run just conformance-fsdb"]
 fn fsdb_metadata_without_hierarchy() {
-    metadata_matches_open(&load_fixture(&provider(), "fsdb/fsdb0005-compare-xz").path);
+    metadata_matches_open(&load_fixture(&root(), "fsdb/fsdb0005-compare-xz").path);
 }
 
 #[cfg(feature = "fsdb-lib")]
 #[test]
-#[ignore = "requires Verdi and ONDAS_FIXTURES; run just conformance-fsdb"]
+#[ignore = "requires Verdi and installed fixtures; run just conformance-fsdb"]
 fn fsdb_sdk_decimal_timescales() {
     for (name, factor, unit) in [
         ("fsdb/fsdb0022-scale-1n", 1, ondas::TimeUnit::Nanosecond),
@@ -1797,7 +1707,7 @@ fn fsdb_sdk_decimal_timescales() {
             ondas::TimeUnit::Picosecond,
         ),
     ] {
-        let (path, _) = fixture_catalog::load_artifact(&provider(), name);
+        let (path, _) = fixture_support::load_artifact(&root(), name);
         metadata_matches_open(&path);
         let metadata = ondas::read_metadata(&path).unwrap();
         let scale = metadata.timescale().unwrap();
@@ -1813,10 +1723,10 @@ fn fsdb_sdk_decimal_timescales() {
 
 #[cfg(feature = "fsdb-lib")]
 #[test]
-#[ignore = "requires Verdi and ONDAS_FIXTURES; run just conformance-fsdb"]
+#[ignore = "requires Verdi and installed fixtures; run just conformance-fsdb"]
 fn fsdb_queries_routing_and_lifecycle() {
     use std::{ffi::OsString, os::unix::ffi::OsStringExt, sync::Arc};
-    let fixture = load_fixture(&provider(), "fsdb/fsdb0005-compare-xz");
+    let fixture = load_fixture(&root(), "fsdb/fsdb0005-compare-xz");
     let mut wave = ondas::open(&fixture.path).unwrap();
     let signals = hierarchy(&wave, &fixture.oracle, true);
     let handles: Vec<_> = signals.values().take(3).copied().collect();
@@ -1911,24 +1821,23 @@ fn fsdb_queries_routing_and_lifecycle() {
 }
 
 fn full_pool(extension: &str) {
-    run_pool(&provider(), extension);
+    run_pool(&root(), extension);
 }
 
-fn run_pool(provider: &Path, extension: &str) {
-    let names = discover(provider, extension);
+fn run_pool(root: &Path, extension: &str) {
+    let names = discover(root, extension);
     assert!(
         !names.is_empty(),
         "no {extension} fixtures in {}",
-        provider.display()
+        root.display()
     );
     eprintln!("{extension} pool: {} fixtures", names.len());
-    // Validate the whole selected catalog before opening any waveform. Loading
+    // Validate the whole selected pool before opening any waveform. Loading
     // drops artifact bytes after hashing; query inputs are held one case at a time.
     let fixtures: Vec<_> = names
         .iter()
         .map(|name| {
-            std::panic::catch_unwind(|| load_conformance_fixture(provider, name))
-                .map_err(panic_message)
+            std::panic::catch_unwind(|| load_conformance_fixture(root, name)).map_err(panic_message)
         })
         .collect();
     let invalid: Vec<_> = names
@@ -1943,7 +1852,7 @@ fn run_pool(provider: &Path, extension: &str) {
         .collect();
     assert!(
         invalid.is_empty(),
-        "{extension} catalog validation failed before conformance:\n{}",
+        "{extension} fixture preflight failed before conformance:\n{}",
         invalid.join("\n")
     );
     let mut failures = Vec::new();
@@ -1992,10 +1901,10 @@ fn run_pool(provider: &Path, extension: &str) {
 macro_rules! cases {
     ($($file:ident, $bytes:ident => $index:expr;)*) => {$ (
         #[test]
-        #[ignore = "requires ONDAS_FIXTURES; run just conformance"]
+        #[ignore = "requires installed fixtures; run just conformance"]
         fn $file() { run_case($index, false); }
         #[test]
-        #[ignore = "requires ONDAS_FIXTURES; run just conformance"]
+        #[ignore = "requires installed fixtures; run just conformance"]
         fn $bytes() { run_case($index, true); }
     )*};
 }
@@ -2145,28 +2054,28 @@ fn foreign_handles(bytes: bool) {
 }
 
 #[test]
-#[ignore = "requires ONDAS_FIXTURES; run just conformance"]
+#[ignore = "requires installed fixtures; run just conformance"]
 fn counter_slice_projections_file() {
     counter_slices(false);
 }
 #[test]
-#[ignore = "requires ONDAS_FIXTURES; run just conformance"]
+#[ignore = "requires installed fixtures; run just conformance"]
 fn counter_slice_projections_bytes() {
     counter_slices(true);
 }
 #[test]
-#[ignore = "requires ONDAS_FIXTURES; run just conformance"]
+#[ignore = "requires installed fixtures; run just conformance"]
 fn foreign_handle_validation_file() {
     foreign_handles(false);
 }
 #[test]
-#[ignore = "requires ONDAS_FIXTURES; run just conformance"]
+#[ignore = "requires installed fixtures; run just conformance"]
 fn foreign_handle_validation_bytes() {
     foreign_handles(true);
 }
 
 #[test]
-#[ignore = "requires ONDAS_FIXTURES; run just conformance"]
+#[ignore = "requires installed fixtures; run just conformance"]
 fn automatic_opening_uses_content_and_keeps_logical_names() {
     let fixture = &fixtures()[0];
     let file = ondas::open(&fixture.path).unwrap();
@@ -2226,21 +2135,21 @@ fn fixture_artifact_checks_reject_corruption_and_escape() {
     fs::write(&path, bytes).unwrap();
     fs::write(&sidecar_path, sidecar.to_string()).unwrap();
     assert_eq!(
-        fixture_catalog::load_artifact(&root, "case").0,
+        fixture_support::load_artifact(&root, "case").0,
         path.canonicalize().unwrap()
     );
 
     fs::write(&path, b"bad!").unwrap();
-    assert!(std::panic::catch_unwind(|| fixture_catalog::load_artifact(&root, "case")).is_err());
+    assert!(std::panic::catch_unwind(|| fixture_support::load_artifact(&root, "case")).is_err());
     fs::write(&path, bytes).unwrap();
     sidecar["artifact"]["size"] = json!(bytes.len() + 1);
     fs::write(&sidecar_path, sidecar.to_string()).unwrap();
-    assert!(std::panic::catch_unwind(|| fixture_catalog::load_artifact(&root, "case")).is_err());
+    assert!(std::panic::catch_unwind(|| fixture_support::load_artifact(&root, "case")).is_err());
     sidecar["artifact"]["size"] = json!(bytes.len());
     sidecar["artifact"]["file"] = json!("../waveform.vcd");
     fs::write(&sidecar_path, sidecar.to_string()).unwrap();
-    assert!(std::panic::catch_unwind(|| fixture_catalog::load_artifact(&root, "case")).is_err());
-    assert!(std::panic::catch_unwind(|| fixture_catalog::load_artifact(&root, "..")).is_err());
+    assert!(std::panic::catch_unwind(|| fixture_support::load_artifact(&root, "case")).is_err());
+    assert!(std::panic::catch_unwind(|| fixture_support::load_artifact(&root, "..")).is_err());
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -2307,7 +2216,6 @@ fn discovery_uses_artifacts_not_fixture_names_or_a_whitelist() {
         )
         .unwrap();
     }
-    fs::write(root.join("catalog.json"), "{}").unwrap();
     assert_eq!(discover(&root, "fst"), ["fst/anything"]);
     assert_eq!(discover(&root, "vcd"), ["vcd/fst-not-selected"]);
     fs::write(root.join("fst/orphan/waveform.fst"), []).unwrap();
@@ -2387,44 +2295,27 @@ fn grouped_discovery_preserves_relative_paths_and_format_boundaries() {
 }
 
 #[test]
-fn sidecars_accept_provider_tags_structured_provenance_and_omitted_oracles() {
+fn omitted_or_empty_oracles_require_verified_artifacts() {
     use sha2::{Digest, Sha256};
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tmp")
-        .join(format!("provider-sidecars-{}", std::process::id()));
+        .join(format!("fixture-no-evidence-{}", std::process::id()));
     fs::create_dir_all(root.join("case")).unwrap();
     let root = root.canonicalize().unwrap();
     let mut sidecar = json!({"schema": 1,
         "artifact": {"format": "vcd", "file": "waveform.vcd", "size": 0,
-            "sha256": format!("{:x}", Sha256::digest([]))},
-        "provenance": {"kind": "converted", "license": "unknown", "source": "source-fixture",
-            "transform": {"tool": "converter"}}, "tags": ["provider-specific"]});
+            "sha256": format!("{:x}", Sha256::digest([]))}});
     let path = root.join("case/fixture.json");
     fs::write(root.join("case/waveform.vcd"), []).unwrap();
-    for transform in [json!({"tool": "converter"}), json!("converter 1.0")] {
-        sidecar["provenance"]["transform"] = transform;
+    for oracle in [None, Some(json!({}))] {
+        if let Some(oracle) = oracle {
+            sidecar["oracle"] = oracle;
+        }
         fs::write(&path, sidecar.to_string()).unwrap();
-        assert_eq!(fixture_sidecar(&root, "case").1, sidecar);
         assert!(load_conformance_fixture(&root, "case").is_none());
     }
     fs::remove_file(root.join("case/waveform.vcd")).unwrap();
     assert!(std::panic::catch_unwind(|| load_conformance_fixture(&root, "case")).is_err());
-    for tags in [json!([""]), json!(["duplicate", "duplicate"])] {
-        sidecar["tags"] = tags;
-        fs::write(&path, sidecar.to_string()).unwrap();
-        assert!(std::panic::catch_unwind(|| fixture_sidecar(&root, "case")).is_err());
-    }
-    sidecar["tags"] = json!([]);
-    sidecar["provenance"]["transform"] = json!({});
-    fs::write(&path, sidecar.to_string()).unwrap();
-    assert!(std::panic::catch_unwind(|| fixture_sidecar(&root, "case")).is_err());
-    sidecar["provenance"]["transform"] = json!("converter");
-    sidecar["provenance"]
-        .as_object_mut()
-        .unwrap()
-        .remove("license");
-    fs::write(&path, sidecar.to_string()).unwrap();
-    assert!(std::panic::catch_unwind(|| fixture_sidecar(&root, "case")).is_err());
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -2461,11 +2352,28 @@ fn empty_pool_and_missing_format_directory_fail() {
 }
 
 #[test]
+fn unsupported_oracle_assertions_and_schema_versions_fail_preflight() {
+    let oracle = json!({
+        "schema": 1, "open": {"result": "ok"}, "metadata": {},
+        "hierarchy": {"variables": [{"path": ["x"], "signal": "x"}]},
+        "signals": {"x": {"encoding": {"kind": "bits", "width": 1}}}
+    });
+    check_oracle_support(&oracle, true);
+    let mut unsupported = oracle.clone();
+    // This is a producer-supported assertion that the runner cannot execute.
+    unsupported["hierarchy"]["variables"][0]["spellings"] = json!({"canonical": "x"});
+    assert!(std::panic::catch_unwind(|| check_oracle_support(&unsupported, true)).is_err());
+    unsupported = oracle;
+    unsupported["schema"] = json!(2);
+    assert!(std::panic::catch_unwind(|| check_oracle_support(&unsupported, true)).is_err());
+}
+
+#[test]
 fn version_one_validation_does_not_accept_aggregate_value_assertions() {
-    validate_value(&json!({"event": true}), &json!({"kind": "event"}));
+    check_value_support(&json!({"event": true}), &json!({"kind": "event"}));
     assert!(
         std::panic::catch_unwind(|| {
-            validate_value(&json!({"occurrences": "2"}), &json!({"kind": "event"}));
+            check_value_support(&json!({"occurrences": "2"}), &json!({"kind": "event"}));
         })
         .is_err()
     );

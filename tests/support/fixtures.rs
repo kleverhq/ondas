@@ -1,4 +1,4 @@
-//! Shared catalog and artifact checks for conformance tests and benchmarks.
+//! Shared sidecar loading and artifact checks for tests and benchmarks.
 use std::{
     fs, io,
     path::{Path, PathBuf},
@@ -7,37 +7,14 @@ use std::{
 use serde_json::Value as Json;
 use sha2::{Digest, Sha256};
 
-pub const PROVIDER: &str = "kleverhq.ondas-fixtures";
-
-pub fn provider() -> PathBuf {
-    let lock: toml::Value =
-        toml::from_str(include_str!("../../fixtures.lock.toml")).expect("fixture lock TOML");
-    let provider_version = lock["providers"][PROVIDER]
-        .as_str()
-        .expect("selected provider version must be a string");
-    assert!(!provider_version.is_empty(), "empty provider version");
-    let root = PathBuf::from(
-        std::env::var_os("ONDAS_FIXTURES")
-            .expect("ONDAS_FIXTURES is required; run just conformance"),
-    );
-    let provider = root
-        .join(PROVIDER)
+pub fn root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("fixtures")
         .canonicalize()
-        .expect("fixture provider is absent; run just fixtures-install");
-    let catalog: Json =
-        serde_json::from_slice(&fs::read(provider.join("catalog.json")).expect("provider catalog"))
-            .unwrap();
-    assert_eq!(catalog["schema"], 1, "catalog schema");
-    assert_eq!(catalog["provider"], PROVIDER, "provider identity");
-    assert_eq!(
-        catalog["version"].as_str(),
-        Some(provider_version),
-        "provider version mismatch"
-    );
-    provider
+        .expect("fixtures are absent; run git submodule update --init fixtures on the host, then ./dev just fixtures-install")
 }
 
-pub fn check_artifact(path: &Path, artifact: &Json, name: &str) {
+fn check_artifact(path: &Path, artifact: &Json, name: &str) {
     let mut file = fs::File::open(path).unwrap();
     let mut digest = Sha256::new();
     let size = io::copy(&mut file, &mut digest).unwrap();
@@ -53,15 +30,12 @@ pub fn check_artifact(path: &Path, artifact: &Json, name: &str) {
     );
 }
 
-pub fn load_artifact(provider: &Path, name: &str) -> (PathBuf, Json) {
-    let directory = provider
+pub fn read_sidecar(root: &Path, name: &str) -> (PathBuf, Json) {
+    let directory = root
         .join(name)
         .canonicalize()
         .unwrap_or_else(|e| panic!("{name}: fixture directory: {e}"));
-    assert!(
-        directory.starts_with(provider),
-        "{name}: fixture escapes provider"
-    );
+    assert!(directory.starts_with(root), "{name}: fixture escapes root");
     let sidecar_path = directory
         .join("fixture.json")
         .canonicalize()
@@ -75,7 +49,10 @@ pub fn load_artifact(provider: &Path, name: &str) -> (PathBuf, Json) {
     )
     .expect("fixture JSON");
     assert_eq!(sidecar["schema"], 1, "{name}: sidecar schema");
-    let artifact = &sidecar["artifact"];
+    (directory, sidecar)
+}
+
+pub fn verify_artifact(directory: &Path, artifact: &Json, name: &str) -> PathBuf {
     let extension = artifact["format"].as_str().unwrap();
     assert!(
         matches!(extension, "fst" | "vcd" | "fsdb" | "ghw" | "wlf"),
@@ -85,9 +62,15 @@ pub fn load_artifact(provider: &Path, name: &str) -> (PathBuf, Json) {
     assert_eq!(artifact["file"], filename, "{name}: artifact filename");
     let path = directory.join(filename).canonicalize().unwrap();
     assert!(
-        path.starts_with(&directory) && path.is_file(),
+        path.starts_with(directory) && path.is_file(),
         "{name}: artifact containment/type"
     );
     check_artifact(&path, artifact, name);
+    path
+}
+
+pub fn load_artifact(root: &Path, name: &str) -> (PathBuf, Json) {
+    let (directory, sidecar) = read_sidecar(root, name);
+    let path = verify_artifact(&directory, &sidecar["artifact"], name);
     (path, sidecar)
 }

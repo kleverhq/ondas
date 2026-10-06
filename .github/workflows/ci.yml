@@ -20,6 +20,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          submodules: true
           persist-credentials: false
       - name: Validate release tag and merged source
         if: github.ref_type == 'tag'
@@ -52,11 +53,14 @@ jobs:
           Path('.devcontainer/ci').mkdir()
           Path('.devcontainer/ci/devcontainer.json').write_text(json.dumps(config))
           PY
-      - name: Restore fixture provider
+      - name: Read pinned fixture revision
+        id: fixture_revision
+        run: echo "sha=$(git rev-parse HEAD:fixtures)" >> "$GITHUB_OUTPUT"
+      - name: Restore waveform payloads
         uses: actions/cache@v4
         with:
-          path: fixtures
-          key: fixtures-${{ runner.os }}-${{ hashFiles('fixtures.lock.toml') }}
+          path: fixtures/*/*/waveform.*
+          key: fixtures-${{ runner.os }}-${{ steps.fixture_revision.outputs.sha }}
       - uses: devcontainers/ci@v0.3
         with:
           configFile: .devcontainer/ci/devcontainer.json
@@ -64,7 +68,6 @@ jobs:
           env: GITHUB_TOKEN
           runCmd: |
             set -euo pipefail
-            export ONDAS_FIXTURES="$PWD/fixtures"
             just fixtures-install
             just ci
             just msrv

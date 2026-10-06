@@ -153,10 +153,10 @@ These checks do not establish hierarchy completeness or universal format support
 ## Verification
 
 The shared [conformance runner](../tests/conformance.rs) discovers every FST in
-the locked provider and checks listed metadata, declarations, samples and windows
+the pinned fixture submodule and checks listed metadata, declarations, samples and windows
 in file/bytes modes. Samples and windows are batched; focused cases cover
 selections, scans, candidates, projections and termination. Failures are aggregated,
-not excluded, and provider additions need no manual case-list update.
+not excluded, and fixture additions need no manual case-list update.
 
 See [testing](testing.md) for memory-reader versus adapter evidence. Sparse oracles
 do not cover every signal, tick, compression variant or first-tick event behavior.

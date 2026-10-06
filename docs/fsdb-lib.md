@@ -41,8 +41,8 @@ not a relocatable binary distribution or a graceful runtime-absence mechanism.
 An RPATH on this crate's own targets would not cover downstream library consumers.
 
 Local container mounts and vendor test gates belong in [automation](automation.md).
-Mount the full SDK and fixture root read-only through an ignored local
-profile; keep vendor outputs separate and vendor files out of images and Docker
+Mount the full SDK read-only through an ignored local profile. Fixtures come
+from the workspace submodule; keep vendor outputs separate and vendor files out of images and Docker
 build contexts.
 
 ## How it works
@@ -260,8 +260,8 @@ contained by exception handling. This is not a sandbox for untrusted files.
 ## Verification
 
 The shared [conformance runner](../tests/conformance.rs), invoked through
-`just conformance-fsdb`, uses the real SDK in file mode against the locked
-provider. Missing or invalid inputs fail. Fixture installation and validation
+`just conformance-fsdb`, uses the real SDK in file mode against the pinned
+fixtures. Missing or invalid inputs fail. Fixture installation and validation
 belong in [fixtures](fixtures.md).
 
 Focused tests cover duplicate selections, projections, boundaries, early stops,

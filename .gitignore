@@ -6,6 +6,5 @@ __pycache__/
 /.env
 /.devcontainer.local/
 /.devcontainer/ci/
-/fixtures/
 /just.local
 /tools.local/

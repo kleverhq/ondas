@@ -6,11 +6,11 @@ use ondas::{Time, TimeRange};
 use super::{BACKEND, candidate_count, fixtures, scan_count};
 
 pub(super) fn records(c: &mut Criterion, fixture: &str, names: &[&str]) {
-    let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
+    let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
     let mut wave = ondas::open_with(&path, BACKEND).unwrap();
     let time = Time::from_ticks(2049);
     let range = TimeRange::closed(Time::from_ticks(2047), time);
-    let mut group = c.benchmark_group(format!("fsdb/{}/{fixture}/file", fixtures::PROVIDER));
+    let mut group = c.benchmark_group(format!("{fixture}/file"));
     group.sample_size(10);
     for &name in names {
         let signal = wave.hierarchy().signal(name).unwrap();

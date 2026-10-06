@@ -40,7 +40,7 @@ fn first_change(record: ScanRef<'_>) -> ControlFlow<Time> {
 
 fn scr1(c: &mut Criterion) {
     let fixture = "fst/fst0015-scr1-max-ahb-coremark";
-    let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
+    let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
     // Loading and allocating the shared bytes is not part of bytes opening.
     let bytes: Arc<[u8]> = fs::read(&path).unwrap().into();
     let late = Time::from_ticks(6_244_000);
@@ -58,7 +58,7 @@ fn scr1(c: &mut Criterion) {
         let mut wave = open();
         let signals = SCR1_SIGNALS.map(|path| wave.hierarchy().signal(path).unwrap());
         assert_eq!(signals.iter().collect::<HashSet<_>>().len(), 4);
-        let group_name = format!("fst/{}/{fixture}/{mode}", fixtures::PROVIDER);
+        let group_name = format!("{fixture}/{mode}");
         let mut group = c.benchmark_group(&group_name);
         group.sample_size(10);
 
@@ -248,7 +248,7 @@ fn scr1(c: &mut Criterion) {
 
 fn chipyard(c: &mut Criterion) {
     let fixture = "fst/fst0000-chipyard-clusteredrocketconfig-dhrystone";
-    let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
+    let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
     let mut wave = ondas::open_with(&path, BACKEND).expect("open Chipyard workload");
     let paths = [
         "TOP.TestDriver.clock",
@@ -258,7 +258,7 @@ fn chipyard(c: &mut Criterion) {
     ];
     let signals = paths.map(|path| wave.hierarchy().signal(path).unwrap());
     assert_eq!(signals.iter().collect::<HashSet<_>>().len(), 4);
-    let mut group = c.benchmark_group(format!("fst/{}/{fixture}/file", fixtures::PROVIDER));
+    let mut group = c.benchmark_group(format!("{fixture}/file"));
     group.sample_size(10);
     group.bench_function(BenchmarkId::new("open", BACKEND), |b| {
         b.iter(|| {
@@ -303,13 +303,13 @@ fn chipyard(c: &mut Criterion) {
 
 fn picorv32(c: &mut Criterion) {
     let fixture = "fst/fst0012-picorv32-test-ez-vcd";
-    let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
+    let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
     let mut wave = ondas::open_with(&path, BACKEND).expect("open PicoRV32 workload");
     // Every unique history, not an order-dependent prefix of declarations or aliases.
     let signals = wave.hierarchy().signals().collect::<Vec<_>>();
     assert!(!signals.is_empty());
     let all = format!("all-unique/n{}", signals.len());
-    let mut group = c.benchmark_group(format!("fst/{}/{fixture}/file", fixtures::PROVIDER));
+    let mut group = c.benchmark_group(format!("{fixture}/file"));
     group.bench_function(BenchmarkId::new("open", BACKEND), |b| {
         b.iter(|| {
             drop(black_box(

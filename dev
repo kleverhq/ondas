@@ -68,22 +68,13 @@ case "$config" in
 esac
 [[ -f $config ]] || fail "devcontainer config not found: $config_relative"
 
-fixture_host=
-fixture_target=/workspaces/.ondas-fixtures
-if [[ -n ${ONDAS_FIXTURES:-} ]]; then
-    [[ $ONDAS_FIXTURES == /* ]] || fail "ONDAS_FIXTURES must be an absolute host path"
-    fixture_host=$(realpath "$ONDAS_FIXTURES" 2>/dev/null) || fail "fixture root not found: $ONDAS_FIXTURES"
-    [[ -d $fixture_host ]] || fail "fixture root is not a directory: $fixture_host"
-    [[ $fixture_host != *,* ]] || fail "fixture root cannot contain a comma"
-fi
-
 config_dir=$(dirname "$config")
 fingerprint=$(
     {
         find "$root/.devcontainer" "$config_dir" -type f -print0 2>/dev/null \
             | sort -zu \
             | xargs -0 sha256sum
-        printf 'config=%s\nfixtures=%s\ngit-common=%s\n' "$config" "$fixture_host" "$common_dir"
+        printf 'config=%s\ngit-common=%s\n' "$config" "$common_dir"
     } | sha256sum | cut -d' ' -f1
 )
 worktree_id=$(printf '%s' "$root" | sha256sum | cut -d' ' -f1)
@@ -119,11 +110,6 @@ exec_args=(
 )
 if [[ $common_dir != "$root/.git" ]]; then
     up+=(--mount "type=bind,source=$common_dir,target=$common_dir")
-fi
-if [[ -n $fixture_host ]]; then
-    up+=(--mount "type=bind,source=$fixture_host,target=$fixture_target")
-    up+=(--remote-env "ONDAS_FIXTURES=$fixture_target")
-    exec_args+=(--remote-env "ONDAS_FIXTURES=$fixture_target")
 fi
 
 if (( exec_only )); then

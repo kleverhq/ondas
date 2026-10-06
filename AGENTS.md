@@ -6,7 +6,7 @@ Ondas is a read-only Rust library for backend-independent waveform analysis.
 
 - Public API contracts and usage examples: rustdoc in `src/`, published on docs.rs.
 - Library concepts and implementation boundaries: `docs/model.md`.
-- Test strategy: `docs/testing.md`; fixture integration and oracle interpretation: `docs/fixtures.md`; catalog, sidecar and oracle schemas: `schemas/` in the fixture provider release selected by `fixtures.lock.toml`.
+- Test strategy: `docs/testing.md`; fixture integration and oracle interpretation: `docs/fixtures.md`; sidecar and oracle schema: `fixtures/schemas/fixture.schema.json` in the pinned Git submodule.
 - Performance methodology: `docs/benchmarking.md`.
 - Development environment, CI, tools, and release policy: `docs/automation.md`.
 - Backend architecture and limits: `docs/vcd-native.md`, `docs/fst-lib.md` and `docs/fsdb-lib.md`. Other format integration docs: `docs/ghw.md` and `docs/wlf.md`.
@@ -19,7 +19,7 @@ Ondas is a read-only Rust library for backend-independent waveform analysis.
 - In each new checkout or worktree, install reviewed host hooks with `./dev --install-hooks`. Reinstall after reviewing changes to the launcher or dispatcher; installation is explicit and worktree-local.
 - Start the current worktree's container before host `git commit`. Hooks use only `./dev --exec-only` and never start, rebuild, or recreate it. Do not bypass hooks unless the user explicitly requests it.
 - Use `./dev just --list` for available recipes. Validate with `./dev just ci`, `./dev just msrv`, and `./dev cargo test --doc --locked` after public documentation changes.
-- `just ci` includes mandatory external conformance; install the locked provider explicitly with `just fixtures-install` first. Missing inputs must fail. Pre-commit uses fixture-free `just check-local`, not `just ci`; neither gate implicitly downloads data.
+- `just ci` includes mandatory external conformance; initialize the pinned submodule on the host with `git submodule update --init fixtures`, then explicitly run `just fixtures-install` first. Missing inputs must fail. Pre-commit uses fixture-free `just check-local`, not `just ci`; neither gate implicitly downloads data.
 - Verify behavior changes with the smallest relevant runnable test. Use the published FST reader without local patches; document its accepted limitations rather than adding speculative hardening.
 - Keep backend types, handles, buffers, and FFI private. Do not expose a plugin framework or introduce speculative backend abstractions.
 - Keep behavior, Rustdoc and tests consistent. Developer docs explain concepts and rationale rather than duplicate the API reference.

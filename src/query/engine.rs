@@ -1359,10 +1359,10 @@ mod tests {
 
     #[cfg(feature = "fsdb-lib")]
     #[test]
-    #[ignore = "requires real FSDB runtime and locked fixtures"]
+    #[ignore = "requires real FSDB runtime and installed fixtures"]
     fn fsdb_checkpoint_preserves_projected_state_and_invalidates() {
-        let root = std::path::PathBuf::from(std::env::var_os("ONDAS_FIXTURES").unwrap());
-        let path = root.join("kleverhq.ondas-fixtures/fsdb/fsdb0010-history-short/waveform.fsdb");
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+        let path = root.join("fsdb/fsdb0010-history-short/waveform.fsdb");
         let mut wave = crate::open_with(path, "fsdb-lib").unwrap();
         let clock = wave.hierarchy().signal("top.clock").unwrap();
         let word = wave.hierarchy().signal("top.word_00").unwrap();
@@ -1462,10 +1462,10 @@ mod tests {
 
     #[cfg(feature = "fsdb-lib")]
     #[test]
-    #[ignore = "requires real FSDB runtime and locked fixtures"]
+    #[ignore = "requires real FSDB runtime and installed fixtures"]
     fn fsdb_cold_window_matches_chronological_reference() {
-        let root = std::path::PathBuf::from(std::env::var_os("ONDAS_FIXTURES").unwrap());
-        let path = root.join("kleverhq.ondas-fixtures/fsdb/fsdb0010-history-short/waveform.fsdb");
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+        let path = root.join("fsdb/fsdb0010-history-short/waveform.fsdb");
         let mut wave = crate::open_with(path, "fsdb-lib").unwrap();
         let clock = wave.hierarchy().signal("top.clock").unwrap();
         let word = wave.hierarchy().signal("top.word_00").unwrap();
@@ -1575,21 +1575,16 @@ mod tests {
 
     #[cfg(feature = "fsdb-lib")]
     #[test]
-    #[ignore = "requires real FSDB runtime and locked fixtures"]
+    #[ignore = "requires real FSDB runtime and installed fixtures"]
     fn fsdb_cold_points_match_chronological_reference() {
-        let root = std::path::PathBuf::from(std::env::var_os("ONDAS_FIXTURES").unwrap());
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures");
         for fixture in [
             "fsdb/fsdb0010-history-short",
             "fsdb/fsdb0017-typed-records",
             "fsdb/fsdb0019-typed-values",
             "fsdb/fsdb0020-nine-state-ranges",
         ] {
-            let mut wave = crate::open(
-                root.join("kleverhq.ondas-fixtures")
-                    .join(fixture)
-                    .join("waveform.fsdb"),
-            )
-            .unwrap();
+            let mut wave = crate::open(root.join(fixture).join("waveform.fsdb")).unwrap();
             let mut signals = Vec::new();
             for variable in wave.hierarchy().variables() {
                 if let Some(signal) = variable.signal()
@@ -1692,10 +1687,10 @@ mod tests {
 
     #[cfg(feature = "fsdb-lib")]
     #[test]
-    #[ignore = "requires real FSDB runtime and locked fixtures"]
+    #[ignore = "requires real FSDB runtime and installed fixtures"]
     fn fsdb_replay_reuses_completed_point_reads() {
-        let root = std::path::PathBuf::from(std::env::var_os("ONDAS_FIXTURES").unwrap());
-        let path = root.join("kleverhq.ondas-fixtures/fsdb/fsdb0010-history-short/waveform.fsdb");
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+        let path = root.join("fsdb/fsdb0010-history-short/waveform.fsdb");
         let mut wave = crate::open_with(&path, "fsdb-lib").unwrap();
         let clock = wave.hierarchy().signal("top.clock").unwrap();
         let word = wave.hierarchy().signal("top.word_00").unwrap();
@@ -1747,7 +1742,7 @@ mod tests {
             expected
         );
         // Event counts require the full reference path, including repeated reads.
-        let path = root.join("kleverhq.ondas-fixtures/fsdb/fsdb0017-typed-records/waveform.fsdb");
+        let path = root.join("fsdb/fsdb0017-typed-records/waveform.fsdb");
         let mut wave = crate::open_with(path, "fsdb-lib").unwrap();
         let event = wave.hierarchy().signal("top.trigger").unwrap();
         let mut selection = wave.select(&[event]).unwrap();

@@ -47,13 +47,13 @@ Rust 1.88 or newer is required; the container supplies the toolchain.
 ```sh
 ./dev --install-hooks
 ./dev just check-local
-# Configure ONDAS_FIXTURES in .env before installation/full CI.
+git submodule update --init fixtures
 ./dev just fixtures-install
 ./dev just ci
 ./dev just msrv
 ```
 
-`check-local` needs no external fixtures. `ci` includes conformance;
+`check-local` needs no initialized submodule or waveform payloads. `ci` includes conformance;
 `./dev just conformance` runs that suite on its own.
 
 [Development setup](docs/automation.md) · [Testing](docs/testing.md)

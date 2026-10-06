@@ -10,7 +10,7 @@ formatting, benchmarks and project tools in the devcontainer. The host needs Git
 Docker with a working daemon, the Dev Container CLI, Bash and standard Linux
 utilities.
 
-From the repository root, after installing the locked fixtures for full CI:
+From the repository root, after initializing the pinned fixture submodule on the host and installing its payloads for full CI:
 
 ```sh
 ./dev --install-hooks
@@ -42,13 +42,10 @@ An optional root `.env` supplies local settings:
 
 ```dotenv
 ONDAS_DEV_CONFIG=.devcontainer.local/devcontainer.json
-ONDAS_FIXTURES=/absolute/host/path/to/fixtures
 ```
 
 `ONDAS_DEV_CONFIG` must be relative to, and inside, the worktree root.
-`ONDAS_FIXTURES` is an absolute host directory. The launcher mounts it and passes
-its container path under the same variable name; tests must not reuse the host
-path.
+The fixture submodule is available through the ordinary workspace mount.
 
 The host sources `.env` as Bash. Treat it as trusted executable configuration,
 not data, and do not load it again through `just`. Profiles forward selected
@@ -60,7 +57,7 @@ Recreate explicitly after changing environment, mounts or image inputs:
 ./dev --recreate just ci
 ```
 
-The launcher fingerprints profile files and the fixture-root path, not every
+The launcher fingerprints profile files and the Git common-directory path, not every
 expanded environment value. Recreation removes the container; keep important data
 in the checkout or persistent mounts rather than its writable layer.
 
@@ -113,13 +110,16 @@ Private CI topology is outside the public contract.
 
 ## Fixtures, tools and privacy
 
-The launcher mounts the fixture root; it does not download or generate data,
-validate catalogs, update hashes or change locks. Fixture tools run inside the
-container under the [fixture contract](fixtures.md).
+Initialize the `fixtures/` Git submodule on the host and install payloads explicitly
+with `./dev just fixtures-install`. The workspace mount supplies fixtures to the
+container. The launcher does not select corpus revisions or install data;
+[fixture integration](fixtures.md) defines setup and consumer checks.
 
-Exclude `.env`, `just.local`, `.devcontainer.local/`, `tools.local/`, materialized
-fixtures, SDKs, credentials and infrastructure details from both
-Git and Docker contexts. Git ignore rules alone do not exclude Docker inputs.
+Exclude `.env`, `just.local`, `.devcontainer.local/`, `tools.local/`, downloaded
+waveform payloads, SDKs, credentials and infrastructure details from
+Git and Docker contexts. The submodule tracks fixture metadata, ignores downloaded
+waveforms, and is excluded in full from Docker contexts and the crate package.
+Git ignore rules alone do not exclude Docker inputs.
 Default checks need neither credentials nor a license network.
 
 Use ignored `tmp/` for scratch and logs without deleting others' work. Tracked
@@ -152,22 +152,19 @@ BuildKit's GitHub Actions cache reuses Dockerfile layers. The runtime config use
 the loaded image with the public settings; no registry publication credentials
 are needed.
 
-The fixture cache key contains the OS and lock-file hash. CI sets
-`ONDAS_FIXTURES`, runs `just fixtures-install` even on cache hits, then
-`just ci && just msrv`. CI also validates release metadata and verifies the
-crates.io package without publishing. Installation clones the exact `v<version>`
-tag from `kleverhq/ondas-fixtures`, checks checkout/catalog identity and runs
-`just install` in that checkout without `--ignore-missing`. The provider owns
-the schemas and format-directory layout, and verifies cached payload sizes and
-hashes.
-Missing assets and corrupt downloads fail; there is no latest-tag fallback or
-cross-version cache restore. GitHub's read-only token supplies API access, and
-fork PRs need no private secrets.
+CI checks out the pinned fixture submodule and keys its payload cache by OS and
+that Git entry's commit SHA. Only waveform files and directories are cached;
+sidecars, scripts, schemas and Git state always come from the selected checkout.
+CI runs `just fixtures-install` even on cache hits, then `just ci` and `just msrv`.
+The fixture installer verifies payload sizes and hashes. Missing assets and
+corrupt downloads fail. GitHub's read-only token supplies API access; fork PRs
+need no additional secrets.
 
-Local installation uses the same explicit target. Neither CI nor `check-local`
-downloads implicitly. Installation rejects existing checkouts at another revision
-or with tracked edits rather than resetting them. Use another fixture root or
-manage that checkout deliberately. Missing required inputs fail.
+Contributors use the same explicit installation command. Neither `check-local`
+nor conformance downloads implicitly. After a parent branch change, run
+`git submodule update --init fixtures` on the host to select its pinned corpus.
+Missing required inputs fail. Release metadata and the crates.io package are
+verified without publishing during `just ci`.
 
 `rust-toolchain.toml` pins development Rust; `Cargo.toml`'s `rust-version` sets the
 MSRV used by `just msrv`. Keep container installation consistent with both. Choose
@@ -192,7 +189,7 @@ Successful docs do not establish native linking or runtime compatibility.
 
 `just ci-fsdb` explicitly enables `fsdb-lib`, checks development Rust and MSRV,
 and runs real FSDB conformance. Supply a complete read-only SDK mount and
-`VERDI_HOME` through the ignored local profile. Install the locked fixtures
+`VERDI_HOME` through the ignored local profile. Install the pinned fixtures
 explicitly before running conformance; tests do not download data. See
 [fsdb-lib](fsdb-lib.md) for the source-build deployment contract and
 [fixtures](fixtures.md) for installation and validation.

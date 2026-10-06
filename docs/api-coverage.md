@@ -62,8 +62,8 @@ The `open` helper selects each fixture's backend explicitly for file/bytes input
 check the oracle through the public API. `automatic_opening_uses_content_and_keeps_logical_names`
 checks automatic opening, `Waveform::format` / `backend`, and logical source names.
 `counter_slice_projections_file` / `_bytes` and `foreign_handle_validation_file` /
-`_bytes` provide targeted reader-backed checks. These paths require the fixture
-provider and are not executed by the library-unit command above. A zero-start
+`_bytes` provide targeted reader-backed checks. These paths require installed
+fixtures and are not executed by the library-unit command above. A zero-start
 chronological FSDB point reference has no native point calls, while the cold
 sample must seek; a separate authored value check guards the reference. Cold
 window and warm-repeat tests snapshot native traversal counters immediately

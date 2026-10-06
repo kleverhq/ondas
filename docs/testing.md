@@ -2,13 +2,13 @@
 
 Tests check the public contracts in Rustdoc. Memory-reader tests isolate shared
 semantics; real artifacts test adapters. [fixtures.md](fixtures.md) links the
-provider-owned schemas and defines integration and oracle interpretation;
+fixture-owned schema and defines integration and oracle interpretation;
 [api-coverage.md](api-coverage.md) maps contracts to executable tests. A passing
 test count alone does not establish coverage.
 
 ## Self-contained tests
 
-These tests need no `ONDAS_FIXTURES`, vendor libraries or external readers. Cover
+These tests need no initialized fixture submodule, vendor libraries or external readers. Cover
 path parsing, escaping and round trips; hierarchy lookup, ambiguity and aliases;
 time bounds and entering state; packed and non-byte-aligned values; projection
 bounds and composition; same-tick ordering, redundant writes and events; selection
@@ -92,18 +92,18 @@ oracle cannot express, such as runtime discovery or vendor error translation.
 
 ## Validation and failures
 
-Before conformance, validate the locked provider, sidecars, paths,
+Before conformance, check the pinned sidecars, supported assertions, paths,
 sizes, hashes and oracle semantics once. Do not rehash artifacts per query.
 [fixtures.md](fixtures.md) defines the checks and the runner's supported profile.
 Producer schema validation is separate from Ondas conformance.
 
-Missing configuration, required readers or selected fixtures must fail, as must
+Missing required inputs or readers or selected fixtures must fail, as must
 invalid data and an empty selection. Do not describe skipped inputs as conformance
 coverage. A deliberately malformed waveform can still be a valid fixture with a
 negative oracle.
 
-Catalog validation and conformance are separate results. An empty oracle is valid
-catalog data but supplies no semantic coverage. Tests do not download, generate,
+Producer metadata validation and conformance are separate results. An empty oracle is valid
+fixture data but supplies no semantic coverage. Tests do not download, generate,
 repair or publish fixtures.
 
 ## Commands and coverage
@@ -114,13 +114,13 @@ and is the fixture-free pre-commit gate. `just ci` also requires conformance.
 Formatting, Clippy, compilation and Rustdoc do not replace runtime tests.
 
 `./dev just conformance` runs the ignored FST/VCD integration tests and
-feature-disabled FSDB routing against the locked provider. The routing check also
-requires its FSDB artifact. Missing environment, provider, version, artifacts or
-oracle data fails the suite. Default test runs leave these external tests ignored
+feature-disabled FSDB routing against the pinned fixtures. The routing check also
+requires its FSDB artifact. Missing artifacts or required
+oracle observations fails the suite. Default test runs leave these external tests ignored
 and do not claim their coverage.
 
 `./dev just conformance-fsdb` enables `fsdb-lib` and checks FSDBs in file mode
-against the locked provider. Missing inputs fail. The runner reports passed,
+against the pinned fixtures. Missing inputs fail. The runner reports passed,
 failed and skipped cases separately; sidecars without oracle observations supply
 no conformance evidence.
 
@@ -128,7 +128,7 @@ The fixture-backed gate executes `just bench-smoke` after conformance;
 the vendor gate runs `just bench-smoke-fsdb` after its conformance. Criterion
 `--test` checks that registered workloads execute, without timing thresholds or
 proof of a speedup. New sparse/dense file/bytes and adapter diagnostic tests
-require the locked release; a local matching-version snapshot is only
+require the pinned corpus; local submodule edits supply only
 development evidence. The conflict fixture asserts a malformed opening error
 in its oracle. The focused `fsdb_conflicting_scope_diagnostic_and_metadata_bypass`
 test separately checks the adapter's diagnostic and metadata-only opening. The
@@ -150,7 +150,7 @@ opens, determine adapter coverage. Request missing cases from the fixture produc
 never turn the new adapter's output into expected observations.
 
 `full_fst_pool` and `full_vcd_pool` discover matching artifacts inside the
-provider's `fst/` and `vcd/` directories without a fixture whitelist. They validate
+`fixtures/fst/` and `fixtures/vcd/` directories without a fixture whitelist. They validate
 inputs before opening and compare every listed sample and window in file/bytes
 modes. Equal-time samples and equal-bound windows are
 batched. One hierarchy traversal matches listed declarations; focused tests cover
@@ -159,7 +159,7 @@ bytes.
 
 Named regressions cover query wrappers, projections, duplicate handles and early
 termination. The full-pool runner reports every case and aggregates assertion and
-reader panics; any mismatch fails, with no expected-failure allowlist. Catalog
+reader panics; any mismatch fails, with no expected-failure allowlist. Input
 errors abort before conformance. Panic interception belongs to tests, not the
 library. Corpus discovery does not certify every signal, tick, reader behavior
 or schema rule.

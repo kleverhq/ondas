@@ -1,110 +1,59 @@
 # Fixture integration and oracle evidence
 
-The fixture provider owns the catalog, sidecar and sparse-oracle schemas. For the
-release selected by `fixtures.lock.toml`, the authoritative definitions are
-[the catalog schema](https://github.com/kleverhq/ondas-fixtures/blob/v6.0.0/schemas/catalog.schema.json),
-[the sidecar schema](https://github.com/kleverhq/ondas-fixtures/blob/v6.0.0/schemas/fixture.schema.json)
-and [the oracle schema](https://github.com/kleverhq/ondas-fixtures/blob/v6.0.0/schemas/oracle.schema.json).
-All three retain schema version 1; provider version 6.0.0 is a separate version.
-Ondas keeps no schema copy. This document owns local integration, runner coverage
-and the interpretation of oracle evidence through the Ondas API. See
-[testing](testing.md) for test strategy and
-[the provider README](https://github.com/kleverhq/ondas-fixtures/blob/v6.0.0/README.md)
-for delivery and producer commands.
+The `fixtures/` Git submodule owns the sidecar and sparse-oracle contract in
+[its unified fixture schema](https://github.com/kleverhq/ondas-fixtures/blob/50db7e1469558e3e6796bcc47083e4252e4917ae/schemas/fixture.schema.json).
+The oracle definition is under `$defs.oracle`; sidecar and nonempty oracle
+`schema: 1` markers remain independent of the selected Git commit. Ondas keeps no
+schema copy. This document owns local integration, runner coverage and the
+interpretation of evidence through the Ondas API. See [testing](testing.md) for
+strategy and [the fixture README](https://github.com/kleverhq/ondas-fixtures/blob/50db7e1469558e3e6796bcc47083e4252e4917ae/README.md)
+for generation, validation and artifact delivery.
 
-## Catalog root and paths
+## Revision and installation
 
-Fixture-driven suites consume an already materialized directory through the
-`ONDAS_FIXTURES` process environment variable. Only `./dev` loads the host `.env`;
-the runner consumes the resulting environment and does not load `.env` itself.
-CI may export the variable directly. For example:
+The parent repository records one exact fixture commit in its `fixtures/` Git
+entry. Initialize that checkout on the host, then explicitly install waveform
+payloads through the development container:
 
-```dotenv
-ONDAS_FIXTURES=/home/user/.cache/ondas/fixtures
+```sh
+git submodule update --init fixtures
+./dev just fixtures-install
 ```
 
-The fixture root can be external or the ignored repository-root `fixtures/`
-directory. Materialized artifacts and local `.env` stay outside tracked source.
-A symlinked external provider also needs its target mounted inside the container.
-Self-contained tests do not read `ONDAS_FIXTURES`; explicitly requested fixture
-suites require it and fail if it is absent.
+The installation recipe invokes the submodule's `just install`. That installer
+finds release assets by the sidecars' recorded hashes and verifies their sizes
+and SHA-256, including cached files. Release tags are a delivery detail; the Git
+entry selects the corpus. Quality gates never initialize, download or generate
+fixtures implicitly. Default tests need no initialized submodule or payloads.
 
-The provider uses format directories:
+Tests and benchmarks resolve `fixtures/` from the repository root, independently
+of the process working directory. Fixture references such as `fst/fst0041-counter`
+use this layout:
 
 ```text
-$ONDAS_FIXTURES/
-└── kleverhq.ondas-fixtures/
-    ├── catalog.json
-    ├── schemas/
-    └── <format>/
-        └── <fixture-name>/
-            ├── fixture.json
-            └── waveform.<format>
+fixtures/
+├── schemas/fixture.schema.json
+└── <format>/<fixture-name>/
+    ├── fixture.json
+    └── waveform.<format>
 ```
 
-Fixture references are paths such as `fst/fst0041-counter`, relative to
-the provider root. The format directory must agree with `artifact.format`.
-`catalog.json.provider` must match the provider directory and selected lock
-entry. Source URLs describe provenance, not provider identity.
+Discovery visits immediate fixture directories within the selected format. The
+format directory must agree with `artifact.format`. Paths, including symlinks,
+must resolve inside the fixture root and each fixture's boundaries. Selected
+single-file artifacts must be regular files. The shared loader in
+`tests/support/fixtures.rs` verifies artifact size and SHA-256 before execution.
 
-The runner discovers immediate fixture directories inside the selected format
-directory, rather than recursively searching the provider. Paths, including
-symlinks, must resolve inside the provider and fixture boundaries.
+The fixture repository validates metadata, including provenance, tags and
+relations. These fields supply no reader observations. An absent oracle and `{}`
+supply no conformance evidence: the required artifact is still verified, then
+reported as skipped. A required pool must execute at least one case with evidence.
 
-## Provider versions and installation
-
-`fixtures.lock.toml` selects the provider version:
-
-```toml
-[providers]
-"kleverhq.ondas-fixtures" = "6.0.0"
-```
-
-The selected version must exactly equal `catalog.json.version`. The provider's
-catalog schema requires SemVer; Ondas compares the locked string without resolving
-version ranges. The lock contains versions only: no URLs, asset names, credentials,
-release checksums, materialization commands or fixture lists. Delivery is separate
-from test semantics.
-
-`./dev just fixtures-install` installs the provider explicitly. It clones
-its exact `v<version>` tag when absent, rejects existing checkouts at another
-revision or with tracked changes, verifies catalog identity/version, then runs
-`just install` in the provider checkout. The provider verifies payload sizes and
-hashes, including cached data. There is no implicit installation during tests,
-no latest-version fallback and no resetting an existing checkout.
-
-Tests and benchmarks select `kleverhq.ondas-fixtures` through the repository
-lock. `ONDAS_FIXTURES` selects its parent directory. See [local snapshots](#local-snapshots)
-for development inputs.
-
-## Sidecars and supported formats
-
-Sidecar structure follows the provider's schema, including its top-level field
-restrictions. `provenance.license` is required; use the producer's explicit
-`unknown` value when a license is not established. Imported and converted data
-retain their source, and converted data retain a nonempty string or object in
-`provenance.transform`. Never automatically assign the provider repository's
-license to an imported waveform.
-
-Tags are unique nonempty strings, with no Ondas-specific whitelist. They describe
-the fixture and may aid external selection; the current pool runner selects by
-artifact format. Neither tags nor relations supply oracle observations. An absent
-oracle and `{}` both supply no conformance evidence. An installed artifact without
-observations is validated and reported as skipped; a required pool must execute
-at least one case with evidence.
-
-For the selected single-file formats, `artifact.file` is `waveform.<format>` and
-must resolve to a regular file inside the fixture directory. Byte size and SHA-256
-bind the sidecar to the exact artifact. Declared and detected format are checked
-independently where applicable. Recipes, simulators, logs, extraction commands
-and temporary files are outside runtime fixture data. Tests never execute sidecar
-commands.
-
-The conformance suite executes FST and VCD in file and bytes modes. The
-explicit `fsdb-lib` suite executes FSDB in file mode with the real vendor runtime.
-The provider also describes GHW, WLF and SHM artifacts, including multi-file SHM
-directories; their presence does not supply Ondas readers or conformance coverage.
-This integration checks the selected reader formats only.
+Conformance executes FST and VCD in file and bytes modes. The explicit `fsdb-lib`
+suite executes FSDB in file mode with the vendor runtime. GHW, WLF and SHM
+sidecars in the submodule do not supply Ondas readers or conformance coverage.
+Fixtures are excluded from the crate package and Docker build context; downloaded
+payloads are ignored by the submodule's Git rules.
 
 ## Sparse oracle semantics
 
@@ -119,7 +68,7 @@ An omitted field makes no assertion. A permitted `null` asserts absence, except
 for the unknown-timestamp meaning of `changed_at`. Empty hierarchy lists do not
 assert that no other objects exist. Unlisted aliases, signals and ticks are not
 negative assertions. Schema structure and permitted fields come from the
-provider's oracle schema, not from this document.
+fixture schema, not from this document.
 
 Ticks and occurrence counts use canonical unsigned decimal strings fitting u64;
 never convert them to seconds for comparison. Declaration bounds are lossless i64
@@ -131,7 +80,7 @@ different IDs assert distinct whole signals.
 
 ### Current runner coverage
 
-`tests/conformance.rs` executes the assertion forms used by the locked pools.
+`tests/conformance.rs` executes the assertion forms used by the pinned pools.
 It is not a general JSON Schema validator or a complete oracle-language executor.
 Producer validation checks the full schema; the Ondas runner checks its executable
 profile and semantic evidence before opening selected waveforms.
@@ -213,7 +162,7 @@ an excursion disappears from normalized traces. Preflight validation compares
 version-1 ordered histories and typed value, missing-state and event-count
 evidence before waveform execution. Overlapping evidence must agree; it is not a
 set of alternative accepted answers. Derived counts and timestamps are ephemeral
-expectations, not new version-1 serialized fields. The validator still accepts `{"event":true}` as a unit value and rejects aggregate values in
+expectations, not new version-1 serialized fields. The runner still accepts `{"event":true}` as a unit value and rejects aggregate values in
 version-1 windows. New serialized assertions would require an explicit version.
 Version 1 also supplies no signedness or logic-domain fields; do not infer them
 from names or observed bits. Independent declaration tests cover those contracts.
@@ -224,18 +173,17 @@ the last value and an event sample has zero occurrences.
 
 ## Validation and execution
 
-Before opening any waveform, the runner validates the provider's catalog
-identity and exact locked version, discovered sidecars, path containment, artifact
-sizes/hashes and supported oracle evidence. It checks tag uniqueness, provenance,
-canonical ticks, declaration bounds, references, encoding/value compatibility,
-window ordering and overlapping observations. Invalid installed data fails before
-conformance. Artifacts are hashed once during preflight, not for every query.
-Producer schema validation remains necessary; this runner does not certify every
-schema rule or assertion form.
+Before opening any waveform, the runner checks discovered sidecars, schema-version
+compatibility, path containment, artifact sizes/hashes, and supported oracle
+evidence. Its executable profile checks signal references, representable ticks
+and encodings, window ordering, and overlapping observations. It rejects assertion
+forms it cannot execute. Metadata validation belongs to the fixture repository;
+Ondas does not implement or run a second JSON Schema validator. Artifacts are
+hashed once during preflight, rather than for every query.
 
-Missing providers or artifacts, unavailable readers, invalid data and empty
-selections fail. A deliberately malformed waveform is different: a valid sidecar
-may assert the waveform error that the API should return.
+An uninitialized submodule, missing artifacts, unavailable readers, unsupported
+assertions, inconsistent evidence, and empty selections fail. A deliberately
+malformed waveform is different: its sidecar can assert the API's opening error.
 
 The matrix is `fixture × explicitly selected compatible backend × supported input
 mode`. All waveform operations go through the public Ondas API. Sidecars describe
@@ -244,16 +192,32 @@ separately so priority changes cannot remove an adapter from coverage. Reusable
 checks derive samples, traces, scans, projections and composed queries from
 independent oracle evidence; concrete coverage belongs in [testing](testing.md).
 
-## Local snapshots
+## Updating the corpus
 
-A local snapshot can replace the installed provider for development when its
-catalog identity and version match `fixtures.lock.toml`. Keep the complete
-snapshot under ignored `tmp/` and select its parent with `ONDAS_FIXTURES`. Use the
-same root for conformance and measurements. The tagged installer does not apply
-to an unpublished version. A locally edited lock is integration work, not proof
-that contributors or CI can install that version. See
-[benchmarking](benchmarking.md#local-fixture-snapshots) for commands.
+Select a new fixture commit deliberately on the host, install its payloads, and
+run the relevant conformance and benchmark checks before committing the updated
+Git entry:
 
-The runner reads local data only. It does not run simulators, download or
-rebuild waveforms, update hashes or publish catalogs. The fixture producer owns
-schemas, generation and delivery.
+```sh
+git -C fixtures fetch origin
+git -C fixtures checkout --detach <commit>
+./dev just fixtures-install
+./dev just conformance
+./dev just bench-smoke
+# With the SDK profile selected:
+./dev just ci-fsdb
+git add fixtures
+```
+
+Commit any required consumer changes and update pinned schema links together
+with the Git entry, then run `./dev just ci` on the clean commit. After switching parent branches, use
+`git submodule update --init fixtures` to restore their selected revision. Do not
+use a moving branch as an automatic input to tests or CI.
+
+Local fixture edits can support experiments inside the submodule. Validate them
+with the fixture repository's tools and use the same checkout for conformance
+and measurements. Shared results require an available fixture commit and matching
+parent Git entry. See [benchmarking](benchmarking.md#fixture-revisions).
+
+The runner reads installed data only. It never executes sidecar commands,
+simulates, repairs artifacts, updates hashes or publishes fixture releases.
