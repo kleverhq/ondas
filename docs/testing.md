@@ -133,12 +133,13 @@ the vendor gate runs `just bench-smoke-fsdb` after its conformance. Criterion
 `--test` checks that registered workloads execute, without timing thresholds or
 proof of a speedup. New sparse/dense file/bytes and adapter diagnostic tests
 require the locked public release; a local matching-version snapshot is only
-development evidence. The conflict fixture now asserts a malformed opening error
+development evidence. The conflict fixture asserts a malformed opening error
 in its oracle. The focused `fsdb_conflicting_scope_diagnostic_and_metadata_bypass`
-test separately checks the adapter's diagnostic and metadata-only opening; it
-must be selected by the vendor gate. Known oracle/adapter mismatches belong in
-[FSDB limits](fsdb-lib.md#verification). The installed FST checks escaped variable spelling and
-alias identity in file/bytes mode. No public FST has an escaped scope, so an
+test separately checks the adapter's diagnostic and metadata-only opening. The
+RocketTile regression checks that same-path module and struct scopes remain
+accessible through traversal and return `LookupError::Ambiguous` on scope lookup.
+Both tests are selected by the vendor gate. The installed FST checks escaped
+variable spelling and alias identity in file/bytes mode. No public FST has an escaped scope, so an
 optional ignored converter test retains that separate scope-provenance check;
 it is not a release gate.
 

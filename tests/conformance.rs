@@ -1753,6 +1753,70 @@ fn fsdb_conflicting_scope_diagnostic_and_metadata_bypass() {
 #[cfg(feature = "fsdb-lib")]
 #[test]
 #[ignore = "requires Verdi and ONDAS_FIXTURES; run just conformance-fsdb"]
+fn fsdb_same_path_module_and_struct_remain_accessible() {
+    let (file, _) =
+        fixture_catalog::load_artifact(&provider(), "fsdb/fsdb0027-rocket-tile-small-1561");
+    let wave = ondas::open_with(file, "fsdb-lib").unwrap();
+    let hierarchy = wave.hierarchy();
+    let root = hierarchy.scope("RocketTile").unwrap();
+    for name in [
+        "dcache__data__data_arrays_0_ext__Memory",
+        "frontend__icache__data_arrays_0_0_ext__Memory",
+        "frontend__icache__data_arrays_1_0_ext__Memory",
+    ] {
+        let path = HierarchyPath::from_components(["RocketTile", name]);
+        let scopes = root
+            .children()
+            .filter_map(|item| match item {
+                ondas::Item::Scope(scope) if scope.path() == path => Some(scope),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(scopes.len(), 2, "{path}");
+        let module = scopes
+            .iter()
+            .find(|scope| scope.kind() == "module")
+            .unwrap();
+        let structure = scopes
+            .iter()
+            .find(|scope| scope.kind() == "struct")
+            .unwrap();
+        assert_eq!(module.packing(), None);
+        assert_eq!(structure.packing(), Some(ondas::Packing::Unpacked));
+        assert_eq!(structure.children().count(), 0);
+        assert_eq!(
+            hierarchy
+                .scopes()
+                .filter(|scope| scope.path() == path)
+                .count(),
+            2
+        );
+        for lookup in [
+            hierarchy.scope_path(&path),
+            hierarchy.scope(&path.to_string()),
+        ] {
+            let Err(ondas::LookupError::Ambiguous {
+                path: ambiguous_path,
+                matches,
+            }) = lookup
+            else {
+                panic!("same-path module and struct must be ambiguous: {path}")
+            };
+            assert_eq!(ambiguous_path, path);
+            assert_eq!(matches, 2);
+        }
+    }
+    // Scope ambiguity does not hide the independently declared same-path variable.
+    assert!(
+        hierarchy
+            .variable("RocketTile.dcache__data__data_arrays_0_ext__Memory")
+            .is_ok()
+    );
+}
+
+#[cfg(feature = "fsdb-lib")]
+#[test]
+#[ignore = "requires Verdi and ONDAS_FIXTURES; run just conformance-fsdb"]
 fn fsdb_metadata_without_hierarchy() {
     metadata_matches_open(&load_fixture(&provider(), "fsdb/fsdb0005-compare-xz").path);
 }

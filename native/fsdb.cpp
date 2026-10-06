@@ -209,12 +209,12 @@ bool_T tree(fsdbTreeCBType type, void *user, void *raw) noexcept {
         }
         case FSDB_TREE_CBT_RECORD_BEGIN: {
             const auto &v = *static_cast<fsdbTreeCBDataRecordBegin *>(raw);
-            d.data.entry = OFS_SCOPE; d.name = text(v.name); d.kind = "record";
+            d.data.entry = OFS_COMPOSITE_SCOPE; d.name = text(v.name); d.kind = "record";
             break;
         }
         case FSDB_TREE_CBT_STRUCT_BEGIN: {
             const auto &v = *static_cast<fsdbTreeCBDataStructBegin *>(raw);
-            d.data.entry = OFS_SCOPE; d.name = text(v.name);
+            d.data.entry = OFS_COMPOSITE_SCOPE; d.name = text(v.name);
             d.kind = v.type == FSDB_STRUCT_TYPE_VHDL_RECORD ? "record" :
                 (v.type >= FSDB_STRUCT_TYPE_UNPACKED_UNION ? "union" : "struct");
             switch (v.type) {

@@ -179,9 +179,13 @@ under the [benchmarking policy](benchmarking.md), not inferred throughput claims
 
 - Identical declarations in appended hierarchy trees are coalesced. Distinct
   aliases retain their paths and share compatible SDK storage identities.
-- Compatible repeated scopes merge and may supply an absent definition name.
-  Conflicting definitions or scope metadata fail with `Error::Malformed`, the
-  scope path and differing attributes. Generic SDK failures remain `Error::Backend`.
+- Compatible repeated SDK scopes merge and may supply an absent definition name.
+  Compatible repeated record/struct containers also merge. A container and an SDK
+  scope at the same path remain distinct scopes. Both retain their metadata and
+  children and are accessible through traversal; scope lookup at that path
+  returns `LookupError::Ambiguous`. Conflicting definitions or metadata between
+  repetitions of either fail with `Error::Malformed`, the scope path and differing
+  attributes. Generic SDK failures remain `Error::Backend`.
 - The SDK's hidden-scope flag is retained. Hidden scopes and their descendants
   stay accessible; consumers choose whether to suppress them during traversal.
 - Explicit vector ranges, including `[0:0]`, become declaration metadata. A
@@ -263,7 +267,8 @@ absence skips. Invalid installed inputs fail. Locks and provider policy belong
 in [fixtures](fixtures.md).
 
 Focused tests cover duplicate selections, projections, boundaries, early stops,
-reentrancy, panic cleanup, independent opens, thread movement and path handling.
+reentrancy, panic cleanup, independent opens, thread movement, path handling and
+same-path module/struct traversal with ambiguous scope lookup.
 Feature-disabled tests check availability and unchanged FST/VCD readers.
 `just ci-fsdb` also runs a separate downstream executable on development Rust and
 MSRV, launched directly without `LD_LIBRARY_PATH` or `VERDI_HOME` to verify native
@@ -273,11 +278,3 @@ See [testing](testing.md) for test strategy. Conformance checks supplied oracle
 observations, not every value class, timestamp or format variant. Missing
 coverage is a request to the fixture producer, never a reason to record this
 adapter's output as its own oracle.
-
-For `fsdb/fsdb0027-rocket-tile-small-1561` in the locked public 6.0.0 corpus, the
-oracle requires successful opening, but the adapter rejects a struct/module
-conflict at one component path. The SDK emits an empty struct container and a
-module with the same name under the same parent; the adapter currently maps both
-to scopes and attempts to merge them. This assertion remains a failure in the
-full pool; a successful metadata-only open does not establish conformance for
-this file.

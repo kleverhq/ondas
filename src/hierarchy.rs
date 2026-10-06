@@ -414,6 +414,9 @@ impl Hierarchy {
     }
 
     /// Resolves an already parsed exact scope path.
+    ///
+    /// Returns [`LookupError::Ambiguous`] when distinct scopes share the path.
+    /// Those scopes remain accessible through [`Self::scopes`] and [`Scope::children`].
     pub fn scope_path(&self, path: &HierarchyPath) -> std::result::Result<Scope<'_>, LookupError> {
         let mut matches = self
             .scopes()

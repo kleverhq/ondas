@@ -266,7 +266,7 @@ impl Reader {
         let mut variables = Vec::new();
         let mut seen_variables = HashSet::new();
         let mut stack = Vec::new();
-        let mut scope_ids: HashMap<(Option<usize>, String), usize> = HashMap::new();
+        let mut scope_ids: HashMap<(Option<usize>, String, u32), usize> = HashMap::new();
         let mut ids = Vec::new();
         let mut indices = HashMap::new();
         let mut encodings = Vec::new();
@@ -283,7 +283,7 @@ impl Reader {
                 let name = string(d.name)?.unwrap_or_default();
                 let kind = string(d.kind)?.unwrap_or_default();
                 match d.entry {
-                    0 => {
+                    0 | 3 => {
                         let parent = stack.last().copied();
                         let definition_name = string(d.definition)?;
                         let packing = match d.packing {
@@ -293,7 +293,10 @@ impl Reader {
                             3 => Some(crate::Packing::TaggedPacked),
                             _ => return Err(backend_error("invalid FSDB packing")),
                         };
-                        let key = (parent, name.clone());
+                        // SDK scopes and record/struct containers are separate
+                        // objects even when their parent and name coincide.
+                        // Repetitions of either still require compatible metadata.
+                        let key = (parent, name.clone(), d.entry);
                         let id = if let Some(&id) = scope_ids.get(&key) {
                             let old = &scopes[id];
                             let differences = [

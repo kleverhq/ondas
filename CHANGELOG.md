@@ -6,6 +6,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserve FSDB record/struct containers separately from SDK scopes with the same path; scope lookup reports ambiguity while both objects remain accessible through traversal.
+- Classify conflicting repeated FSDB scope metadata as `Error::Malformed`.
+
 ## [1.0.1] - 2026-09-29
 
 ### Fixed
