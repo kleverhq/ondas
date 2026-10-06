@@ -180,8 +180,8 @@ under the [benchmarking policy](benchmarking.md), not inferred throughput claims
 - Identical declarations in appended hierarchy trees are coalesced. Distinct
   aliases retain their paths and share compatible SDK storage identities.
 - Compatible repeated scopes merge and may supply an absent definition name.
-  Conflicting definitions or scope metadata fail with the scope path and differing
-  attributes.
+  Conflicting definitions or scope metadata fail with `Error::Malformed`, the
+  scope path and differing attributes. Generic SDK failures remain `Error::Backend`.
 - The SDK's hidden-scope flag is retained. Hidden scopes and their descendants
   stay accessible; consumers choose whether to suppress them during traversal.
 - Explicit vector ranges, including `[0:0]`, become declaration metadata. A
@@ -274,10 +274,10 @@ observations, not every value class, timestamp or format variant. Missing
 coverage is a request to the fixture producer, never a reason to record this
 adapter's output as its own oracle.
 
-The locked public 6.0.0 corpus exposes two scope-conflict mismatches. For
-`fsdb/fsdb0021-conflicting-scope`, the oracle requires a malformed opening error,
-but the adapter reports `Error::Backend` with the conflicting module/task kinds.
-For `fsdb/fsdb0027-rocket-tile-small-1561`, the oracle requires successful opening,
-but the adapter rejects a struct/module conflict at one component path. These
-assertions remain failures in the full pool; neither a successful metadata-only
-open nor focused diagnostic coverage establishes conformance for those files.
+For `fsdb/fsdb0027-rocket-tile-small-1561` in the locked public 6.0.0 corpus, the
+oracle requires successful opening, but the adapter rejects a struct/module
+conflict at one component path. The SDK emits an empty struct container and a
+module with the same name under the same parent; the adapter currently maps both
+to scopes and attempts to merge them. This assertion remains a failure in the
+full pool; a successful metadata-only open does not establish conformance for
+this file.

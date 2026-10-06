@@ -1734,16 +1734,16 @@ fn fsdb_conflicting_scope_diagnostic_and_metadata_bypass() {
         (scale.factor(), scale.unit()),
         (1, ondas::TimeUnit::Nanosecond)
     );
-    let Err(Error::Backend {
+    let Err(Error::Malformed {
+        format,
         backend,
-        operation,
         message,
     }) = ondas::open_with(path, "fsdb-lib")
     else {
         panic!("conflicting declarations must reject full open")
     };
+    assert_eq!(format, Format::Fsdb);
     assert_eq!(backend, "fsdb-lib");
-    assert_eq!(operation, "read FSDB");
     assert!(
         message.contains("conflicting FSDB scope top: kind \"module\" vs \"task\""),
         "{message}"

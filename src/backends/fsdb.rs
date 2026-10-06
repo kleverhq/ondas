@@ -10,8 +10,8 @@ use std::{
 };
 
 use crate::{
-    BitRange, BitsRef, Direction, Encoding, Error, Hierarchy, Metadata, Result, Signal, Time,
-    TimeSpan, Timescale, ValueRef,
+    BitRange, BitsRef, Direction, Encoding, Error, Format, Hierarchy, Metadata, Result, Signal,
+    Time, TimeSpan, Timescale, ValueRef,
     hierarchy::{EnumerationData, ScopeData, VariableData},
 };
 
@@ -324,10 +324,14 @@ impl Reader {
                                         .map(|&parent| scopes[parent].name.as_str())
                                         .chain(std::iter::once(name.as_str())),
                                 );
-                                return Err(backend_error(format!(
-                                    "conflicting FSDB scope {path}: {}",
-                                    differences.join(", ")
-                                )));
+                                return Err(Error::Malformed {
+                                    format: Format::Fsdb,
+                                    backend: BACKEND.into(),
+                                    message: format!(
+                                        "conflicting FSDB scope {path}: {}",
+                                        differences.join(", ")
+                                    ),
+                                });
                             }
                             if old.definition_name.is_none() {
                                 scopes[id].definition_name = definition_name;
