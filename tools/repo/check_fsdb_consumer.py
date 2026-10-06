@@ -25,7 +25,7 @@ fn main() {
 def main():
     fixture = (
         Path(os.environ["ONDAS_FIXTURES"])
-        / "kleverhq.ondas-fixtures/fsdb0005-compare-xz/waveform.fsdb"
+        / "kleverhq.ondas-fixtures/fsdb/fsdb0005-compare-xz/waveform.fsdb"
     ).resolve(strict=True)
     scratch = ROOT / "tmp"
     scratch.mkdir(exist_ok=True)

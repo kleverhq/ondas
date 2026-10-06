@@ -14,8 +14,8 @@ fn range(start: u64, end: u64) -> TimeRange {
 #[ignore = "requires real FSDB runtime and locked fixtures; run just conformance-fsdb"]
 fn fsdb_temporal_workloads() {
     for (fixture, end) in [
-        ("fsdb0010-history-short", 4096),
-        ("fsdb0011-history-long", 1_048_576),
+        ("fsdb/fsdb0010-history-short", 4096),
+        ("fsdb/fsdb0011-history-long", 1_048_576),
     ] {
         let fixture = load_fixture(&provider(), fixture);
         let mut wave = ondas::open_with(&fixture.path, workloads::BACKEND).unwrap();
@@ -86,7 +86,7 @@ fn fsdb_temporal_workloads() {
 #[test]
 #[ignore = "requires real FSDB runtime and locked fixtures; run just conformance-fsdb"]
 fn fsdb_loading_window_resets() {
-    let fixture = load_fixture(&provider(), "fsdb0010-history-short");
+    let fixture = load_fixture(&provider(), "fsdb/fsdb0010-history-short");
     let mut wave = ondas::open_with(&fixture.path, workloads::BACKEND).unwrap();
     let clock = wave.hierarchy().signal("top.clock").unwrap();
     let word = wave.hierarchy().signal("top.word_00").unwrap();
@@ -200,7 +200,7 @@ fn fsdb_conditional_workloads() {
 #[test]
 #[ignore = "requires real FSDB runtime and locked fixtures; run just conformance-fsdb"]
 fn fsdb_typed_temporal_workload() {
-    let fixture = load_fixture(&provider(), "fsdb0017-typed-records");
+    let fixture = load_fixture(&provider(), "fsdb/fsdb0017-typed-records");
     let mut wave = ondas::open_with(&fixture.path, workloads::BACKEND).unwrap();
     let signals = [
         "top.trigger",

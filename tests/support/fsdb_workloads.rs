@@ -7,7 +7,7 @@ use ondas::{
 };
 
 pub const BACKEND: &str = "fsdb-lib";
-pub const WIDE: &str = "fsdb0015-wide-compact-toggle";
+pub const WIDE: &str = "fsdb/fsdb0015-wide-compact-toggle";
 
 // Slots are driver, control, payload. Sharing duplicates a base identity; the
 // independent control is a projection of a different, simultaneously active base.

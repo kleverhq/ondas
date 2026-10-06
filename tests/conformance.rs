@@ -34,13 +34,13 @@ use fixture_catalog::checked_provider;
 use fixture_catalog::{provider, provider_directory};
 use normalized_oracle::{changes, legacy_value as normalized};
 const CASES: [&str; 7] = [
-    "fst0041-counter",
-    "fst0035-tb-complex-types-icarus-fst-waves",
-    "fst0061-shortstring",
-    "fst0032-systemc-components-waves-ace-ace-ace-ace-example-ace-axi-test",
-    "fst0033-systemc-components-waves-axi4-tlm-pin-tlm-axi4-tlm-pin-tlm-example-axi4-tlm-pin-tlm",
-    "fst0046-overlay-tb-reduced-issue-21",
-    "fst0048-foo",
+    "fst/fst0041-counter",
+    "fst/fst0035-tb-complex-types-icarus-fst-waves",
+    "fst/fst0061-shortstring",
+    "fst/fst0032-systemc-components-waves-ace-ace-ace-ace-example-ace-axi-test",
+    "fst/fst0033-systemc-components-waves-axi4-tlm-pin-tlm-axi4-tlm-pin-tlm-example-axi4-tlm-pin-tlm",
+    "fst/fst0046-overlay-tb-reduced-issue-21",
+    "fst/fst0048-foo",
 ];
 
 struct Fixture {
@@ -327,12 +327,22 @@ fn fixture_sidecar(provider: &Path, name: &str) -> (PathBuf, Json) {
     let filename = format!("waveform.{extension}");
     assert_eq!(artifact["file"], filename, "{name}: artifact filename");
     let provenance = &sidecar["provenance"];
+    assert!(
+        !provenance["license"]
+            .as_str()
+            .expect("provenance license")
+            .is_empty()
+    );
     match provenance["kind"].as_str().unwrap() {
         "authored" => (),
         "imported" | "converted" => {
             assert!(!provenance["source"].as_str().unwrap().is_empty());
             if provenance["kind"] == "converted" {
-                assert!(!provenance["transform"].as_str().unwrap().is_empty());
+                match &provenance["transform"] {
+                    Json::String(text) => assert!(!text.is_empty()),
+                    Json::Object(fields) => assert!(!fields.is_empty()),
+                    _ => panic!("{name}: invalid provenance transform"),
+                }
             }
         }
         kind => panic!("{name}: invalid provenance {kind}"),
@@ -341,33 +351,13 @@ fn fixture_sidecar(provider: &Path, name: &str) -> (PathBuf, Json) {
     for tag in list(&sidecar, "tags") {
         let tag = tag.as_str().expect("fixture tag string");
         assert!(
-            [
-                "conformance",
-                "metadata",
-                "hierarchy",
-                "paths",
-                "aliases",
-                "values",
-                "bits",
-                "real",
-                "strings",
-                "events",
-                "unknown-states",
-                "ranges",
-                "projections",
-                "same-time",
-                "constants",
-                "enumerations",
-                "malformed",
-                "large",
-            ]
-            .contains(&tag)
-                && tags.insert(tag),
-            "{name}: unknown/duplicate tag {tag}"
+            !tag.is_empty() && tags.insert(tag),
+            "{name}: empty/duplicate tag {tag}"
         );
     }
-    let oracle = &sidecar["oracle"];
-    if !oracle.as_object().expect("oracle object").is_empty() {
+    if let Some(oracle) = sidecar.get("oracle")
+        && !oracle.as_object().expect("oracle object").is_empty()
+    {
         validate_oracle(oracle, oracle["open"]["result"] == "ok");
     }
     artifact["size"].as_u64().expect("artifact size");
@@ -390,7 +380,7 @@ fn load_available_fixture(provider: &Path, name: &str, required: bool) -> Option
         "fsdb" if cfg!(feature = "fsdb-lib") => Format::Fsdb,
         other => panic!("{name}: unexpected selected format {other}"),
     };
-    let oracle = sidecar["oracle"].clone();
+    let oracle = sidecar.get("oracle").cloned().unwrap_or_else(|| json!({}));
     eprintln!("validating {name}");
     let path = directory.join(artifact["file"].as_str().unwrap());
     match fs::symlink_metadata(&path) {
@@ -1305,8 +1295,16 @@ fn run_case(index: usize, bytes: bool) {
 
 fn discover(provider: &Path, extension: &str) -> Vec<String> {
     let provider = provider.canonicalize().expect("provider directory");
+    // Public 6.0 providers group fixtures by format. Private 2.0 providers
+    // retain their flat layout until that separately locked corpus is migrated.
+    let grouped = provider_directory(&provider.join(extension));
+    let directory = grouped.as_deref().unwrap_or(&provider);
+    assert!(
+        directory.starts_with(&provider),
+        "format directory escapes provider"
+    );
     let mut names = Vec::new();
-    for entry in fs::read_dir(&provider).expect("provider directory") {
+    for entry in fs::read_dir(directory).expect("fixture format directory") {
         let entry = entry.unwrap();
         let directory = entry.path();
         if !fs::metadata(&directory)
@@ -1315,14 +1313,22 @@ fn discover(provider: &Path, extension: &str) -> Vec<String> {
         {
             continue;
         }
+        let name = entry.file_name().into_string().expect("UTF-8 fixture name");
+        let name = if grouped.is_some() {
+            format!("{extension}/{name}")
+        } else {
+            name
+        };
         let sidecar = directory.join("fixture.json");
         let declares_format = match fs::symlink_metadata(&sidecar) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
             Err(e) => panic!("{}: {e}", sidecar.display()),
             Ok(_) => {
-                let name = entry.file_name();
-                let (_, sidecar) =
-                    fixture_sidecar(&provider, name.to_str().expect("UTF-8 fixture name"));
+                let (_, sidecar) = fixture_sidecar(&provider, &name);
+                assert!(
+                    grouped.is_none() || sidecar["artifact"]["format"] == extension,
+                    "{name}: format directory mismatch"
+                );
                 sidecar["artifact"]["format"] == extension
             }
         };
@@ -1339,7 +1345,7 @@ fn discover(provider: &Path, extension: &str) -> Vec<String> {
             directory.display()
         );
         if declares_format {
-            names.push(entry.file_name().into_string().expect("UTF-8 fixture name"));
+            names.push(name);
         }
     }
     names.sort();
@@ -1529,7 +1535,7 @@ fn full_vcd_pool() {
 #[test]
 #[ignore = "requires public ONDAS_FIXTURES; run just conformance"]
 fn fsdb_disabled_routing() {
-    let path = provider().join("fsdb0005-compare-xz/waveform.fsdb");
+    let path = provider().join("fsdb/fsdb0005-compare-xz/waveform.fsdb");
     assert!(matches!(
         ondas::open(&path),
         Err(Error::NoBackend {
@@ -1618,7 +1624,7 @@ fn callback_query_reader_smoke(fixture: &Fixture, bytes: bool) {
 #[test]
 #[ignore = "requires ONDAS_FIXTURES; run just conformance"]
 fn callback_query_fst_reader() {
-    let fixture = load_fixture(&provider(), "fst0041-counter");
+    let fixture = load_fixture(&provider(), "fst/fst0041-counter");
     for bytes in [false, true] {
         callback_query_reader_smoke(&fixture, bytes);
     }
@@ -1641,20 +1647,23 @@ fn metadata_matches_open(path: &Path) {
 #[test]
 #[ignore = "requires ONDAS_FIXTURES; run just conformance"]
 fn fst_metadata_matches_open() {
-    metadata_matches_open(&load_fixture(&provider(), "fst0041-counter").path);
+    metadata_matches_open(&load_fixture(&provider(), "fst/fst0041-counter").path);
 }
 
 #[cfg(feature = "fsdb-lib")]
 #[test]
 #[ignore = "requires Verdi and ONDAS_FIXTURES; run just conformance-fsdb"]
 fn callback_query_fsdb_reader() {
-    callback_query_reader_smoke(&load_fixture(&provider(), "fsdb0005-compare-xz"), false);
+    callback_query_reader_smoke(
+        &load_fixture(&provider(), "fsdb/fsdb0005-compare-xz"),
+        false,
+    );
 }
 
 #[test]
 #[ignore = "requires locked public fixtures; run just conformance"]
 fn fst_sparse_dense_identity_and_parity() {
-    let (path, _) = fixture_catalog::load_artifact(&provider(), "fst0087-sparse-dense-active");
+    let (path, _) = fixture_catalog::load_artifact(&provider(), "fst/fst0087-sparse-dense-active");
     for mut wave in [
         ondas::open_with(&path, "fst-lib").unwrap(),
         ondas::open_bytes_with("waveform.fst", fs::read(&path).unwrap().into(), "fst-lib").unwrap(),
@@ -1716,7 +1725,7 @@ fn fst_sparse_dense_identity_and_parity() {
 #[test]
 #[ignore = "requires Verdi and ONDAS_FIXTURES; run just conformance-fsdb"]
 fn fsdb_conflicting_scope_diagnostic_and_metadata_bypass() {
-    let (path, _) = fixture_catalog::load_artifact(&provider(), "fsdb0021-conflicting-scope");
+    let (path, _) = fixture_catalog::load_artifact(&provider(), "fsdb/fsdb0021-conflicting-scope");
     let metadata = ondas::read_metadata(&path).unwrap();
     let span = metadata.time_span().unwrap();
     assert_eq!((span.first().ticks(), span.last().ticks()), (0, 0));
@@ -1745,7 +1754,7 @@ fn fsdb_conflicting_scope_diagnostic_and_metadata_bypass() {
 #[test]
 #[ignore = "requires Verdi and ONDAS_FIXTURES; run just conformance-fsdb"]
 fn fsdb_metadata_without_hierarchy() {
-    metadata_matches_open(&load_fixture(&provider(), "fsdb0005-compare-xz").path);
+    metadata_matches_open(&load_fixture(&provider(), "fsdb/fsdb0005-compare-xz").path);
 }
 
 #[cfg(feature = "fsdb-lib")]
@@ -1753,10 +1762,14 @@ fn fsdb_metadata_without_hierarchy() {
 #[ignore = "requires Verdi and ONDAS_FIXTURES; run just conformance-fsdb"]
 fn fsdb_sdk_decimal_timescales() {
     for (name, factor, unit) in [
-        ("fsdb0022-scale-1n", 1, ondas::TimeUnit::Nanosecond),
-        ("fsdb0023-scale-0p1n", 100, ondas::TimeUnit::Picosecond),
-        ("fsdb0024-scale-0p01n", 10, ondas::TimeUnit::Picosecond),
-        ("fsdb0025-scale-2p5n", 2500, ondas::TimeUnit::Picosecond),
+        ("fsdb/fsdb0022-scale-1n", 1, ondas::TimeUnit::Nanosecond),
+        ("fsdb/fsdb0023-scale-0p1n", 100, ondas::TimeUnit::Picosecond),
+        ("fsdb/fsdb0024-scale-0p01n", 10, ondas::TimeUnit::Picosecond),
+        (
+            "fsdb/fsdb0025-scale-2p5n",
+            2500,
+            ondas::TimeUnit::Picosecond,
+        ),
     ] {
         let (path, _) = fixture_catalog::load_artifact(&provider(), name);
         metadata_matches_open(&path);
@@ -1777,7 +1790,7 @@ fn fsdb_sdk_decimal_timescales() {
 #[ignore = "requires Verdi and ONDAS_FIXTURES; run just conformance-fsdb"]
 fn fsdb_queries_routing_and_lifecycle() {
     use std::{ffi::OsString, os::unix::ffi::OsStringExt, sync::Arc};
-    let fixture = load_fixture(&provider(), "fsdb0005-compare-xz");
+    let fixture = load_fixture(&provider(), "fsdb/fsdb0005-compare-xz");
     let mut wave = ondas::open(&fixture.path).unwrap();
     let signals = hierarchy(&wave, &fixture.oracle, true);
     let handles: Vec<_> = signals.values().take(3).copied().collect();
@@ -1875,7 +1888,7 @@ fn fsdb_queries_routing_and_lifecycle() {
 #[test]
 #[ignore = "requires ONDAS_FIXTURES; run just conformance-fsdb"]
 fn fsdb_optional_payload_policy() {
-    let original = provider().join("fsdb0005-compare-xz");
+    let original = provider().join("fsdb/fsdb0005-compare-xz");
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tmp")
         .join(format!("fsdb-policy-{}", std::process::id()));
@@ -2269,7 +2282,7 @@ fn optional_missing_payload_still_validates_overlapping_evidence() {
     let root = root.canonicalize().unwrap();
     let mut sidecar = json!({
         "schema":1,"artifact":{"file":"waveform.vcd","format":"vcd","size":0,"sha256":"0".repeat(64)},
-        "provenance":{"kind":"authored"},"oracle":{
+        "provenance":{"kind":"authored","license":"unknown"},"oracle":{
             "schema":1,"open":{"result":"ok"},"metadata":{},
             "hierarchy":{"variables":[{"path":["x"],"signal":"x"}]},
             "signals":{"x":{"encoding":{"kind":"bits","width":1},
@@ -2314,7 +2327,7 @@ fn discovery_uses_artifacts_not_fixture_names_or_a_whitelist() {
         fs::write(
             root.join(name).join("fixture.json"),
             json!({"schema": 1, "artifact": {"format": format, "file": format!("waveform.{format}"),
-                "size": 0, "sha256": "0".repeat(64)}, "provenance": {"kind": "authored"}, "oracle": {}}).to_string(),
+                "size": 0, "sha256": "0".repeat(64)}, "provenance": {"kind": "authored", "license": "unknown"}, "oracle": {}}).to_string(),
         )
         .unwrap();
     }
@@ -2349,6 +2362,82 @@ fn discovery_uses_artifacts_not_fixture_names_or_a_whitelist() {
             .unwrap();
         assert!(std::panic::catch_unwind(|| discover(&root, "fst")).is_err());
     }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn grouped_discovery_preserves_relative_paths_and_format_boundaries() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tmp")
+        .join(format!("grouped-discovery-{}", std::process::id()));
+    for name in ["fst/custom-name", "vcd/another-name", "fst/nested/ignored"] {
+        fs::create_dir_all(root.join(name)).unwrap();
+        let format = name.split('/').next().unwrap();
+        fs::write(
+            root.join(name).join("fixture.json"),
+            json!({"schema": 1, "artifact": {"format": format,
+                "file": format!("waveform.{format}"), "size": 0, "sha256": "0".repeat(64)},
+                "provenance": {"kind": "authored", "license": "unknown"}})
+            .to_string(),
+        )
+        .unwrap();
+    }
+    assert_eq!(discover(&root, "fst"), ["fst/custom-name"]);
+    assert_eq!(discover(&root, "vcd"), ["vcd/another-name"]);
+    fs::copy(
+        root.join("vcd/another-name/fixture.json"),
+        root.join("fst/custom-name/fixture.json"),
+    )
+    .unwrap();
+    assert!(std::panic::catch_unwind(|| discover(&root, "fst")).is_err());
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink("/not/an/ondas/format", root.join("fsdb")).unwrap();
+        assert!(std::panic::catch_unwind(|| discover(&root, "fsdb")).is_err());
+        fs::remove_file(root.join("fsdb")).unwrap();
+        std::os::unix::fs::symlink(root.join("vcd"), root.join("fsdb")).unwrap();
+        assert!(std::panic::catch_unwind(|| discover(&root, "fsdb")).is_err());
+        fs::remove_file(root.join("fsdb")).unwrap();
+        std::os::unix::fs::symlink(root.parent().unwrap(), root.join("fsdb")).unwrap();
+        assert!(std::panic::catch_unwind(|| discover(&root, "fsdb")).is_err());
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn sidecars_accept_provider_tags_structured_provenance_and_omitted_oracles() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tmp")
+        .join(format!("provider-sidecars-{}", std::process::id()));
+    fs::create_dir_all(root.join("case")).unwrap();
+    let root = root.canonicalize().unwrap();
+    let mut sidecar = json!({"schema": 1,
+        "artifact": {"format": "vcd", "file": "waveform.vcd", "size": 0, "sha256": "0".repeat(64)},
+        "provenance": {"kind": "converted", "license": "unknown", "source": "source-fixture",
+            "transform": {"tool": "converter"}}, "tags": ["provider-specific"]});
+    let path = root.join("case/fixture.json");
+    for transform in [json!({"tool": "converter"}), json!("converter 1.0")] {
+        sidecar["provenance"]["transform"] = transform;
+        fs::write(&path, sidecar.to_string()).unwrap();
+        assert_eq!(fixture_sidecar(&root, "case").1, sidecar);
+        assert!(load_available_fixture(&root, "case", false).is_none());
+    }
+    for tags in [json!([""]), json!(["duplicate", "duplicate"])] {
+        sidecar["tags"] = tags;
+        fs::write(&path, sidecar.to_string()).unwrap();
+        assert!(std::panic::catch_unwind(|| fixture_sidecar(&root, "case")).is_err());
+    }
+    sidecar["tags"] = json!([]);
+    sidecar["provenance"]["transform"] = json!({});
+    fs::write(&path, sidecar.to_string()).unwrap();
+    assert!(std::panic::catch_unwind(|| fixture_sidecar(&root, "case")).is_err());
+    sidecar["provenance"]["transform"] = json!("converter");
+    sidecar["provenance"]
+        .as_object_mut()
+        .unwrap()
+        .remove("license");
+    fs::write(&path, sidecar.to_string()).unwrap();
+    assert!(std::panic::catch_unwind(|| fixture_sidecar(&root, "case")).is_err());
     fs::remove_dir_all(root).unwrap();
 }
 

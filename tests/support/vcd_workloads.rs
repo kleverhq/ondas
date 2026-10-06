@@ -6,7 +6,7 @@ use ondas::{
     Waveform,
 };
 
-pub const FIXTURE: &str = "vcd0071-swerv1";
+pub const FIXTURE: &str = "vcd/vcd0071-swerv1";
 pub const BACKEND: &str = "vcd-native";
 pub const PATHS: [&str; 4] = [
     "TOP.core_clk",

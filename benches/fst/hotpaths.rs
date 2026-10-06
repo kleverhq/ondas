@@ -18,9 +18,9 @@ fn candidates(selection: &mut Selection<'_>, range: TimeRange) -> u64 {
 
 pub(super) fn strings(c: &mut Criterion) {
     for fixture in [
-        "fst0044-overlay-tb-issue-21",
-        "fst0060-manytypes2",
-        "fst0061-shortstring",
+        "fst/fst0044-overlay-tb-issue-21",
+        "fst/fst0060-manytypes2",
+        "fst/fst0061-shortstring",
     ] {
         let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
         let mut wave = ondas::open_with(&path, BACKEND).unwrap();
@@ -50,9 +50,9 @@ pub(super) fn strings(c: &mut Criterion) {
 pub(super) fn topology(c: &mut Criterion) {
     // Identical selected histories: only unselected handles or global times vary.
     for (fixture, handles) in [
-        ("fst0084-topology-small", 16),
-        ("fst0085-topology-many-handles", 16384),
-        ("fst0086-topology-many-times", 16),
+        ("fst/fst0084-topology-small", 16),
+        ("fst/fst0085-topology-many-handles", 16384),
+        ("fst/fst0086-topology-many-times", 16),
     ] {
         let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
         let mut wave = ondas::open_with(&path, BACKEND).unwrap();
@@ -146,7 +146,7 @@ pub(super) fn topology(c: &mut Criterion) {
 }
 
 pub(super) fn sparse_dense(c: &mut Criterion) {
-    let fixture = "fst0087-sparse-dense-active";
+    let fixture = "fst/fst0087-sparse-dense-active";
     let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
     let mut wave = ondas::open_with(&path, BACKEND).unwrap();
     let mut group = c.benchmark_group(format!(
@@ -190,7 +190,7 @@ pub(super) fn sparse_dense(c: &mut Criterion) {
 }
 
 pub(super) fn wide(c: &mut Criterion) {
-    let fixture = "fst0083-wide-compact-toggle";
+    let fixture = "fst/fst0083-wide-compact-toggle";
     let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
     let mut wave = ondas::open_with(&path, BACKEND).unwrap();
     let wide = wave.hierarchy().signal("top.wide").unwrap();
@@ -290,7 +290,7 @@ pub(super) fn wide(c: &mut Criterion) {
 }
 
 pub(super) fn boundaries(c: &mut Criterion) {
-    let fixture = "fst0015-scr1-max-ahb-coremark";
+    let fixture = "fst/fst0015-scr1-max-ahb-coremark";
     let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
     let mut wave = ondas::open_with(&path, BACKEND).unwrap();
     let constant = wave

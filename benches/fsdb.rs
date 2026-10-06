@@ -45,7 +45,7 @@ fn first_change(record: ScanRef<'_>) -> ControlFlow<Time> {
 }
 
 fn compare(c: &mut Criterion) {
-    let fixture = "fsdb0004-compare";
+    let fixture = "fsdb/fsdb0004-compare";
     let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
     let mut wave = ondas::open_with(&path, BACKEND).expect("open compare workload");
     let paths = [
@@ -152,7 +152,7 @@ fn compare(c: &mut Criterion) {
 }
 
 fn mode_change(c: &mut Criterion) {
-    let fixture = "fsdb0003-mode-change";
+    let fixture = "fsdb/fsdb0003-mode-change";
     let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
     let mut wave = ondas::open_with(&path, BACKEND).expect("open mode-change workload");
     let clock = wave.hierarchy().signal("doe_core_cbc.clk").unwrap();
@@ -255,7 +255,7 @@ fn mode_change(c: &mut Criterion) {
 }
 
 fn wide(c: &mut Criterion) {
-    let fixture = "fsdb0009-wide-bus";
+    let fixture = "fsdb/fsdb0009-wide-bus";
     let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
     let mut wave = ondas::open_with(&path, BACKEND).expect("open wide workload");
     let word = wave.hierarchy().signal("tb.dat1").unwrap();
@@ -321,24 +321,24 @@ fn wide(c: &mut Criterion) {
 
 fn controlled_corpus(c: &mut Criterion) {
     for (fixture, end) in [
-        ("fsdb0010-history-short", 4096),
-        ("fsdb0011-history-long", 1_048_576),
+        ("fsdb/fsdb0010-history-short", 4096),
+        ("fsdb/fsdb0011-history-long", 1_048_576),
     ] {
         controlled::history(c, fixture, end);
     }
     for (fixture, histories) in [
-        ("fsdb0012-topology-small", 16),
-        ("fsdb0013-topology-many-handles", 16_384),
-        ("fsdb0014-topology-many-times", 16),
-        ("fsdb0016-topology-many-aliases", 16),
+        ("fsdb/fsdb0012-topology-small", 16),
+        ("fsdb/fsdb0013-topology-many-handles", 16_384),
+        ("fsdb/fsdb0014-topology-many-times", 16),
+        ("fsdb/fsdb0016-topology-many-aliases", 16),
     ] {
         controlled::topology(c, fixture, histories);
     }
-    controlled::wide(c, "fsdb0015-wide-compact-toggle");
-    controlled::aliases(c, "fsdb0016-topology-many-aliases");
+    controlled::wide(c, "fsdb/fsdb0015-wide-compact-toggle");
+    controlled::aliases(c, "fsdb/fsdb0016-topology-many-aliases");
     typed::records(
         c,
-        "fsdb0017-typed-records",
+        "fsdb/fsdb0017-typed-records",
         &[
             "top.logic4",
             "top.trigger",
@@ -348,7 +348,11 @@ fn controlled_corpus(c: &mut Criterion) {
             "top.text_long",
         ],
     );
-    typed::records(c, "fsdb0018-native-real32", &["top.real32", "top.control"]);
+    typed::records(
+        c,
+        "fsdb/fsdb0018-native-real32",
+        &["top.real32", "top.control"],
+    );
 }
 
 criterion_group!(

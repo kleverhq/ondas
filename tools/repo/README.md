@@ -25,15 +25,17 @@ real containers. `./dev just pre-commit` checks all tracked files. See
 ## Fixture installation
 
 `./dev just fixtures-install` runs `install_fixtures.py` in the container. It needs
-Git, Python 3.11+, network access and `ONDAS_FIXTURES`. It reads the lock, clones
+Git, Python 3.11+, Just, network access and `ONDAS_FIXTURES`. It reads the lock, clones
 the provider's exact tag, checks checkout/catalog identity and runs its
-`install.py`. Only the selected provider directory is modified. Mismatched or
-dirty checkouts fail rather than being reset.
+`just install` in that checkout. Only the selected provider directory is modified.
+Mismatched or dirty checkouts fail rather than being reset.
 
 The provider installer downloads release assets and verifies sizes and SHA-256,
 including cached payloads. It does not bypass missing assets. `GITHUB_TOKEN` is
 optional for authenticated API access. `test_install_fixtures.py` checks clone,
 reuse, revision/catalog rejection and installer execution without network access.
+The provider owns `schemas/` and stores sidecars and waveforms under
+`<format>/<fixture>/`; Ondas consumes its selected release without copying schemas.
 
 ## Release metadata
 

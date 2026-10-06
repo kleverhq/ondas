@@ -14,7 +14,7 @@ fn consume(time: Time, value: ValueRef<'_>) {
 }
 
 pub(super) fn wide(c: &mut Criterion) {
-    let fixture = "fst0083-wide-compact-toggle";
+    let fixture = "fst/fst0083-wide-compact-toggle";
     let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
     let mut wave = ondas::open_with(&path, BACKEND).unwrap();
     let scalar = wave.hierarchy().signal("top.control").unwrap();
@@ -248,7 +248,7 @@ pub(super) fn wide(c: &mut Criterion) {
 }
 
 pub(super) fn sections(c: &mut Criterion) {
-    let fixture = "fst0015-scr1-max-ahb-coremark";
+    let fixture = "fst/fst0015-scr1-max-ahb-coremark";
     let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
     let mut wave = ondas::open_with(&path, BACKEND).unwrap();
     let clock = wave.hierarchy().signal("TOP.clk").unwrap();
@@ -292,7 +292,7 @@ pub(super) fn sections(c: &mut Criterion) {
 pub(super) fn wrapped(c: &mut Criterion) {
     // This locked input has an FST whole-file gzip wrapper, not ordinary
     // per-section compression. Its tiny size does not model large wrapper RSS.
-    let fixture = "fst0050-wellen-32";
+    let fixture = "fst/fst0050-wellen-32";
     let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
     let open = || ondas::open_with(black_box(&path), BACKEND).unwrap();
     let mut wave = open();

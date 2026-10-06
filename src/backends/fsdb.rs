@@ -749,7 +749,8 @@ mod tests {
     #[ignore = "requires real FSDB runtime and locked public fixtures"]
     fn fsdb_bits_use_caller_storage() {
         let root = std::path::PathBuf::from(std::env::var_os("ONDAS_FIXTURES").unwrap());
-        let path = root.join("kleverhq.ondas-fixtures/fsdb0015-wide-compact-toggle/waveform.fsdb");
+        let path =
+            root.join("kleverhq.ondas-fixtures/fsdb/fsdb0015-wide-compact-toggle/waveform.fsdb");
         let (mut reader, hierarchy, _) = Reader::open(&path, "bits".into()).unwrap();
         let signal = hierarchy.signal("top.wide").unwrap();
         let id = reader.ids[signal.index()];

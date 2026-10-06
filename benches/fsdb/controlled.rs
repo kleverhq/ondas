@@ -224,7 +224,9 @@ pub(super) fn topology(c: &mut Criterion, fixture: &str, histories: usize) {
             ))
         });
     });
-    if fixture != "fsdb0014-topology-many-times" && fixture != "fsdb0016-topology-many-aliases" {
+    if fixture != "fsdb/fsdb0014-topology-many-times"
+        && fixture != "fsdb/fsdb0016-topology-many-aliases"
+    {
         group.bench_function(
             BenchmarkId::new("regression/metadata-only/open-drop", BACKEND),
             |b| {

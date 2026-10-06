@@ -12,18 +12,19 @@ class FixtureInstallTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             lock = root / "lock.toml"
-            lock.write_text('[providers]\n"kleverhq.ondas-fixtures" = "4.1.2"\n')
+            lock.write_text('[providers]\n"kleverhq.ondas-fixtures" = "6.0.0"\n')
             target = root / installer.PROVIDER
 
             def run(command, **kwargs):
                 if command[1] == "clone":
-                    self.assertIn("v4.1.2", command)
+                    self.assertIn("v6.0.0", command)
                     target.mkdir()
-                    (target / "catalog.json").write_text(json.dumps({"provider": installer.PROVIDER, "version": "4.1.2"}))
+                    (target / "catalog.json").write_text(json.dumps({"provider": installer.PROVIDER, "version": "6.0.0"}))
 
             with patch.object(installer.subprocess, "run", side_effect=run) as execute, patch.object(installer.subprocess, "check_output", return_value="commit\n"):
                 installer.install(root, lock)
-                self.assertEqual(execute.call_args_list[-1].args[0][-1], str(target / "install.py"))
+                self.assertEqual(execute.call_args_list[-1].args[0], ["just", "install"])
+                self.assertEqual(execute.call_args_list[-1].kwargs["cwd"], target)
                 execute.reset_mock()
                 installer.install(root, lock)
                 self.assertFalse(any(call.args[0][1] == "clone" for call in execute.call_args_list))

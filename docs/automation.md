@@ -156,8 +156,10 @@ The fixture cache key contains the OS and lock-file hash. CI sets
 `ONDAS_FIXTURES`, runs `just fixtures-install` even on cache hits, then
 `just ci && just msrv`. CI also validates release metadata and verifies the
 crates.io package without publishing. Installation clones the exact `v<version>`
-tag from `kleverhq/ondas-fixtures`, checks checkout/catalog identity and invokes its
-installer without `--ignore-missing`. It verifies cached payload sizes and hashes.
+tag from `kleverhq/ondas-fixtures`, checks checkout/catalog identity and runs
+`just install` in that checkout without `--ignore-missing`. The provider owns
+the schemas and format-directory layout, and verifies cached payload sizes and
+hashes.
 Missing assets and corrupt downloads fail; there is no latest-tag fallback or
 cross-version cache restore. GitHub's read-only token supplies API access, and
 fork PRs need no private secrets.

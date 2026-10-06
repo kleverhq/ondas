@@ -277,11 +277,14 @@ drift; a Criterion regression label alone does not establish a code regression.
 
 ### Unpublished local providers
 
-A locally generated provider can be used without publishing it. Its catalog
-version must still match `fixtures.lock.toml`, and every referenced sidecar and
-payload must be present. Keep a self-contained snapshot under ignored `tmp/`
+A local snapshot of the selected public provider can be used without publishing
+it. Its catalog identity and version must match `fixtures.lock.toml`, it uses
+the same format directories, and every referenced sidecar and payload must be
+present. Keep a self-contained snapshot under ignored `tmp/`
 rather than running against a producer directory while it is being modified.
 The tagged-release installer is not applicable to an unpublished version.
+Providers with another identity are not selected by the shipped benchmarks;
+see [custom provider limits](fixtures.md#custom-and-unpublished-providers).
 
 For a snapshot at `tmp/fsdb-fixtures/kleverhq.ondas-fixtures`, select its parent
 inside the existing worktree container without changing canonical environment

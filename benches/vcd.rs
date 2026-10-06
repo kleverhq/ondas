@@ -9,7 +9,7 @@ mod fixtures;
 #[path = "../tests/support/vcd_workloads.rs"]
 mod workloads;
 
-const FIXTURE: &str = "vcd0071-swerv1";
+const FIXTURE: &str = "vcd/vcd0071-swerv1";
 const BACKEND: &str = workloads::BACKEND;
 const SIGNALS: [&str; 4] = [
     "TOP.core_clk",
@@ -413,7 +413,7 @@ fn swerv(c: &mut Criterion) {
 }
 
 fn compact_wide(c: &mut Criterion) {
-    let fixture = "vcd0096-wide-compact-toggle";
+    let fixture = "vcd/vcd0096-wide-compact-toggle";
     let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
     let mut wave = ondas::open_with(&path, BACKEND).expect("open compact-wide workload");
     let wide = wave.hierarchy().signal("top.wide").unwrap();
@@ -510,7 +510,7 @@ fn compact_wide(c: &mut Criterion) {
 }
 
 fn scr1(c: &mut Criterion) {
-    let fixture = "vcd0097-scr1-max-ahb-coremark";
+    let fixture = "vcd/vcd0097-scr1-max-ahb-coremark";
     let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
     let mut wave = ondas::open_with(&path, BACKEND).expect("open SCR1 workload");
     let paths = [
@@ -863,7 +863,7 @@ fn composed(c: &mut Criterion) {
 }
 
 fn picorv32_open(c: &mut Criterion) {
-    let fixture = "vcd0098-picorv32-test-vcd";
+    let fixture = "vcd/vcd0098-picorv32-test-vcd";
     let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
     let mut group = c.benchmark_group(format!("vcd/{}/{fixture}/file", fixtures::PROVIDER));
     group.sample_size(10);

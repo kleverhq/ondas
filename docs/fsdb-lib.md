@@ -273,3 +273,11 @@ See [testing](testing.md) for test strategy. Conformance checks supplied oracle
 observations, not every value class, timestamp or format variant. Missing
 coverage is a request to the fixture producer, never a reason to record this
 adapter's output as its own oracle.
+
+The locked public 6.0.0 corpus exposes two scope-conflict mismatches. For
+`fsdb/fsdb0021-conflicting-scope`, the oracle requires a malformed opening error,
+but the adapter reports `Error::Backend` with the conflicting module/task kinds.
+For `fsdb/fsdb0027-rocket-tile-small-1561`, the oracle requires successful opening,
+but the adapter rejects a struct/module conflict at one component path. These
+assertions remain failures in the full pool; neither a successful metadata-only
+open nor focused diagnostic coverage establishes conformance for those files.

@@ -11,7 +11,8 @@ fn range(start: u64, end: u64) -> TimeRange {
 #[test]
 #[ignore = "requires ONDAS_FIXTURES; run just conformance"]
 fn fst_duplicate_projections_match_individual_scans() {
-    let (path, _) = fixtures::load_artifact(&fixtures::provider(), "fst0083-wide-compact-toggle");
+    let (path, _) =
+        fixtures::load_artifact(&fixtures::provider(), "fst/fst0083-wide-compact-toggle");
     let mut wave = ondas::open_with(&path, "fst-lib").unwrap();
     let wide = wave.hierarchy().signal("top.wide").unwrap();
     let high = wide.slice(4095, 1).unwrap();
@@ -45,7 +46,8 @@ fn fst_duplicate_projections_match_individual_scans() {
 #[test]
 #[ignore = "requires ONDAS_FIXTURES; run just conformance"]
 fn fst_wide_normalized_whole_and_stable_projection() {
-    let (path, _) = fixtures::load_artifact(&fixtures::provider(), "fst0083-wide-compact-toggle");
+    let (path, _) =
+        fixtures::load_artifact(&fixtures::provider(), "fst/fst0083-wide-compact-toggle");
     let mut wave = ondas::open_with(&path, "fst-lib").unwrap();
     let wide = wave.hierarchy().signal("top.wide").unwrap();
     for signal in [wide, wide.slice(4095, 1).unwrap()] {
@@ -106,7 +108,8 @@ fn fst_wide_normalized_whole_and_stable_projection() {
 #[test]
 #[ignore = "requires ONDAS_FIXTURES; run just conformance"]
 fn fst_composed_wide_observations() {
-    let (path, _) = fixtures::load_artifact(&fixtures::provider(), "fst0083-wide-compact-toggle");
+    let (path, _) =
+        fixtures::load_artifact(&fixtures::provider(), "fst/fst0083-wide-compact-toggle");
     let mut wave = ondas::open_with(&path, "fst-lib").unwrap();
     let scalar = wave.hierarchy().signal("top.control").unwrap();
     let wide = wave.hierarchy().signal("top.wide").unwrap();
@@ -207,7 +210,8 @@ fn fst_composed_wide_observations() {
 #[test]
 #[ignore = "requires ONDAS_FIXTURES; run just conformance"]
 fn fst_candidates_deduplicate_raw_activity_and_reuse_after_stop() {
-    let (path, _) = fixtures::load_artifact(&fixtures::provider(), "fst0083-wide-compact-toggle");
+    let (path, _) =
+        fixtures::load_artifact(&fixtures::provider(), "fst/fst0083-wide-compact-toggle");
     let mut wave = ondas::open_with(&path, "fst-lib").unwrap();
     let wide = wave.hierarchy().signal("top.wide").unwrap();
     let low = wide.slice(0, 0).unwrap();
@@ -277,9 +281,9 @@ fn fst_candidates_deduplicate_raw_activity_and_reuse_after_stop() {
 #[ignore = "requires ONDAS_FIXTURES; run just conformance"]
 fn fst_string_candidates_preserve_values_and_reuse_after_stop() {
     for fixture in [
-        "fst0044-overlay-tb-issue-21",
-        "fst0060-manytypes2",
-        "fst0061-shortstring",
+        "fst/fst0044-overlay-tb-issue-21",
+        "fst/fst0060-manytypes2",
+        "fst/fst0061-shortstring",
     ] {
         let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
         for bytes in [false, true] {
@@ -318,7 +322,7 @@ fn fst_string_candidates_preserve_values_and_reuse_after_stop() {
             };
             let before = read_values(&mut selection);
             assert!(!before.is_empty());
-            if fixture == "fst0061-shortstring" {
+            if fixture == "fst/fst0061-shortstring" {
                 assert!(
                     before
                         .iter()
@@ -404,7 +408,8 @@ fn assert_toggle(tick: u64, sample: SampleRef<'_>) {
 #[test]
 #[ignore = "requires ONDAS_FIXTURES; run just conformance"]
 fn fst_composed_sections_and_wrapper() {
-    let (path, _) = fixtures::load_artifact(&fixtures::provider(), "fst0015-scr1-max-ahb-coremark");
+    let (path, _) =
+        fixtures::load_artifact(&fixtures::provider(), "fst/fst0015-scr1-max-ahb-coremark");
     let mut wave = ondas::open_with(&path, "fst-lib").unwrap();
     let signals = ["TOP.clk", "TOP.$unit.SCR1_ARCH_RST_VECTOR"]
         .map(|name| wave.hierarchy().signal(name).unwrap());
@@ -477,7 +482,7 @@ fn fst_composed_sections_and_wrapper() {
         assert!(reads > 0);
         assert_eq!(reads % 6, 0);
     }
-    let (path, _) = fixtures::load_artifact(&fixtures::provider(), "fst0050-wellen-32");
+    let (path, _) = fixtures::load_artifact(&fixtures::provider(), "fst/fst0050-wellen-32");
     assert_eq!(
         std::fs::read(&path).unwrap()[0],
         254,

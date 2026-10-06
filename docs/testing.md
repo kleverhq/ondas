@@ -1,9 +1,10 @@
 # Testing
 
 Tests check the public contracts in Rustdoc. Memory-reader tests isolate shared
-semantics; real artifacts test adapters. [fixtures.md](fixtures.md) defines the
-catalog and oracle contract, and [api-coverage.md](api-coverage.md) maps contracts
-to executable tests. A passing test count alone does not establish coverage.
+semantics; real artifacts test adapters. [fixtures.md](fixtures.md) links the
+provider-owned schemas and defines integration and oracle interpretation;
+[api-coverage.md](api-coverage.md) maps contracts to executable tests. A passing
+test count alone does not establish coverage.
 
 ## Self-contained tests
 
@@ -93,7 +94,8 @@ oracle cannot express, such as runtime discovery or vendor error translation.
 
 Before conformance, validate the selected locked providers, sidecars, paths,
 sizes, hashes and oracle semantics once. Do not rehash artifacts per query.
-[fixtures.md](fixtures.md) defines the checks.
+[fixtures.md](fixtures.md) defines the checks and the runner's supported profile.
+Producer schema validation is separate from Ondas conformance.
 
 Missing configuration, required readers or required selected fixtures must fail,
 as must invalid data and an empty required selection. Optional private provider
@@ -131,10 +133,11 @@ the vendor gate runs `just bench-smoke-fsdb` after its conformance. Criterion
 `--test` checks that registered workloads execute, without timing thresholds or
 proof of a speedup. New sparse/dense file/bytes and adapter diagnostic tests
 require the locked public release; a local matching-version snapshot is only
-development evidence. The conflict fixture has an empty oracle, so discovery in
-the full pool is not diagnostic coverage. The focused
-`fsdb_conflicting_scope_diagnostic_and_metadata_bypass` test must be selected
-by the vendor gate. The installed FST checks escaped variable spelling and
+development evidence. The conflict fixture now asserts a malformed opening error
+in its oracle. The focused `fsdb_conflicting_scope_diagnostic_and_metadata_bypass`
+test separately checks the adapter's diagnostic and metadata-only opening; it
+must be selected by the vendor gate. Known oracle/adapter mismatches belong in
+[FSDB limits](fsdb-lib.md#verification). The installed FST checks escaped variable spelling and
 alias identity in file/bytes mode. No public FST has an escaped scope, so an
 optional ignored converter test retains that separate scope-provenance check;
 it is not a release gate.
@@ -149,9 +152,10 @@ The value classes asserted by supplied oracle observations, not merely successfu
 opens, determine adapter coverage. Request missing cases from the fixture producer;
 never turn the new adapter's output into expected observations.
 
-`full_fst_pool` and `full_vcd_pool` discover all matching artifacts without a
-whitelist. They validate inputs before opening and compare every listed sample
-and window in file/bytes modes. Equal-time samples and equal-bound windows are
+`full_fst_pool` and `full_vcd_pool` discover matching artifacts inside the public
+provider's `fst/` and `vcd/` directories without a fixture whitelist. They validate
+inputs before opening and compare every listed sample and window in file/bytes
+modes. Equal-time samples and equal-bound windows are
 batched. One hierarchy traversal matches listed declarations; focused tests cover
 exact lookup and alias iterators. The runner does not cache the pool's artifact
 bytes.

@@ -6,7 +6,7 @@ Ondas is a read-only Rust library for backend-independent waveform analysis.
 
 - Public API contracts and usage examples: rustdoc in `src/`, published on docs.rs.
 - Library concepts and implementation boundaries: `docs/model.md`.
-- Test strategy: `docs/testing.md`; fixture catalog and oracle contract: `docs/fixtures.md` and `docs/oracle.schema.json`; required provider versions: `fixtures.lock.toml`.
+- Test strategy: `docs/testing.md`; fixture integration and oracle interpretation: `docs/fixtures.md`; catalog, sidecar and oracle schemas: `schemas/` in the fixture provider release selected by `fixtures.lock.toml`.
 - Performance methodology: `docs/benchmarking.md`.
 - Development environment, CI, tools, and release policy: `docs/automation.md`.
 - Backend architecture and limits: `docs/vcd-native.md`, `docs/fst-lib.md` and `docs/fsdb-lib.md`. Other format integration docs: `docs/ghw.md` and `docs/wlf.md`.

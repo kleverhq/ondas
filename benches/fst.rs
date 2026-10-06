@@ -39,7 +39,7 @@ fn first_change(record: ScanRef<'_>) -> ControlFlow<Time> {
 }
 
 fn scr1(c: &mut Criterion) {
-    let fixture = "fst0015-scr1-max-ahb-coremark";
+    let fixture = "fst/fst0015-scr1-max-ahb-coremark";
     let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
     // Loading and allocating the shared bytes is not part of bytes opening.
     let bytes: Arc<[u8]> = fs::read(&path).unwrap().into();
@@ -247,7 +247,7 @@ fn scr1(c: &mut Criterion) {
 }
 
 fn chipyard(c: &mut Criterion) {
-    let fixture = "fst0000-chipyard-clusteredrocketconfig-dhrystone";
+    let fixture = "fst/fst0000-chipyard-clusteredrocketconfig-dhrystone";
     let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
     let mut wave = ondas::open_with(&path, BACKEND).expect("open Chipyard workload");
     let paths = [
@@ -302,7 +302,7 @@ fn chipyard(c: &mut Criterion) {
 }
 
 fn picorv32(c: &mut Criterion) {
-    let fixture = "fst0012-picorv32-test-ez-vcd";
+    let fixture = "fst/fst0012-picorv32-test-ez-vcd";
     let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
     let mut wave = ondas::open_with(&path, BACKEND).expect("open PicoRV32 workload");
     // Every unique history, not an order-dependent prefix of declarations or aliases.

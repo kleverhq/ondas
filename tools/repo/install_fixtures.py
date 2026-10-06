@@ -29,7 +29,7 @@ def install(root, lock=ROOT / "fixtures.lock.toml"):
     catalog = json.loads((directory / "catalog.json").read_text())
     if catalog["provider"] != PROVIDER or catalog["version"] != version:
         raise ValueError(f"{directory}: catalog does not match fixtures.lock.toml")
-    subprocess.run([sys.executable, str(directory / "install.py")], check=True)
+    subprocess.run(["just", "install"], cwd=directory, check=True)
 
 
 if __name__ == "__main__":
