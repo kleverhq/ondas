@@ -10,28 +10,9 @@ use sha2::{Digest, Sha256};
 pub const PROVIDER: &str = "kleverhq.ondas-fixtures";
 
 pub fn provider() -> PathBuf {
-    checked_provider(PROVIDER, include_str!("../../fixtures.lock.toml"))
-        .expect("required public fixture provider is absent; run just fixtures-install")
-}
-
-pub fn provider_directory(path: &Path) -> Option<PathBuf> {
-    match fs::symlink_metadata(path) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
-        result => {
-            result.unwrap();
-            assert!(
-                path.is_dir(),
-                "invalid provider directory: {}",
-                path.display()
-            );
-        }
-    }
-    Some(path.canonicalize().unwrap())
-}
-
-pub fn checked_provider(name: &str, lock_text: &str) -> Option<PathBuf> {
-    let lock: toml::Value = toml::from_str(lock_text).expect("fixture lock TOML");
-    let provider_version = lock["providers"][name]
+    let lock: toml::Value =
+        toml::from_str(include_str!("../../fixtures.lock.toml")).expect("fixture lock TOML");
+    let provider_version = lock["providers"][PROVIDER]
         .as_str()
         .expect("selected provider version must be a string");
     assert!(!provider_version.is_empty(), "empty provider version");
@@ -39,18 +20,21 @@ pub fn checked_provider(name: &str, lock_text: &str) -> Option<PathBuf> {
         std::env::var_os("ONDAS_FIXTURES")
             .expect("ONDAS_FIXTURES is required; run just conformance"),
     );
-    let provider = provider_directory(&root.join(name))?;
+    let provider = root
+        .join(PROVIDER)
+        .canonicalize()
+        .expect("fixture provider is absent; run just fixtures-install");
     let catalog: Json =
         serde_json::from_slice(&fs::read(provider.join("catalog.json")).expect("provider catalog"))
             .unwrap();
     assert_eq!(catalog["schema"], 1, "catalog schema");
-    assert_eq!(catalog["provider"], name, "provider identity");
+    assert_eq!(catalog["provider"], PROVIDER, "provider identity");
     assert_eq!(
         catalog["version"].as_str(),
         Some(provider_version),
         "provider version mismatch"
     );
-    Some(provider)
+    provider
 }
 
 pub fn check_artifact(path: &Path, artifact: &Json, name: &str) {

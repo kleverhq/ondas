@@ -135,7 +135,7 @@ shared owned storage before timing; opening includes cloning that shared handle
 but not reading the file into memory. Both modes include waveform destruction in
 open measurements and reuse their selections in prepared-query measurements.
 
-A 64-bit sparse bank and a 64-bit dense bank in one public FST distinguish
+A 64-bit sparse bank and a 64-bit dense bank in one FST distinguish
 selected-slot activity at unique selection sizes 1, 16 and 64, and 256 versus
 4096 ticks at fixed cardinality. Their point cases create fresh selections on
 each iteration. This is a selected-query cost, not cold disk or full file opening.
@@ -162,8 +162,8 @@ Concrete fixtures, paths, bounds and sample counts remain in `benches/fst.rs`,
 
 `benches/fsdb.rs` measures the public API with the explicit `fsdb-lib` reader
 and file inputs only. The target requires the `fsdb-lib` feature, the SDK runtime
-and the locked public fixture provider; it does not use private fixtures. See
-[FSDB setup and limits](fsdb-lib.md) for the SDK environment.
+and the locked fixture provider. See [FSDB setup and limits](fsdb-lib.md) for the
+SDK environment.
 
 Three compact recordings serve different questions: `fsdb0004-compare` covers
 open, hierarchy traversal/lookup, selection construction, four distinct base
@@ -205,7 +205,7 @@ checks still run during registration, including filtered runs; redundant
 success-only query probes are omitted.
 
 Those three recordings are only approximately 8–35 KB, and their wide base has
-just two post-initial changes. Controlled public recordings supplement them in
+just two post-initial changes. Controlled recordings supplement them in
 `benches/fsdb/controlled.rs` and `benches/fsdb/typed.rs`:
 
 | Fixtures | Controlled comparison |
@@ -264,9 +264,9 @@ example from the repository root:
 # Focus on controlled topology or width-sensitive workloads:
 ./dev cargo bench --locked --bench fst -- topology
 ./dev cargo bench --locked --bench fst -- wide-compact-toggle
-# Public FSDB corpus, with the SDK feature enabled:
-./dev cargo bench --locked --features fsdb-lib --bench fsdb -- --save-baseline fsdb-public-initial
-./dev cargo bench --locked --features fsdb-lib --bench fsdb -- --baseline fsdb-public-initial
+# FSDB corpus, with the SDK feature enabled:
+./dev cargo bench --locked --features fsdb-lib --bench fsdb -- --save-baseline fsdb-initial
+./dev cargo bench --locked --features fsdb-lib --bench fsdb -- --baseline fsdb-initial
 ```
 
 Select revisions with host Git and preserve Criterion output between runs;
@@ -275,16 +275,14 @@ without committing or archiving them. Changed fixtures or workloads invalidate a
 like-for-like comparison. Repeat an unchanged revision to estimate environmental
 drift; a Criterion regression label alone does not establish a code regression.
 
-### Unpublished local providers
+### Local fixture snapshots
 
-A local snapshot of the selected public provider can be used without publishing
+A local snapshot of the selected provider can be used without publishing
 it. Its catalog identity and version must match `fixtures.lock.toml`, it uses
 the same format directories, and every referenced sidecar and payload must be
 present. Keep a self-contained snapshot under ignored `tmp/`
 rather than running against a producer directory while it is being modified.
 The tagged-release installer is not applicable to an unpublished version.
-Providers with another identity are not selected by the shipped benchmarks;
-see [custom provider limits](fixtures.md#custom-and-unpublished-providers).
 
 For a snapshot at `tmp/fsdb-fixtures/kleverhq.ondas-fixtures`, select its parent
 inside the existing worktree container without changing canonical environment
@@ -306,8 +304,7 @@ The fixture-backed `./dev just ci` gate runs `just bench-smoke` (VCD and FST)
 after conformance; `./dev just ci-fsdb` runs `just bench-smoke-fsdb` after vendor
 conformance. For a focused local run, use `./dev cargo bench --locked --bench
 fst -- regression --test`, or the corresponding format and feature flags.
-The vendor recipe executes only public benchmark inputs. For FSDB, first run
-public conformance, then smoke the feature-gated target:
+For FSDB, first run conformance, then smoke the feature-gated target:
 
 ```sh
 ./dev cargo test --locked --features fsdb-lib --test conformance full_fsdb_pool -- --ignored --nocapture
@@ -318,9 +315,7 @@ Default all-target checks skip FSDB's feature-gated target; SDK-enabled checks
 must compile it explicitly. Smoke timings are not regression evidence. A proprietary
 target must not prevent unrelated public targets from compiling; explicitly
 requesting that target without its required fixtures or runtime must fail clearly.
-Optional private payload absence follows [fixture policy](fixtures.md): omit those
-cases before registration and report the omission, rather than timing an empty
-operation. Installed but invalid inputs always fail.
+Missing or invalid fixture inputs fail before measurement.
 
 Keep Criterion's runner, results and comparisons. Custom history stores,
 thresholds, dashboards and mandatory cross-format datasets are outside this

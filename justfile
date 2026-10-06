@@ -41,18 +41,17 @@ test: _inside
 conformance: _inside
     cargo test --locked --test conformance -- --ignored --nocapture
 
-# Check every public FSDB and available private FSDB, plus focused regressions.
-# Set ONDAS_REQUIRE_PRIVATE_FIXTURES=1 to require the complete private selection.
+# Check every FSDB in the locked provider, plus focused regressions.
 conformance-fsdb: _inside
     cargo test --locked --features fsdb-lib --test conformance fsdb_ -- --ignored --nocapture
     cargo test --locked --features fsdb-lib --lib fsdb_ -- --ignored
 
-# Execute public Criterion workloads without timing thresholds.
+# Execute VCD/FST Criterion workloads without timing thresholds.
 bench-smoke: _inside
     cargo bench --locked --bench vcd -- --test
     cargo bench --locked --bench fst -- --test
 
-# Execute vendor Criterion workloads against public fixtures.
+# Execute vendor Criterion workloads against locked fixtures.
 bench-smoke-fsdb: _inside
     cargo bench --locked --features fsdb-lib --bench fsdb -- --test
 
@@ -79,7 +78,7 @@ tools-test: _inside
 pre-commit: _inside
     pre-commit run --all-files
 
-# Install and verify the tagged public fixture provider from GitHub.
+# Install and verify the tagged fixture provider from GitHub.
 fixtures-install: _inside
     python3 -B tools/repo/install_fixtures.py
 

@@ -92,21 +92,19 @@ oracle cannot express, such as runtime discovery or vendor error translation.
 
 ## Validation and failures
 
-Before conformance, validate the selected locked providers, sidecars, paths,
+Before conformance, validate the locked provider, sidecars, paths,
 sizes, hashes and oracle semantics once. Do not rehash artifacts per query.
 [fixtures.md](fixtures.md) defines the checks and the runner's supported profile.
 Producer schema validation is separate from Ondas conformance.
 
-Missing configuration, required readers or required selected fixtures must fail,
-as must invalid data and an empty required selection. Optional private provider
-or payload absence is reported explicitly as a skip; corruption is never a skip.
-Do not describe skipped inputs as conformance coverage. A deliberately malformed waveform can still be a valid
-fixture with a negative oracle.
+Missing configuration, required readers or selected fixtures must fail, as must
+invalid data and an empty selection. Do not describe skipped inputs as conformance
+coverage. A deliberately malformed waveform can still be a valid fixture with a
+negative oracle.
 
 Catalog validation and conformance are separate results. An empty oracle is valid
 catalog data but supplies no semantic coverage. Tests do not download, generate,
-repair or publish fixtures. Public runs must work without private credentials or
-inaccessible artifacts; private providers use the same local contract.
+repair or publish fixtures.
 
 ## Commands and coverage
 
@@ -117,43 +115,41 @@ Formatting, Clippy, compilation and Rustdoc do not replace runtime tests.
 
 `./dev just conformance` runs the ignored FST/VCD integration tests and
 feature-disabled FSDB routing against the locked provider. The routing check also
-requires its public FSDB artifact. Missing environment, provider, version, artifacts or oracle data
-fails the suite. Default test runs leave these external tests ignored and do not
-claim their coverage.
+requires its FSDB artifact. Missing environment, provider, version, artifacts or
+oracle data fails the suite. Default test runs leave these external tests ignored
+and do not claim their coverage.
 
-`./dev just conformance-fsdb` enables `fsdb-lib` and checks public FSDBs in file
-mode, plus available private FSDBs. The private version is pinned separately in
-ignored `fixtures.private.lock.toml`; set `ONDAS_REQUIRE_PRIVATE_FIXTURES=1` to
-require that provider and every selected payload. Missing public inputs always
-fail. The runner validates installed metadata even when an optional payload is
-absent, and reports passed, failed and skipped cases separately.
+`./dev just conformance-fsdb` enables `fsdb-lib` and checks FSDBs in file mode
+against the locked provider. Missing inputs fail. The runner reports passed,
+failed and skipped cases separately; sidecars without oracle observations supply
+no conformance evidence.
 
-The fixture-backed public gate executes `just bench-smoke` after conformance;
+The fixture-backed gate executes `just bench-smoke` after conformance;
 the vendor gate runs `just bench-smoke-fsdb` after its conformance. Criterion
 `--test` checks that registered workloads execute, without timing thresholds or
 proof of a speedup. New sparse/dense file/bytes and adapter diagnostic tests
-require the locked public release; a local matching-version snapshot is only
+require the locked release; a local matching-version snapshot is only
 development evidence. The conflict fixture asserts a malformed opening error
 in its oracle. The focused `fsdb_conflicting_scope_diagnostic_and_metadata_bypass`
 test separately checks the adapter's diagnostic and metadata-only opening. The
 RocketTile regression checks that same-path module and struct scopes remain
 accessible through traversal and return `LookupError::Ambiguous` on scope lookup.
 Both tests are selected by the vendor gate. The installed FST checks escaped
-variable spelling and alias identity in file/bytes mode. No public FST has an escaped scope, so an
-optional ignored converter test retains that separate scope-provenance check;
-it is not a release gate.
+variable spelling and alias identity in file/bytes mode. No installed FST has an
+escaped scope, so an optional ignored converter test retains that separate
+scope-provenance check; it is not a release gate.
 
 `./dev just ci-fsdb` adds vendor-enabled static, unit, documentation and MSRV
 checks. Focused FSDB regressions cover path/bytes routing, reentrant callbacks,
 independent opens, cross-thread use/drop, panic cleanup, repeated selections,
-slices and missing/corrupt payload policy. The vendor gate also runs
+slices and declaration diagnostics. The vendor gate also runs
 `just fsdb-consumer` on development Rust and MSRV: a separate executable launches
 outside Cargo's runtime environment to verify native dependency propagation.
 The value classes asserted by supplied oracle observations, not merely successful
 opens, determine adapter coverage. Request missing cases from the fixture producer;
 never turn the new adapter's output into expected observations.
 
-`full_fst_pool` and `full_vcd_pool` discover matching artifacts inside the public
+`full_fst_pool` and `full_vcd_pool` discover matching artifacts inside the
 provider's `fst/` and `vcd/` directories without a fixture whitelist. They validate
 inputs before opening and compare every listed sample and window in file/bytes
 modes. Equal-time samples and equal-bound windows are
@@ -170,6 +166,5 @@ or schema rule.
 
 Public examples should be doctests: runnable for self-contained behavior,
 `no_run` when they need external artifacts. Check them directly with
-`./dev cargo test --doc --locked`. Public and private suites stay separate under
-[automation policy](automation.md). [Performance measurements](benchmarking.md)
+`./dev cargo test --doc --locked`. [Performance measurements](benchmarking.md)
 are neither correctness tests nor timing-based CI gates.

@@ -7,6 +7,5 @@ __pycache__/
 /.devcontainer.local/
 /.devcontainer/ci/
 /fixtures/
-/fixtures.private.lock.toml
 /just.local
 /tools.local/

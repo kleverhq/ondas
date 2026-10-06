@@ -28,9 +28,8 @@ and license topology out of public source/images. Separate SDK-dependent outputs
 across versions; prefer runtime discovery at opening over build-time discovery.
 
 Test the actual adapter through [conformance](testing.md) and external
-[providers](fixtures.md). Preserve provenance and assert only established
-observations. A large vendor mock is not a substitute, and public sidecars must
-not refer to inaccessible private artifacts.
+[fixtures](fixtures.md). Preserve provenance and assert only established
+observations. A large vendor mock is not a substitute for real-artifact validation.
 
 Explicit WLF suites fail on missing runtimes or fixtures and remain separate from
 public CI. Performance cases use a WLF target; compare readers on the same

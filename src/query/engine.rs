@@ -1359,7 +1359,7 @@ mod tests {
 
     #[cfg(feature = "fsdb-lib")]
     #[test]
-    #[ignore = "requires real FSDB runtime and locked public fixtures"]
+    #[ignore = "requires real FSDB runtime and locked fixtures"]
     fn fsdb_checkpoint_preserves_projected_state_and_invalidates() {
         let root = std::path::PathBuf::from(std::env::var_os("ONDAS_FIXTURES").unwrap());
         let path = root.join("kleverhq.ondas-fixtures/fsdb/fsdb0010-history-short/waveform.fsdb");
@@ -1462,7 +1462,7 @@ mod tests {
 
     #[cfg(feature = "fsdb-lib")]
     #[test]
-    #[ignore = "requires real FSDB runtime and locked public fixtures"]
+    #[ignore = "requires real FSDB runtime and locked fixtures"]
     fn fsdb_cold_window_matches_chronological_reference() {
         let root = std::path::PathBuf::from(std::env::var_os("ONDAS_FIXTURES").unwrap());
         let path = root.join("kleverhq.ondas-fixtures/fsdb/fsdb0010-history-short/waveform.fsdb");
@@ -1575,7 +1575,7 @@ mod tests {
 
     #[cfg(feature = "fsdb-lib")]
     #[test]
-    #[ignore = "requires real FSDB runtime and locked public fixtures"]
+    #[ignore = "requires real FSDB runtime and locked fixtures"]
     fn fsdb_cold_points_match_chronological_reference() {
         let root = std::path::PathBuf::from(std::env::var_os("ONDAS_FIXTURES").unwrap());
         for fixture in [
@@ -1692,7 +1692,7 @@ mod tests {
 
     #[cfg(feature = "fsdb-lib")]
     #[test]
-    #[ignore = "requires real FSDB runtime and locked public fixtures"]
+    #[ignore = "requires real FSDB runtime and locked fixtures"]
     fn fsdb_replay_reuses_completed_point_reads() {
         let root = std::path::PathBuf::from(std::env::var_os("ONDAS_FIXTURES").unwrap());
         let path = root.join("kleverhq.ondas-fixtures/fsdb/fsdb0010-history-short/waveform.fsdb");

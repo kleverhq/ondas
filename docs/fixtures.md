@@ -1,7 +1,7 @@
 # Fixture integration and oracle evidence
 
 The fixture provider owns the catalog, sidecar and sparse-oracle schemas. For the
-public release selected by `fixtures.lock.toml`, the authoritative definitions are
+release selected by `fixtures.lock.toml`, the authoritative definitions are
 [the catalog schema](https://github.com/kleverhq/ondas-fixtures/blob/v6.0.0/schemas/catalog.schema.json),
 [the sidecar schema](https://github.com/kleverhq/ondas-fixtures/blob/v6.0.0/schemas/fixture.schema.json)
 and [the oracle schema](https://github.com/kleverhq/ondas-fixtures/blob/v6.0.0/schemas/oracle.schema.json).
@@ -29,7 +29,7 @@ A symlinked external provider also needs its target mounted inside the container
 Self-contained tests do not read `ONDAS_FIXTURES`; explicitly requested fixture
 suites require it and fail if it is absent.
 
-The public provider uses format directories:
+The provider uses format directories:
 
 ```text
 $ONDAS_FIXTURES/
@@ -42,23 +42,18 @@ $ONDAS_FIXTURES/
             └── waveform.<format>
 ```
 
-Public fixture references are paths such as `fst/fst0041-counter`, relative to
+Fixture references are paths such as `fst/fst0041-counter`, relative to
 the provider root. The format directory must agree with `artifact.format`.
-Provider names are stable namespaces; `catalog.json.provider` must exactly match
-the provider directory and selected lock entry. Source URLs describe provenance,
-not provider identity. Different providers remain different inputs even when they
-contain identically named fixtures.
+`catalog.json.provider` must match the provider directory and selected lock
+entry. Source URLs describe provenance, not provider identity.
 
 The runner discovers immediate fixture directories inside the selected format
-directory, rather than recursively searching the provider. To retain existing
-private catalogs, it also accepts the legacy flat `<provider>/<fixture-name>`
-layout when the selected format directory is absent. It does not combine grouped
-and flat fixtures for the same format. Paths, including symlinks, must resolve
-inside the provider and fixture boundaries.
+directory, rather than recursively searching the provider. Paths, including
+symlinks, must resolve inside the provider and fixture boundaries.
 
 ## Provider versions and installation
 
-`fixtures.lock.toml` selects the public provider version:
+`fixtures.lock.toml` selects the provider version:
 
 ```toml
 [providers]
@@ -71,18 +66,16 @@ version ranges. The lock contains versions only: no URLs, asset names, credentia
 release checksums, materialization commands or fixture lists. Delivery is separate
 from test semantics.
 
-`./dev just fixtures-install` installs the public provider explicitly. It clones
+`./dev just fixtures-install` installs the provider explicitly. It clones
 its exact `v<version>` tag when absent, rejects existing checkouts at another
 revision or with tracked changes, verifies catalog identity/version, then runs
 `just install` in the provider checkout. The provider verifies payload sizes and
 hashes, including cached data. There is no implicit installation during tests,
 no latest-version fallback and no resetting an existing checkout.
 
-Extra provider directories and lock entries do not automatically add test cases.
-The current public tests and benchmarks select `kleverhq.ondas-fixtures` through
-the repository lock. The private FSDB suite selects its own named provider through
-an ignored lock. See [custom providers](#custom-and-unpublished-providers) and
-[private providers](#public-and-private-providers) for their supported scope.
+Tests and benchmarks select `kleverhq.ondas-fixtures` through the repository
+lock. `ONDAS_FIXTURES` selects its parent directory. See [local snapshots](#local-snapshots)
+for development inputs.
 
 ## Sidecars and supported formats
 
@@ -92,11 +85,6 @@ restrictions. `provenance.license` is required; use the producer's explicit
 retain their source, and converted data retain a nonempty string or object in
 `provenance.transform`. Never automatically assign the provider repository's
 license to an imported waveform.
-
-Public corpora may contain authored, imported and converted waveforms from public
-sources when provenance and known licensing are retained. Confidential or
-redistribution-prohibited material belongs outside public providers. Content
-removal and storage policy belong to the producer, not the Ondas runner.
 
 Tags are unique nonempty strings, with no Ondas-specific whitelist. They describe
 the fixture and may aid external selection; the current pool runner selects by
@@ -112,7 +100,7 @@ independently where applicable. Recipes, simulators, logs, extraction commands
 and temporary files are outside runtime fixture data. Tests never execute sidecar
 commands.
 
-The public conformance suite executes FST and VCD in file and bytes modes. The
+The conformance suite executes FST and VCD in file and bytes modes. The
 explicit `fsdb-lib` suite executes FSDB in file mode with the real vendor runtime.
 The provider also describes GHW, WLF and SHM artifacts, including multi-file SHM
 directories; their presence does not supply Ondas readers or conformance coverage.
@@ -223,11 +211,9 @@ reader returns a known timestamp, retaining the public allowance for unknown tim
 The runner checks points at raw observation ticks and their neighbors even when
 an excursion disappears from normalized traces. Preflight validation compares
 version-1 ordered histories and typed value, missing-state and event-count
-evidence before deciding whether an optional payload is installed. Overlapping
-evidence must agree; it is not a set of alternative accepted answers. Derived
-counts and timestamps are ephemeral expectations, not new version-1 serialized
-fields. The validator
-still accepts `{"event":true}` as a unit value and rejects aggregate values in
+evidence before waveform execution. Overlapping evidence must agree; it is not a
+set of alternative accepted answers. Derived counts and timestamps are ephemeral
+expectations, not new version-1 serialized fields. The validator still accepts `{"event":true}` as a unit value and rejects aggregate values in
 version-1 windows. New serialized assertions would require an explicit version.
 Version 1 also supplies no signedness or logic-domain fields; do not infer them
 from names or observed bits. Independent declaration tests cover those contracts.
@@ -238,7 +224,7 @@ the last value and an event sample has zero occurrences.
 
 ## Validation and execution
 
-Before opening any waveform, the runner validates each selected provider's catalog
+Before opening any waveform, the runner validates the provider's catalog
 identity and exact locked version, discovered sidecars, path containment, artifact
 sizes/hashes and supported oracle evidence. It checks tag uniqueness, provenance,
 canonical ticks, declaration bounds, references, encoding/value compatibility,
@@ -247,10 +233,9 @@ conformance. Artifacts are hashed once during preflight, not for every query.
 Producer schema validation remains necessary; this runner does not certify every
 schema rule or assertion form.
 
-Required missing providers or payloads, unavailable readers, invalid data and empty
-required selections fail. A deliberately malformed waveform is different: a valid
-sidecar may assert the waveform error that the API should return. Optional private
-absence follows the policy below and never relaxes checks on data that is present.
+Missing providers or artifacts, unavailable readers, invalid data and empty
+selections fail. A deliberately malformed waveform is different: a valid sidecar
+may assert the waveform error that the API should return.
 
 The matrix is `fixture × explicitly selected compatible backend × supported input
 mode`. All waveform operations go through the public Ondas API. Sidecars describe
@@ -259,56 +244,16 @@ separately so priority changes cannot remove an adapter from coverage. Reusable
 checks derive samples, traces, scans, projections and composed queries from
 independent oracle evidence; concrete coverage belongs in [testing](testing.md).
 
-## Custom and unpublished providers
+## Local snapshots
 
-Any external process or mounted filesystem can supply a provider with compatible
-catalogs, sidecars and oracle evidence. Storage, authentication, generation and
-publication are external to the runner. Public and private data use the same
-schema definitions and interpretation; privacy is a delivery/access policy.
+A local snapshot can replace the installed provider for development when its
+catalog identity and version match `fixtures.lock.toml`. Keep the complete
+snapshot under ignored `tmp/` and select its parent with `ONDAS_FIXTURES`. Use the
+same root for conformance and measurements. The tagged installer does not apply
+to an unpublished version. A locally edited lock is integration work, not proof
+that contributors or CI can install that version. See
+[benchmarking](benchmarking.md#local-fixture-snapshots) for commands.
 
-The shipped commands have fixed provider selections. `ONDAS_FIXTURES` changes
-the root directory, not the selected namespace. Adding a custom provider directory
-or another `[providers]` entry does not make `just conformance` or the benchmarks
-run it. There is currently no general provider-name or lock-file command-line
-selector. A provider with a different identity needs an explicit test integration
-or a separate consumer using the public Ondas API.
-
-An unpublished snapshot of the selected public provider can replace its installed
-contents for local development when identity and version match the repository
-lock. Keep the complete snapshot under ignored `tmp/` and use the same root for
-conformance and measurements. The tagged installer does not apply to an unpublished
-version. A locally edited lock is integration work, not proof that contributors or
-CI can install that version. See [benchmarking](benchmarking.md#unpublished-local-providers)
-for commands.
-
-## Public and private providers
-
-The private provider selected by the FSDB runner is
-`kleverhq.ondas-fixtures-private`. Public CI does not use it. Its version is pinned
-in ignored repository-root `fixtures.private.lock.toml`, using the same
-`[providers]` table and exact catalog version. Do not commit that lock, private
-sidecars, waveforms, credentials or infrastructure details.
-
-Locked public artifacts must be accessible to contributors and fork CI without
-private credentials. Keep private fixtures entirely in private providers, without
-public placeholders or sidecars for inaccessible data. The public installer remains
-public-only; private materialization and authentication use external processes.
-
-For `fsdb-lib` conformance, the public provider is required. The private provider
-is optional by default: if absent, report an explicit provider skip; if installed,
-validate its catalog against the private lock and check each available FSDB.
-An absent optional payload is skipped only after validating its sidecar and oracle.
-Broken links, unsafe paths, invalid catalogs/oracles, hash or size mismatches and
-semantic failures are errors. Existing flat private catalogs remain supported;
-new grouped catalogs follow the format-directory layout above.
-
-Set `ONDAS_REQUIRE_PRIVATE_FIXTURES=1` to require the private provider and every
-selected FSDB payload. Unset or `0` retains optional absence behavior; other values
-are configuration errors. A zero-private-case skip does not establish private
-conformance. Discovery uses installed sidecars, not a hardcoded fixture list;
-catalog schema 1 does not enumerate uninstalled sidecar directories.
-
-The runner reads local data only. It cannot run simulators, download or authenticate
-to storage, rebuild waveforms, update hashes or publish catalogs. Ondas owns its
-self-contained tests, shared validation/conformance, provider selections and locks;
-the fixture producer owns schemas, generation and delivery.
+The runner reads local data only. It does not run simulators, download or
+rebuild waveforms, update hashes or publish catalogs. The fixture producer owns
+schemas, generation and delivery.

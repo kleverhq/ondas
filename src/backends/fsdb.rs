@@ -753,7 +753,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires real FSDB runtime and locked public fixtures"]
+    #[ignore = "requires real FSDB runtime and locked fixtures"]
     fn fsdb_bits_use_caller_storage() {
         let root = std::path::PathBuf::from(std::env::var_os("ONDAS_FIXTURES").unwrap());
         let path =

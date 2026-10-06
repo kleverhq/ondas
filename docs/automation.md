@@ -118,9 +118,9 @@ validate catalogs, update hashes or change locks. Fixture tools run inside the
 container under the [fixture contract](fixtures.md).
 
 Exclude `.env`, `just.local`, `.devcontainer.local/`, `tools.local/`, materialized
-fixtures, SDKs, credentials, private sidecars and infrastructure details from both
+fixtures, SDKs, credentials and infrastructure details from both
 Git and Docker contexts. Git ignore rules alone do not exclude Docker inputs.
-Public runs must need neither private credentials nor a license network.
+Default checks need neither credentials nor a license network.
 
 Use ignored `tmp/` for scratch and logs without deleting others' work. Tracked
 temporary work belongs in `docs/wip/yymmdd-slug/`. Move durable conclusions into
@@ -192,12 +192,10 @@ Successful docs do not establish native linking or runtime compatibility.
 
 `just ci-fsdb` explicitly enables `fsdb-lib`, checks development Rust and MSRV,
 and runs real FSDB conformance. Supply a complete read-only SDK mount and
-`VERDI_HOME` through the ignored local profile. Keep the private provider's version
-in ignored `fixtures.private.lock.toml`; `ONDAS_REQUIRE_PRIVATE_FIXTURES=1` makes
-that corpus mandatory for a strict run. Neither vendor nor public tests implicitly
-download data. The public installer remains public-only. See [fsdb-lib](fsdb-lib.md) for
-the source-build deployment contract and [fixtures](fixtures.md) for absence
-versus corruption handling.
+`VERDI_HOME` through the ignored local profile. Install the locked fixtures
+explicitly before running conformance; tests do not download data. See
+[fsdb-lib](fsdb-lib.md) for the source-build deployment contract and
+[fixtures](fixtures.md) for installation and validation.
 
 Compatibility covers released public signatures and documented observations,
 including value identity and query semantics, not just whether consumers compile.
