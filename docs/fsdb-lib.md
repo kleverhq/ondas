@@ -35,9 +35,11 @@ No vendor symbol contents are read through these anchors. SDK variants with
 `SONAME` are rejected rather than relying on an unspecified loader search path.
 
 The SDK must remain available at its build-time path for the executable's
-lifetime. Rebuild the executable if you move the SDK. Removing the SDK can prevent
-process startup before Rust runs, even for VCD/FST applications. The binary is not
-relocatable and cannot handle a missing runtime SDK gracefully.
+lifetime. Rebuild the executable if you move the SDK. You can move the executable
+if the SDK library paths remain valid. Removing the SDK can prevent process
+startup before Rust runs, even for VCD/FST applications. A binary distribution
+still depends on that SDK installation. It cannot handle a missing runtime SDK
+gracefully.
 An RPATH on this crate's own targets would not cover downstream library consumers.
 
 Local container mounts and vendor test gates belong in [automation](automation.md).
