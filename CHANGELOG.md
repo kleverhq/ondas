@@ -6,6 +6,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-10-07
+
+### Changed
+
+- Use a pinned Git submodule for fixtures, with tools that support selective payload installation.
+
 ### Fixed
 
 - Preserve FSDB record/struct containers separately from SDK scopes with the same path; scope lookup reports ambiguity while both objects remain accessible through traversal.
@@ -29,6 +35,7 @@ Initial release of Ondas, a read-only Rust library for waveform analysis.
 - Final-tick state normalization and event occurrence counts, with documented reader limits.
 - Fixture-backed conformance tests, performance benchmarks, and automated release checks.
 
-[Unreleased]: https://github.com/kleverhq/ondas/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/kleverhq/ondas/compare/v1.0.2...HEAD
+[1.0.2]: https://github.com/kleverhq/ondas/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/kleverhq/ondas/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/kleverhq/ondas/releases/tag/v1.0.0
