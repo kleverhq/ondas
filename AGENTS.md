@@ -28,6 +28,9 @@ Ondas is a read-only Rust library for backend-independent waveform analysis.
 ## Writing and temporary work
 
 - Write concise, neutral English about concepts, constraints and rationale, not task history or progress lists.
+- Write `docs/*.md` and public API Rustdoc in practical Simplified Technical English ("80% STE"). This is a style target, not a compliance score or a claim of full ASD-STE100 compliance. Exclude `docs/wip/` from this requirement.
+- Use short, direct sentences, simple verbs and consistent terms. Prefer active voice. Give instructions in the imperative and separate complex conditions into clear steps. Keep necessary Rust and waveform terms, API names, code, commands and exact technical meaning.
+- Always review changes to these documents and Rustdoc for 80% STE style and technical accuracy. Fix unclear wording and obvious style problems. Do not require word-by-word dictionary checks, formal rule models, automated STE gates or repeated edits for minor preferences.
 - Repository documentation is self-contained; do not depend on seed documents or sibling checkouts.
 - Use ignored root `tmp/` for disposable scratch, logs, and ad hoc outputs. Do not delete files belonging to the user or other agents.
 - Temporary artifacts that need committing belong only under `docs/wip/yymmdd-slug/`, including execution plans and investigation notes. They may live on temporary branches but must be removed before merge into `main`; promote durable conclusions into their authoritative documents first.

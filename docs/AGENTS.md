@@ -9,6 +9,7 @@
 
 ## Writing
 
+- Use the practical "80% STE" style defined in `../AGENTS.md`. Review every documentation change for clear language and technical accuracy. The rule does not apply to `wip/`.
 - Describe concepts and constraints directly. Keep implementation status, changelogs and execution plans out of normative docs.
 - Link to the owner of a contract instead of maintaining parallel copies. Link the unified fixture schema to the commit pinned by the `../fixtures/` Git submodule; keep Ondas runner coverage and evidence interpretation in `fixtures.md`.
 - Keep tracked temporary work only in `wip/yymmdd-slug/`; remove those task directories before merge into `main`.

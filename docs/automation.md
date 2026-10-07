@@ -3,14 +3,15 @@
 ## Environment
 
 Linux `x86_64-unknown-linux-gnu` is the supported target for the public container,
-CI, docs.rs and release checks. Other platforms are best effort.
+CI, docs.rs and release checks. Other platforms have no guaranteed support.
 
 Keep Git, editors, agents, signing and credentials on the host. Run builds, tests,
 formatting, benchmarks and project tools in the devcontainer. The host needs Git,
 Docker with a working daemon, the Dev Container CLI, Bash and standard Linux
 utilities.
 
-From the repository root, after initializing the pinned fixture submodule on the host and installing its payloads for full CI:
+Initialize the pinned fixture submodule on the host. Install its payloads before
+full CI. Then run these commands from the repository root:
 
 ```sh
 ./dev --install-hooks
@@ -20,8 +21,8 @@ From the repository root, after initializing the pinned fixture submodule on the
 ./dev just docs
 ```
 
-`justfile` defines the recipes and their checks. Prefer recipes; use
-`./dev <command> ...` when none exists, for example
+`justfile` defines the recipes and their checks. Prefer recipes. Use
+`./dev <command> ...` when no recipe exists, for example
 `./dev cargo test --doc --locked`. Local API docs are in
 `target/doc/ondas/index.html`.
 
@@ -47,9 +48,9 @@ ONDAS_DEV_CONFIG=.devcontainer.local/devcontainer.json
 `ONDAS_DEV_CONFIG` must be relative to, and inside, the worktree root.
 The fixture submodule is available through the ordinary workspace mount.
 
-The host sources `.env` as Bash. Treat it as trusted executable configuration,
-not data, and do not load it again through `just`. Profiles forward selected
-values through mounts, `containerEnv` or `remoteEnv`, not wholesale secret exports.
+The host sources `.env` as Bash. Treat it as trusted executable configuration.
+Do not load it again through `just`. Profiles forward selected values through
+mounts, `containerEnv` or `remoteEnv`. Do not export all secrets into the container.
 
 Recreate explicitly after changing environment, mounts or image inputs:
 
@@ -57,9 +58,9 @@ Recreate explicitly after changing environment, mounts or image inputs:
 ./dev --recreate just ci
 ```
 
-The launcher fingerprints profile files and the Git common-directory path, not every
-expanded environment value. Recreation removes the container; keep important data
-in the checkout or persistent mounts rather than its writable layer.
+The launcher fingerprints profile files and the Git common-directory path. It does
+not fingerprint every expanded environment value. Recreation removes the container.
+Keep important data in the checkout or persistent mounts.
 
 ## Pre-commit
 
@@ -68,13 +69,13 @@ needs no container, host Python or host Pre-commit. Installation copies the
 reviewed `dev` and `tools/repo/git-hook` into the worktree's Git `ondas-hooks/`
 directory, enables worktree configuration and sets `core.hooksPath`.
 
-Installation is idempotent and refuses unrelated hooks paths. Worktrees have
-separate copies; switching branches does not replace active hook code. Reinstall
+Installation is safe to repeat and refuses unrelated hooks paths. Worktrees have
+separate copies. Switching branches does not replace active hook code. Reinstall
 after reviewing launcher or dispatcher changes. Do not install hooks at container
 startup or run `pre-commit install` inside the container.
 
 The host dispatcher maps the worktree, Git/common directories and exact
-`GIT_INDEX_FILE`, clears inherited host Git environment and invokes the installed
+`GIT_INDEX_FILE`, clears inherited host Git environment and runs the installed
 launcher's `--exec-only` mode. Container Pre-commit isolates staged changes and
 runs `.pre-commit-config.yaml`. Its `just check-local` gate needs no fixtures and
 never installs them or runs conformance.
@@ -95,12 +96,12 @@ Prefer the public Dockerfile with explicit runtime mounts, network settings and
 environment. Mount SDKs and credentials read-only unless an operation needs writes.
 Use a local Dockerfile only for requirements such as packages or linker setup
 that runtime configuration cannot supply. Keep the public workspace layout, user
-and command-entry model; a little profile JSON duplication is simpler than a
+and command-entry model. A little profile JSON duplication is simpler than a
 configuration generator.
 
 `just.local` is reserved for private recipes when the public `justfile` enables
-its optional import. It adds commands, not alternate meanings: `just ci` must not
-change with installed vendor tools. Select SDK versions and environments explicitly.
+its optional import. It adds commands without changing existing ones. `just ci`
+must not change with installed vendor tools. Select SDK versions and environments explicitly.
 Use separate `CARGO_TARGET_DIR` values when build outputs depend on SDK headers
 or ABI.
 
@@ -112,8 +113,8 @@ Private CI topology is outside the public contract.
 
 Initialize the `fixtures/` Git submodule on the host and install payloads explicitly
 with `./dev just fixtures-install`. The workspace mount supplies fixtures to the
-container. The launcher does not select corpus revisions or install data;
-[fixture integration](fixtures.md) defines setup and consumer checks.
+container. The launcher does not select corpus revisions or install data.
+[Fixture integration](fixtures.md) defines setup and consumer checks.
 
 Exclude `.env`, `just.local`, `.devcontainer.local/`, `tools.local/`, downloaded
 waveform payloads, SDKs, credentials and infrastructure details from
@@ -124,7 +125,7 @@ Default checks need neither credentials nor a license network.
 
 Use ignored `tmp/` for scratch and logs without deleting others' work. Tracked
 temporary work belongs in `docs/wip/yymmdd-slug/`. Move durable conclusions into
-their owning docs and remove task directories before merging into `main`; retain
+their owning docs and remove task directories before merging into `main`. Retain
 `docs/wip/AGENTS.md`. Do not automate this cleanup rule in hooks or CI.
 
 Keep public recipes stable and reproducible, and request private suites separately.
@@ -134,7 +135,7 @@ can be checks, but wall-clock timings cannot be gates.
 Short wrappers belong in `justfile`. Put nontrivial public helpers in
 `tools/<name>/` with an entry point, tests, a recipe and a README covering purpose,
 inputs/outputs, modified files, dependencies, usage and limits. Use shell for thin
-wrappers; use a testable language for parsing, checksums, filesystem validation and
+wrappers. Use a testable language for parsing, checksums, filesystem validation and
 subprocess handling. Keep private helpers in `tools.local/` and avoid a shared
 framework until real common logic exists.
 
@@ -153,8 +154,8 @@ the loaded image with the public settings; no registry publication credentials
 are needed.
 
 CI checks out the pinned fixture submodule and keys its payload cache by OS and
-that Git entry's commit SHA. Only waveform files and directories are cached;
-sidecars, scripts, schemas and Git state always come from the selected checkout.
+that Git entry's commit SHA. Only waveform files and directories are cached.
+Sidecars, scripts, schemas and Git state always come from the selected checkout.
 CI runs `just fixtures-install` even on cache hits, then `just ci` and `just msrv`.
 The fixture installer verifies payload sizes and hashes. Missing assets and
 corrupt downloads fail. GitHub's read-only token supplies API access; fork PRs
@@ -166,36 +167,41 @@ nor conformance downloads implicitly. After a parent branch change, run
 Missing required inputs fail. Release metadata and the crates.io package are
 verified without publishing during `just ci`.
 
-`rust-toolchain.toml` pins development Rust; `Cargo.toml`'s `rust-version` sets the
+`rust-toolchain.toml` pins development Rust. `Cargo.toml`'s `rust-version` sets the
 MSRV used by `just msrv`. Keep container installation consistent with both. Choose
-the MSRV from supported dependencies, language/library requirements and any
-justified project floor, not just current stable or an old dependency snapshot.
+the MSRV from supported dependencies, language and library requirements, and any
+justified project minimum. Do not base it only on current stable Rust or an old
+dependency snapshot.
 Check proprietary configurations at that same MSRV in their explicit environment.
 Record intentional increases in package metadata and the changelog, never in a
 patch release.
 
 ## Documentation and releases
 
-Rustdoc owns API contracts and examples; `docs/` owns concepts and policies.
+Rustdoc owns API contracts and examples. `docs/` owns concepts and policies.
+Write and review these texts in the practical "80% STE" style defined in
+[`AGENTS.md`](../AGENTS.md). Use clear sentences and consistent technical terms.
+Preserve exact contracts without requiring formal STE compliance checks.
 Build docs with warnings denied. `package.metadata.docs.rs` selects features and
-targets; `just docs` reproduces that build. docs.rs builds after crates.io
+targets. `just docs` reproduces that build. docs.rs builds after crates.io
 publication, so no separate site or publishing job is needed.
 
 Public checks and docs.rs use the default nonvendor feature set. Optional backend
 features are additive, but `--all-features` includes SDK-dependent builds and is
-not a public CI requirement. `cargo doc` still executes build scripts; do not
+not a public CI requirement. `cargo doc` still executes build scripts. Do not
 substitute a fake reader or silently bypass SDK discovery for documentation.
 Successful docs do not establish native linking or runtime compatibility.
 
 `just ci-fsdb` explicitly enables `fsdb-lib`, checks development Rust and MSRV,
 and runs real FSDB conformance. Supply a complete read-only SDK mount and
 `VERDI_HOME` through the ignored local profile. Install the pinned fixtures
-explicitly before running conformance; tests do not download data. See
+explicitly before running conformance. Tests do not download data. See
 [fsdb-lib](fsdb-lib.md) for the source-build deployment contract and
 [fixtures](fixtures.md) for installation and validation.
 
 Compatibility covers released public signatures and documented observations,
-including value identity and query semantics, not just whether consumers compile.
+including value identity and query semantics. Successful consumer compilation
+alone does not establish compatibility.
 Breaking changes require a minor version increase before 1.0, or a major increase
 afterward, with migration notes and contract tests. Patch releases preserve those
 contracts and the supported Rust floor. Unreleased development checkpoints are
@@ -205,14 +211,14 @@ version, tag, publish or authorize a release.
 A release consists of a crates.io package, `vX.Y.Z` tag and GitHub Release, without
 a binary matrix, release assets or Pages site. Preparation updates the package
 version, affected lockfile entries and dated changelog section. `just ci` includes
-`just release-check`: version/changelog validation, `cargo package --list` and
-`cargo publish --dry-run`. Run MSRV and SDK-backed checks separately before
+`just release-check`. This recipe validates version and changelog data and runs
+`cargo package --list` and `cargo publish --dry-run`. Run MSRV and SDK-backed checks separately before
 release. These local commands never publish.
 
 After the release PR is merged and verified, push its `vX.Y.Z` tag. The CI
 workflow repeats the public checks, then publishes the crate using the repository
 secret `CRATES_IO_TOKEN`. Only tag builds receive this token. A dependent job
 creates the GitHub Release from that version's changelog notes, without binary
-assets. If only GitHub Release creation fails, rerun the failed job rather than
-the successful crate publication. docs.rs builds asynchronously; the release
+assets. If only GitHub Release creation fails, rerun the failed job. Do not repeat
+the successful crate publication. docs.rs builds asynchronously. The release
 does not wait for it.

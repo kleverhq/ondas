@@ -1,10 +1,11 @@
 /// An absolute waveform time expressed in source ticks.
 ///
-/// This is not a backend-local time index. [`Timescale`] describes the duration
-/// of a tick when known; the API exposes no global timestamp table. Delta cycles
-/// are not modeled separately. A point sample uses the final state after all
-/// changes to that signal at the tick. Traces and scans expose the same final
-/// tick states, not intermediate writes. Order across different signals is unspecified.
+/// Time is not an index into a backend time table. [`Timescale`] describes the
+/// duration of a tick when known. The API has no global timestamp table and no
+/// separate delta-cycle coordinate. A point sample uses the final state after all
+/// changes to that signal at the tick. Traces and scans use the same final tick
+/// states. They do not show intermediate writes. Order across different signals
+/// is unspecified.
 /// Recorded metadata bounds do not restrict query times.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Time(u64);
@@ -49,13 +50,13 @@ impl TimeSpan {
 
 /// An inclusive absolute tick range, optionally unbounded at the waveform end.
 ///
-/// Both bounds are included. An absent end means EOF, not a synthetic timestamp.
-/// A bounded range with `start > end` is empty, not an error: its scan makes no
-/// visitor calls and its trace has neither an initial state nor changes.
-/// [`TimeRange::point`] covers all changes at a single tick, with any state
-/// strictly before that tick represented separately as an initial state.
-/// [`Metadata::time_span`](crate::Metadata::time_span) describes recorded ticks;
-/// it does not restrict caller-supplied query bounds.
+/// Both bounds are included. An absent end means EOF. It does not create a
+/// timestamp. A bounded range with `start > end` is empty and returns no error.
+/// Its scan makes no visitor calls. Its trace has no initial state or changes.
+/// [`TimeRange::point`] covers all changes at one tick. Any state strictly before
+/// that tick is a separate initial state.
+/// [`Metadata::time_span`](crate::Metadata::time_span) describes recorded ticks.
+/// It does not restrict the query bounds supplied by the caller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TimeRange {
     start: Time,
@@ -109,7 +110,8 @@ impl TimeRange {
 
 /// The exact duration of one tick as an integer factor and unit.
 ///
-/// The representation preserves `factor × unit`, not floating-point seconds per tick.
+/// The representation preserves `factor × unit`. It does not use floating-point
+/// seconds per tick.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Timescale {
     factor: u32,

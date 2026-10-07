@@ -17,7 +17,7 @@ use crate::{LookupError, PathError, PathFormatError, Result, SliceError};
 
 /// An owned, immutable sequence of exact hierarchy components.
 ///
-/// Identity is the exact component sequence; escaping belongs only to textual
+/// Identity is the exact component sequence. Escaping affects only text
 /// representations. Paths start at the hierarchy root. Relative paths and the
 /// navigation components `.` and `..` are not supported.
 ///
@@ -25,8 +25,8 @@ use crate::{LookupError, PathError, PathFormatError, Result, SliceError};
 ///
 /// - Ordinary components: `tb.dut.data`.
 /// - SystemVerilog escaped identifiers: `tb.\gen.blk[0] .data`. A leading
-///   backslash opens the identifier and whitespace terminates it; embedded dots
-///   and brackets do not split the path.
+///   backslash starts the identifier. Whitespace ends it. Embedded dots and
+///   brackets do not split the path.
 /// - Ondas quoted components: `tb."name with space".data`,
 ///   `tb."name.with.dots".data`, or `tb."имя сигнала".data`. These represent names
 ///   outside SystemVerilog identifier syntax.
@@ -35,8 +35,8 @@ use crate::{LookupError, PathError, PathFormatError, Result, SliceError};
 ///
 /// Each quoted component uses JSON string syntax. Accepted escapes are `\"`,
 /// `\\`, `\/`, `\b`, `\f`, `\n`, `\r`, `\t`, and `\uXXXX` with exactly four
-/// hexadecimal digits. Unicode surrogate pairs decode to one Unicode scalar;
-/// unpaired surrogates are invalid. Unknown escapes such as `\q`, incomplete
+/// hexadecimal digits. Unicode surrogate pairs decode to one Unicode scalar.
+/// Unpaired surrogates are invalid. Unknown escapes such as `\q`, incomplete
 /// escapes, and unescaped `U+0000..=U+001F` characters produce [`PathError`]. These
 /// rules apply inside quotes, not to SystemVerilog escaped identifiers.
 ///
@@ -46,15 +46,15 @@ use crate::{LookupError, PathError, PathFormatError, Result, SliceError};
 /// slice-like spelling are quoted. Inside quotes, canonical output uses `\"`
 /// and `\\`, the short escapes `\b`, `\f`, `\n`, `\r`, and `\t`, and lowercase
 /// `\u00xx` for the remaining `U+0000..=U+001F` characters. All other characters,
-/// including `/` and non-ASCII Unicode, are emitted literally, without Unicode
-/// normalization. Thus `tb."a\u000Ab"` canonicalizes to `tb."a\nb"`.
+/// including `/` and non-ASCII Unicode, are written literally. Output does not
+/// normalize Unicode. Thus `tb."a\u000Ab"` canonicalizes to `tb."a\nb"`.
 ///
 /// [`Self::to_verilog`] instead produces lossless SystemVerilog-compatible text
 /// or a [`PathFormatError`].
 ///
 /// # Path versus selector
 ///
-/// Brackets have no array-index or bit-slice meaning here: `tb.mem[0]` may name
+/// Brackets do not specify array indices or bit slices here. `tb.mem[0]` may name
 /// an actual declaration. Only [`Hierarchy::signal`] interprets an optional
 /// trailing `[msb:lsb]` as a projection after exact lookup fails.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -177,14 +177,14 @@ impl fmt::Display for HierarchyPath {
     }
 }
 
-/// An immutable, cloneable waveform hierarchy.
+/// An immutable waveform hierarchy that can be cloned.
 ///
-/// [`Scope`] and [`Variable`] are borrowed views; [`Signal`] is a copyable query
+/// [`Scope`] and [`Variable`] are borrowed views. [`Signal`] is a copyable query
 /// handle. Clone the hierarchy before retaining views across mutable queries on
-/// its [`Waveform`](crate::Waveform); see the example on that type.
+/// its [`Waveform`](crate::Waveform). See the example on that type.
 ///
-/// Declarations and histories are distinct: [`Self::variables`] includes aliases,
-/// while [`Self::signals`] lists unique whole histories. Lookup failures use
+/// Declarations and histories are distinct. [`Self::variables`] includes aliases.
+/// [`Self::signals`] lists unique whole histories. Lookup failures use
 /// [`LookupError`], not opening or backend errors.
 #[derive(Clone)]
 pub struct Hierarchy {
@@ -255,15 +255,15 @@ pub struct Variable<'h> {
 
 /// An opaque waveform signal handle with an optional bit projection.
 ///
-/// A handle can have [`Encoding::Unsupported`]; value queries then return
+/// A handle can have [`Encoding::Unsupported`]. Value queries then return
 /// [`Error::UnsupportedSignal`](crate::Error::UnsupportedSignal).
 ///
 /// Whole aliases of the same underlying history compare equal. Distinct histories
-/// have distinct whole handles. Handles belong to their source hierarchy/waveform;
-/// using one with another source is [`Error::InvalidSignal`](crate::Error::InvalidSignal).
+/// have distinct whole handles. Handles belong to their source hierarchy and waveform.
+/// Using one with another source returns [`Error::InvalidSignal`](crate::Error::InvalidSignal).
 /// Backend-local identifiers and projection representation are not public contracts.
 ///
-/// A projection has its own observed history: only changes to the selected bits
+/// A projection has its own observed history. Only changes to the selected bits
 /// appear in traces and scans. For projected samples, `changed_at` identifies the
 /// last change of the projected value, not unrelated activity in its base signal.
 /// It is `None` if the backend cannot establish that time reliably.
@@ -386,10 +386,10 @@ impl Hierarchy {
 
     /// Resolves an exact variable path first, then an optional trailing bit slice.
     ///
-    /// The entire selector is first considered as an exact variable path. Only
-    /// if that variable is not found is one trailing `[msb:lsb]` interpreted as a
-    /// [`Signal::slice`]. An actual variable named `data[7:0]` therefore wins over
-    /// slicing `data`. `[n]` is never a slice; select one bit with `[n:n]`.
+    /// The lookup first treats the entire selector as an exact variable path. If
+    /// that variable is not found, one trailing `[msb:lsb]` can specify a
+    /// [`Signal::slice`]. An actual variable named `data[7:0]` therefore takes
+    /// priority over slicing `data`. `[n]` is never a slice. Select one bit with `[n:n]`.
     ///
     /// For example, `tb.mem[0]` names a whole signal, while `tb.mem[0][7:0]`
     /// can slice it. Use [`Self::signal_path`] followed by [`Signal::slice`] to
@@ -487,9 +487,9 @@ impl Hierarchy {
     /// Iterates over declarations that alias a signal valid for this hierarchy.
     ///
     /// For a sliced handle, returns the declarations of its base whole signal,
-    /// ignoring the projection. Slicing does not create declarations: whole,
+    /// ignoring the projection. Slicing does not create declarations. Whole,
     /// sliced, and repeatedly sliced handles with the same base return the same
-    /// declarations, with their original metadata rather than projected ranges.
+    /// declarations. They retain their original metadata and declaration ranges.
     ///
     /// A handle from another hierarchy or waveform produces
     /// [`Error::InvalidSignal`](crate::Error::InvalidSignal).
@@ -531,20 +531,20 @@ impl<'h> Scope<'h> {
 
     /// Returns the canonical lower-case scope kind.
     ///
-    /// Common kinds are normalized; unknown vendor kinds retain a namespaced
-    /// spelling rather than being forced into a closed enum.
+    /// Common kinds are normalized. Unknown vendor kinds retain a namespaced
+    /// spelling. They are not forced into a closed enum.
     pub fn kind(&self) -> &'h str {
         &self.data().kind
     }
 
     /// Returns whether the VCD or FST declaration used a leading Verilog escape marker.
     ///
-    /// The marker is excluded from [`Self::name`] and path identity. Prepending
-    /// one backslash to the name recovers its reader-provided identifier spelling;
-    /// terminating whitespace is not retained. Merged scopes retain the first
+    /// The marker is excluded from [`Self::name`] and path identity. Add one
+    /// backslash before the name to recover the reader-provided identifier spelling.
+    /// Terminating whitespace is not retained. Merged scopes retain the first
     /// declaration's spelling. This records input spelling, not whether the name
     /// needs escaping when formatted as a path. FSDB retains SDK-provided names
-    /// without interpreting leading backslashes; this flag is `false` for FSDB.
+    /// without interpreting leading backslashes. This flag is `false` for FSDB.
     pub fn name_was_escaped(&self) -> bool {
         self.data().name_was_escaped
     }
@@ -552,7 +552,7 @@ impl<'h> Scope<'h> {
     /// Returns whether the source explicitly marks this scope as hidden.
     ///
     /// Hidden scopes and their contents remain accessible. This flag is local
-    /// to the scope, not inherited: to hide a subtree, callers must also check
+    /// to the scope and is not inherited. To hide a subtree, also check
     /// its ancestors. Returns `false` when the backend has no hidden-scope flag.
     pub fn is_hidden(&self) -> bool {
         self.data().is_hidden
@@ -591,21 +591,21 @@ impl<'h> Variable<'h> {
     /// Returns the reader-provided local declaration name before range extraction, if retained.
     ///
     /// FSDB returns the SDK callback spelling, including any leading backslash or
-    /// printed range suffix. Coalesced duplicate declarations retain the first
-    /// callback's spelling; aliases retain their own. This is not path identity:
-    /// use [`Self::name`] for lookup. Other backends return `None`.
+    /// printed range suffix. Merged duplicate declarations retain the first
+    /// callback's spelling. Aliases retain their own. This spelling does not define
+    /// path identity. Use [`Self::name`] for lookup. Other backends return `None`.
     pub fn reader_name(&self) -> Option<&'h str> {
         self.data().reader_name.as_deref()
     }
 
     /// Returns whether the VCD or FST declaration used a leading Verilog escape marker.
     ///
-    /// Prepending one backslash to [`Self::name`] recovers the reader-provided
-    /// identifier spelling, without terminating whitespace or declared ranges.
-    /// This flag does not affect identity or lookup. Coalesced repeated
-    /// declarations retain the first spelling; aliases retain their own flags.
-    /// FSDB retains SDK-provided names without interpreting leading backslashes;
-    /// this flag is `false` for FSDB.
+    /// Add one backslash before [`Self::name`] to recover the reader-provided
+    /// identifier spelling. This excludes terminating whitespace and declared ranges.
+    /// This flag does not affect identity or lookup. Merged repeated
+    /// declarations retain the first spelling. Aliases retain their own flags.
+    /// FSDB retains SDK-provided names without interpreting leading backslashes.
+    /// This flag is `false` for FSDB.
     pub fn name_was_escaped(&self) -> bool {
         self.data().name_was_escaped
     }
@@ -638,7 +638,7 @@ impl<'h> Variable<'h> {
 
     /// Returns the canonical lower-case declaration kind.
     ///
-    /// Common kinds are normalized; unknown vendor kinds retain a namespaced
+    /// Common kinds are normalized. Unknown vendor kinds retain a namespaced
     /// spelling. Kind is separate from constancy and value encoding.
     pub fn kind(&self) -> &'h str {
         &self.data().kind
@@ -656,7 +656,7 @@ impl<'h> Variable<'h> {
 
     /// Returns whether the declaration denotes a constant value.
     ///
-    /// This is independent of kind and encoding: a parameter or generic may
+    /// This is independent of kind and encoding. A parameter or generic may
     /// carry bits, a real value, or a string.
     pub fn is_constant(&self) -> bool {
         self.data().is_constant
@@ -669,8 +669,8 @@ impl<'h> Variable<'h> {
 
     /// Returns known signed or unsigned interpretation of this declaration.
     ///
-    /// `None` means unavailable or not applicable (for example, a real, string
-    /// or event), not unsigned. This metadata is independent of shared
+    /// `None` means unavailable or not applicable, for example for a real, string
+    /// or event. It does not mean unsigned. This metadata is independent of shared
     /// [`Signal`] identity and is never inferred from observed values or names.
     /// Reading it does not load value histories.
     pub fn signedness(&self) -> Option<Signedness> {
@@ -793,7 +793,7 @@ impl BitRange {
 
 /// Borrowed enumeration metadata for a variable declaration.
 ///
-/// Encoded keys are text metadata; they do not change the signal's value encoding
+/// Encoded keys are text metadata. They do not change the signal's value encoding
 /// or the representation used by value queries.
 pub struct Enumeration<'h> {
     data: &'h EnumerationData,
@@ -867,22 +867,22 @@ impl Signal {
 
     /// Selects an inclusive normalized range from the current bit-vector value.
     ///
-    /// Index zero is the least-significant, rightmost bit of the current value;
-    /// these positions need not match [`Variable::range`]. Requires `msb >= lsb`
-    /// and `msb < current_width`. Non-bit encodings return [`SliceError::NotBits`],
+    /// Index zero is the least-significant, rightmost bit of the current value.
+    /// These positions need not match [`Variable::range`]. The bounds must satisfy
+    /// `msb >= lsb` and `msb < current_width`. Non-bit encodings return [`SliceError::NotBits`],
     /// reversed bounds return [`SliceError::InvalidRange`], and bounds outside
     /// the current width return [`SliceError::OutOfBounds`].
     ///
     /// Repeated slices compose relative to the current projection:
     /// `data.slice(31, 16)?.slice(7, 0)?` selects original bits `[23:16]`.
     /// [`Self::base`] removes the projection. Selecting the full current width
-    /// returns the same handle; a full-width slice of a whole signal is whole.
+    /// returns the same handle. A full-width slice of a whole signal is whole.
     ///
     /// The resulting history filters out changes that leave the projected value
     /// unchanged. For base values `00000000` at tick 10, `00000001` at tick 20,
     /// and `10100001` at tick 30, slice `[7:4]` changes at 10 and 30, not 20.
     /// Its sample `changed_at` is the last projected change time, or `None` when
-    /// that time cannot be determined reliably; it is not another bit's change time.
+    /// that time cannot be determined reliably. It is not another bit's change time.
     /// Multiple slices of one base remain separate public selection entries.
     pub fn slice(self, msb: u32, lsb: u32) -> std::result::Result<Self, SliceError> {
         let width = self.width().ok_or(SliceError::NotBits)?;

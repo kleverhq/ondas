@@ -2,12 +2,12 @@
 
 `fsdb-lib` is Ondas's optional FSDB backend. It reads binary FSDB through the
 Synopsys FSDB Reader SDK from Verdi (2021+). A private C++ shim
-calls the SDK; the Rust adapter maps declarations, SDK identities and value records into
-the common model. It accepts files, not bytes or streams, and does not convert
+calls the SDK. The Rust adapter maps declarations, SDK identities and value
+records into the common model. It accepts files, not bytes or streams, and does not convert
 FSDB to another format.
 
 The implementation is private. [Rustdoc](https://docs.rs/ondas) describes reader
-selection and public observation contracts; this document covers the backend's
+selection and public observation contracts. This document covers the backend's
 data flow, storage and limits.
 
 ## Dependencies and deployment
@@ -17,67 +17,69 @@ target is `x86_64-unknown-linux-gnu`. `VERDI_HOME` selects the installed Verdi r
 in the filesystem where Cargo runs. The build requires a C++11 compiler, binutils
 `readelf`, zlib development files and the corresponding C++ runtime. It uses
 `share/FsdbReader` headers and the SDK's `linux64` library directory (`LINUX64` is
-also recognized). Missing inputs fail a feature-enabled build; feature-disabled
-builds neither discover nor link the SDK. Older SDKs can reject files written in
-newer FSDB format versions; use a newer Reader for those files.
+also recognized). Missing inputs fail a feature-enabled build. Feature-disabled
+builds do not discover or link the SDK. Older SDKs can reject files written in
+newer FSDB format versions. Use a newer Reader for those files.
 
 Only Ondas's own Rust adapter, C++ shim, private C ABI header and dependency-link
 anchors are distributed. SDK headers, libraries, manuals and fixtures are not
 copied into the crate. Use and redistribution permissions remain the user's
-responsibility; absence of a runtime license checkout is not a grant of rights.
+responsibility. The absence of a runtime license checkout does not grant rights.
 
-The shim is a static archive; the installed Reader libraries are linked
+The shim is a static archive. The installed Reader libraries are linked
 dynamically. These libraries have no ELF `SONAME`, so a generated linker script
 retains their absolute paths in the consumer's `DT_NEEDED` entries. A private
 two-address object keeps `libnsys` and zlib from being discarded by lld's
-`--as-needed`: the Reader library does not declare those dependencies itself.
+`--as-needed`. The Reader library does not declare those dependencies itself.
 No vendor symbol contents are read through these anchors. SDK variants with
 `SONAME` are rejected rather than relying on an unspecified loader search path.
 
 The SDK must remain available at its build-time path for the executable's
-lifetime. Moving it requires rebuilding; removing it can prevent process startup
-before Rust runs, even when the application only intends to read VCD/FST. This is
-not a relocatable binary distribution or a graceful runtime-absence mechanism.
+lifetime. Rebuild the executable if you move the SDK. You can move the executable
+if the SDK library paths remain valid. Removing the SDK can prevent process
+startup before Rust runs, even for VCD/FST applications. A binary distribution
+still depends on that SDK installation. It cannot handle a missing runtime SDK
+gracefully.
 An RPATH on this crate's own targets would not cover downstream library consumers.
 
 Local container mounts and vendor test gates belong in [automation](automation.md).
 Mount the full SDK read-only through an ignored local profile. Fixtures come
-from the workspace submodule; keep vendor outputs separate and vendor files out of images and Docker
-build contexts.
+from the workspace submodule. Keep vendor outputs separate. Keep vendor files
+out of images and Docker build contexts.
 
 ## How it works
 
-The diagram shows the chronological cold-query path for mixed values and events;
-bit-only queries can seek the entering state as described below.
+The diagram shows the chronological cold-query path for mixed values and events.
+Bit-only queries can seek the entering state as described below.
 
 ![FSDB opening reads hierarchy and metadata into an owned model. A chronological cold query loads selected SDK identities, traverses from the beginning through the inclusive end, copies values under the SDK lock and feeds the shared query engine outside that lock.](images/fsdb-lib-flow.drawio.svg)
 
 ### Opening
 
-Content recognition precedes filename extensions. The ordinary FST signature
+Content recognition takes priority over filename extensions. The ordinary FST signature
 includes its header-section length because a single initial zero byte also
-occurs in FSDB. The enabled Reader probes otherwise unrecognized file contents;
-case-insensitive extensions provide the fallback. Explicit selection never
+occurs in FSDB. The enabled Reader probes otherwise unrecognized file contents.
+Case-insensitive extensions provide the fallback. Explicit selection never
 switches backends after an opening failure.
 
 The shim opens one `ffrOpenNonSharedObj` per waveform and calls
 `ffrReadScopeVarTree`. When present, datatype blocks are read first so enumeration
 definitions are available to declaration callbacks. Tree callbacks collect scope
-and variable descriptors;
+and variable descriptors.
 Rust builds the hierarchy and maps SDK identities to common base signals.
 Aliases retain separate declarations but share a base identity. Header queries
 supply bounds, timescale, writer and date.
 
 The returned `Waveform` retains the owned hierarchy and metadata. Its adapter
-keeps the Reader object, identity/index maps and encodings; the shim retains
+keeps the Reader object, identity/index maps and encodings. The shim retains
 hierarchy descriptors. Opening does not traverse
 all value histories or certify that every later record can be decoded.
 
 `read_metadata(path)` uses the same SDK file open and header queries but skips
 datatype and hierarchy callbacks. It closes the SDK object after copying the
-metadata. It does not validate declarations; `open(path)` still does.
+metadata. It does not validate declarations. `open(path)` still does.
 
-Actual Unix path bytes are passed to the SDK, including non-UTF-8 names;
+The adapter passes actual Unix path bytes to the SDK, including non-UTF-8 names.
 `source_name` is only a display string. Embedded NUL is rejected. There are no
 hidden temporary files or memory-file adapters. Keep the source unchanged while
 open.
@@ -87,14 +89,14 @@ open.
 Cold bit-only point samples use per-signal SDK seeks after loading the deduplicated
 base selection. Each seek finishes its aligned tick. The reader walks earlier
 completed ticks until the selected projection differs, establishing its exact
-normalized `changed_at`; an initial or constant projected state retains `None`.
+normalized `changed_at`. An initial or constant projected state retains `None`.
 This also handles same-tick excursions and redundant writes. A constant projection
 can still require walking its full history. Mixed-value and event selections keep
 the chronological reference path.
 
 The resulting bounded point snapshot represents state after the requested tick.
-It can serve the same point again or seed later windows, never the entering state
-of a window beginning at that tick or earlier. Point snapshots use the existing
+It can serve the same point again or initialize later windows. It cannot supply
+the entering state of a window that starts at that tick or earlier. Point snapshots use the existing
 selection cache budget and are discarded on break, error or panic.
 
 For a window `[start, end]`, the shared query layer resolves aliases and
@@ -104,7 +106,7 @@ with `ffrCreateTimeBasedVCTrvsHdl`.
 
 For a cold bit-only window with a nonzero start, the existing point seek obtains
 exact projected state and change times at `start - 1`. Chronological traversal
-then begins at `start`; records at that tick are still normalized in full. Mixed
+then starts at `start`. Records at that tick are still normalized in full. Mixed
 values and events instead start at zero so earlier selected records establish
 entering values and event counts. A persistent-only selection can retain one
 normalized boundary checkpoint within the query engine's 4 MiB budget.
@@ -113,18 +115,18 @@ position the SDK view at the saved boundary. Oversized snapshots fall back to
 the full-prefix path. Break, error and panic discard the checkpoint.
 
 A successful persistent-only query also retains its final bounded slot state
-and next unread tick. Repeated point reads need no SDK traversal; forward reads
+and next unread tick. Repeated point reads need no SDK traversal. Forward reads
 can resume from that state. Earlier windows use the boundary checkpoint or
-full replay; cold bit-only points can seek independently. Neither snapshot accumulates requested times or retains SDK
-histories. Both snapshots are discarded on break, error or panic; a new selection
-starts without them and never shares another selection's state. Event selections
+full replay. Cold bit-only points can seek independently. Neither snapshot
+accumulates requested times or retains SDK histories. Both snapshots are discarded
+on break, error or panic. A new selection starts without them and never shares
+another selection's state. Event selections
 use the reference path for exact preceding-tick counts, and `u64::MAX` has no
 resumable next tick.
 
-The cursor checks each timestamp
-against the inclusive `end` **before decoding the value**, so an excluded record
-does not fail a prefix query. Equal-tick cross-signal order is not a public
-guarantee. The raw SDK traversal does not sort or collapse records; the shared
+The cursor checks each timestamp against the inclusive `end` **before decoding
+the value**. Thus, an excluded record does not fail a prefix query. Equal-tick cross-signal order is not a public
+guarantee. The raw SDK traversal does not sort or combine records. The shared
 query engine applies the public tick normalization described below.
 
 The shim reads storage metadata before `ffrGetVC`, validates each logic code and
@@ -134,15 +136,15 @@ another release-build validation pass. Reals and strings are copied from
 transient SDK storage while holding the lock. After unlocking, Rust decodes
 reals and strings and passes borrowed values to the shared
 query engine. That engine applies projections, tracks entering state, and emits
-final persistent tick changes and per-tick event aggregates. Samples consume all observations
-at their requested tick; scans can stop with `Break`; owned traces collect output.
+final persistent tick changes and per-tick event aggregates. Samples consume all
+observations at their requested tick. Scans can stop with `Break`. Owned traces
+collect output.
 
 When the file supports view windows, loading uses the checkpoint or bit-only
 seek boundary (otherwise zero) through the inclusive query end. The retained state
-preserves exact normalized change times; SDK values preceding the boundary are
-not emitted again. The
-SDK loads complete flush sessions intersecting that window, not precisely the
-requested ticks. Other files retain full loading.
+preserves exact normalized change times. SDK values preceding the boundary are
+not emitted again. The SDK loads complete flush sessions that intersect the
+window. Loading is not limited to the requested ticks. Other files retain full loading.
 
 A traversal guard frees the cursor, unloads selected values and resets the SDK
 selection on completion, `Break`, error or Rust panic. A supported view window
@@ -159,35 +161,36 @@ in [`native/fsdb.cpp`](../native/fsdb.cpp), and linking in
 | Choice | Consequence |
 |---|---|
 | Hierarchy at opening | Opening retains declarations and identity maps, not decoded histories. Value errors can first appear during queries. |
-| Load selected SDK signals through the query end | Loading precedes callbacks and is flush-session granular. The SDK may allocate substantial selected-history storage even for a short window or an early `Break`. |
-| Bounded normalized checkpoint | A cold bit-only window seeks entering state and reads its bounded interval; mixed values and events replay earlier selected records. Compatible repeated persistent-only windows can reuse one checkpoint; there is no multi-time index. |
-| Batch base identities | Aliases and projections share SDK selection/loading. Chronological scans share base replay; cold points seek each distinct projection. Output order and duplicates are preserved. |
-| Cold bit-only point seeks | Skip unrelated prefix records while proving the selected projection's change time. Native point bytes are copied under the SDK lock; no handle or SDK buffer escapes. Constant projections may still walk the prefix. |
-| Caller-owned chronological logic buffer | Each traversal sizes one buffer to the widest selected base bit signal, even when no bit record is reached. Logic is validated/normalized directly into it; a separate reusable buffer copies non-bit records without clearing or resizing the bit destination. SDK pointers never reach visitors. |
-| Selected-state reuse, no SDK history cache | One final snapshot and one bounded boundary checkpoint belong to the selection. Repeated points can avoid traversal; an actual traversal still performs SDK selection/loading and creates a new cursor. Neither cache grows with query history. |
+| Load selected SDK signals through the query end | Loading occurs before callbacks and uses complete flush sessions. The SDK may allocate substantial selected-history storage even for a short window or an early `Break`. |
+| Bounded normalized checkpoint | A cold bit-only window seeks entering state and reads its bounded interval. Mixed values and events replay earlier selected records. Compatible repeated persistent-only windows can reuse one checkpoint. There is no multi-time index. |
+| Batch base identities | Aliases and projections share SDK selection/loading. Chronological scans share base replay. Cold points seek each distinct projection. Output order and duplicates are preserved. |
+| Cold bit-only point seeks | Skip unrelated prefix records while proving the selected projection's change time. Native point bytes are copied under the SDK lock. No handle or SDK buffer escapes. Constant projections may still walk the prefix. |
+| Caller-owned chronological logic buffer | Each traversal sizes one buffer to the widest selected base bit signal, even when no bit record is reached. The shim validates and normalizes logic directly into this buffer. A separate reusable buffer copies non-bit records without clearing or resizing the bit destination. SDK pointers never reach visitors. |
+| Selected-state reuse, no SDK history cache | One final snapshot and one bounded boundary checkpoint belong to the selection. Repeated points can avoid traversal. An actual traversal still performs SDK selection/loading and creates a new cursor. Neither cache grows with query history. |
 | Serialized SDK calls | Independent waveform readers do not execute SDK operations concurrently through this adapter. Rust visitors run outside the lock. |
 | Streaming observations | Shared query state retains bounded entering/pending values and event counts per selection entry. Owned traces additionally retain their output. |
 
 Ondas adds no time index, checkpoint database, mmap or parallel decoder. SDK
-loading is distinct from an adapter history cache; memory is not bounded by the
+loading is separate from an adapter history cache. Memory is not bounded by the
 query engine's state alone. Compare the same artifact, selection and workload
-under the [benchmarking policy](benchmarking.md), not inferred throughput claims.
+under the [benchmarking policy](benchmarking.md). Do not infer throughput from
+implementation choices alone.
 
 ## Supported data
 
 ### Names and declarations
 
-- Identical declarations in appended hierarchy trees are coalesced. Distinct
+- Identical declarations in appended hierarchy trees are merged. Distinct
   aliases retain their paths and share compatible SDK storage identities.
 - Compatible repeated SDK scopes merge and may supply an absent definition name.
   Compatible repeated record/struct containers also merge. A container and an SDK
   scope at the same path remain distinct scopes. Both retain their metadata and
-  children and are accessible through traversal; scope lookup at that path
+  children and are accessible through traversal. Scope lookup at that path
   returns `LookupError::Ambiguous`. Conflicting definitions or metadata between
   repetitions of either fail with `Error::Malformed`, the scope path and differing
   attributes. Generic SDK failures remain `Error::Backend`.
 - The SDK's hidden-scope flag is retained. Hidden scopes and their descendants
-  stay accessible; consumers choose whether to suppress them during traversal.
+  stay accessible. Consumers choose whether to suppress them during traversal.
 - Explicit vector ranges, including `[0:0]`, become declaration metadata. A
   matching trailing range is removed from unescaped names or after whitespace
   terminating an escaped identifier. An attached suffix on an escaped name stays
@@ -195,13 +198,14 @@ under the [benchmarking policy](benchmarking.md), not inferred throughput claims
   retains the pre-extraction SDK spelling, including the escape marker and any
   printed range, for consumers that distinguish those source forms. Memory indices
   remain names, not query projections.
-- Known scope and variable kinds map to canonical names; unknown kinds remain
+- Known scope and variable kinds map to canonical names. Unknown kinds remain
   namespaced. Direction and constant flags are retained when supplied.
 - Record/struct members retain their containing scopes and available packing.
   Enum datatype definitions supply type names and encoded value/label tables.
   Typed enum and packed-variable callbacks remain visible. Enum histories with
-  supported per-bit Verilog/VHDL logic storage are queryable as bits; other custom
-  storage remains unsupported rather than guessed from labels or observed values.
+  supported per-bit Verilog/VHDL logic storage are queryable as bits. Other custom
+  storage remains unsupported. The adapter does not guess its encoding from labels
+  or observed values.
 - Unsupported declarations remain visible but fail query validation before
   visiting values. Not every composite or user-defined SDK type has a decoder.
 
@@ -210,20 +214,20 @@ under the [benchmarking policy](benchmarking.md), not inferred throughput claims
 | Value class | Behavior |
 |---|---|
 | Bits | Validate width and preserve every decoded bit. Ordinary digital storage preserves `0/1/x/z`; recognized VHDL logic storage preserves all nine states. Unknown logic codes fail. |
-| Reals | Decode copied host-order binary32/binary64 bytes without alignment assumptions; promote binary32 to `f64`. Storage, not the source type name, determines precision. |
+| Reals | Decode copied host-order binary32/binary64 bytes without alignment assumptions. Promote binary32 to `f64`. Storage, not the source type name, determines precision. |
 | Strings | Read NUL-terminated bytes, not the SDK's fixed-size string index. Map bytes reversibly to U+0000 through U+00FF (Latin-1), without UTF-8 inference. Embedded NUL is not supported. |
-| Events | Normal HDL trigger records become occurrences; no-change initialization records are ignored. Unknown event records fail. Transaction event variables are unsupported. |
+| Events | Normal HDL trigger records become occurrences. No-change initialization records are ignored. Unknown event records fail. Transaction event variables are unsupported. |
 
 ### Time and metadata
 
 - Time is absolute unsigned integer ticks. Floating timestamp formats are
-  rejected, not rounded; backwards traversal timestamps fail.
+  rejected instead of rounded. Backwards traversal timestamps fail.
 - Timescales with decimal factors and SDK-abbreviated SI units normalize exactly
   to positive integer factors with supported units (for example, `0.1n` is
   `100ps`). Source tick counts are unchanged. An absent or empty scale remains
-  absent; an unsupported nonempty scale fails opening.
+  absent. An unsupported nonempty scale fails opening.
 - Recorded bounds come from the file, not the selected histories. Reversed bounds
-  fail; a source without variable declarations has no recorded span in Ondas.
+  fail. A source without variable declarations has no recorded span in Ondas.
 - Writer and date preserve present-empty strings. Comments are not populated.
 
 ## Controls and limits
@@ -238,13 +242,14 @@ Transaction, assertion and object-database semantics are outside the common mode
 ### Ownership and threads
 
 SDK types and pointers remain behind the private C ABI. Each waveform owns its
-non-shared Reader; mutable query access owns its cursor exclusively. The Reader
+non-shared Reader. Mutable query access owns its cursor exclusively. The Reader
 guide recommends `ffrOpenNonSharedObj` for multithreaded applications.
 
 All SDK operations, including open and destruction, are serialized within this
 adapter. The Rust owner can move across threads. This lock does not coordinate
 unrelated SDK users elsewhere in the process. Visitors run in Rust, outside the
-lock and never from C++; a visitor can query a different waveform reentrantly.
+lock. They are never called from C++. A visitor can query a different waveform
+while its callback runs.
 
 ### Malformed input and SDK failures
 
@@ -253,7 +258,7 @@ saved and reported after the SDK returns. Indistinguishable SDK opening failures
 become backend errors, not invented corruption diagnoses. Value failures can
 occur after opening succeeds and scans may already have delivered observations.
 
-SDK banners and warnings remain visible: Ondas does not suppress process-wide
+SDK banners and warnings remain visible. Ondas does not suppress process-wide
 stdout/stderr. Native crashes, aborts and malformed-input robustness are not
 contained by exception handling. This is not a sandbox for untrusted files.
 
@@ -274,5 +279,5 @@ dependency propagation.
 
 See [testing](testing.md) for test strategy. Conformance checks supplied oracle
 observations, not every value class, timestamp or format variant. Missing
-coverage is a request to the fixture producer, never a reason to record this
-adapter's output as its own oracle.
+coverage must be requested from the fixture producer. Do not use this adapter's
+output as its own oracle.

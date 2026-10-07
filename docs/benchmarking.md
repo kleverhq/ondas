@@ -1,7 +1,7 @@
 # Benchmarking
 
 Use Criterion to investigate public API performance and manage local results and
-baselines. Timings are not CI or release gates; benchmarks do not repeat
+baselines. Timings are not CI or release gates. Benchmarks do not repeat
 conformance assertions.
 
 ## Workloads
@@ -9,7 +9,7 @@ conformance assertions.
 Use one Criterion target per measured format, such as `benches/vcd.rs`. Share
 sidecar loading and artifact checks with conformance tests in
 `tests/support/fixtures.rs`. Keep concrete fixtures, reader choices, operations,
-and workload parameters in the format target; extract shared operations only
+and workload parameters in the format target. Extract shared operations only
 when another target needs them.
 
 ```text
@@ -18,12 +18,12 @@ benchmark case   = fixture + operation + parameters
 backend          = reader implementation
 ```
 
-Add cases for concrete performance questions, not to fill a matrix. Formats need
-neither equivalent fixtures nor directly comparable results.
+Add cases for concrete performance questions, not to fill a matrix. Formats do not need
+equivalent fixtures or directly comparable results.
 
 Use the [pinned fixture corpus](fixtures.md). Validate fixtures and their hashes
-before timing, never inside iterations. Benchmarks neither fetch fixtures nor
-update metadata.
+before timing. Do not validate them inside iterations. Benchmarks do not fetch
+fixtures or update metadata.
 
 Signal paths, selection sizes, ticks, ranges, and projections are Rust workload
 parameters. Do not introduce a benchmark manifest, recipe language, or
@@ -39,12 +39,12 @@ explicit reader comparison.
 Criterion IDs must be globally unique across targets and describe format,
 fixture identity, operation, input mode, and relevant parameters. Reader
 names distinguish cases inside a shared group. File and bytes inputs are modes
-of the same format target; register bytes cases only for readers that support
+of the same format target. Register bytes cases only for readers that support
 them.
 
 Run relevant unit and conformance tests before comparing revisions. Setup checks
 fixtures, readers, signal resolution and successful operations. It does not repeat
-oracle assertions, fingerprint results or infer correctness from equal timings.
+oracle assertions or fingerprint results. Equal timings do not prove correctness.
 
 ## Measurement boundaries
 
@@ -64,20 +64,20 @@ A `fresh-selection` case creates, queries and drops a new selection inside each
 iteration while keeping the waveform and resolved handles outside timing. A
 `warm-repeat` case primes a dedicated selection outside timing. The latter may
 measure a checkpoint or completed-state cache hit, not native traversal. First
-and second exact-lookup cases open a fresh waveform outside timing; the second
-primes exactly one lookup before timing the index build. Do not accidentally
+and second exact-lookup cases open a fresh waveform outside timing. The second
+runs exactly one lookup before timing the index build. Do not accidentally
 include path resolution or selection creation unless that is the operation under
-study. Use `black_box` on inputs and results; for callback scans, consume a minimal
+study. Use `black_box` on inputs and results. For callback scans, consume a minimal
 counter or equivalent observable output through `black_box`.
 
-A fresh waveform may use a warm filesystem cache; it is not a cold-disk test.
+A fresh waveform may use a warm filesystem cache. This is not a cold-disk test.
 Prepared queries measure reuse, not first-query cost. Compare cases with the same
 setup and destruction boundaries.
 
 ## VCD workload design
 
 Combine real recordings with compact diagnostic fixtures. Real recordings show
-whether a cost matters in practical analysis; controlled activity isolates a
+whether a cost matters in practical analysis. Controlled activity isolates a
 cause that total file size or a mixed workload can hide. The
 [VCD backend model](vcd-native.md) explains the parsing and replay constraints.
 Choose comparisons along these independent dimensions:
@@ -85,10 +85,9 @@ Choose comparisons along these independent dimensions:
 - **History traversed versus window width.** Equal-width windows at different
   positions distinguish output volume from the work needed to establish entering
   state. Early termination should be tested with both short and long prefixes:
-  finding few changes does not necessarily require reading little history.
+  Finding few changes can still require reading a long history.
 - **Shared work versus repeated queries.** Sampling several signals at one time
-  tests batching; sampling at several times tests reuse across queries. Neither
-  substitutes for the other. Distinguish unique base signals from projections
+  tests batching. Sampling at several times tests reuse across queries. Test both. Distinguish unique base signals from projections
   and repeated selection entries when varying selection size.
 - **Encoded size versus logical width.** Compact text can represent wide values.
   Whole-vector, slice and narrow-control queries over the same activity reveal
@@ -100,10 +99,10 @@ Choose comparisons along these independent dimensions:
   selections and intervals reveals whether requesting less output avoids work
   or merely discards its result.
 
-Keep each comparison focused rather than multiplying every dimension into a
-matrix. Bound owned-history ranges unless full materialization is the question,
-and choose sample counts appropriate to slow workloads rather than shortening
-away the expensive operation. Sparse oracle coverage establishes correctness only
+Keep each comparison focused. Do not combine every dimension into a matrix.
+Bound owned-history ranges unless you need to measure full materialization.
+Choose sample counts that suit slow workloads. Do not remove the expensive
+operation to shorten a run. Sparse oracle coverage establishes correctness only
 for its declared observations, not for every interval used in timing. Concrete
 fixtures, paths, bounds and measurement settings belong in `benches/vcd.rs`.
 
@@ -117,8 +116,8 @@ from selected activity without requiring a cross-format comparison.
 
 The [FST backend model](fst-lib.md) explains why section seeking does not
 imply direct lookup at the requested start tick. Equal-width early and late
-windows expose replay from zero; individual and batched samples expose shared
-traversal; sample series measure repeated queries without a history cache.
+windows show the cost of replay from zero. Individual and batched samples show
+shared traversal costs. Sample series measure repeated queries without a history cache.
 Early-stop cases measure the public callback boundary, including any chain or
 frame decompression that precedes that callback. Do not interpret them as the
 cost of decoding only one change.
@@ -126,18 +125,18 @@ cost of decoding only one change.
 Compare scans, candidate times and owned traces on the same narrow window.
 Whole-vector and slice traces isolate projection and result-production costs;
 repeated, overlapping projections distinguish selection entries from unique base
-reads. Full scans use a callback counter; full owned histories are limited to the
+reads. Full scans use a callback counter. Full owned histories are limited to the
 compact recording. Hierarchy and selection cases operate on an already opened
 waveform and do not include decoding values.
 
 A few file/bytes pairs cover opening and prepared queries. Bytes are loaded into
-shared owned storage before timing; opening includes cloning that shared handle
+shared owned storage before timing. Opening includes cloning that shared handle
 but not reading the file into memory. Both modes include waveform destruction in
 open measurements and reuse their selections in prepared-query measurements.
 
 A 64-bit sparse bank and a 64-bit dense bank in one FST distinguish
 selected-slot activity at unique selection sizes 1, 16 and 64, and 256 versus
-4096 ticks at fixed cardinality. Their point cases create fresh selections on
+4096 ticks at a fixed selection size. Their point cases create fresh selections on
 each iteration. This is a selected-query cost, not cold disk or full file opening.
 
 The controlled workloads in `benches/fst/hotpaths.rs` separate selected activity
@@ -165,7 +164,7 @@ and file inputs only. The target requires the `fsdb-lib` feature, the SDK runtim
 and the pinned fixture corpus. See [FSDB setup and limits](fsdb-lib.md) for the
 SDK environment.
 
-Three compact recordings serve different questions: `fsdb0004-compare` covers
+Three compact recordings serve different questions. `fsdb0004-compare` covers
 open, hierarchy traversal/lookup, selection construction, four distinct base
 signals sampled individually, batched or through a prepared selection, and
 bounded full scans, candidate times and owned traces. `fsdb0003-mode-change`
@@ -174,10 +173,10 @@ quiet windows on sparse and constant signals, and repeated point queries.
 `fsdb0009-wide-bus` compares a 1024-bit base, its changing low bit and a stable
 slice on the same window, plus repeated low-bit selection entries. Each recording
 also has an open/drop case. Workload preflight distinguishes active windows from
-quiet windows; independent value correctness belongs to fixture conformance.
+quiet windows. Fixture conformance checks values independently.
 
 The [FSDB backend model](fsdb-lib.md) explains why prepared selections do not
-imply cached SDK histories: every traversal loads selected signals, creates a
+imply cached SDK histories. Every traversal loads selected signals, creates a
 handle and unloads afterward. Persistent-only selections can reuse a bounded
 normalized checkpoint to start a compatible traversal at its saved boundary
 when the file supports view windows. Other files retain full SDK loading and
@@ -185,18 +184,20 @@ prefix traversal, suppressing pre-boundary records before value decoding.
 Cold bit-only points can seek entering state using native point queries; cold
 positive-start windows can seek immediately before their start. These paths
 still load the selected SDK data and may walk backwards to establish a stable
-projection's last change; they do not promise constant work or validation of
+projection's last change. They do not promise constant work or validation of
 skipped prefix records. Mixed/event selections, incompatible reuse and files
 without a usable view window retain chronological traversal. Prepared-query
 warmup can establish a checkpoint, so prepared results are not cold late-entry
 measurements. A final selected-state snapshot can also avoid SDK traversal for
 repeated point reads or resume forward reads. Measurements include SDK work
-whenever a traversal is needed; warmed prepared samples can avoid it entirely. Early callback termination
+whenever a traversal is needed. Warmed prepared samples can avoid it entirely.
+Early callback termination
 cannot avoid loading that precedes the first callback. Selection construction
 alone does not load values. One-shot individual and batched samples both include
-selection creation and owned result destruction; prepared samples exclude
-selection setup and can benefit from selection-local state reuse. Scan and candidate callbacks count records without storing
-them; traces include materialization and destruction. A query-series iteration
+selection creation and owned result destruction. Prepared samples exclude
+selection setup and can reuse state retained by the selection. Scan and candidate
+callbacks count records without storing them. Traces include materialization
+and destruction. A query-series iteration
 contains 8 or 32 point queries by repeating the same eight-timestamp block once
 or four times, with throughput reported in queries rather than returned records.
 The `block8` series IDs distinguish these workloads from earlier series with
@@ -219,8 +220,8 @@ just two post-initial changes. Controlled recordings supplement them in
 
 The history pair separates an unused suffix from an increasingly long selected
 prefix without assuming how much the SDK decompresses internally. Fresh-selection
-early/late scans and a short nonzero window test seek/setup cost; bounded late
-traces and candidates test different output boundaries, and a primed scan
+early and late scans and a short nonzero window test seek and setup costs. Bounded
+late traces and candidates test different output boundaries. A primed scan
 controls for retained-state reuse. Topology cases measure metadata-only open
 and first/second exact lookup with fresh setup. The wide recording also compares
 cold one-shot whole, stable projection and scalar points against a primed repeat. Output-heavy
@@ -230,22 +231,22 @@ in the shared MSB-first value comparison. Duplicate whole vectors exercise
 retained-state copying which one-bit duplicates do not represent. Borrowed
 sample output still includes decoded/retained state; it is not an allocation-free
 backend measurement. The typed file's `top.real32` is a shortreal source variable
-stored as binary64 by its producer; the separate native-real32 recording covers
+stored as binary64 by its producer. The separate native-real32 recording covers
 the four-byte conversion path.
 
-These are workload comparisons, not profiler attribution. SDK memory usage,
-allocation attribution and concurrent lock contention require separate
-measurement methods. A large numerical end tick is not a substitute for many
+These comparisons measure workload costs. They do not identify the costs of
+individual internal operations. Use separate methods to measure SDK memory use,
+allocations and concurrent lock contention. A large numerical end tick is not a substitute for many
 recorded changes. Keep exact paths, bounds and sample settings in the benchmark
 sources, and verify fixture conformance before interpreting timings.
 
 `benches/fsdb/composed.rs` covers temporal sampling, conditional wide payload
-reads and first accepted results; `just conformance-fsdb` checks the consumers
+reads and first accepted results. `just conformance-fsdb` checks the consumers
 outside timing. Fresh cases include open, handle resolution, selection and
-cleanup; prepared cases exclude that setup but still include SDK loading.
+cleanup. Prepared cases exclude that setup but still include SDK loading.
 First-result timing includes query cleanup, not just time to the callback.
-Selective payload access does not imply skipped native decoding; the bounded
-sequential comparison retains owned current values rather than an output list.
+Selective payload access does not imply skipped native decoding. The bounded
+sequential comparison retains owned current values instead of an output list.
 
 ## Local baselines
 
@@ -269,29 +270,29 @@ example from the repository root:
 ./dev cargo bench --locked --features fsdb-lib --bench fsdb -- --baseline fsdb-initial
 ```
 
-Select revisions with host Git and preserve Criterion output between runs;
-worktrees do not share it automatically. Keep baselines in ignored build output,
+Select revisions with host Git and preserve Criterion output between runs.
+Worktrees do not share this output automatically. Keep baselines in ignored build output,
 without committing or archiving them. Changed fixtures or workloads invalidate a
 like-for-like comparison. Repeat an unchanged revision to estimate environmental
-drift; a Criterion regression label alone does not establish a code regression.
+drift. A Criterion regression label alone does not establish a code regression.
 
 ### Fixture revisions
 
 Tests and benchmarks use the same `fixtures/` submodule checkout. Record its full
-commit SHA with measurements; changed artifacts or workload definitions invalidate
+commit SHA with measurements. Changed artifacts or workload definitions invalidate
 a comparison. Local edits inside the submodule are development evidence. Shared
 results require an available fixture commit and the corresponding parent Git entry.
 See [corpus updates](fixtures.md#updating-the-corpus) for setup and validation.
 
 Criterion group names start with `<format>/<fixture>` and add input modes or
 workload names. Changing group IDs requires new baselines. Existing result
-directories can remain; comparisons require matching IDs and corpus revisions.
+directories can remain. Comparisons require matching IDs and corpus revisions.
 
 ## Automation
 
 The existing `just check` compiles benchmark targets with `cargo check --all-targets`.
 The fixture-backed `./dev just ci` gate runs `just bench-smoke` (VCD and FST)
-after conformance; `./dev just ci-fsdb` runs `just bench-smoke-fsdb` after vendor
+after conformance. `./dev just ci-fsdb` runs `just bench-smoke-fsdb` after vendor
 conformance. For a focused local run, use `./dev cargo bench --locked --bench
 fst -- regression --test`, or the corresponding format and feature flags.
 For FSDB, first run conformance, then smoke the feature-gated target:
@@ -301,13 +302,13 @@ For FSDB, first run conformance, then smoke the feature-gated target:
 ./dev cargo bench --locked --features fsdb-lib --bench fsdb -- --test
 ```
 
-Default all-target checks skip FSDB's feature-gated target; SDK-enabled checks
+Default all-target checks skip FSDB's feature-gated target. SDK-enabled checks
 must compile it explicitly. Smoke timings are not regression evidence. A proprietary
-target must not prevent unrelated public targets from compiling; explicitly
-requesting that target without its required fixtures or runtime must fail clearly.
+target must not prevent unrelated public targets from compiling. An explicit
+request for that target must fail clearly if its fixtures or runtime are missing.
 Missing or invalid fixture inputs fail before measurement.
 
 Keep Criterion's runner, results and comparisons. Custom history stores,
 thresholds, dashboards and mandatory cross-format datasets are outside this
-contract, as are memory, allocation and RSS profiling. Put notes in ignored `tmp/`;
-use tracked WIP only when the investigation must travel with a branch.
+contract, as are memory, allocation and RSS profiling. Put notes in ignored `tmp/`.
+Use tracked WIP only when the investigation must travel with a branch.

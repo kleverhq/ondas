@@ -1,7 +1,7 @@
 # Public API test map
 
-[Rustdoc](../src/lib.rs) defines contracts; [testing.md](testing.md) explains test
-strategy. This map identifies executable checks, not complete branch coverage.
+[Rustdoc](../src/lib.rs) defines contracts. [testing.md](testing.md) explains test
+strategy. This map identifies executable checks. It does not claim complete branch coverage.
 Test names are relative to the listed file's test module.
 
 ## Self-contained checks
@@ -10,23 +10,23 @@ Run `./dev --exec-only cargo test --locked --lib` in a running development
 container. Shared queries use the private `Waveform::memory` helper and exercise
 public query results without format decoding.
 
-| Public surface / contract area | Tests and observations |
+| API or contract | Tests and observations |
 | --- | --- |
-| Opening functions, `read_metadata`, `Format`, opening `Error` categories | [`src/waveform.rs`](../src/waveform.rs): `opening_errors_distinguish_detection_selection_and_io`; `detection_prefers_content_and_falls_back_to_case_insensitive_extensions` checks recognition precedence, extension hints, explicit selection, and I/O rejection. `read_metadata_preserves_vcd_detection_and_values` checks content selection and metadata parity; fixture-gated `fst_metadata_matches_open` checks FST parity; SDK-gated `fsdb_metadata_without_hierarchy` checks FSDB parity; `fsdb_conflicting_scope_diagnostic_and_metadata_bypass` independently checks header metadata despite full-open rejection. |
+| Opening functions, `read_metadata`, `Format`, opening `Error` categories | [`src/waveform.rs`](../src/waveform.rs): `opening_errors_distinguish_detection_selection_and_io`; `detection_prefers_content_and_falls_back_to_case_insensitive_extensions` checks recognition priority, extension hints, explicit selection, and I/O rejection. `read_metadata_preserves_vcd_detection_and_values` checks content selection and matching metadata. Fixture-gated `fst_metadata_matches_open` checks matching FST metadata. SDK-gated `fsdb_metadata_without_hierarchy` checks matching FSDB metadata. `fsdb_conflicting_scope_diagnostic_and_metadata_bypass` independently checks header metadata despite full-open rejection. |
 | `Waveform::metadata`, `Metadata` optional fields and comments | `metadata_preserves_optional_fields_and_comment_order` in `src/waveform.rs` checks normalized metadata access, absent fields, ordered duplicate/empty comments, and iterator length. It does not test reader extraction. |
 | `Hierarchy` traversal/lookups/aliases; `Scope`, `Variable`, enumeration and declaration metadata | [`src/hierarchy/tests.rs`](../src/hierarchy/tests.rs): `hierarchy_views_aliases_and_metadata`, `root_declarations_duplicate_scopes_and_extreme_ranges`; includes cloned hierarchy lifetime, root declarations, duplicate scopes, original range endpoints, and enumeration labels. |
 | `Scope::name_was_escaped`, `Variable::name_was_escaped`, `Variable::reader_name` | `escaped_names_preserve_spelling_without_changing_identity` in `tests/vcd_native.rs` checks scopes, aliases, separators and a literal backslash; fixture-gated `fst_sparse_dense_identity_and_parity` checks escaped FST declarations, alias identity and file/bytes sample parity without an installed converter. `escaped_scalar_suffix_preserves_ambiguous_lookup` in `src/backends/fsdb.rs` checks retained SDK spellings with attached and separated suffixes, and non-FSDB readers return no reader name. |
-| `Scope::is_hidden` | `hidden_flag_is_local_and_does_not_filter_hierarchy` in `src/hierarchy/tests.rs` checks local flags, parent inspection and unfiltered lookup. SDK-gated `fsdb_hidden_scopes_remain_accessible` checks real hidden and visible scopes. |
-| `Variable::signedness`, `Variable::logic_domain`, `Signedness`, `LogicDomain` | `interpretation_belongs_to_declarations_not_shared_histories` in `src/hierarchy/tests.rs` constructs metadata without a reader; signed/unsigned aliases, two/four/nine-state domains, unknown and non-integral declarations. FST `interpretation_requires_explicit_type_evidence` checks conservative mapping; native VCD `missing_interpretation_does_not_prevent_queries` checks absent metadata remains usable. |
+| `Scope::is_hidden` | `hidden_flag_is_local_and_does_not_filter_hierarchy` in `src/hierarchy/tests.rs` checks local flags, parent inspection and unfiltered lookup. SDK-gated `fsdb_hidden_scopes_remain_accessible` checks hidden and visible scopes in a real file. |
+| `Variable::signedness`, `Variable::logic_domain`, `Signedness`, `LogicDomain` | `interpretation_belongs_to_declarations_not_shared_histories` in `src/hierarchy/tests.rs` constructs metadata without a reader. It covers signed and unsigned aliases, two-, four- and nine-state domains, and declarations with unknown or non-integral interpretation. FST `interpretation_requires_explicit_type_evidence` checks mapping that requires explicit evidence. native VCD `missing_interpretation_does_not_prevent_queries` checks that queries work with absent metadata. |
 | Exact paths, selectors, `LookupError`, `PathError`, `PathFormatError` | `exact_lookup_precedes_selectors`, `paths_round_trip_and_keep_exact_components`, `quoted_json_escapes_and_surrogates`, `path_errors_have_byte_offsets`, `exact_unicode_paths_do_not_normalize_names`; covers parsed/component-built paths, `FromStr`, canonical/Verilog spelling, byte offsets, ambiguity, signal-less declarations, and distinct Unicode component sequences. |
 | `Signal` identity/projection methods, `Encoding`, `SliceError`, `BitRange` | `signals_compose_normalize_and_validate`, `exact_lookup_precedes_selectors`, `unrepresentable_range_width_panics` in `src/hierarchy/tests.rs`; equality, full-width normalization, relative slicing, base aliases, bounds, non-bit rejection, foreign handles, and range overflow. |
 | `Time`, `TimeRange`, `TimeSpan`, `Timescale`, `TimeUnit` | [`src/time.rs`](../src/time.rs): `inclusive_ranges_preserve_bounds`, `exact_time_metadata`; inclusive/reversed/unbounded ranges, zero and maximum ticks, exact units/factors, and const evaluation. Query effects are checked separately below. |
 | `Bits`, `BitsRef`, `Logic`, `Value`, `ValueRef` | [`src/value.rs`](../src/value.rs): `ascii_states_and_iteration`, `slices_and_owned_storage`, `values_round_trip_and_compare`, `real_identity_and_conversion_preserve_bits`, `identity_distinguishes_every_logic_state`; nine-state ordering/indexing, empty vectors, non-byte-aligned slices, source-independent ownership, strings, real payloads, events, and internal value comparison rules. |
 
-The following tests are in [`src/query/tests.rs`](../src/query/tests.rs), through
+The following tests in [`src/query/tests.rs`](../src/query/tests.rs) use
 `Waveform` one-shot methods and reusable `Selection` queries:
 
-| Public surface / contract area | Tests and observations |
+| API or contract | Tests and observations |
 | --- | --- |
 | `sample`, `samples`, `visit_samples`, `Sample` / `SampleRef` | `samples_hold_final_tick_state_and_count_every_event`, `genuine_tick_zero_events_and_borrowed_sample_breaks_survive`; missing persistent state, exact event multiplicity, final same-tick state, selection order/duplicates, result signal access, and borrowed early stop. |
 | `select`, selection signal/hierarchy access, `scan`, `traces` | `scan_emits_initials_first_and_keeps_duplicate_entries`, `multiple_initials_follow_selection_order_not_history_order`; distinct histories enter in selection order, duplicate entries retain observations, events/missing histories have no initial, and all initials precede changes. Cross-signal order within a tick is not required. |
@@ -36,13 +36,13 @@ The following tests are in [`src/query/tests.rs`](../src/query/tests.rs), throug
 | `Selection::query`, `QueryContext`, indexed subset reads | `tests/query_contract.rs` exercises the public API on real VCD input: adjacent repeated reads, conditional subsets, owned retention, validation, cancellation and caller errors. Public QueryContext Rustdoc rejects escaping contexts and samples. Library tests `query_reads_nondrivers_between_distant_candidates`, `query_samples_match_normalized_points_for_all_value_classes` and `query_never_publishes_incomplete_ticks_and_empty_drivers_do_not_read` check projections, exact identity, missing/event states, source gaps and failure boundaries. |
 | `Selection::scan_each` indexed slots | Native VCD `indexed_scan_identifies_alias_projection_and_event_slots` checks input indices, initial ordering, aliases, repeated/overlapping projections and aggregate counts. `indexed_and_plain_scans_share_empty_break_and_error_behavior` checks empty selections, immediate break and late errors through both visitors. |
 | Temporal query composition | `tests/query_composition.rs` uses a small public-API consumer with repeated adjacent reads, candidate confirmation, current control, caller-chosen event/payload observation time and staged output. Literal results cover events at 5/19 versus candidates 10/20, baseline/current/prior distinctions, simultaneous/shared drivers, alias/projection slots, excursions, permutations, extra candidates, bounded acceptance, rejected prefixes, no matches and a failed final payload read. |
-| Runnable public usage | Crate-level Rustdoc runs tiny VCD examples for bounded indexed export (aliases, projections, normalized changes and stopping), simpler point/batch reads, missing interpretation metadata and conditional activity/control/payload sampling. Conditions choose adjacent read times; only accepted payload is retained after waveform destruction. |
-| Streaming bounds and lifecycle | `src/query/engine/streaming_tests.rs` uses the incrementally generated private reader to count actual slot high-water state, raw advances, read starts, base subsets and resource release. Fixed-width runs, rejected prefixes, repeated adjacent reads and a logical early-stop budget detect buffering/replay regressions. `sparse_active_finalization_visits_only_touched_slots` counts one setup scan separately from real comparison/commit loop visits, checking a net-equal excursion, delayed quiet slot and previous-tick event multiplicity. Source/consumer failure cases preserve completed observations and allow fresh queries; caller payload delivery is distinguished from fallback decoding. QueryContext, SampleRef and indexed ScanRef escape examples are compile-fail Rustdoc tests. |
-| Independent semantic facade reference | `src/waveform/semantics_tests.rs` compares explicitly authored normalized histories across point/batch/prepared/borrowed samples, traces, both scan visitors and composed reads. It covers all logic states, exact real bits/strings, aliases/duplicates/projections, event gaps, nonzero start, empty/inclusive/quiet/after-EOF ranges, cross-signal permutations, extra candidate filtering, zero and maximum ticks. Common reader pool windows also compare composed reads against independent oracle derivation in every tested input mode. |
+| Runnable public usage | Public Rustdoc runs tiny VCD examples for bounded indexed export (aliases, projections, normalized changes and stopping), simpler point/batch reads, missing interpretation metadata and conditional activity/control/payload sampling. Conditions choose adjacent read times; only accepted payload is retained after waveform destruction. |
+| Streaming bounds and lifecycle | `src/query/engine/streaming_tests.rs` uses the incrementally generated private reader to count the maximum retained slot state, raw advances, read starts, base subsets and resource release. Fixed-width runs, rejected prefixes, repeated adjacent reads and a logical early-stop budget detect buffering/replay regressions. `sparse_active_finalization_visits_only_touched_slots` counts one setup scan separately from comparison and commit loop visits, checking a net-equal excursion, delayed quiet slot and previous-tick event multiplicity. Source and consumer failure cases preserve completed observations and allow fresh queries. Counters separate caller payload delivery from fallback decoding. QueryContext, SampleRef and indexed ScanRef escape examples are compile-fail Rustdoc tests. |
+| Independent semantic facade reference | `src/waveform/semantics_tests.rs` compares manually specified normalized histories across point/batch/prepared/borrowed samples, traces, both scan visitors and composed reads. It covers all logic states, exact real bits/strings, aliases/duplicates/projections, event gaps, nonzero start, empty/inclusive/quiet/after-EOF ranges, cross-signal permutations, extra candidate filtering, zero and maximum ticks. Common reader pool windows also compare composed reads against independent oracle derivation in every tested input mode. |
 | Legacy oracle derivation | `tests/support/normalized_oracle.rs` tests net-equal excursions, first unknown establishment, event counts, unchanged serialized evidence, NaN payload/timestamp gaps, chained earlier-window timestamp proofs and typed overlap contradictions without production code. `missing_payload_and_conflicting_evidence_fail_preflight` rejects absent artifacts and contradictory observations. `version_one_validation_does_not_accept_aggregate_value_assertions` preserves the v1 format and checks proven timestamp enforcement; conformance compares indexed records per input slot. |
 | Private completed-tick traversal | `completed_tick_callback_reads_before_and_final_state_and_can_fail` in `src/query/engine.rs` checks simultaneous entering/final state, event aggregates, fallible callback propagation, commit boundaries and restart through the existing memory reader. |
 | Final persistent tick states | `final_tick_excursions_preserve_projected_change_times`; whole-value and slice excursions, delayed HDL-unknown establishment, duplicate projections, cross-signal permutations, EOF holding and point-range entering timestamps. |
-| Exact real identity in retained histories | `real_histories_retain_exact_representations`; distinct NaN payloads and signed zeros remain observable in samples, traces and entering state; identical writes do not advance known change times. |
+| Exact real identity in retained histories | `real_histories_retain_exact_representations`; Distinct NaN payloads and signed zeros remain observable in samples, traces and entering state. Identical writes do not advance known change times. |
 | Owned persistence across callbacks, queries, and waveform destruction | `borrowed_mixed_values_remain_owned_after_queries_and_source_drop`; retained sample/scan copies and owned traces/samples preserve real, Unicode/NUL string, and nine-state values against explicit expectations. |
 | `ControlFlow` completion/break and query errors | `breaks_stop_the_reader_and_late_errors_preserve_prior_callbacks`, `incomplete_first_tick_is_not_published_on_error`, `invalid_and_unsupported_signals_fail_before_queries`; scan/candidate early stop, late scan observations, failed owned queries, no sample callbacks on read failure, and foreign/unsupported handles. |
 
@@ -52,7 +52,7 @@ The following tests are in [`src/query/tests.rs`](../src/query/tests.rs), throug
 observations. `full_fst_pool` and `full_vcd_pool` discover all artifacts of their
 format. `pool_queries` batches listed samples/windows and reports each case,
 without a failure allowlist.
-Listed declarations are matched from public traversal; focused cases additionally
+The runner matches listed declarations through public traversal. Focused cases also
 exercise exact lookup and alias iterators. Native kind normalization has regressions
 `real_parameter_kind_is_canonical` and `compound_scope_kinds_are_canonical` in
 [`src/backends/fst.rs`](../src/backends/fst.rs). Full-pool metadata assertions also
@@ -64,10 +64,10 @@ checks automatic opening, `Waveform::format` / `backend`, and logical source nam
 `counter_slice_projections_file` / `_bytes` and `foreign_handle_validation_file` /
 `_bytes` provide targeted reader-backed checks. These paths require installed
 fixtures and are not executed by the library-unit command above. A zero-start
-chronological FSDB point reference has no native point calls, while the cold
-sample must seek; a separate authored value check guards the reference. Cold
+chronological FSDB point reference makes no native point calls. The cold sample
+must seek. A separate check with manually specified values verifies the reference. Cold
 window and warm-repeat tests snapshot native traversal counters immediately
-around the subject operation; they count records delivered to Rust, not all SDK
+around the measured operation. They count records delivered to Rust, not all SDK
 work.
 
 [`src/backends/fst.rs`](../src/backends/fst.rs) also has self-contained adaptation
@@ -87,5 +87,5 @@ hardening or vendor behavior. Oracles cover supplied observations, not every
 content of an opened file. First-observation `changed_at` may be unknown, and
 candidate times may include extras. FST's first-tick event limitation in
 [crate rustdoc](../src/lib.rs) does not apply to genuine memory-reader events.
-Constructing reserved error variants would not exercise a reader path, so tests
-do not count that as coverage.
+Constructing reserved error variants does not exercise a reader path. Tests do
+not count this as coverage.

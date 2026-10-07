@@ -1,6 +1,6 @@
 use crate::{Format, HierarchyPath, Signal, Time};
 
-/// An error encountered while parsing a hierarchy path.
+/// An error that occurs while parsing a hierarchy path.
 ///
 /// Syntax diagnostics are separate from file and backend failures. The offset is
 /// a byte position in the input, not a character index.
@@ -13,7 +13,7 @@ pub struct PathError {
     pub message: String,
 }
 
-/// An error encountered while formatting a hierarchy path for Verilog.
+/// An error that occurs while formatting a hierarchy path for Verilog.
 #[derive(Debug, Clone, thiserror::Error)]
 #[non_exhaustive]
 pub enum PathFormatError {
@@ -25,7 +25,7 @@ pub enum PathFormatError {
     },
 }
 
-/// An error encountered while creating a signal bit slice.
+/// An error that occurs while creating a signal bit slice.
 #[derive(Debug, Clone, thiserror::Error)]
 #[non_exhaustive]
 pub enum SliceError {
@@ -54,11 +54,12 @@ pub enum SliceError {
     },
 }
 
-/// An error encountered while resolving hierarchy metadata.
+/// An error that occurs while resolving hierarchy metadata.
 ///
-/// Missing, ambiguous, and signal-less declarations are normal metadata
-/// resolution outcomes, not backend failures. Invalid selectors retain separate
-/// path and slice diagnostics rather than becoming [`Error::Backend`].
+/// Metadata lookup can find a missing or ambiguous declaration, or one without a
+/// signal. These are normal lookup outcomes, not backend failures. Invalid
+/// selectors return separate path and slice errors. They do not become
+/// [`Error::Backend`].
 #[derive(Debug, Clone, thiserror::Error)]
 #[non_exhaustive]
 pub enum LookupError {
@@ -102,21 +103,22 @@ pub enum LookupError {
     ),
 }
 
-/// An error encountered while opening or querying a waveform.
+/// An error that occurs while opening or querying a waveform.
 ///
-/// Categories distinguish recovery actions: I/O may require checking the path,
-/// permissions, or filesystem; unavailable backends may require a runtime library
-/// or license; unsupported formats and input kinds require a different reader.
+/// Error categories help you choose a recovery action. For I/O errors, check the
+/// path, permissions, or filesystem. An unavailable backend may need a runtime
+/// library or license. Unsupported formats and input kinds need a different reader.
 /// [`LookupError`] and [`SliceError`] separately describe metadata resolution and
 /// projection errors.
 ///
 /// # Failure contract
 ///
-/// Failures reported by a backend return this type. Upstream reader panics are
-/// not intercepted; see the [reader limits](crate#reader-details).
-/// Empty results are not error sentinels: no known persistent state is [`Sample::Missing`](crate::Sample::Missing),
-/// no event is an occurrence count of zero, and no changes is an empty trace
-/// change list. Invalid handles and unsupported values remain errors.
+/// Failures reported by a backend return this type. Ondas does not intercept
+/// upstream reader panics. See the [reader limits](crate#reader-details).
+/// Empty results do not represent errors. If no persistent state is known, the
+/// result is [`Sample::Missing`](crate::Sample::Missing). If no event is observed,
+/// the occurrence count is zero. If no changes occur, the trace change list is empty. Invalid
+/// handles and unsupported values remain errors.
 ///
 /// A scan may have delivered observations before a late backend error. Owned
 /// sample and trace queries return no partial result.
@@ -198,7 +200,7 @@ pub enum Error {
         len: usize,
     },
 
-    /// A query-context read is outside the current/preceding tick window.
+    /// A query-context read is outside the current and preceding tick window.
     #[error(
         "cannot read {requested:?} in a query at {current:?}; only the current tick and its checked predecessor are available"
     )]
