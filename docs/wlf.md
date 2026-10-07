@@ -2,16 +2,16 @@
 
 WLF is the Questa/ModelSim waveform format. A reader may use a vendor library or
 an independent implementation. Format, reader, SDK version and runtime settings
-are separate choices; `vendor-wlf` is an example name, not a reserved backend.
+are separate choices. `vendor-wlf` is an example name, not a reserved backend.
 
-Expose the read-only [common model](model.md), not a vendor database API. Handles,
+Expose the read-only [common model](model.md). Keep the vendor database API private. Handles,
 callbacks, buffer layouts and native errors stay private. Record support and
-limits from verified integration evidence; not every stored object is an Ondas
+limits from verified integration evidence. Not every stored object is an Ondas
 signal.
 
 ## Mapping and resources
 
-Keep declarations separate from histories, preserving aliases, ranges, constants,
+Keep declarations separate from histories. Preserve aliases, ranges, constants,
 type metadata and unsupported classes. Map time to absolute ticks without adding
 a public delta-cycle coordinate.
 
@@ -25,12 +25,12 @@ libraries or licenses are availability errors, not malformed waveforms.
 Use an ignored local profile for vendor installations, network settings and
 licenses under [automation policy](automation.md). Keep private paths, SDK files
 and license topology out of public source/images. Separate SDK-dependent outputs
-across versions; prefer runtime discovery at opening over build-time discovery.
+across versions. Prefer runtime discovery at opening over build-time discovery.
 
 Test the actual adapter through [conformance](testing.md) and external
 [fixtures](fixtures.md). Preserve provenance and assert only established
 observations. A large vendor mock is not a substitute for real-artifact validation.
 
 Explicit WLF suites fail on missing runtimes or fixtures and remain separate from
-public CI. Performance cases use a WLF target; compare readers on the same
+public CI. Performance cases use a WLF target. Compare readers on the same
 artifact, parameters and [measurement boundaries](benchmarking.md).

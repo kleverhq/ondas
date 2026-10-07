@@ -6,19 +6,20 @@ use std::fmt;
 /// only during that callback. Use [`Self::to_owned`] to retain a value. Views from
 /// [`Value::as_ref`], [`Initial::value`](crate::Initial::value), or
 /// [`Change::value`](crate::Change::value) instead borrow owned storage and remain
-/// valid for that borrow; not every view is callback-only.
+/// valid for that borrow. Some views therefore remain valid outside callbacks.
 ///
-/// Bit-vector signedness is a declaration interpretation, not a separate value
-/// variant. Persistent histories expose final recorded states at source ticks,
-/// with at most one net change per selection entry and tick. Intermediate
-/// same-tick excursions are not exposed. Events carry observed per-tick counts,
-/// not persistent state or an ordering of individual occurrences.
+/// Bit-vector signedness comes from the declaration. It does not add a value
+/// variant. Persistent histories show final recorded states at source ticks,
+/// with at most one net change per selection entry and tick. They do not show
+/// intermediate changes within a tick. Events carry observed per-tick counts.
+/// They have no persistent state and do not show the order of individual occurrences.
 ///
-/// Queries detect persistent net changes by comparing all logic states distinctly,
-/// strings by exact contents, and reals by their binary64 bit patterns. Signed zeros and
-/// different NaN patterns therefore differ. This preserves the representation
-/// supplied by the reader, not source precision or NaN payloads already lost
-/// during decoding. Numerical equality remains caller policy.
+/// Queries detect persistent net changes by comparing representations. Each logic
+/// state is distinct. Strings compare by exact contents. Reals compare by their
+/// binary64 bit patterns. Signed zeros and different NaN patterns therefore differ.
+/// This preserves the representation supplied by the reader. It cannot recover
+/// source precision or NaN payloads lost during decoding. The caller defines
+/// numerical equality.
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub enum ValueRef<'a> {
@@ -37,7 +38,7 @@ pub enum ValueRef<'a> {
         /// The string payload.
         &'a str,
     ),
-    /// An aggregate of event observations at one tick.
+    /// A total count of event observations at one tick.
     ///
     /// Scan and trace records have positive counts. Counts reflect reader
     /// observations, including [reader limitations](crate#reader-details),
@@ -50,7 +51,7 @@ pub enum ValueRef<'a> {
 
 /// An owned waveform value suitable for long-term storage.
 ///
-/// [`ValueRef::to_owned`] retains a borrowed value independently of its source;
+/// [`ValueRef::to_owned`] retains a borrowed value independently of its source.
 /// [`Self::as_ref`] borrows this owner's storage. See [`ValueRef`] for persistent
 /// value, signedness, and event semantics.
 #[derive(Debug, Clone)]
@@ -71,7 +72,7 @@ pub enum Value {
         /// The string payload.
         Box<str>,
     ),
-    /// An aggregate of event observations at one tick; see [`ValueRef::Event`].
+    /// A total count of event observations at one tick. See [`ValueRef::Event`].
     Event {
         /// The number of observed occurrences at this tick.
         occurrences: u64,
@@ -165,10 +166,10 @@ impl Logic {
 /// A borrowed, opaque view of a bit-vector value.
 ///
 /// Index zero is the least-significant, rightmost bit. [`Display`](fmt::Display)
-/// emits a most-significant-to-least-significant logic string using lowercase
-/// letters. Storage is opaque and can borrow native backend data without an
-/// intermediate string. Views can also borrow [`Bits`] storage;
-/// callback-supplied views must be copied with [`Self::to_owned`] to outlive the call.
+/// writes a logic string from the most-significant bit to the least-significant
+/// bit, using lowercase letters. Storage is opaque and can borrow native backend
+/// data without an intermediate string. Views can also borrow [`Bits`] storage.
+/// Copy callback views with [`Self::to_owned`] to keep them after the call.
 #[derive(Debug, Clone, Copy)]
 pub struct BitsRef<'a> {
     data: &'a [u8],

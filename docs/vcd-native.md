@@ -2,11 +2,11 @@
 
 `vcd-native` is Ondas's VCD backend. It uses its own Rust parser, with no external
 parser library or conversion to another format. It accepts files and shared owned
-bytes. IEEE 1364-2001 clause 18.2 is the baseline; the producer extensions below
+bytes. IEEE 1364-2001 clause 18.2 is the baseline. The producer extensions below
 are compatibility choices.
 
 The implementation is private. [Rustdoc](https://docs.rs/ondas) describes reader
-selection and public observation contracts; this document covers the backend's
+selection and public observation contracts. This document covers the backend's
 data flow, storage and limits.
 
 ## How it works
@@ -20,15 +20,15 @@ hierarchy, maps identifier codes to shared signal storage and records the body
 start offset. It then reads every body record to validate the source, determine
 time bounds and settle encodings, including real declarations carrying strings.
 Only then does it return a `Waveform`. On sufficiently large Unix file inputs,
-the opening pass validates independent timestamp-delimited chunks with positional
-reads from the same file; ambiguous boundaries or inconsistent chunks fall back
-to the serial pass. Bytes inputs use the serial pass. The declarations and
-mappings survive; the sequence of value records does not.
+the opening pass validates independent chunks bounded by timestamps. It uses
+positional reads from the same file. Ambiguous boundaries or inconsistent chunks
+fall back to the serial pass. Bytes inputs use the serial pass. The reader retains
+declarations and mappings. It does not retain the sequence of value records.
 
 ### Queries
 
 Without reusable selected state, records before a window `[start, end]`
-establish entering state; records inside the window produce changes. A sample
+establish entering state. Records inside the window produce changes. A sample
 likewise needs every record at its requested tick for final state or event count.
 On large Unix files that passed split validation at opening, eligible cold
 bit/real selections can summarize only their selected prefix concurrently
@@ -50,25 +50,25 @@ selection's replay state.
 
 A reusable selection retains one private parser position and the entering/final
 selected state at its last completed tick. Repeated and forward reads can resume
-there; earlier requests use a boundary checkpoint when eligible, otherwise they
-replay from the body. Session reuse
-also requires the retained tick to precede the session start, so previous-tick
-events remain exact. Failed or stopped traversals discard reuse; a new selection
+there. Earlier requests use a boundary checkpoint when eligible. Otherwise, they
+replay from the body. Session reuse also requires the retained tick to precede
+the session start. This preserves exact previous-tick event counts. Failed or
+stopped traversals discard retained state. A new selection
 always starts without retained values. No history or candidate list is cached.
 
 A selection also retains at most one query-boundary checkpoint: normalized
 selected state strictly before the requested range, together with the position
 before its next selected record. Sessions place this boundary at `start - 1`
 to preserve preceding-tick events. Repeating a late window can then avoid its
-prefix; an eligible first use summarizes that prefix in bounded parallel chunks.
-A changed boundary replaces the checkpoint; requests before it may replay
+prefix. An eligible first use summarizes that prefix in bounded parallel chunks.
+A changed boundary replaces the checkpoint. Requests before it may replay
 sequentially.
 The checkpoint includes dump-block context, not merely a timestamp/offset.
 
 Checkpoint storage is capped at 4 MiB, counting the snapshot, slot array and
 owned value bytes (excluding allocator overhead). An oversized snapshot is not
 retained. This cap is additional to the working selection and last replay window;
-there is no time or value index built during opening. The diagram above shows
+opening builds no time or value index. The diagram above shows
 the serial uncached path.
 
 The parser and replay loop are in [`src/backends/vcd.rs`](../src/backends/vcd.rs).
@@ -78,23 +78,23 @@ Shared observation logic is in [`src/query/engine.rs`](../src/query/engine.rs).
 
 | Choice | Consequence |
 |---|---|
-| Full validation at opening | Opening reads the whole source before any query can run. Large Unix files can split this work across cores without retaining value histories; encodings, comments and time bounds are merged in source order. |
-| On-demand selected prefix summaries | Large Unix files can process independent prefix chunks concurrently for eligible cold point or window queries; the target window is still replayed in order. Ineligible queries replay from the body. |
-| Bounded full-range batch replay | Large Unix files can parse selected records in parallel from the original file handle and send batches in source order. Up to approximately 192 MiB of selected records may be in flight across workers (excluding allocator overhead), even for a streaming scan; strings and oversized declared widths fall back to serial replay. The parser still reads the full text, and the opening pass is unchanged. |
+| Full validation at opening | Opening reads the whole source before any query can run. Large Unix files can split this work across cores without retaining value histories. Encodings, comments and time bounds are merged in source order. |
+| On-demand selected prefix summaries | Large Unix files can process independent prefix chunks concurrently for eligible cold point or window queries. The target window is still replayed in order. Ineligible queries replay from the body. |
+| Bounded full-range batch replay | Large Unix files can parse selected records in parallel from the original file handle and send batches in source order. Up to approximately 192 MiB of selected records may be in flight across workers (excluding allocator overhead), even for a streaming scan. Strings and oversized declared widths fall back to serial replay. The parser still reads the full text, and the opening pass is unchanged. |
 | Batch selected signals | One traversal serves the batch. A reusable selection also retains bounded projected values and event counts for replay reuse. |
 | No history cache or time index | A selection retains the last replay window and at most one bounded range-boundary snapshot. The identifier map alone cannot seek to a tick. |
-| Buffered file input and reusable body token buffers | Whitespace and its following token are read together. Dense printable identifier codes use a bounded direct table; sparse codes use the identifier map. The reader does not load the entire file into memory. Bytes input retains the caller's shared source allocation. |
+| Buffered file input and reusable body token buffers | Whitespace and its following token are read together. Dense printable identifier codes use a bounded direct table. Sparse codes use the identifier map. The reader does not load the entire file into memory. Bytes input retains the caller's shared source allocation. |
 | Streaming observations | Working storage includes declarations, identifier maps, parser buffers, bounded transient full-range batches, and entering/pending values and event counts per selection entry. Wide values still need space. Owned traces also retain their requested output. |
 
 Source bit digits are validated before selection filtering, including high digits
-that will be truncated. Padding/truncation then constructs the selected vector
+that will be truncated. Padding or truncation then constructs the selected vector
 from validated states without rescanning its full declared width. Selected
-persistent values still need materialization for later accepted reads; reducing
+persistent values still need materialization for later accepted reads. Reducing
 token allocation does not imply skipping source bytes or physical I/O.
 
 Prepared repeated samples and windows can measure retained-state reuse rather
 than parsing. Fresh-selection benchmark cases include the first prefix and
-snapshot construction; opening remains a separate operation.
+snapshot construction. Opening remains a separate operation.
 
 The reader uses no persistent checkpoint database, mmap or complete value
 history. Its large-file parallel passes hold bounded transient selected state,
@@ -107,13 +107,14 @@ Sources must remain unchanged while open.
 
 - Identifier codes are printable, contextual tokens, not numbers or commands.
   Hierarchy components preserve UTF-8 spelling.
-- Compatible aliases share storage. Identical repeated declarations merge;
-  conflicting names with different identifiers remain ambiguous.
+- Compatible aliases share storage. Identical repeated declarations merge.
+  Conflicting names with different identifiers remain ambiguous.
 - Separated bit ranges preserve direction and must agree with width. Attached
   `[msb:lsb]` suffixes are ranges only when their width agrees. Literal array
   indices and escaped brackets stay in names.
-- Known SV/VHDL kinds map to canonical hyphenated names. Optional producer attributes are
-  recognized but do not populate rich type metadata or expose simulator types.
+- Known SV/VHDL kinds map to canonical hyphenated names. The reader recognizes
+  optional producer attributes. It does not use them to populate rich type metadata
+  or expose simulator types.
 
 ### Values
 
@@ -127,7 +128,7 @@ Sources must remain unchanged while open.
 
 ### Time, metadata and text
 
-- Timestamps are exact integral decimal u64 ticks, including `.0` forms.
+- Timestamps are exact integer decimal u64 ticks, including `.0` forms.
   Decimal timescales normalize to an exact supported factor/unit without
   floating-point rounding.
 - Metadata preserves internal whitespace, present-empty fields and comment order.
@@ -163,7 +164,7 @@ oracle excludes those ticks and non-bit blackout windows.
 Opening fails on unknown significant commands or identifiers, incompatible
 storage aliases, invalid values, incomplete scopes/dump blocks and inputs without
 declarations. Fractional, backwards and overflowing timestamps also fail.
-Malformed input never becomes a successful empty waveform.
+The reader does not turn malformed input into a successful empty waveform.
 
 ## Verification
 
@@ -174,5 +175,5 @@ the pinned fixture submodule and checks listed metadata, declarations, samples a
 in file/bytes modes. Expectations come from the independent instrumented
 libgtkwave oracle, not this backend.
 
-Sparse agreement is not exhaustive certification. See [testing](testing.md) and
+Agreement with sparse observations does not prove all behavior. See [testing](testing.md) and
 [fixtures](fixtures.md) for the runner and oracle contracts.

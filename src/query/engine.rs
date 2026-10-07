@@ -95,13 +95,13 @@ impl QueryContext<'_> {
     /// entire subset and sampling time are validated before any callback.
     /// Empty subsets produce no callbacks. Invalid indices return
     /// [`Error::InvalidSelectionIndex`]. Only the current absolute tick and the
-    /// tick immediately before it (`t - 1`, when `t > 0`) are valid; other times
+    /// tick immediately before it (`t - 1`, when `t > 0`) are valid. Other times
     /// return [`Error::InvalidQueryTime`].
     ///
-    /// Persistent values and change times follow [`Selection::samples`]; events
+    /// Persistent values and change times follow [`Selection::samples`]. Events
     /// are exact-tick counts, including zero. A visitor borrows each sample only
     /// during its callback. Its `Break` stops this subset visit and is returned
-    /// unchanged; the caller decides whether to stop the outer query. Errors
+    /// unchanged. The caller decides whether to stop the outer query. Errors
     /// propagate unchanged, without rolling back earlier successful callbacks.
     pub fn visit_samples<B>(
         &self,
@@ -334,10 +334,10 @@ impl<'w> Selection<'w> {
     /// # Candidate times
     ///
     /// Candidates are increasing and unique in the inclusive range. A candidate
-    /// need not be an actual change: identical writes or changes hidden by a
+    /// need not be an actual change. Identical writes or changes hidden by a
     /// projection may produce extra callbacks. Callers must confirm their conditions.
     /// Empty drivers or an empty range produce no callbacks. Driver indices are
-    /// validated before reading; invalid indices return [`Error::InvalidSelectionIndex`].
+    /// validated before reading. Invalid indices return [`Error::InvalidSelectionIndex`].
     ///
     /// On successful completion without an early stop, every timestamp at which
     /// a full normalized scan of the driver entries in the same range would emit
@@ -350,18 +350,19 @@ impl<'w> Selection<'w> {
     ///
     /// Each context exposes only its completed absolute tick and the tick
     /// immediately before it (`t - 1`, when `t > 0`), even if that preceding tick
-    /// lies before the range start. No unfinished tick is published. Only requested samples are delivered to read visitors; a
-    /// sequential fallback may decode records for all selected histories and
-    /// traverse the prefix once to establish entering state. It never replays
-    /// per operand or collects all candidates. Additional query state is bounded
-    /// by selection and value sizes, excluding input, reader/index and SDK residency.
+    /// lies before the range start. No unfinished tick is published. Read visitors
+    /// receive only requested samples. A sequential fallback may decode records for
+    /// all selected histories and traverse the prefix once to establish entering
+    /// state. It never replays per operand or collects all candidates. Additional query state is bounded
+    /// by selection and value sizes. This bound excludes memory used by the input,
+    /// reader, index and SDK.
     ///
     /// # Stopping and errors
     ///
     /// Callback `Break` stops delivery immediately and is returned unchanged.
     /// Callback/read errors propagate without rolling back earlier observations.
     /// The reader may decode one next-tick record to complete a tick before
-    /// invoking the callback. Fresh queries are valid after completion, stop or
+    /// calling the callback. Fresh queries are valid after completion, stop or
     /// error, under the reader's documented malformed-input limitations.
     ///
     /// # Basic use
@@ -389,7 +390,7 @@ impl<'w> Selection<'w> {
     ///
     /// The payload visitor runs only for accepted candidates. It copies the
     /// value so the result survives the callback and the waveform itself.
-    /// This limits caller reads and copies; a sequential reader may still decode
+    /// This limits caller reads and copies. A sequential reader may still decode
     /// selected payload while advancing. The example uses tiny in-memory VCD
     /// data so it can run without an external file.
     ///
@@ -641,15 +642,15 @@ impl<'w> Selection<'w> {
     /// in `0..self.signals().len()` and identifies an input position, not a
     /// backend offset or global signal ID. Aliases and repeated whole signals
     /// or slices each receive their own slot's records. Duplicate entries each
-    /// receive the same per-tick event aggregate; internal base-history
+    /// receive the same per-tick event aggregate. Internal base-history
     /// deduplication is not observable.
     ///
     /// Initial states appear first in selection order (entries without one are
     /// omitted). Changes follow in nondecreasing time order, with no additional
-    /// cross-entry ordering promise within a tick. An empty selection invokes
-    /// no callbacks. Records borrow storage only for the callback; use
+    /// cross-entry ordering promise within a tick. An empty selection calls
+    /// no callbacks. Records borrow storage only for the callback. Use
     /// [`ValueRef::to_owned`] to retain values. `Break` stops delivery immediately
-    /// and is returned unchanged; a read error preserves prior callbacks but
+    /// and is returned unchanged. A read error preserves prior callbacks but
     /// does not publish the unfinished tick. No complete history is collected.
     ///
     /// # Basic use

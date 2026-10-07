@@ -3,7 +3,7 @@
 
 Ondas is a Rust library for reading waveform files and analyzing signal values.
 Use it to browse a design's hierarchy, sample signals at a given time, or process
-changes over a time range. The same API works across supported formats; the
+changes over a time range. The same API works across supported formats. The
 library does not write or convert waveforms.
 
 ## Supported formats
@@ -31,12 +31,12 @@ modules are private.
 
 | Type | What it represents |
 |---|---|
-| [`Waveform`] | An open source, its [`Metadata`], its hierarchy and its query interface. |
-| [`Hierarchy`] | Immutable declarations. [`Scope`] groups declarations; [`Variable`] describes one declaration. |
+| [`Waveform`] | An open source with its [`Metadata`], hierarchy and query interface. |
+| [`Hierarchy`] | Immutable declarations. [`Scope`] groups declarations. [`Variable`] describes one declaration. |
 | [`Signal`] | A handle to a signal's history, optionally sliced to fixed bit positions. Aliased declarations can share a signal. |
 | [`Selection`] | An ordered signal list reused across queries. It mutably borrows its waveform and preserves order and duplicates. |
 | [`Sample`], [`Trace`] | Owned query results: an observation at one tick, or state and changes over a range. |
-| [`SampleRef`], [`ScanRef`], [`ValueRef`] | Borrowed views. Callback views cannot escape their callback; use [`ValueRef::to_owned`] when a value must be retained. |
+| [`SampleRef`], [`ScanRef`], [`ValueRef`] | Borrowed views. Callback views cannot escape their callback. Use [`ValueRef::to_owned`] when a value must be retained. |
 
 Use [`open`] or [`open_bytes`] for automatic backend selection. Use [`open_with`]
 or [`open_bytes_with`] to select a backend explicitly, without fallback.
@@ -68,7 +68,7 @@ File-based examples use `no_run` because they require the named signals.
 
 [`HierarchyPath`] represents exact names and escaping. [`Hierarchy::signal`]
 first looks up an exact variable path, then considers one trailing `[msb:lsb]`
-slice. To separate name lookup from slicing, use [`Hierarchy::signal_path`]
+slice if exact lookup fails. To separate name lookup from slicing, use [`Hierarchy::signal_path`]
 followed by [`Signal::slice`]. Slice indices are normalized value positions,
 not HDL indices.
 
@@ -83,8 +83,8 @@ not HDL indices.
 | Visit possible change times | [`Selection::scan_candidate_times`] |
 | Check conditions at activity ticks and read only the requested samples | [`Selection::query`] |
 
-Use an ordinary point or batch query when the observation time is already known.
-A selection is useful when the same signal list is queried repeatedly.
+Use a point or batch query when you already know the observation time.
+Use a selection for repeated queries over the same signal list.
 
 For streamed output, [`Selection::scan_each`] identifies each record by its
 position in the selection. Its example exports a bus, an alias and two slices,
@@ -92,29 +92,30 @@ then stops early.
 
 For conditional sampling, [`Selection::query`] separates driver signals, which
 determine candidate times, from the other signals the caller may read. Each
-[`QueryContext`] can read its completed tick and the preceding tick, not arbitrary
-history. Its example checks a transition and control value before copying a
-payload. Conditions remain ordinary Rust code; the query does not collect a
-candidate list or require reborrowing the waveform inside a callback.
+[`QueryContext`] can read its completed tick and the preceding tick. It cannot
+read arbitrary history. Its example checks a transition and control value before copying a
+payload. Write conditions in ordinary Rust code. The query does not collect a
+candidate list or require another waveform borrow inside a callback.
 
 ## Time, values and errors
 
 - [`Time`] counts absolute source ticks, not indices into a backend time table.
-  Ranges are closed. A reversed bounded range is empty, not an error.
+  Ranges include both bounds. A reversed bounded range is empty and returns no error.
 - A point sample reports the final persistent state at its tick. Delta cycles
   are not modeled. [`Sample::Missing`] means no persistent state is known at or
   before the requested time.
 - An event sample counts reader-observed occurrences at exactly that tick,
-  including zero. Scans and traces carry one positive aggregate per selection
-  entry and tick. Aggregation cannot recover omitted events or expose intra-tick
-  ordering.
+  including zero. Scans and traces carry one positive total count per selection
+  entry and tick. These counts cannot recover omitted events or show occurrence
+  order within a tick.
 - A scan separates state strictly before the range from changes inside it.
-  Candidate-time scans return a strictly increasing superset of change times;
-  initials and event multiplicity do not add candidate times. See
+  Candidate-time scans include all change times in strictly increasing order.
+  They can include extra times. Initial states and repeated events at one tick
+  do not add candidate times. See
   [`Selection::scan`] and [`Selection::scan_candidate_times`] for the full contracts.
 - [`PathError`], [`PathFormatError`], [`LookupError`] and [`SliceError`] describe
   path and metadata resolution errors. Opening and query failures use [`Error`].
-  Reader-reported failures return errors, not empty-result sentinels.
+  Reader failures return errors. Empty results do not represent failures.
 - Scans and callback queries may have delivered observations before a later
   failure. Owned samples and traces return no partial collection.
 
@@ -161,16 +162,16 @@ reals, strings and event callbacks, preserving aliases and explicit source range
   inconsistencies return [`Error`].
 - At the first recorded tick, event callbacks can include an initialization
   snapshot that the reader cannot distinguish from occurrences. Ondas preserves
-  those callbacks; they do not establish exact physical event counts at that tick.
+  those callbacks. They do not establish exact physical event counts at that tick.
 
-Selections reuse validated handles and base-signal grouping, not complete value
-histories. Stateful queries traverse selected histories from their beginning
-through their end to establish state. Scans retain entering and pending final values per
-selected entry and stop reader callbacks on `Break`; owned traces also retain
-their output. The decoder owns input and decompression buffers, so this is not a
+Selections reuse validated handles and base-signal grouping. They do not retain
+complete value histories. Stateful queries traverse selected histories from their
+beginning through their end to establish state. Scans retain entering and pending
+final values per selected entry. They stop reader callbacks on `Break`. Owned
+traces also retain their output. The decoder owns input and decompression buffers, so this is not a
 fixed bound on total memory use. Candidate-time scans skip sections before their
 window and avoid retaining values, but still decode and validate selected chains
-rather than using a separate activity index. Section frames and base activity may
+without a separate activity index. Section frames and base activity may
 produce extra candidates. These costs do not change observation semantics.
 
 </details>
@@ -185,7 +186,7 @@ Verdi installation when building.
 
 - Use Verdi 2021 or newer on Linux x86_64 GNU. Building requires a C++11 compiler,
   binutils and zlib development files. Older SDKs can reject newer FSDB format
-  versions; use a newer Reader for those files.
+  versions. Use a newer Reader for those files.
 - Without the feature, Ondas does not discover an SDK and the backend name
   `fsdb-lib` returns [`Error::UnknownBackend`].
 - The backend opens files only. Explicit byte input returns
@@ -203,11 +204,11 @@ let sample = wave.sample(signal, ondas::Time::from_ticks(10))?;
 
 Input files and the linked SDK installation must remain unchanged and available.
 Binaries retain the build-time SDK library paths. Removing those libraries can
-prevent the entire executable from starting, even for VCD/FST operations;
-runtime SDK absence is not handled gracefully.
+prevent the entire executable from starting, even for VCD/FST operations.
+The executable cannot handle a missing runtime SDK gracefully.
 
 - Known digital storage preserves bits and source logic states. Real storage maps
-  to `f64`; NUL-terminated strings use reversible Latin-1. Embedded-NUL string
+  to `f64`. NUL-terminated strings use reversible Latin-1. Embedded-NUL string
   data and transaction events are unsupported.
 - Normal HDL event records remain occurrences. No-change event initialization
   markers are not triggers. Unknown event records and event queries on
@@ -218,14 +219,14 @@ runtime SDK absence is not handled gracefully.
   rejected rather than rounded.
 
 Independent Reader objects and serialized SDK calls preserve `Waveform: Send + Sync`.
-The lock is released before Rust visitors, so a callback can query another
-waveform. Queries load selected histories; cold bit-only bounded queries can
-seek their entering state and traverse only the requested window. Other cold
+The adapter releases the lock before calling Rust visitors. A callback can
+query another waveform. Queries load selected histories. Cold bit-only bounded
+queries can seek their entering state and traverse only the requested window. Other cold
 queries traverse from the beginning. Records skipped by a seek are not decoded
 or validated by the sequential adapter. Vendor loading has its own memory cost.
 SDK diagnostics may appear on stdout/stderr.
-C++ exceptions become backend errors, but native crashes or aborts are not
-contained. SDK permissions and runtime dependencies remain the caller's
+C++ exceptions become backend errors. The adapter does not contain native
+crashes or aborts. SDK permissions and runtime dependencies remain the caller's
 responsibility. Ondas distributes no vendor files.
 
 </details>

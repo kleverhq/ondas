@@ -14,10 +14,11 @@ use crate::{
 
 /// Opens a waveform file with an automatically selected available backend.
 ///
-/// FST uses `fst-lib`; VCD uses `vcd-native`. FSDB uses `fsdb-lib` when the
+/// FST uses `fst-lib`. VCD uses `vcd-native`. FSDB uses `fsdb-lib` when the
 /// optional feature of the same name is enabled. Content recognition takes
-/// precedence over the filename; a recognized extension is a fallback hint. A recognized format without a
-/// reader returns [`Error::NoBackend`]; unrecognized input returns
+/// priority over the filename. A recognized extension is a fallback hint.
+/// A recognized format without a reader returns [`Error::NoBackend`].
+/// Unrecognized input returns
 /// [`Error::UnknownFormat`]. Each opened waveform uses one backend.
 ///
 /// File and decoder errors are returned where the decoder reports them. See
@@ -32,7 +33,7 @@ pub fn open(path: impl AsRef<Path>) -> Result<Waveform> {
 /// VCD currently use their regular readers, so this is not a fast path for those
 /// formats. Format detection matches [`open`], as do metadata values for files
 /// that open successfully. Unlike [`open`], it does not validate an FSDB
-/// declaration tree; use [`open`] for validated hierarchy or signal access.
+/// declaration tree. Use [`open`] for validated hierarchy or signal access.
 ///
 /// This function accepts file paths, not byte inputs.
 pub fn read_metadata(path: impl AsRef<Path>) -> Result<Metadata> {
@@ -55,7 +56,7 @@ pub fn read_metadata(path: impl AsRef<Path>) -> Result<Metadata> {
 ///
 /// Available names are `fst-lib`, `vcd-native`, and feature-enabled `fsdb-lib`.
 /// A disabled optional backend is an unknown name. Unknown names return
-/// [`Error::UnknownBackend`]; a format unsupported by the selected backend returns
+/// [`Error::UnknownBackend`]. A format unsupported by the selected backend returns
 /// [`Error::BackendDoesNotSupport`]. See [`open`] for detection and reader limits.
 pub fn open_with(path: impl AsRef<Path>, backend: &str) -> Result<Waveform> {
     open_file(path.as_ref(), Some(backend))
@@ -66,7 +67,7 @@ pub fn open_with(path: impl AsRef<Path>, backend: &str) -> Result<Waveform> {
 /// `name` is the logical [`Metadata::source_name`] and a format-detection hint.
 /// The input stays alive through the shared ownership of `bytes`. Detection,
 /// errors, and reader limitations are the same as [`open`]. Both FST and VCD readers
-/// support file and byte input. `fsdb-lib` is file-only: FSDB selected by the
+/// support file and byte input. `fsdb-lib` reads files only. FSDB selected by the
 /// filename hint returns [`Error::UnsupportedInput`] when that feature is enabled.
 /// The SDK's content probe is only available for file paths.
 pub fn open_bytes(name: impl Into<String>, bytes: Arc<[u8]>) -> Result<Waveform> {
@@ -77,7 +78,7 @@ pub fn open_bytes(name: impl Into<String>, bytes: Arc<[u8]>) -> Result<Waveform>
 ///
 /// Combines [`open_bytes`]' input ownership with [`open_with`]'s explicit reader
 /// selection and error categories. Selecting enabled `fsdb-lib` always returns
-/// [`Error::UnsupportedInput`] without materializing a temporary file.
+/// [`Error::UnsupportedInput`] without creating a temporary file.
 pub fn open_bytes_with(
     name: impl Into<String>,
     bytes: Arc<[u8]>,
@@ -246,19 +247,19 @@ pub enum Format {
 ///
 /// Holds one private reader and exposes format-independent types. Queries need
 /// mutable access for reader state. A [`Selection`] reuses a validated ordered
-/// signal list; one-shot methods have the same semantics as temporary selections.
-/// Input order and duplicates remain visible; base-signal deduplication is private.
+/// signal list. One-shot methods have the same semantics as temporary selections.
+/// Input order and duplicates remain visible. Base-signal deduplication is private.
 ///
 /// Handles from another source return [`Error::InvalidSignal`]. Querying an
 /// unsupported value class returns [`Error::UnsupportedSignal`]. Ordinary decoder
-/// errors are returned, but upstream panics are not intercepted; see crate docs.
+/// errors are returned. Ondas does not intercept upstream panics. See crate docs.
 ///
 /// # Example: resolve a declaration, sample a slice and read a trace
 ///
 /// This example requires a file containing the named signal. Clone the hierarchy
 /// before keeping a [`crate::Variable`] or [`crate::Scope`] view across mutable
-/// waveform queries: those views borrow their hierarchy, while [`Signal`] is
-/// copyable. The clone lets the declaration view coexist with `&mut Waveform`.
+/// waveform queries. These views borrow their hierarchy. [`Signal`] is copyable.
+/// The clone lets the declaration view coexist with `&mut Waveform`.
 ///
 /// [`crate::HierarchyPath`] handles exact names and escaping. After resolving the
 /// signal, `slice(31, 28)` selects normalized value positions, not HDL indices.
@@ -389,8 +390,8 @@ impl Waveform {
     /// Visits entering states and changes over inclusive bounds.
     ///
     /// Equivalent to [`Selection::scan`], including duplicate entries, slice
-    /// filtering, and same-signal ordering. Values are callback-scoped. A break
-    /// stops successfully; a late reader error may follow earlier observations.
+    /// filtering, and same-signal ordering. Values are valid only during the callback.
+    /// A break stops successfully. A late reader error may follow earlier observations.
     pub fn scan<B>(
         &mut self,
         signals: &[Signal],
@@ -403,7 +404,7 @@ impl Waveform {
     /// Visits unique, increasing candidate change times over inclusive bounds.
     ///
     /// Equivalent to [`Selection::scan_candidate_times`]. Initial-state times
-    /// are excluded; extra candidates are allowed. A break stops successfully.
+    /// are excluded. Extra candidates are allowed. A break stops successfully.
     pub fn scan_candidate_times<B>(
         &mut self,
         signals: &[Signal],
@@ -468,8 +469,8 @@ impl Metadata {
     /// Returns the first and last recorded ticks when reliably available.
     ///
     /// `None` means an empty source or unavailable metadata. These bounds do not
-    /// restrict queries: samples after EOF hold the last persistent value, while
-    /// event counts are zero.
+    /// restrict queries. Samples after EOF hold the last persistent value.
+    /// Event counts are zero.
     pub fn time_span(&self) -> Option<TimeSpan> {
         self.time_span
     }
