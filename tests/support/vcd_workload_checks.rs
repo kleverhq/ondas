@@ -3,7 +3,7 @@ use std::ops::ControlFlow;
 
 use ondas::{SampleRef, Time, TimeRange, ValueRef};
 
-use super::{fixture_catalog as fixtures, vcd_workloads as workloads};
+use super::{fixture_support as fixtures, vcd_workloads as workloads};
 
 fn bits(value: ValueRef<'_>) -> String {
     let ValueRef::Bits(bits) = value else {
@@ -23,9 +23,9 @@ fn observation(sample: SampleRef<'_>) -> Option<(String, Option<Time>)> {
 }
 
 #[test]
-#[ignore = "requires ONDAS_FIXTURES; run just conformance"]
+#[ignore = "requires installed fixtures; run just conformance"]
 fn composed_baseline_matches_point_and_sequential_observations() {
-    let (path, _) = fixtures::load_artifact(&fixtures::provider(), workloads::FIXTURE);
+    let (path, _) = fixtures::load_artifact(&fixtures::root(), workloads::FIXTURE);
     let mut wave = ondas::open_with(path, workloads::BACKEND).unwrap();
     let signals = workloads::signals(&wave);
     assert_eq!(signals[2].width(), Some(64));

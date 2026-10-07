@@ -6,7 +6,7 @@ use ondas::{Time, TimeRange};
 use super::{BACKEND, candidate_count, first_change, fixtures, scan_count};
 
 pub(super) fn history(c: &mut Criterion, fixture: &str, end: u64) {
-    let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
+    let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
     let mut wave = ondas::open_with(&path, BACKEND).unwrap();
     let clock = wave.hierarchy().signal("top.clock").unwrap();
     let words = (0..64)
@@ -17,7 +17,7 @@ pub(super) fn history(c: &mut Criterion, fixture: &str, end: u64) {
         })
         .collect::<Vec<_>>();
     assert_eq!(words.iter().collect::<HashSet<_>>().len(), 64);
-    let name = format!("fsdb/{}/{fixture}/file", fixtures::PROVIDER);
+    let name = format!("{fixture}/file");
     let mut group = c.benchmark_group(&name);
     group.sample_size(10);
     group.bench_function(BenchmarkId::new("open", BACKEND), |b| {
@@ -210,12 +210,12 @@ pub(super) fn history(c: &mut Criterion, fixture: &str, end: u64) {
 }
 
 pub(super) fn topology(c: &mut Criterion, fixture: &str, histories: usize) {
-    let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
+    let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
     let mut wave = ondas::open_with(&path, BACKEND).unwrap();
     assert_eq!(wave.hierarchy().signals().count(), histories);
     let sparse = wave.hierarchy().signal("top.probe_sparse").unwrap();
     let constant = wave.hierarchy().signal("top.probe_constant").unwrap();
-    let mut group = c.benchmark_group(format!("fsdb/{}/{fixture}/file", fixtures::PROVIDER));
+    let mut group = c.benchmark_group(format!("{fixture}/file"));
     group.sample_size(20);
     group.bench_function(BenchmarkId::new("open", BACKEND), |b| {
         b.iter(|| {
@@ -224,7 +224,9 @@ pub(super) fn topology(c: &mut Criterion, fixture: &str, histories: usize) {
             ))
         });
     });
-    if fixture != "fsdb0014-topology-many-times" && fixture != "fsdb0016-topology-many-aliases" {
+    if fixture != "fsdb/fsdb0014-topology-many-times"
+        && fixture != "fsdb/fsdb0016-topology-many-aliases"
+    {
         group.bench_function(
             BenchmarkId::new("regression/metadata-only/open-drop", BACKEND),
             |b| {
@@ -313,14 +315,14 @@ pub(super) fn topology(c: &mut Criterion, fixture: &str, histories: usize) {
 }
 
 pub(super) fn wide(c: &mut Criterion, fixture: &str) {
-    let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
+    let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
     let mut wave = ondas::open_with(&path, BACKEND).unwrap();
     let lsb = wave.hierarchy().signal("top.wide").unwrap();
     let msb = wave.hierarchy().signal("top.wide_msb").unwrap();
     let control = wave.hierarchy().signal("top.control").unwrap();
     let time = Time::from_ticks(2056);
     let range = TimeRange::closed(Time::from_ticks(2048), time);
-    let mut group = c.benchmark_group(format!("fsdb/{}/{fixture}/file", fixtures::PROVIDER));
+    let mut group = c.benchmark_group(format!("{fixture}/file"));
     group.sample_size(10);
     for (name, signal, active) in [
         ("top.wide/whole4096", lsb, true),
@@ -385,10 +387,7 @@ pub(super) fn wide(c: &mut Criterion, fixture: &str) {
     }
     group.finish();
 
-    let mut group = c.benchmark_group(format!(
-        "fsdb/{}/{fixture}/file/regression",
-        fixtures::PROVIDER
-    ));
+    let mut group = c.benchmark_group(format!("{fixture}/file/regression"));
     group.sample_size(10);
     for (name, signal) in [
         ("whole4096", lsb),
@@ -411,7 +410,7 @@ pub(super) fn wide(c: &mut Criterion, fixture: &str) {
 
 pub(super) fn aliases(c: &mut Criterion, fixture: &str) {
     // The matching 16-history topology cases are registered by the caller too.
-    let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
+    let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
     let mut wave = ondas::open_with(&path, BACKEND).unwrap();
     let sparse = wave.hierarchy().signal("top.probe_sparse").unwrap();
     let constant = wave.hierarchy().signal("top.probe_constant").unwrap();
@@ -426,10 +425,7 @@ pub(super) fn aliases(c: &mut Criterion, fixture: &str) {
         }))
         .collect::<Vec<_>>();
     let time = Time::from_ticks(524_288);
-    let mut group = c.benchmark_group(format!(
-        "fsdb/{}/{fixture}/file/aliases",
-        fixtures::PROVIDER
-    ));
+    let mut group = c.benchmark_group(format!("{fixture}/file/aliases"));
     group.sample_size(20);
     for count in [1, 8, 64] {
         group.bench_function(

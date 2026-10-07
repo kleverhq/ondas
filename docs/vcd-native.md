@@ -170,7 +170,7 @@ Malformed input never becomes a successful empty waveform.
 [`tests/vcd_native.rs`](../tests/vcd_native.rs) checks lexical boundaries, exact
 arithmetic, classification, controls, replay and ownership without external data.
 The shared [conformance runner](../tests/conformance.rs) discovers every VCD in
-the locked provider and checks listed metadata, declarations, samples and windows
+the pinned fixture submodule and checks listed metadata, declarations, samples and windows
 in file/bytes modes. Expectations come from the independent instrumented
 libgtkwave oracle, not this backend.
 

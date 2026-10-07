@@ -9,7 +9,7 @@ mod fixtures;
 #[path = "../tests/support/vcd_workloads.rs"]
 mod workloads;
 
-const FIXTURE: &str = "vcd0071-swerv1";
+const FIXTURE: &str = "vcd/vcd0071-swerv1";
 const BACKEND: &str = workloads::BACKEND;
 const SIGNALS: [&str; 4] = [
     "TOP.core_clk",
@@ -191,12 +191,12 @@ const PICORV32_SELECTORS: [&str; 100] = [
 ];
 
 fn swerv(c: &mut Criterion) {
-    let (path, _) = fixtures::load_artifact(&fixtures::provider(), FIXTURE);
+    let (path, _) = fixtures::load_artifact(&fixtures::root(), FIXTURE);
     let mut wave = ondas::open_with(&path, BACKEND).expect("open VCD workload");
     let signals = SIGNALS.map(|path| wave.hierarchy().signal(path).expect("workload signal"));
     let early = Time::from_ticks(1000);
     let late = Time::from_ticks(13000);
-    let group_name = format!("vcd/{}/{FIXTURE}/file", fixtures::PROVIDER);
+    let group_name = format!("{FIXTURE}/file");
     let mut group = c.benchmark_group(&group_name);
 
     // Opening includes destruction, but does not claim a cold filesystem cache.
@@ -413,12 +413,12 @@ fn swerv(c: &mut Criterion) {
 }
 
 fn compact_wide(c: &mut Criterion) {
-    let fixture = "vcd0096-wide-compact-toggle";
-    let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
+    let fixture = "vcd/vcd0096-wide-compact-toggle";
+    let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
     let mut wave = ondas::open_with(&path, BACKEND).expect("open compact-wide workload");
     let wide = wave.hierarchy().signal("top.wide").unwrap();
     let control = wave.hierarchy().signal("top.control").unwrap();
-    let mut group = c.benchmark_group(format!("vcd/{}/{fixture}/file", fixtures::PROVIDER));
+    let mut group = c.benchmark_group(format!("{fixture}/file"));
     group.bench_function(BenchmarkId::new("open", BACKEND), |b| {
         b.iter(|| {
             drop(black_box(
@@ -510,8 +510,8 @@ fn compact_wide(c: &mut Criterion) {
 }
 
 fn scr1(c: &mut Criterion) {
-    let fixture = "vcd0097-scr1-max-ahb-coremark";
-    let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
+    let fixture = "vcd/vcd0097-scr1-max-ahb-coremark";
+    let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
     let mut wave = ondas::open_with(&path, BACKEND).expect("open SCR1 workload");
     let paths = [
         "TOP.clk",
@@ -534,7 +534,7 @@ fn scr1(c: &mut Criterion) {
     ];
     let full_signals =
         full_paths.map(|path| wave.hierarchy().signal(path).expect("full-history signal"));
-    let mut group = c.benchmark_group(format!("vcd/{}/{fixture}/file", fixtures::PROVIDER));
+    let mut group = c.benchmark_group(format!("{fixture}/file"));
     // Late queries parse almost a gigabyte per iteration.
     group.sample_size(10);
     group.bench_function(BenchmarkId::new("open", BACKEND), |b| {
@@ -655,14 +655,10 @@ fn scr1(c: &mut Criterion) {
 }
 
 fn composed(c: &mut Criterion) {
-    let (path, _) = fixtures::load_artifact(&fixtures::provider(), workloads::FIXTURE);
+    let (path, _) = fixtures::load_artifact(&fixtures::root(), workloads::FIXTURE);
     let mut wave = ondas::open_with(&path, BACKEND).unwrap();
     let signals = workloads::signals(&wave);
-    let mut group = c.benchmark_group(format!(
-        "vcd/{}/{}/file/composed",
-        fixtures::PROVIDER,
-        workloads::FIXTURE
-    ));
+    let mut group = c.benchmark_group(format!("{}/file/composed", workloads::FIXTURE));
     group.sample_size(10);
     {
         let mut selection = wave.select(&signals).unwrap();
@@ -863,9 +859,9 @@ fn composed(c: &mut Criterion) {
 }
 
 fn picorv32_open(c: &mut Criterion) {
-    let fixture = "vcd0098-picorv32-test-vcd";
-    let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
-    let mut group = c.benchmark_group(format!("vcd/{}/{fixture}/file", fixtures::PROVIDER));
+    let fixture = "vcd/vcd0098-picorv32-test-vcd";
+    let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
+    let mut group = c.benchmark_group(format!("{fixture}/file"));
     group.sample_size(10);
     group.bench_function(BenchmarkId::new("open", BACKEND), |b| {
         b.iter(|| {

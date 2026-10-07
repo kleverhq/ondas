@@ -10,8 +10,8 @@ use std::{
 };
 
 use crate::{
-    BitRange, BitsRef, Direction, Encoding, Error, Hierarchy, Metadata, Result, Signal, Time,
-    TimeSpan, Timescale, ValueRef,
+    BitRange, BitsRef, Direction, Encoding, Error, Format, Hierarchy, Metadata, Result, Signal,
+    Time, TimeSpan, Timescale, ValueRef,
     hierarchy::{EnumerationData, ScopeData, VariableData},
 };
 
@@ -266,7 +266,7 @@ impl Reader {
         let mut variables = Vec::new();
         let mut seen_variables = HashSet::new();
         let mut stack = Vec::new();
-        let mut scope_ids: HashMap<(Option<usize>, String), usize> = HashMap::new();
+        let mut scope_ids: HashMap<(Option<usize>, String, u32), usize> = HashMap::new();
         let mut ids = Vec::new();
         let mut indices = HashMap::new();
         let mut encodings = Vec::new();
@@ -283,7 +283,7 @@ impl Reader {
                 let name = string(d.name)?.unwrap_or_default();
                 let kind = string(d.kind)?.unwrap_or_default();
                 match d.entry {
-                    0 => {
+                    0 | 3 => {
                         let parent = stack.last().copied();
                         let definition_name = string(d.definition)?;
                         let packing = match d.packing {
@@ -293,7 +293,10 @@ impl Reader {
                             3 => Some(crate::Packing::TaggedPacked),
                             _ => return Err(backend_error("invalid FSDB packing")),
                         };
-                        let key = (parent, name.clone());
+                        // SDK scopes and record/struct containers are separate
+                        // objects even when their parent and name coincide.
+                        // Repetitions of either still require compatible metadata.
+                        let key = (parent, name.clone(), d.entry);
                         let id = if let Some(&id) = scope_ids.get(&key) {
                             let old = &scopes[id];
                             let differences = [
@@ -324,10 +327,14 @@ impl Reader {
                                         .map(|&parent| scopes[parent].name.as_str())
                                         .chain(std::iter::once(name.as_str())),
                                 );
-                                return Err(backend_error(format!(
-                                    "conflicting FSDB scope {path}: {}",
-                                    differences.join(", ")
-                                )));
+                                return Err(Error::Malformed {
+                                    format: Format::Fsdb,
+                                    backend: BACKEND.into(),
+                                    message: format!(
+                                        "conflicting FSDB scope {path}: {}",
+                                        differences.join(", ")
+                                    ),
+                                });
                             }
                             if old.definition_name.is_none() {
                                 scopes[id].definition_name = definition_name;
@@ -746,10 +753,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires real FSDB runtime and locked public fixtures"]
+    #[ignore = "requires real FSDB runtime and installed fixtures"]
     fn fsdb_bits_use_caller_storage() {
-        let root = std::path::PathBuf::from(std::env::var_os("ONDAS_FIXTURES").unwrap());
-        let path = root.join("kleverhq.ondas-fixtures/fsdb0015-wide-compact-toggle/waveform.fsdb");
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+        let path = root.join("fsdb/fsdb0015-wide-compact-toggle/waveform.fsdb");
         let (mut reader, hierarchy, _) = Reader::open(&path, "bits".into()).unwrap();
         let signal = hierarchy.signal("top.wide").unwrap();
         let id = reader.ids[signal.index()];

@@ -7,7 +7,7 @@ conformance assertions.
 ## Workloads
 
 Use one Criterion target per measured format, such as `benches/vcd.rs`. Share
-catalog and artifact validation with conformance tests in
+sidecar loading and artifact checks with conformance tests in
 `tests/support/fixtures.rs`. Keep concrete fixtures, reader choices, operations,
 and workload parameters in the format target; extract shared operations only
 when another target needs them.
@@ -21,7 +21,7 @@ backend          = reader implementation
 Add cases for concrete performance questions, not to fill a matrix. Formats need
 neither equivalent fixtures nor directly comparable results.
 
-Use the [test catalog and lock](fixtures.md). Validate fixtures and their hashes
+Use the [pinned fixture corpus](fixtures.md). Validate fixtures and their hashes
 before timing, never inside iterations. Benchmarks neither fetch fixtures nor
 update metadata.
 
@@ -37,7 +37,7 @@ setup boundary. Automatic opening is a separate workload, not a substitute for
 explicit reader comparison.
 
 Criterion IDs must be globally unique across targets and describe format,
-provider/fixture identity, operation, input mode, and relevant parameters. Reader
+fixture identity, operation, input mode, and relevant parameters. Reader
 names distinguish cases inside a shared group. File and bytes inputs are modes
 of the same format target; register bytes cases only for readers that support
 them.
@@ -135,7 +135,7 @@ shared owned storage before timing; opening includes cloning that shared handle
 but not reading the file into memory. Both modes include waveform destruction in
 open measurements and reuse their selections in prepared-query measurements.
 
-A 64-bit sparse bank and a 64-bit dense bank in one public FST distinguish
+A 64-bit sparse bank and a 64-bit dense bank in one FST distinguish
 selected-slot activity at unique selection sizes 1, 16 and 64, and 256 versus
 4096 ticks at fixed cardinality. Their point cases create fresh selections on
 each iteration. This is a selected-query cost, not cold disk or full file opening.
@@ -162,8 +162,8 @@ Concrete fixtures, paths, bounds and sample counts remain in `benches/fst.rs`,
 
 `benches/fsdb.rs` measures the public API with the explicit `fsdb-lib` reader
 and file inputs only. The target requires the `fsdb-lib` feature, the SDK runtime
-and the locked public fixture provider; it does not use private fixtures. See
-[FSDB setup and limits](fsdb-lib.md) for the SDK environment.
+and the pinned fixture corpus. See [FSDB setup and limits](fsdb-lib.md) for the
+SDK environment.
 
 Three compact recordings serve different questions: `fsdb0004-compare` covers
 open, hierarchy traversal/lookup, selection construction, four distinct base
@@ -205,7 +205,7 @@ checks still run during registration, including filtered runs; redundant
 success-only query probes are omitted.
 
 Those three recordings are only approximately 8–35 KB, and their wide base has
-just two post-initial changes. Controlled public recordings supplement them in
+just two post-initial changes. Controlled recordings supplement them in
 `benches/fsdb/controlled.rs` and `benches/fsdb/typed.rs`:
 
 | Fixtures | Controlled comparison |
@@ -264,9 +264,9 @@ example from the repository root:
 # Focus on controlled topology or width-sensitive workloads:
 ./dev cargo bench --locked --bench fst -- topology
 ./dev cargo bench --locked --bench fst -- wide-compact-toggle
-# Public FSDB corpus, with the SDK feature enabled:
-./dev cargo bench --locked --features fsdb-lib --bench fsdb -- --save-baseline fsdb-public-initial
-./dev cargo bench --locked --features fsdb-lib --bench fsdb -- --baseline fsdb-public-initial
+# FSDB corpus, with the SDK feature enabled:
+./dev cargo bench --locked --features fsdb-lib --bench fsdb -- --save-baseline fsdb-initial
+./dev cargo bench --locked --features fsdb-lib --bench fsdb -- --baseline fsdb-initial
 ```
 
 Select revisions with host Git and preserve Criterion output between runs;
@@ -275,26 +275,17 @@ without committing or archiving them. Changed fixtures or workloads invalidate a
 like-for-like comparison. Repeat an unchanged revision to estimate environmental
 drift; a Criterion regression label alone does not establish a code regression.
 
-### Unpublished local providers
+### Fixture revisions
 
-A locally generated provider can be used without publishing it. Its catalog
-version must still match `fixtures.lock.toml`, and every referenced sidecar and
-payload must be present. Keep a self-contained snapshot under ignored `tmp/`
-rather than running against a producer directory while it is being modified.
-The tagged-release installer is not applicable to an unpublished version.
+Tests and benchmarks use the same `fixtures/` submodule checkout. Record its full
+commit SHA with measurements; changed artifacts or workload definitions invalidate
+a comparison. Local edits inside the submodule are development evidence. Shared
+results require an available fixture commit and the corresponding parent Git entry.
+See [corpus updates](fixtures.md#updating-the-corpus) for setup and validation.
 
-For a snapshot at `tmp/fsdb-fixtures/kleverhq.ondas-fixtures`, select its parent
-inside the existing worktree container without changing canonical environment
-configuration:
-
-```sh
-./dev bash -c 'export ONDAS_FIXTURES="$PWD/tmp/fsdb-fixtures"; cargo test --locked --features fsdb-lib --test conformance full_fsdb_pool -- --ignored --nocapture'
-./dev bash -c 'export ONDAS_FIXTURES="$PWD/tmp/fsdb-fixtures"; cargo bench --locked --features fsdb-lib --bench fsdb -- --test'
-```
-
-Use the same override for timing and fixture-backed quality checks. A lock update
-to an unpublished provider is local integration work, not evidence that others
-can install it from a release.
+Criterion group names start with `<format>/<fixture>` and add input modes or
+workload names. Changing group IDs requires new baselines. Existing result
+directories can remain; comparisons require matching IDs and corpus revisions.
 
 ## Automation
 
@@ -303,8 +294,7 @@ The fixture-backed `./dev just ci` gate runs `just bench-smoke` (VCD and FST)
 after conformance; `./dev just ci-fsdb` runs `just bench-smoke-fsdb` after vendor
 conformance. For a focused local run, use `./dev cargo bench --locked --bench
 fst -- regression --test`, or the corresponding format and feature flags.
-The vendor recipe executes only public benchmark inputs. For FSDB, first run
-public conformance, then smoke the feature-gated target:
+For FSDB, first run conformance, then smoke the feature-gated target:
 
 ```sh
 ./dev cargo test --locked --features fsdb-lib --test conformance full_fsdb_pool -- --ignored --nocapture
@@ -315,9 +305,7 @@ Default all-target checks skip FSDB's feature-gated target; SDK-enabled checks
 must compile it explicitly. Smoke timings are not regression evidence. A proprietary
 target must not prevent unrelated public targets from compiling; explicitly
 requesting that target without its required fixtures or runtime must fail clearly.
-Optional private payload absence follows [fixture policy](fixtures.md): omit those
-cases before registration and report the omission, rather than timing an empty
-operation. Installed but invalid inputs always fail.
+Missing or invalid fixture inputs fail before measurement.
 
 Keep Criterion's runner, results and comparisons. Custom history stores,
 thresholds, dashboards and mandatory cross-format datasets are outside this

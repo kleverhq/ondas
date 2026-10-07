@@ -2,7 +2,7 @@ use std::ops::ControlFlow;
 
 use ondas::{Logic, SampleRef, Time, TimeRange, ValueRef};
 
-use super::{load_fixture, provider};
+use super::{load_fixture, root};
 #[path = "fsdb_workloads.rs"]
 mod workloads;
 
@@ -14,10 +14,10 @@ fn range(start: u64, end: u64) -> TimeRange {
 #[ignore = "requires real FSDB runtime and locked fixtures; run just conformance-fsdb"]
 fn fsdb_temporal_workloads() {
     for (fixture, end) in [
-        ("fsdb0010-history-short", 4096),
-        ("fsdb0011-history-long", 1_048_576),
+        ("fsdb/fsdb0010-history-short", 4096),
+        ("fsdb/fsdb0011-history-long", 1_048_576),
     ] {
-        let fixture = load_fixture(&provider(), fixture);
+        let fixture = load_fixture(&root(), fixture);
         let mut wave = ondas::open_with(&fixture.path, workloads::BACKEND).unwrap();
         let signals = ["top.clock", "top.word_00", "top.word_01"]
             .map(|name| wave.hierarchy().signal(name).unwrap());
@@ -86,7 +86,7 @@ fn fsdb_temporal_workloads() {
 #[test]
 #[ignore = "requires real FSDB runtime and locked fixtures; run just conformance-fsdb"]
 fn fsdb_loading_window_resets() {
-    let fixture = load_fixture(&provider(), "fsdb0010-history-short");
+    let fixture = load_fixture(&root(), "fsdb/fsdb0010-history-short");
     let mut wave = ondas::open_with(&fixture.path, workloads::BACKEND).unwrap();
     let clock = wave.hierarchy().signal("top.clock").unwrap();
     let word = wave.hierarchy().signal("top.word_00").unwrap();
@@ -121,7 +121,7 @@ fn fsdb_loading_window_resets() {
 #[test]
 #[ignore = "requires real FSDB runtime and locked fixtures; run just conformance-fsdb"]
 fn fsdb_conditional_workloads() {
-    let fixture = load_fixture(&provider(), workloads::WIDE);
+    let fixture = load_fixture(&root(), workloads::WIDE);
     let mut wave = ondas::open_with(&fixture.path, workloads::BACKEND).unwrap();
     for shared in [false, true] {
         let signals = workloads::wide_signals(&wave, shared);
@@ -200,7 +200,7 @@ fn fsdb_conditional_workloads() {
 #[test]
 #[ignore = "requires real FSDB runtime and locked fixtures; run just conformance-fsdb"]
 fn fsdb_typed_temporal_workload() {
-    let fixture = load_fixture(&provider(), "fsdb0017-typed-records");
+    let fixture = load_fixture(&root(), "fsdb/fsdb0017-typed-records");
     let mut wave = ondas::open_with(&fixture.path, workloads::BACKEND).unwrap();
     let signals = [
         "top.trigger",
@@ -226,7 +226,7 @@ fn fsdb_typed_temporal_workload() {
     assert_eq!(candidates, 33);
     assert_eq!(observations.len(), 33 * 3 * 6);
     // Point reads are the independently invoked normalized reference; the public
-    // provider's typed/event oracle is also checked by full_fsdb_pool.
+    // fixture typed/event oracle is also checked by full_fsdb_pool.
     let expected: Vec<_> = (2047..=2080)
         .map(|tick| selection.samples(Time::from_ticks(tick)).unwrap())
         .collect();

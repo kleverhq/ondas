@@ -13,16 +13,15 @@ fn range(start: u64, end: u64) -> TimeRange {
 
 pub(super) fn temporal(c: &mut Criterion) {
     for (fixture, end) in [
-        ("fsdb0010-history-short", 4096),
-        ("fsdb0011-history-long", 1_048_576),
+        ("fsdb/fsdb0010-history-short", 4096),
+        ("fsdb/fsdb0011-history-long", 1_048_576),
     ] {
-        let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
+        let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
         let mut wave = ondas::open_with(path, BACKEND).unwrap();
         let signals = ["top.clock", "top.word_00", "top.word_01"]
             .map(|name| wave.hierarchy().signal(name).unwrap());
         let mut selection = wave.select(&signals).unwrap();
-        let mut group =
-            c.benchmark_group(format!("fsdb/{}/{fixture}/W1/prepared", fixtures::PROVIDER));
+        let mut group = c.benchmark_group(format!("{fixture}/W1/prepared"));
         group.sample_size(10);
         for start in [0, end - 31] {
             let window = range(start, start + 31);
@@ -80,13 +79,9 @@ pub(super) fn temporal(c: &mut Criterion) {
 }
 
 pub(super) fn payload(c: &mut Criterion) {
-    let (path, _) = fixtures::load_artifact(&fixtures::provider(), workloads::WIDE);
+    let (path, _) = fixtures::load_artifact(&fixtures::root(), workloads::WIDE);
     let mut wave = ondas::open_with(&path, BACKEND).unwrap();
-    let mut group = c.benchmark_group(format!(
-        "fsdb/{}/{}/W2/prepared",
-        fixtures::PROVIDER,
-        workloads::WIDE
-    ));
+    let mut group = c.benchmark_group(format!("{}/W2/prepared", workloads::WIDE));
     group.sample_size(10);
     for shared in [false, true] {
         let signals = workloads::wide_signals(&wave, shared);
@@ -144,11 +139,7 @@ pub(super) fn payload(c: &mut Criterion) {
 
     let signals = workloads::wide_signals(&wave, false);
     let mut selection = wave.select(&signals).unwrap();
-    let mut group = c.benchmark_group(format!(
-        "fsdb/{}/{}/W3",
-        fixtures::PROVIDER,
-        workloads::WIDE
-    ));
+    let mut group = c.benchmark_group(format!("{}/W3", workloads::WIDE));
     group.sample_size(10);
     for start in [0, 2048] {
         let window = range(start, 4096);
@@ -223,8 +214,8 @@ pub(super) fn payload(c: &mut Criterion) {
 }
 
 pub(super) fn typed(c: &mut Criterion) {
-    let fixture = "fsdb0017-typed-records";
-    let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
+    let fixture = "fsdb/fsdb0017-typed-records";
+    let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
     let mut wave = ondas::open_with(path, workloads::BACKEND).unwrap();
     let signals = [
         "top.trigger",
@@ -236,7 +227,7 @@ pub(super) fn typed(c: &mut Criterion) {
     ]
     .map(|name| wave.hierarchy().signal(name).unwrap());
     let mut selection = wave.select(&signals).unwrap();
-    let mut group = c.benchmark_group(format!("fsdb/{}/{fixture}/W1/prepared", fixtures::PROVIDER));
+    let mut group = c.benchmark_group(format!("{fixture}/W1/prepared"));
     group.sample_size(10);
     group.bench_function(
         BenchmarkId::new("adjacent/event+logic+reals+strings/2048..=2080", BACKEND),

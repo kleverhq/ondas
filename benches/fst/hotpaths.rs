@@ -18,11 +18,11 @@ fn candidates(selection: &mut Selection<'_>, range: TimeRange) -> u64 {
 
 pub(super) fn strings(c: &mut Criterion) {
     for fixture in [
-        "fst0044-overlay-tb-issue-21",
-        "fst0060-manytypes2",
-        "fst0061-shortstring",
+        "fst/fst0044-overlay-tb-issue-21",
+        "fst/fst0060-manytypes2",
+        "fst/fst0061-shortstring",
     ] {
-        let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
+        let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
         let mut wave = ondas::open_with(&path, BACKEND).unwrap();
         let signals = wave
             .hierarchy()
@@ -34,8 +34,7 @@ pub(super) fn strings(c: &mut Criterion) {
         let mut selection = wave.select(&signals).unwrap();
         assert!(candidates(&mut selection, window) > 0);
         assert!(scan_count(&mut selection, window) > 0);
-        let mut group =
-            c.benchmark_group(format!("fst/{}/{fixture}/file/strings", fixtures::PROVIDER));
+        let mut group = c.benchmark_group(format!("{fixture}/file/strings"));
         group.sample_size(30);
         group.bench_function(BenchmarkId::new("candidate-times/all", BACKEND), |b| {
             b.iter(|| black_box(candidates(&mut selection, black_box(window))));
@@ -50,11 +49,11 @@ pub(super) fn strings(c: &mut Criterion) {
 pub(super) fn topology(c: &mut Criterion) {
     // Identical selected histories: only unselected handles or global times vary.
     for (fixture, handles) in [
-        ("fst0084-topology-small", 16),
-        ("fst0085-topology-many-handles", 16384),
-        ("fst0086-topology-many-times", 16),
+        ("fst/fst0084-topology-small", 16),
+        ("fst/fst0085-topology-many-handles", 16384),
+        ("fst/fst0086-topology-many-times", 16),
     ] {
-        let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
+        let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
         let mut wave = ondas::open_with(&path, BACKEND).unwrap();
         assert_eq!(wave.hierarchy().signals().count(), handles);
         let sparse = wave.hierarchy().signal("top.probe_sparse").unwrap();
@@ -63,7 +62,7 @@ pub(super) fn topology(c: &mut Criterion) {
         let late = Time::from_ticks(1048576);
         let window = TimeRange::closed(quiet, Time::from_ticks(524320));
         let full = TimeRange::closed(Time::from_ticks(1), late);
-        let mut group = c.benchmark_group(format!("fst/{}/{fixture}/file", fixtures::PROVIDER));
+        let mut group = c.benchmark_group(format!("{fixture}/file"));
         group.sample_size(20);
         let lookup = ondas::HierarchyPath::parse("top.probe_sparse").unwrap();
         for (name, prime) in [("first-exact", false), ("second-build-index", true)] {
@@ -146,13 +145,10 @@ pub(super) fn topology(c: &mut Criterion) {
 }
 
 pub(super) fn sparse_dense(c: &mut Criterion) {
-    let fixture = "fst0087-sparse-dense-active";
-    let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
+    let fixture = "fst/fst0087-sparse-dense-active";
+    let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
     let mut wave = ondas::open_with(&path, BACKEND).unwrap();
-    let mut group = c.benchmark_group(format!(
-        "fst/{}/{fixture}/file/regression",
-        fixtures::PROVIDER
-    ));
+    let mut group = c.benchmark_group(format!("{fixture}/file/regression"));
     group.sample_size(10);
     for bank in ["sparse", "dense"] {
         let signals = (0..64)
@@ -190,8 +186,8 @@ pub(super) fn sparse_dense(c: &mut Criterion) {
 }
 
 pub(super) fn wide(c: &mut Criterion) {
-    let fixture = "fst0083-wide-compact-toggle";
-    let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
+    let fixture = "fst/fst0083-wide-compact-toggle";
+    let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
     let mut wave = ondas::open_with(&path, BACKEND).unwrap();
     let wide = wave.hierarchy().signal("top.wide").unwrap();
     let scalar = wave.hierarchy().signal("top.control").unwrap();
@@ -199,7 +195,7 @@ pub(super) fn wide(c: &mut Criterion) {
     let high = wide.slice(4095, 1).unwrap();
     let late = Time::from_ticks(4096);
     let window = TimeRange::closed(Time::from_ticks(2048), late);
-    let mut group = c.benchmark_group(format!("fst/{}/{fixture}/file", fixtures::PROVIDER));
+    let mut group = c.benchmark_group(format!("{fixture}/file"));
     group.sample_size(20);
     // The scalar and low bit toggle together; the high slice is stable.
     for (name, signal, expected) in [
@@ -290,8 +286,8 @@ pub(super) fn wide(c: &mut Criterion) {
 }
 
 pub(super) fn boundaries(c: &mut Criterion) {
-    let fixture = "fst0015-scr1-max-ahb-coremark";
-    let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
+    let fixture = "fst/fst0015-scr1-max-ahb-coremark";
+    let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
     let mut wave = ondas::open_with(&path, BACKEND).unwrap();
     let constant = wave
         .hierarchy()
@@ -299,7 +295,7 @@ pub(super) fn boundaries(c: &mut Criterion) {
         .unwrap();
     let clock = wave.hierarchy().signal("TOP.clk").unwrap();
     let mut selection = wave.select(&[constant]).unwrap();
-    let mut group = c.benchmark_group(format!("fst/{}/{fixture}/file", fixtures::PROVIDER));
+    let mut group = c.benchmark_group(format!("{fixture}/file"));
     group.sample_size(20);
     // Actual section starts; the selected reset vector does not change.
     for boundary in [745342_u64, 3248312, 5812392] {

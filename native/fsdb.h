@@ -14,7 +14,8 @@ extern "C" {
  * next call on its owner; Rust copies it before unlocking or calling visitors. */
 typedef struct ondas_fsdb ondas_fsdb;
 enum { OFS_UNSUPPORTED, OFS_BITS, OFS_REAL, OFS_STRING, OFS_EVENT };
-enum { OFS_SCOPE, OFS_UPSCOPE, OFS_VAR };
+/* Composite containers remain distinct from SDK scopes at the same path. */
+enum { OFS_SCOPE, OFS_UPSCOPE, OFS_VAR, OFS_COMPOSITE_SCOPE };
 
 typedef struct {
     uint64_t id;

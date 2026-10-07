@@ -14,16 +14,13 @@ fn consume(time: Time, value: ValueRef<'_>) {
 }
 
 pub(super) fn wide(c: &mut Criterion) {
-    let fixture = "fst0083-wide-compact-toggle";
-    let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
+    let fixture = "fst/fst0083-wide-compact-toggle";
+    let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
     let mut wave = ondas::open_with(&path, BACKEND).unwrap();
     let scalar = wave.hierarchy().signal("top.control").unwrap();
     let wide = wave.hierarchy().signal("top.wide").unwrap();
     let low = wide.slice(0, 0).unwrap();
-    let mut group = c.benchmark_group(format!(
-        "fst/{}/{fixture}/file/normal/composed",
-        fixtures::PROVIDER
-    ));
+    let mut group = c.benchmark_group(format!("{fixture}/file/normal/composed"));
     group.sample_size(20);
     group.measurement_time(Duration::from_secs(3));
 
@@ -248,8 +245,8 @@ pub(super) fn wide(c: &mut Criterion) {
 }
 
 pub(super) fn sections(c: &mut Criterion) {
-    let fixture = "fst0015-scr1-max-ahb-coremark";
-    let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
+    let fixture = "fst/fst0015-scr1-max-ahb-coremark";
+    let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
     let mut wave = ondas::open_with(&path, BACKEND).unwrap();
     let clock = wave.hierarchy().signal("TOP.clk").unwrap();
     let constant = wave
@@ -257,10 +254,7 @@ pub(super) fn sections(c: &mut Criterion) {
         .signal("TOP.$unit.SCR1_ARCH_RST_VECTOR")
         .unwrap();
     let mut selection = wave.select(&[clock, constant]).unwrap();
-    let mut group = c.benchmark_group(format!(
-        "fst/{}/{fixture}/file/normal/composed",
-        fixtures::PROVIDER
-    ));
+    let mut group = c.benchmark_group(format!("{fixture}/file/normal/composed"));
     group.sample_size(20);
     group.measurement_time(Duration::from_secs(3));
     // Equal 45-tick windows; two cross actual value-section starts.
@@ -292,16 +286,13 @@ pub(super) fn sections(c: &mut Criterion) {
 pub(super) fn wrapped(c: &mut Criterion) {
     // This locked input has an FST whole-file gzip wrapper, not ordinary
     // per-section compression. Its tiny size does not model large wrapper RSS.
-    let fixture = "fst0050-wellen-32";
-    let (path, _) = fixtures::load_artifact(&fixtures::provider(), fixture);
+    let fixture = "fst/fst0050-wellen-32";
+    let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
     let open = || ondas::open_with(black_box(&path), BACKEND).unwrap();
     let mut wave = open();
     let signal = wave.hierarchy().signal("wellen_32.spisub_s.cs_n").unwrap();
     let window = range(1, 2_000_000_000);
-    let mut group = c.benchmark_group(format!(
-        "fst/{}/{fixture}/file/whole-file-gzip/composed",
-        fixtures::PROVIDER
-    ));
+    let mut group = c.benchmark_group(format!("{fixture}/file/whole-file-gzip/composed"));
     group.sample_size(20);
     group.measurement_time(Duration::from_secs(3));
     group.bench_function(BenchmarkId::new("open-drop", BACKEND), |b| {
