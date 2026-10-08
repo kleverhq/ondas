@@ -126,6 +126,10 @@ against the pinned fixtures. Missing inputs fail. The runner reports passed,
 failed and skipped cases separately; sidecars without oracle observations supply
 no conformance evidence.
 
+Both conformance recipes use the optimized `conformance` Cargo profile for the
+library, runtime dependencies and tests. Debug assertions and integer overflow
+checks remain enabled. Self-contained tests use the default test profile.
+
 The fixture-backed gate executes `just bench-smoke` after conformance;
 the vendor gate runs `just bench-smoke-fsdb` after its conformance. Criterion
 `--test` checks that registered workloads execute. It uses no timing thresholds

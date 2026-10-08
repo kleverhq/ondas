@@ -298,7 +298,7 @@ fst -- regression --test`, or the corresponding format and feature flags.
 For FSDB, first run conformance, then smoke the feature-gated target:
 
 ```sh
-./dev cargo test --locked --features fsdb-lib --test conformance full_fsdb_pool -- --ignored --nocapture
+./dev cargo test --locked --profile conformance --features fsdb-lib --test conformance full_fsdb_pool -- --ignored --nocapture
 ./dev cargo bench --locked --features fsdb-lib --bench fsdb -- --test
 ```
 

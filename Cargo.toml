@@ -30,6 +30,11 @@ criterion = { version = "0.8", default-features = false, features = ["cargo_benc
 sha2 = "0.10"
 wellen = "=0.25.6"
 
+[profile.conformance]
+inherits = "release"
+debug-assertions = true
+overflow-checks = true
+
 [[bench]]
 name = "vcd"
 harness = false

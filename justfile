@@ -39,12 +39,12 @@ test: _inside
 
 # Check every FST/VCD in the pinned fixtures plus focused API regressions.
 conformance: _inside
-    cargo test --locked --test conformance -- --ignored --nocapture
+    cargo test --locked --profile conformance --test conformance -- --ignored --nocapture
 
 # Check every FSDB in the pinned fixtures, plus focused regressions.
 conformance-fsdb: _inside
-    cargo test --locked --features fsdb-lib --test conformance fsdb_ -- --ignored --nocapture
-    cargo test --locked --features fsdb-lib --lib fsdb_ -- --ignored
+    cargo test --locked --profile conformance --features fsdb-lib --test conformance fsdb_ -- --ignored --nocapture
+    cargo test --locked --profile conformance --features fsdb-lib --lib fsdb_ -- --ignored
 
 # Execute VCD/FST Criterion workloads without timing thresholds.
 bench-smoke: _inside
