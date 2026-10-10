@@ -1,4 +1,5 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
+set positional-arguments
 
 msrv := `sed -n 's/^rust-version = "\([^"]*\)"/\1/p' Cargo.toml`
 
@@ -43,8 +44,11 @@ conformance: _inside
 
 # Check every FSDB in the pinned fixtures, plus focused regressions.
 conformance-fsdb: _inside
+    tools/repo/fsdb-sweep just _conformance-fsdb
+
+_conformance-fsdb: _inside
     cargo test --locked --profile conformance --features fsdb-lib --test conformance fsdb_ -- --ignored --nocapture
-    cargo test --locked --profile conformance --features fsdb-lib --lib fsdb_ -- --ignored
+    cargo test --locked --profile conformance --features fsdb-lib --lib fsdb_ -- --ignored --nocapture
 
 # Execute VCD/FST Criterion workloads without timing thresholds.
 bench-smoke: _inside
@@ -53,20 +57,33 @@ bench-smoke: _inside
 
 # Execute vendor Criterion workloads against pinned fixtures.
 bench-smoke-fsdb: _inside
+    tools/repo/fsdb-sweep just _bench-smoke-fsdb
+
+_bench-smoke-fsdb: _inside
     cargo bench --locked --features fsdb-lib --bench fsdb -- --test
+
+# Measure FSDB workloads for each selected SDK; accepts Criterion arguments.
+bench-fsdb *args: _inside
+    tools/repo/fsdb-sweep just _bench-fsdb "$@"
+
+_bench-fsdb *args: _inside
+    cargo bench --locked --features fsdb-lib --bench fsdb -- "$@"
 
 # Verify actual downstream linking, independent of Cargo's runtime environment.
 fsdb-consumer: _inside
     python3 tools/repo/check_fsdb_consumer.py
 
-# Validate the optional backend; VERDI_HOME must select an installed SDK.
+# Validate each SDK in VERDI_HOMES, or the single VERDI_HOME.
 ci-fsdb: _inside
+    tools/repo/fsdb-sweep just _ci-fsdb
+
+_ci-fsdb: _inside
     cargo clippy --locked --all-targets --features fsdb-lib -- -D warnings
     cargo test --locked --features fsdb-lib
     cargo +{{msrv}} check --locked --lib --features fsdb-lib
     RUSTDOCFLAGS="-D warnings" cargo doc --locked --lib --features fsdb-lib --no-deps
-    just conformance-fsdb
-    just bench-smoke-fsdb
+    just _conformance-fsdb
+    just _bench-smoke-fsdb
     just fsdb-consumer
     RUSTUP_TOOLCHAIN={{msrv}} just fsdb-consumer
 
