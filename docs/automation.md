@@ -105,6 +105,33 @@ must not change with installed vendor tools. Select SDK versions and environment
 Use separate `CARGO_TARGET_DIR` values when build outputs depend on SDK headers
 or ABI.
 
+For FSDB, set one `VERDI_HOME` or a whitespace-separated `VERDI_HOMES` list in
+the ignored root `.env`:
+
+```dotenv
+VERDI_HOMES="/sdk/reader-a /sdk/reader-b"
+```
+
+Forward the list through the ignored local profile:
+
+```json
+"remoteEnv": {
+  "VERDI_HOMES": "${localEnv:VERDI_HOMES}"
+}
+```
+
+Keep the SDK mount in that same profile. Recreate after changing the settings.
+`VERDI_HOMES` takes precedence over `VERDI_HOME`; list paths must have no
+whitespace. An unset or empty list uses the single path. The selected directories
+must exist inside the container.
+
+`ci-fsdb`, `conformance-fsdb`, `bench-smoke-fsdb` and `bench-fsdb` run once per
+selected SDK. Each run sets `VERDI_HOME` and uses
+`${CARGO_TARGET_DIR:-target}/fsdb-sdk/<position>` for Cargo and Criterion output.
+Later SDKs still run after a failed command; any failure fails the sweep.
+Cancellation stops the sweep. Keep the list order stable when comparing local
+baselines, or use a fresh output directory after changing it.
+
 The launcher does not discover EDA installations, select versions, configure
 licenses or branch on backend names. Profiles and recipes own those choices.
 Private CI topology is outside the public contract.
@@ -194,8 +221,8 @@ Successful docs do not establish native linking or runtime compatibility.
 
 `just ci-fsdb` explicitly enables `fsdb-lib`, checks development Rust and MSRV,
 and runs real FSDB conformance. Supply a complete read-only SDK mount and
-`VERDI_HOME` through the ignored local profile. Install the pinned fixtures
-explicitly before running conformance. Tests do not download data. See
+`VERDI_HOME` or `VERDI_HOMES` through the ignored local profile. Install the pinned
+fixtures explicitly before running conformance. Tests do not download data. See
 [fsdb-lib](fsdb-lib.md) for the source-build deployment contract and
 [fixtures](fixtures.md) for installation and validation.
 

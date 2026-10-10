@@ -3,11 +3,13 @@ use std::{collections::HashSet, hint::black_box, ops::ControlFlow};
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput};
 use ondas::{Time, TimeRange};
 
-use super::{BACKEND, candidate_count, first_change, fixtures, scan_count};
+use super::{BACKEND, candidate_count, first_change, fixtures, fsdb_compatibility, scan_count};
 
 pub(super) fn history(c: &mut Criterion, fixture: &str, end: u64) {
     let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
-    let mut wave = ondas::open_with(&path, BACKEND).unwrap();
+    let Some(mut wave) = fsdb_compatibility::open(ondas::open_with(&path, BACKEND), &path) else {
+        return;
+    };
     let clock = wave.hierarchy().signal("top.clock").unwrap();
     let words = (0..64)
         .map(|i| {
@@ -211,7 +213,9 @@ pub(super) fn history(c: &mut Criterion, fixture: &str, end: u64) {
 
 pub(super) fn topology(c: &mut Criterion, fixture: &str, histories: usize) {
     let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
-    let mut wave = ondas::open_with(&path, BACKEND).unwrap();
+    let Some(mut wave) = fsdb_compatibility::open(ondas::open_with(&path, BACKEND), &path) else {
+        return;
+    };
     assert_eq!(wave.hierarchy().signals().count(), histories);
     let sparse = wave.hierarchy().signal("top.probe_sparse").unwrap();
     let constant = wave.hierarchy().signal("top.probe_constant").unwrap();
@@ -316,7 +320,9 @@ pub(super) fn topology(c: &mut Criterion, fixture: &str, histories: usize) {
 
 pub(super) fn wide(c: &mut Criterion, fixture: &str) {
     let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
-    let mut wave = ondas::open_with(&path, BACKEND).unwrap();
+    let Some(mut wave) = fsdb_compatibility::open(ondas::open_with(&path, BACKEND), &path) else {
+        return;
+    };
     let lsb = wave.hierarchy().signal("top.wide").unwrap();
     let msb = wave.hierarchy().signal("top.wide_msb").unwrap();
     let control = wave.hierarchy().signal("top.control").unwrap();
@@ -411,7 +417,9 @@ pub(super) fn wide(c: &mut Criterion, fixture: &str) {
 pub(super) fn aliases(c: &mut Criterion, fixture: &str) {
     // The matching 16-history topology cases are registered by the caller too.
     let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
-    let mut wave = ondas::open_with(&path, BACKEND).unwrap();
+    let Some(mut wave) = fsdb_compatibility::open(ondas::open_with(&path, BACKEND), &path) else {
+        return;
+    };
     let sparse = wave.hierarchy().signal("top.probe_sparse").unwrap();
     let constant = wave.hierarchy().signal("top.probe_constant").unwrap();
     assert_eq!(wave.hierarchy().signals().count(), 16);

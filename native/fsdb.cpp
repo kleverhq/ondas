@@ -24,6 +24,15 @@ void report(char *error, size_t capacity, const char *message) noexcept {
 std::string text(const char *value) { return value ? value : ""; }
 uint64_t ticks(fsdbTag64 tag) { return (uint64_t(tag.H) << 32) | tag.L; }
 
+bool newer_file_version(const std::string &file, const char *reader) {
+    unsigned file_major, file_minor, reader_major, reader_minor;
+    char extra;
+    return reader
+        && std::sscanf(file.c_str(), "%u.%u%c", &file_major, &file_minor, &extra) == 2
+        && std::sscanf(reader, "%u.%u%c", &reader_major, &reader_minor, &extra) == 2
+        && (file_major > reader_major || (file_major == reader_major && file_minor > reader_minor));
+}
+
 std::string scope_kind(unsigned type) {
     switch (type) {
     case FSDB_ST_VCD_MODULE: case FSDB_ST_SV_MODULE: return "module";
@@ -328,11 +337,17 @@ extern "C" int ondas_fsdb_open(const char *path, int metadata_only, ondas_fsdb *
         reader->path = path;
         require(!reader->path.empty(), "empty FSDB path");
         reader->file = ffrObject::ffrOpenNonSharedObj(&reader->path[0]);
+        ffrFSDBInfo info{};
+        const bool has_info = ffrObject::ffrGetFSDBInfo(&reader->path[0], info) == FSDB_RC_SUCCESS;
+        if (!reader->file && has_info) {
+            const std::string version(info.version, strnlen(info.version, sizeof(info.version)));
+            const char *api_version = ffrObject::ffrGetAPIVersion();
+            if (newer_file_version(version, api_version))
+                throw std::runtime_error("FSDB file version " + version + " is newer than Reader API " + api_version);
+        }
         require(reader->file != nullptr, "FSDB Reader could not open the file (check file variant and SDK version)");
         auto *file = reader->file;
-        ffrFSDBInfo info{};
-        reader->view_window = ffrObject::ffrGetFSDBInfo(&reader->path[0], info) == FSDB_RC_SUCCESS
-                              && info.is_view_window_available;
+        reader->view_window = has_info && info.is_view_window_available;
         require(file->ffrGetXTagType() == FSDB_XTAG_TYPE_L || file->ffrGetXTagType() == FSDB_XTAG_TYPE_HL,
                 "floating FSDB timestamps are unsupported");
         if (!metadata_only) {

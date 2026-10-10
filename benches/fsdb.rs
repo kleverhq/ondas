@@ -5,6 +5,8 @@ use ondas::{ScanRef, Selection, Time, TimeRange};
 
 #[path = "../tests/support/fixtures.rs"]
 mod fixtures;
+#[path = "../tests/support/fsdb_compatibility.rs"]
+mod fsdb_compatibility;
 
 #[path = "fsdb/composed.rs"]
 mod composed;
@@ -47,7 +49,9 @@ fn first_change(record: ScanRef<'_>) -> ControlFlow<Time> {
 fn compare(c: &mut Criterion) {
     let fixture = "fsdb/fsdb0004-compare";
     let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
-    let mut wave = ondas::open_with(&path, BACKEND).expect("open compare workload");
+    let Some(mut wave) = fsdb_compatibility::open(ondas::open_with(&path, BACKEND), &path) else {
+        return;
+    };
     let paths = [
         "compare_tb.clk",
         "compare_tb.dut.counter",
@@ -154,7 +158,9 @@ fn compare(c: &mut Criterion) {
 fn mode_change(c: &mut Criterion) {
     let fixture = "fsdb/fsdb0003-mode-change";
     let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
-    let mut wave = ondas::open_with(&path, BACKEND).expect("open mode-change workload");
+    let Some(mut wave) = fsdb_compatibility::open(ondas::open_with(&path, BACKEND), &path) else {
+        return;
+    };
     let clock = wave.hierarchy().signal("doe_core_cbc.clk").unwrap();
     let ready = wave.hierarchy().signal("doe_core_cbc.ready").unwrap();
     let constant = wave
@@ -257,7 +263,9 @@ fn mode_change(c: &mut Criterion) {
 fn wide(c: &mut Criterion) {
     let fixture = "fsdb/fsdb0009-wide-bus";
     let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
-    let mut wave = ondas::open_with(&path, BACKEND).expect("open wide workload");
+    let Some(mut wave) = fsdb_compatibility::open(ondas::open_with(&path, BACKEND), &path) else {
+        return;
+    };
     let word = wave.hierarchy().signal("tb.dat1").unwrap();
     let low = word.slice(0, 0).unwrap();
     let stable = word.slice(63, 1).unwrap();

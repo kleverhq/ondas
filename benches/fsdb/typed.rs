@@ -3,11 +3,13 @@ use std::{hint::black_box, ops::ControlFlow};
 use criterion::{BenchmarkId, Criterion};
 use ondas::{Time, TimeRange};
 
-use super::{BACKEND, candidate_count, fixtures, scan_count};
+use super::{BACKEND, candidate_count, fixtures, fsdb_compatibility, scan_count};
 
 pub(super) fn records(c: &mut Criterion, fixture: &str, names: &[&str]) {
     let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
-    let mut wave = ondas::open_with(&path, BACKEND).unwrap();
+    let Some(mut wave) = fsdb_compatibility::open(ondas::open_with(&path, BACKEND), &path) else {
+        return;
+    };
     let time = Time::from_ticks(2049);
     let range = TimeRange::closed(Time::from_ticks(2047), time);
     let mut group = c.benchmark_group(format!("{fixture}/file"));

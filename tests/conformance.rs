@@ -16,6 +16,8 @@ use ondas::{
 use serde_json::{Value as Json, json};
 #[path = "support/fixtures.rs"]
 mod fixture_support;
+#[path = "support/fsdb_compatibility.rs"]
+mod fsdb_compatibility;
 #[cfg(feature = "fsdb-lib")]
 #[path = "support/fsdb_workload_tests.rs"]
 mod fsdb_workload_tests;
@@ -337,8 +339,11 @@ fn open(fixture: &Fixture, bytes: bool) -> ondas::Result<Waveform> {
     }
 }
 
-fn checked_open(fixture: &Fixture, bytes: bool, context: &str) -> Option<Waveform> {
-    let result = open(fixture, bytes);
+fn checked_open(
+    fixture: &Fixture,
+    result: ondas::Result<Waveform>,
+    context: &str,
+) -> Option<Waveform> {
     if fixture.oracle["open"]["result"] == "error" {
         assert!(
             matches!(result, Err(Error::Malformed { format, ref backend, .. }) if format == fixture.format && backend == fixture.backend()),
@@ -1130,7 +1135,7 @@ fn run_case(index: usize, bytes: bool) {
         if bytes { "bytes" } else { "file" }
     );
     eprintln!("checking {context}");
-    let Some(mut wave) = checked_open(fixture, bytes, &context) else {
+    let Some(mut wave) = checked_open(fixture, open(fixture, bytes), &context) else {
         return;
     };
     metadata(&wave, &fixture.oracle["metadata"], bytes, fixture);
@@ -1252,9 +1257,16 @@ fn discover(root: &Path, extension: &str) -> Vec<String> {
     names
 }
 
-fn pool_queries(fixture: &Fixture, bytes: bool, context: &str) {
-    let Some(mut wave) = checked_open(fixture, bytes, context) else {
-        return;
+fn pool_queries(fixture: &Fixture, bytes: bool, context: &str) -> bool {
+    let result = open(fixture, bytes);
+    if let Err(error) = &result
+        && fsdb_compatibility::is_version_error(error)
+    {
+        eprintln!("SKIP {context}: {error}");
+        return false;
+    }
+    let Some(mut wave) = checked_open(fixture, result, context) else {
+        return true;
     };
     metadata(&wave, &fixture.oracle["metadata"], bytes, fixture);
     let signals = hierarchy(&wave, &fixture.oracle, false);
@@ -1409,6 +1421,7 @@ fn pool_queries(fixture: &Fixture, bytes: bool, context: &str) {
             );
         }
     }
+    true
 }
 
 fn panic_message(error: Box<dyn std::any::Any + Send>) -> String {
@@ -1463,7 +1476,9 @@ fn full_fsdb_pool() {
 
 // A bounded execution smoke test, not an independent expected-value oracle.
 fn callback_query_reader_smoke(fixture: &Fixture, bytes: bool) {
-    let mut wave = open(fixture, bytes).unwrap();
+    let Some(mut wave) = fsdb_compatibility::open(open(fixture, bytes), &fixture.path) else {
+        return;
+    };
     let signal = wave
         .hierarchy()
         .signals()
@@ -1506,8 +1521,8 @@ fn callback_query_fst_reader() {
     }
 }
 
-fn metadata_matches_open(path: &Path) {
-    let fast = ondas::read_metadata(path).unwrap();
+fn metadata_matches_open(path: &Path) -> Option<ondas::Metadata> {
+    let fast = fsdb_compatibility::open(ondas::read_metadata(path), path)?;
     let full = ondas::open(path).unwrap();
     assert_eq!(fast.source_name(), full.metadata().source_name());
     assert_eq!(fast.timescale(), full.metadata().timescale());
@@ -1518,12 +1533,13 @@ fn metadata_matches_open(path: &Path) {
         fast.comments().collect::<Vec<_>>(),
         full.metadata().comments().collect::<Vec<_>>()
     );
+    Some(fast)
 }
 
 #[test]
 #[ignore = "requires installed fixtures; run just conformance"]
 fn fst_metadata_matches_open() {
-    metadata_matches_open(&load_fixture(&root(), "fst/fst0041-counter").path);
+    metadata_matches_open(&load_fixture(&root(), "fst/fst0041-counter").path).unwrap();
 }
 
 #[cfg(feature = "fsdb-lib")]
@@ -1599,7 +1615,9 @@ fn fst_sparse_dense_identity_and_parity() {
 #[ignore = "requires Verdi and installed fixtures; run just conformance-fsdb"]
 fn fsdb_conflicting_scope_diagnostic_and_metadata_bypass() {
     let (path, _) = fixture_support::load_artifact(&root(), "fsdb/fsdb0021-conflicting-scope");
-    let metadata = ondas::read_metadata(&path).unwrap();
+    let Some(metadata) = fsdb_compatibility::open(ondas::read_metadata(&path), &path) else {
+        return;
+    };
     let span = metadata.time_span().unwrap();
     assert_eq!((span.first().ticks(), span.last().ticks()), (0, 0));
     let scale = metadata.timescale().unwrap();
@@ -1628,7 +1646,9 @@ fn fsdb_conflicting_scope_diagnostic_and_metadata_bypass() {
 #[ignore = "requires Verdi and installed fixtures; run just conformance-fsdb"]
 fn fsdb_same_path_module_and_struct_remain_accessible() {
     let (file, _) = fixture_support::load_artifact(&root(), "fsdb/fsdb0027-rocket-tile-small-1561");
-    let wave = ondas::open_with(file, "fsdb-lib").unwrap();
+    let Some(wave) = fsdb_compatibility::open(ondas::open_with(&file, "fsdb-lib"), &file) else {
+        return;
+    };
     let hierarchy = wave.hierarchy();
     let root = hierarchy.scope("RocketTile").unwrap();
     for name in [
@@ -1690,7 +1710,7 @@ fn fsdb_same_path_module_and_struct_remain_accessible() {
 #[test]
 #[ignore = "requires Verdi and installed fixtures; run just conformance-fsdb"]
 fn fsdb_metadata_without_hierarchy() {
-    metadata_matches_open(&load_fixture(&root(), "fsdb/fsdb0005-compare-xz").path);
+    let _ = metadata_matches_open(&load_fixture(&root(), "fsdb/fsdb0005-compare-xz").path);
 }
 
 #[cfg(feature = "fsdb-lib")]
@@ -1708,8 +1728,9 @@ fn fsdb_sdk_decimal_timescales() {
         ),
     ] {
         let (path, _) = fixture_support::load_artifact(&root(), name);
-        metadata_matches_open(&path);
-        let metadata = ondas::read_metadata(&path).unwrap();
+        let Some(metadata) = metadata_matches_open(&path) else {
+            continue;
+        };
         let scale = metadata.timescale().unwrap();
         assert_eq!((scale.factor(), scale.unit()), (factor, unit), "{name}");
         let span = metadata.time_span().unwrap();
@@ -1727,7 +1748,9 @@ fn fsdb_sdk_decimal_timescales() {
 fn fsdb_queries_routing_and_lifecycle() {
     use std::{ffi::OsString, os::unix::ffi::OsStringExt, sync::Arc};
     let fixture = load_fixture(&root(), "fsdb/fsdb0005-compare-xz");
-    let mut wave = ondas::open(&fixture.path).unwrap();
+    let Some(mut wave) = fsdb_compatibility::open(ondas::open(&fixture.path), &fixture.path) else {
+        return;
+    };
     let signals = hierarchy(&wave, &fixture.oracle, true);
     let handles: Vec<_> = signals.values().take(3).copied().collect();
     assert!(!handles.is_empty());
@@ -1874,10 +1897,11 @@ fn run_pool(root: &Path, extension: &str) {
             let result = std::panic::catch_unwind(|| pool_queries(&fixture, bytes, &context))
                 .map_err(panic_message);
             match result {
-                Ok(()) => {
+                Ok(true) => {
                     passed += 1;
                     eprintln!("PASS {context}");
                 }
+                Ok(false) => skipped += 1,
                 Err(error) => {
                     eprintln!("FAIL {context}: {error}");
                     failures.push(format!("{context}: {error}"));

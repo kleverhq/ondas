@@ -188,6 +188,12 @@ An uninitialized submodule, missing artifacts, unavailable readers, unsupported
 assertions, inconsistent evidence, and empty selections fail. A deliberately
 malformed waveform is different: its sidecar can assert the API's opening error.
 
+FSDB cases can be skipped after input validation when a failed SDK open reports
+a newer file version than the Reader API. The runner prints the reason and counts
+these cases separately. Unexpected opening errors and observation mismatches fail.
+A required pool still needs at least one executed case with evidence. Keep SDK
+selection in ignored local configuration, not in fixture sidecars.
+
 The matrix is `fixture × explicitly selected compatible backend × supported input
 mode`. All waveform operations go through the public Ondas API. Sidecars describe
 waveforms, not reader implementations. Automatic reader selection is tested

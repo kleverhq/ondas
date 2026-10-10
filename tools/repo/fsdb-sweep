@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+(( $# )) || { echo "usage: fsdb-sweep <command> [args...]" >&2; exit 2; }
+if [[ -n ${VERDI_HOMES:-} ]]; then
+    IFS=$' \t\n' read -r -d '' -a homes < <(printf '%s\0' "$VERDI_HOMES")
+else
+    [[ -n ${VERDI_HOME:-} ]] || {
+        echo "error: set VERDI_HOMES or VERDI_HOME in the local container environment" >&2
+        exit 1
+    }
+    homes=("$VERDI_HOME")
+fi
+(( ${#homes[@]} )) || { echo "error: VERDI_HOMES contains no SDK paths" >&2; exit 1; }
+
+target_base=${CARGO_TARGET_DIR:-target}/fsdb-sdk
+result=0
+for index in "${!homes[@]}"; do
+    home_path=${homes[$index]}
+    printf 'FSDB SDK %s/%s: %s\n' "$((index + 1))" "${#homes[@]}" "$home_path"
+    if [[ ! -d $home_path ]]; then
+        echo "error: SDK directory is absent: $home_path" >&2
+        result=1
+        continue
+    fi
+    if env -u VERDI_HOMES VERDI_HOME="$home_path" \
+        CARGO_TARGET_DIR="$target_base/$((index + 1))" "$@"; then
+        printf 'PASS SDK %s\n' "$((index + 1))"
+    else
+        status=$?
+        (( status != 130 && status != 143 )) || exit "$status"
+        printf 'FAIL SDK %s (exit %s)\n' "$((index + 1))" "$status" >&2
+        result=1
+    fi
+done
+exit "$result"

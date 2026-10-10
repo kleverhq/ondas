@@ -250,6 +250,10 @@ mod time;
 mod value;
 mod waveform;
 
+#[cfg(all(test, feature = "fsdb-lib"))]
+#[path = "../tests/support/fsdb_compatibility.rs"]
+mod fsdb_compatibility;
+
 /// Errors and input kinds used by path, hierarchy, slicing, and waveform operations.
 pub use error::{Error, InputKind, LookupError, PathError, PathFormatError, SliceError};
 /// Types describing waveform hierarchy and queryable signals.

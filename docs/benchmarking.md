@@ -266,8 +266,8 @@ example from the repository root:
 ./dev cargo bench --locked --bench fst -- topology
 ./dev cargo bench --locked --bench fst -- wide-compact-toggle
 # FSDB corpus, with the SDK feature enabled:
-./dev cargo bench --locked --features fsdb-lib --bench fsdb -- --save-baseline fsdb-initial
-./dev cargo bench --locked --features fsdb-lib --bench fsdb -- --baseline fsdb-initial
+./dev just bench-fsdb --save-baseline fsdb-initial
+./dev just bench-fsdb --baseline fsdb-initial
 ```
 
 Select revisions with host Git and preserve Criterion output between runs.
@@ -298,9 +298,19 @@ fst -- regression --test`, or the corresponding format and feature flags.
 For FSDB, first run conformance, then smoke the feature-gated target:
 
 ```sh
-./dev cargo test --locked --profile conformance --features fsdb-lib --test conformance full_fsdb_pool -- --ignored --nocapture
-./dev cargo bench --locked --features fsdb-lib --bench fsdb -- --test
+./dev just conformance-fsdb
+./dev just bench-smoke-fsdb
 ```
+
+These recipes use the [local SDK selection](automation.md#proprietary-environments).
+`bench-fsdb` forwards its arguments to Criterion and measures each selected SDK
+in a separate target directory. Criterion IDs and baseline names stay the same.
+Keep the SDK list order stable when comparing results, or choose fresh output.
+
+Preparation validates each artifact before opening it. If the Reader rejects a
+newer file version, preparation prints `SKIP` and omits that fixture's workload
+groups. Other failures still fail. Timed operations are unchanged. A successful
+smoke run covers only registered workloads; skipped groups supply no evidence.
 
 Default all-target checks skip FSDB's feature-gated target. SDK-enabled checks
 must compile it explicitly. Smoke timings are not regression evidence. A proprietary
