@@ -2,7 +2,7 @@ use std::ops::ControlFlow;
 
 use ondas::{Logic, SampleRef, Time, TimeRange, ValueRef};
 
-use super::{load_fixture, root};
+use super::{fsdb_compatibility, load_fixture, root};
 #[path = "fsdb_workloads.rs"]
 mod workloads;
 
@@ -18,7 +18,12 @@ fn fsdb_temporal_workloads() {
         ("fsdb/fsdb0011-history-long", 1_048_576),
     ] {
         let fixture = load_fixture(&root(), fixture);
-        let mut wave = ondas::open_with(&fixture.path, workloads::BACKEND).unwrap();
+        let Some(mut wave) = fsdb_compatibility::open(
+            ondas::open_with(&fixture.path, workloads::BACKEND),
+            &fixture.path,
+        ) else {
+            continue;
+        };
         let signals = ["top.clock", "top.word_00", "top.word_01"]
             .map(|name| wave.hierarchy().signal(name).unwrap());
         let mut selection = wave.select(&signals).unwrap();
@@ -87,7 +92,12 @@ fn fsdb_temporal_workloads() {
 #[ignore = "requires real FSDB runtime and locked fixtures; run just conformance-fsdb"]
 fn fsdb_loading_window_resets() {
     let fixture = load_fixture(&root(), "fsdb/fsdb0010-history-short");
-    let mut wave = ondas::open_with(&fixture.path, workloads::BACKEND).unwrap();
+    let Some(mut wave) = fsdb_compatibility::open(
+        ondas::open_with(&fixture.path, workloads::BACKEND),
+        &fixture.path,
+    ) else {
+        return;
+    };
     let clock = wave.hierarchy().signal("top.clock").unwrap();
     let word = wave.hierarchy().signal("top.word_00").unwrap();
     // Shrinking, expanding, changed selection, and a bound beyond the file.
@@ -122,7 +132,12 @@ fn fsdb_loading_window_resets() {
 #[ignore = "requires real FSDB runtime and locked fixtures; run just conformance-fsdb"]
 fn fsdb_conditional_workloads() {
     let fixture = load_fixture(&root(), workloads::WIDE);
-    let mut wave = ondas::open_with(&fixture.path, workloads::BACKEND).unwrap();
+    let Some(mut wave) = fsdb_compatibility::open(
+        ondas::open_with(&fixture.path, workloads::BACKEND),
+        &fixture.path,
+    ) else {
+        return;
+    };
     for shared in [false, true] {
         let signals = workloads::wide_signals(&wave, shared);
         let mut selection = wave.select(&signals).unwrap();
@@ -201,7 +216,12 @@ fn fsdb_conditional_workloads() {
 #[ignore = "requires real FSDB runtime and locked fixtures; run just conformance-fsdb"]
 fn fsdb_typed_temporal_workload() {
     let fixture = load_fixture(&root(), "fsdb/fsdb0017-typed-records");
-    let mut wave = ondas::open_with(&fixture.path, workloads::BACKEND).unwrap();
+    let Some(mut wave) = fsdb_compatibility::open(
+        ondas::open_with(&fixture.path, workloads::BACKEND),
+        &fixture.path,
+    ) else {
+        return;
+    };
     let signals = [
         "top.trigger",
         "top.logic4",

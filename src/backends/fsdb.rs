@@ -735,6 +735,7 @@ fn timescale(text: &str) -> Option<Timescale> {
 mod tests {
     use super::*;
     use crate::TimeUnit;
+    use crate::fsdb_compatibility;
     #[test]
     fn real_storage_preserves_binary_values() {
         for value in [0.0_f32, -0.0, -3.25, f32::INFINITY, f32::NEG_INFINITY] {
@@ -757,7 +758,11 @@ mod tests {
     fn fsdb_bits_use_caller_storage() {
         let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures");
         let path = root.join("fsdb/fsdb0015-wide-compact-toggle/waveform.fsdb");
-        let (mut reader, hierarchy, _) = Reader::open(&path, "bits".into()).unwrap();
+        let Some((mut reader, hierarchy, _)) =
+            fsdb_compatibility::open(Reader::open(&path, "bits".into()), &path)
+        else {
+            return;
+        };
         let signal = hierarchy.signal("top.wide").unwrap();
         let id = reader.ids[signal.index()];
         let width = signal.width().unwrap() as usize;
@@ -837,7 +842,10 @@ mod tests {
     #[ignore = "requires installed SDK demo FSDB"]
     fn fsdb_datatype_enum_is_queryable() {
         let sdk = std::path::PathBuf::from(std::env::var_os("VERDI_HOME").unwrap());
-        let mut wave = crate::open(sdk.join("share/VIA/demo/waveform/cpu.fsdb")).unwrap();
+        let path = sdk.join("share/VIA/demo/waveform/cpu.fsdb");
+        let Some(mut wave) = fsdb_compatibility::open(crate::open(&path), &path) else {
+            return;
+        };
         let variable = wave
             .hierarchy()
             .variables()
@@ -876,7 +884,10 @@ mod tests {
     #[ignore = "requires installed SDK demo FSDB"]
     fn fsdb_hidden_scopes_remain_accessible() {
         let sdk = std::path::PathBuf::from(std::env::var_os("VERDI_HOME").unwrap());
-        let wave = crate::open(sdk.join("share/VIA/demo/waveform/cpu.fsdb")).unwrap();
+        let path = sdk.join("share/VIA/demo/waveform/cpu.fsdb");
+        let Some(wave) = fsdb_compatibility::open(crate::open(&path), &path) else {
+            return;
+        };
         let hierarchy = wave.hierarchy();
         assert!(hierarchy.scopes().any(|scope| scope.is_hidden()));
         assert!(hierarchy.scopes().any(|scope| !scope.is_hidden()));

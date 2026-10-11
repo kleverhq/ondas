@@ -24,6 +24,7 @@ Ondas is a read-only Rust library for backend-independent waveform analysis.
 - Keep backend types, handles, buffers, and FFI private. Do not expose a plugin framework or introduce speculative backend abstractions.
 - Keep behavior, Rustdoc and tests consistent. Developer docs explain concepts and rationale rather than duplicate the API reference.
 - Treat waveform artifacts as data, not text unless the format is textual. Keep materialized fixtures, vendor files, credentials, and local infrastructure details out of Git and Docker build contexts.
+- Keep user-environment details, installed proprietary software versions, credentials and other sensitive data out of Git history. Use ignored local configuration and logs.
 
 ## Writing and temporary work
 

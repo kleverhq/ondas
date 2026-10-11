@@ -126,6 +126,13 @@ against the pinned fixtures. Missing inputs fail. The runner reports passed,
 failed and skipped cases separately; sidecars without oracle observations supply
 no conformance evidence.
 
+The FSDB recipes run once per SDK selected by `VERDI_HOMES`, with `VERDI_HOME`
+as the single-path fallback. See [local SDK selection](automation.md#proprietary-environments).
+For a skipped FSDB fixture, focused Rust tests print `SKIP` with the reason and
+return. The pool counts the case as skipped. See
+[fixture execution rules](fixtures.md#validation-and-execution) for skip conditions
+and required evidence.
+
 Both conformance recipes use the optimized `conformance` Cargo profile for the
 library, runtime dependencies and tests. Debug assertions and integer overflow
 checks remain enabled. Self-contained tests use the default test profile.
@@ -151,6 +158,8 @@ independent opens, cross-thread use/drop, panic cleanup, repeated selections,
 slices and declaration diagnostics. The vendor gate also runs
 `just fsdb-consumer` on development Rust and MSRV: a separate executable launches
 outside Cargo's runtime environment to verify native dependency propagation.
+If its fixture requires a newer Reader, the consumer reports a version skip
+after startup. This verifies loading, but supplies no query coverage for that SDK.
 The value classes asserted by supplied oracle observations, not merely successful
 opens, determine adapter coverage. Request missing cases from the fixture producer;
 never turn the new adapter's output into expected observations.

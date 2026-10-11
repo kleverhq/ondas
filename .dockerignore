@@ -7,3 +7,4 @@ worktrees
 **/__pycache__
 fixtures
 tools.local
+just.local

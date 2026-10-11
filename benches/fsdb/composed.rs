@@ -3,7 +3,7 @@ use std::{hint::black_box, ops::ControlFlow};
 use criterion::{BenchmarkId, Criterion};
 use ondas::{Time, TimeRange};
 
-use super::{BACKEND, candidate_count, fixtures, scan_count};
+use super::{BACKEND, candidate_count, fixtures, fsdb_compatibility, scan_count};
 #[path = "../../tests/support/fsdb_workloads.rs"]
 pub(crate) mod workloads;
 
@@ -17,7 +17,10 @@ pub(super) fn temporal(c: &mut Criterion) {
         ("fsdb/fsdb0011-history-long", 1_048_576),
     ] {
         let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
-        let mut wave = ondas::open_with(path, BACKEND).unwrap();
+        let Some(mut wave) = fsdb_compatibility::open(ondas::open_with(&path, BACKEND), &path)
+        else {
+            continue;
+        };
         let signals = ["top.clock", "top.word_00", "top.word_01"]
             .map(|name| wave.hierarchy().signal(name).unwrap());
         let mut selection = wave.select(&signals).unwrap();
@@ -80,7 +83,9 @@ pub(super) fn temporal(c: &mut Criterion) {
 
 pub(super) fn payload(c: &mut Criterion) {
     let (path, _) = fixtures::load_artifact(&fixtures::root(), workloads::WIDE);
-    let mut wave = ondas::open_with(&path, BACKEND).unwrap();
+    let Some(mut wave) = fsdb_compatibility::open(ondas::open_with(&path, BACKEND), &path) else {
+        return;
+    };
     let mut group = c.benchmark_group(format!("{}/W2/prepared", workloads::WIDE));
     group.sample_size(10);
     for shared in [false, true] {
@@ -216,7 +221,11 @@ pub(super) fn payload(c: &mut Criterion) {
 pub(super) fn typed(c: &mut Criterion) {
     let fixture = "fsdb/fsdb0017-typed-records";
     let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
-    let mut wave = ondas::open_with(path, workloads::BACKEND).unwrap();
+    let Some(mut wave) =
+        fsdb_compatibility::open(ondas::open_with(&path, workloads::BACKEND), &path)
+    else {
+        return;
+    };
     let signals = [
         "top.trigger",
         "top.logic4",
