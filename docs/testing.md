@@ -128,11 +128,10 @@ no conformance evidence.
 
 The FSDB recipes run once per SDK selected by `VERDI_HOMES`, with `VERDI_HOME`
 as the single-path fallback. See [local SDK selection](automation.md#proprietary-environments).
-When an open fails and the SDK reports a newer file version than its Reader API,
-tests print `SKIP` with that reason. Focused Rust tests return after this report;
-the pool counts the case as skipped. These cases supply no conformance evidence.
-Invalid fixture inputs, unexpected opening errors and query mismatches still fail.
-The pool must execute at least one case with evidence.
+For a skipped FSDB fixture, focused Rust tests print `SKIP` with the reason and
+return. The pool counts the case as skipped. See
+[fixture execution rules](fixtures.md#validation-and-execution) for skip conditions
+and required evidence.
 
 Both conformance recipes use the optimized `conformance` Cargo profile for the
 library, runtime dependencies and tests. Debug assertions and integer overflow

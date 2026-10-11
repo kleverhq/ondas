@@ -309,7 +309,7 @@ Keep the SDK list order stable when comparing results, or choose fresh output.
 
 Preparation validates each artifact before opening it. If the Reader rejects a
 newer file version, preparation prints `SKIP` and omits that fixture's workload
-groups. Other failures still fail. Timed operations are unchanged. A successful
+groups. Other failures still fail. A successful
 smoke run covers only registered workloads; skipped groups supply no evidence.
 
 Default all-target checks skip FSDB's feature-gated target. SDK-enabled checks
