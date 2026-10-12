@@ -40,7 +40,7 @@ Do not synthesize source constants, generics, event occurrences, physical-unit A
 - [ ] (2026-10-12) Implement the independent native factory GHW reader and grouped-layout orchestration; create and verify external evidence.
 - [ ] Milestone 1: establish independent fixture evidence, the source-format probes, and benchmark workload definitions.
 - [x] (2026-10-12) Add test-only native wire primitives: checked fixed fields, 32-/64-bit LEB128, both byte orders, lossless string octets and five-bit prefix decoding. Four GHW unit tests and check-local pass; public dispatch remains disabled until full reader integration.
-- [ ] Milestone 2: implement and test the binary decoder and full supported type grammar.
+- [x] (2026-10-12) Milestone 2: implement and test the checked binary primitives and supported type grammar. Eleven self-contained GHW tests pass, including 2048 nested constraints; eight named real-source headers pass. OCR completed; replace invariant panics with typed failures, defer its allocation/performance suggestions as instructed. Public backend dispatch remains disabled until milestone 4.
 - [ ] Milestone 3: implement hierarchy mapping, ordered signal recipes, and alias identity.
 - [ ] Milestone 4: implement bounded streaming reads and integrate the public opening/query APIs.
 - [ ] Milestone 5: complete issue regressions and external GHW conformance.
@@ -669,3 +669,5 @@ Private wire/type/body/hierarchy modules may share concrete enums and structs fo
 Revision (2026-10-12): Start implementation under an active goal. Review completed milestones with OCR, use no Astra agents, and commit independently verified work locally. Execute benchmarks only to verify that they work; ignore timing results and defer tuning and query continuation to a separate pass.
 
 Revision (2026-10-12): Implement the independent factory foundation and four native wire tests; import the two original issue attachments without changing their payloads. Focused factory tests pass (10); full factory before/after suites have the same one failure and 17 errors. Image build, OCR reviews and fixture gates are still in progress.
+
+Revision (2026-10-12): Complete the initial wire/type decoder and OCR review. Install and hash-verify all 95 GHW inputs; reuse 71 matching local artifacts after unauthenticated release-download rate limiting. Reproduce 91 canonical completions and four diagnosed failures. Fixtures commit 765cf66 adds unchanged original issue-90/99 payload metadata. Fixture validation/check passes (469 fixtures, 42 tool tests). Use an ignored, read-only Git wrapper for the fixture checker because container worktree paths do not resolve the submodule relative Git pointer; do not forward this override to temporary-repository tests. Factory source review and image/producer validation remain pending.
