@@ -46,6 +46,10 @@ impl Wire {
         Ok(())
     }
 
+    pub(super) fn at_eof(&mut self) -> Result<bool> {
+        Ok(self.input.fill_buf()?.is_empty())
+    }
+
     pub(super) fn fixed<const N: usize>(&mut self) -> Result<[u8; N]> {
         let mut result = [0; N];
         let mut filled = 0;
