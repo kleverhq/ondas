@@ -115,7 +115,7 @@ tests and doctests. `just check-local` adds static checks and repository-tool te
 and is the fixture-free pre-commit gate. `just ci` also requires conformance.
 Formatting, Clippy, compilation and Rustdoc do not replace runtime tests.
 
-`./dev just conformance` runs the ignored FST/VCD integration tests and
+`./dev just conformance` runs the ignored FST/VCD/GHW integration tests and
 feature-disabled FSDB routing against the pinned fixtures. The routing check also
 requires its FSDB artifact. Missing artifacts or required oracle observations
 fail the suite. Default test runs leave these external tests ignored

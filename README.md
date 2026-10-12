@@ -20,7 +20,7 @@ opening waveforms, resolving signals and querying values.
 
 ## Cargo features
 
-No Cargo features are enabled by default. VCD and FST readers are always
+No Cargo features are enabled by default. VCD, FST and GHW readers are always
 included, even with `default-features = false`.
 
 - `fsdb-lib`: adds the FSDB reader. Requires a local Verdi FSDB Reader SDK
@@ -37,6 +37,7 @@ ondas = { version = "1", features = ["fsdb-lib"] }
 |---|---|---|---|
 | `vcd-native` | VCD | Built-in Rust parser; no external parser dependency | [docs/vcd-native.md](docs/vcd-native.md) |
 | `fst-lib` | FST | `fst-reader` 0.17.0 | [docs/fst-lib.md](docs/fst-lib.md) |
+| `ghw-native` | GHW | Built-in Rust parser; no external parser dependency | [docs/ghw.md](docs/ghw.md) |
 | `fsdb-lib` | FSDB | Optional `fsdb-lib` feature; local Verdi FSDB Reader SDK, file-only | [docs/fsdb-lib.md](docs/fsdb-lib.md) |
 
 ## Development

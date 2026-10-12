@@ -49,8 +49,8 @@ relations. These fields supply no reader observations. An absent oracle and `{}`
 supply no conformance evidence. The runner still verifies the required artifact,
 then reports it as skipped. A required pool must execute at least one case with evidence.
 
-Conformance executes FST and VCD in file and bytes modes. The explicit `fsdb-lib`
-suite executes FSDB in file mode with the vendor runtime. GHW, WLF and SHM
+Conformance executes FST, VCD and GHW in file and bytes modes. The explicit `fsdb-lib`
+suite executes FSDB in file mode with the vendor runtime. WLF and SHM
 sidecars in the submodule do not supply Ondas readers or conformance coverage.
 Fixtures are excluded from the crate package and Docker build context. Downloaded
 payloads are ignored by the submodule's Git rules.
@@ -87,13 +87,13 @@ profile and semantic evidence before opening selected waveforms.
 
 Nonempty successful pool oracles currently need explicit `metadata`, `hierarchy`
 and nonempty `signals` sections, with each signal ID referenced by a variable.
-Supported scope assertions are `path`, `kind` and `definition_name`. Supported
+Supported scope assertions are `path`, `kind`, `packing` and `definition_name`. Supported
 variable assertions are `path`, `kind`, `direction`, `range`, `type_name`,
-`is_constant` and `signal`. Those fields are checked during execution. Supported
+`is_constant`, `enumeration` and `signal`. Those fields are checked during execution. Supported
 signal encodings are bits, real, string and event, with successful samples/windows.
 Opening-error oracles currently cover `malformed` only.
 
-The schema's additional sparse forms, packing/spelling/enumeration assertions,
+The schema's additional sparse forms, spelling assertions,
 unsupported encodings, `unknown-format` opening assertions and sample/window
 errors are not executable by this runner. Unsupported assertion forms are rejected
 rather than silently counted as passing observations. Local API tests cover

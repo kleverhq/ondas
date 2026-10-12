@@ -1,32 +1,130 @@
-# GHW integration
+# Native GHW reader
 
-GHW is GHDL's binary waveform format. The planned adapter uses `wellen` to map
-declarations and histories to the [common model](model.md). It must keep the GHDL
-type system and format-specific database API private. Use real files to establish
-supported constructs and decoding limits. Format recognition does not prove
-language coverage.
+`ghw-native` is the built-in Rust reader for GHDL Waveform files. Automatic
+opening and explicit selection use this reader. It accepts files and shared
+`Arc<[u8]>` input. It needs no Cargo feature, native library, converter or temporary
+file. The public API follows the [common model](model.md).
 
-## Mapping
+## Format boundary
 
-Preserve available type names, enumeration labels/encodings, direction, constants
-and source ranges. Leave unknown information absent. A lack of transitions does
-not make a declaration constant.
+GHW has no separate normative format standard. The executable reference is the
+GHDL producer and reader at revision
+[`2c451de76b07b73fd338c91d68fd5cefcb152512`](https://github.com/ghdl/ghdl/tree/2c451de76b07b73fd338c91d68fd5cefcb152512).
+The Rust implementation uses the wire grammar and independent fixture evidence.
+It does not link GHDL or use wellen at runtime.
 
-Declaration indices and normalized query-bit positions differ. Preserve each
-logic state. Do not reduce these states to binary values. Enumeration metadata belongs
-to declarations, not a separate runtime-value variant.
+The reader accepts uncompressed versions 0 and 1, with word/offset descriptors
+4/1. Fixed fields and binary64 values use the declared
+byte order. Signed and unsigned LEB128 fields have checked widths. Strings use
+the source prefix encoding. Each string octet maps reversibly to Unicode U+0000
+to U+00FF. The reader does not guess UTF-8 from byte contents.
 
-A declaration without a queryable history differs from a history with an
-unsupported encoding. Preserve its hierarchy information without inventing values
-or failing unrelated lookups.
+Opening reads strings, types and hierarchy, then validates the complete body.
+This pass establishes the first and last recorded ticks. `read_metadata` uses
+the same full opening path and drops the reader. It is not a header-only operation.
+Directory and tail sections are validated when present. Recorded footer offsets
+do not drive query seeking. Clean EOF after a complete section is accepted;
+partial fields, value lists and section terminators fail.
 
-## Verification
+GHW does not encode time resolution. Ondas preserves integer ticks and reports
+the conventional unit of one femtosecond. It cannot repair scaling from a
+producer that used another simulation resolution. Missing writer, date and
+definition-name information remains absent.
 
-Use real GHW fixtures with the [common conformance suite](testing.md). Check
-ranges, types/enumerations, constants/generics, logic states, unsupported encodings
-and reader error translation. Sparse observations do not establish complete
-hierarchy coverage.
+## Declaration and value mapping
 
-Select `wellen` explicitly and test each supported input mode. GHW performance
-cases belong in their own target under the [benchmarking policy](benchmarking.md).
-They do not need to reproduce a VCD/FST fixture set.
+| Source object | Ondas representation |
+| --- | --- |
+| Integer and physical scalar | Signed 32- or 64-bit `Bits`, according to source storage |
+| Real scalar | `Real`, preserving binary64 bits |
+| Bit, boolean and std_ulogic scalar | One bit; two or nine states from explicit source type markers |
+| Other enumeration | Fixed-width ordinal bits with declaration labels and encoded keys |
+| Integer-indexed one-dimensional bit or std_ulogic vector | One whole `Bits` signal with the source range |
+| Other array, including boolean and character arrays | Unpacked array scopes and readable element leaves |
+| Record | Unpacked record scope and readable fields |
+| Process | Leaf process scope |
+
+Constrained enum metadata keeps original base ordinals. Subsets do not renumber
+their labels. Character leaves retain their declared labels, including Latin-1
+octets. They do not become string values. Physical unit tables remain private;
+queries return the source integer value without scaling.
+
+Array layouts support multiple dimensions, enum and negative indices, mixed
+directions, nested bounds, arrays of records and records of arrays. Unbounded
+record aliases use their resolved field constraints. A null vector retains a
+variable with no signal or bit range. A null non-vector array retains an empty
+array scope. No value is invented for either object.
+
+Names retain exact source case and punctuation, including VHDL extended
+identifier delimiters. Use `HierarchyPath::from_components` for exact components.
+Generate-for scopes retain their source iterator suffix. The reader does not
+apply Verilog name normalization or infer signed vector types from type names.
+Absence of changes does not make a declaration constant.
+
+Whole signal identity uses the ordered source scalar IDs and common encoding.
+Exact aliases share a signal. Reversed, subset, superset and overlapping recipes
+remain distinct when their ordered recipes differ. Scalar-ID holes are resolved
+through active ranks. They do not cause a repeated search through unused IDs.
+Declaration metadata remains independent of shared signal identity.
+
+## Query cost and storage
+
+Each query replays the body from its start through the required prefix. A late
+window must establish earlier state. Selection does not avoid reading unrelated
+encoded records. It limits assembled runtime values to the distinct selected
+whole recipes. A narrow vector slice still requires its whole source recipe.
+
+Reverse scalar dependencies update selected positions. Each touched whole value
+is delivered once per change list. Repeated lists at one tick remain ordered.
+The common query engine observes the final tick state and compares projections
+before emitting changes. Equal ticks can span snapshot and cycle sections.
+
+Explicit completed-tick notifications allow callback termination before values
+at the next tick, including an unrelated-only suffix. Scans, candidates and
+composed queries use the common engine. Callback values borrow current buffers;
+owned traces retain their requested output.
+
+The reader retains hierarchy, type layouts and ordered recipes, plus input
+buffers. Queries retain selected current values and common query state. They do
+not retain all source histories or a global timestamp index. There is no query
+checkpoint or continuation cache. Benchmark warm cases distinguish a reused
+waveform or selection from a reader that retains full histories.
+
+## Errors and limits
+
+Detected invalid fields, ordinals, IDs, time order and incomplete sections return
+`Error::Malformed` with a byte offset. I/O failures return `Error::Io`.
+Unsupported versions, descriptors, type tags, hierarchy tags and layouts return
+`Error::Backend` with an explicit unsupported-GHW message. Gzip and bzip2 outer
+containers are unsupported. The reader does not decompress through a subprocess.
+
+Historical range tag 35 in `ghw0002-ghdl-issue-538` is unsupported. The format
+boundary does not include arbitrary historical producer grammars, access/file
+types or repair of broken recordings. Derived empty layouts are limited to
+1,000,000 scopes. This checked limit prevents a compact empty-element array from
+creating an unbounded hierarchy. It returns an explicit unsupported-layout error.
+
+## Evidence
+
+[`tests/ghw_native.rs`](../tests/ghw_native.rs) checks the public API with independent
+literal bytes. Private wire tests cover checked integers, tiny buffers, both byte
+orders and versions, real payloads, deep constraints, aliases and section errors.
+Test counters check selected storage, shared scalar decoding and early stopping.
+
+The [fixture suite](fixtures.md) verifies the complete discovered GHW pool. Its
+eighteen positive profiles use independent oracles from the pinned native GHDL
+reader. Three hash-bound truncated cycle recordings assert malformed opening.
+Other artifacts have no oracle and are reported as skipped after hash validation.
+The historical unsupported range has a separate mandatory file/bytes check.
+
+[`ghw_workload_checks.rs`](../tests/support/ghw_workload_checks.rs) checks source
+bit order, issue-99 neighbors, nested raw/resolved vectors, numeric storage,
+processes, nulls and exact names. It checks shared benchmark consumers against
+authored values and independent complete windows. The named type coverage also
+includes multidimensional arrays, p32, queryable i64, enum subsets and unbounded
+record aliases. These extend the incomplete paths in pinned
+[wellen 0.25.6](https://github.com/ekiwi/wellen/tree/34f40595c4330bcac364397679cdc3d5ae6b5c0c/src/ghw).
+They do not imply support for every VHDL construct.
+
+The [benchmark target](benchmarking.md) checks execution and ownership boundaries.
+This implementation makes no performance comparison claim.

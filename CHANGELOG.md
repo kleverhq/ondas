@@ -6,6 +6,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Read uncompressed GHW files and shared bytes with the built-in `ghw-native`
+  backend, including composite VHDL declarations and the existing query APIs.
+- Check native GHW values with independent fixture oracles and execute GHW
+  benchmark workloads through the default CI gate.
+
 ## [1.0.2] - 2026-10-07
 
 ### Changed
