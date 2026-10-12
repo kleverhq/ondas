@@ -39,6 +39,7 @@ Do not synthesize source constants, generics, event occurrences, physical-unit A
 - [x] (2026-10-12) Review the local fixture/factory workflow with Astra high, fix the unrelated full-suite gate, pass its targeted re-check and a fresh independent Astra high control review.
 - [ ] (2026-10-12) Implement the independent native factory GHW reader and grouped-layout orchestration; create and verify external evidence.
 - [ ] Milestone 1: establish independent fixture evidence, the source-format probes, and benchmark workload definitions.
+- [x] (2026-10-12) Add test-only native wire primitives: checked fixed fields, 32-/64-bit LEB128, both byte orders, lossless string octets and five-bit prefix decoding. Four GHW unit tests and check-local pass; public dispatch remains disabled until full reader integration.
 - [ ] Milestone 2: implement and test the binary decoder and full supported type grammar.
 - [ ] Milestone 3: implement hierarchy mapping, ordered signal recipes, and alias identity.
 - [ ] Milestone 4: implement bounded streaming reads and integrate the public opening/query APIs.
@@ -49,6 +50,8 @@ Do not synthesize source constants, generics, event occurrences, physical-unit A
 
 ## Surprises & Discoveries
 
+
+The imported original issue-99 recording was independently scanned by pinned libghw: cpu_core_tb.uut.reg_file.addr_c uses ordered scalar IDs 828..832 and changes to 00001 at tick 150000000, then 00000 at 152000000. The original issue-90 archive contains a 4232-byte GHW file with genuine multidimensional arrays. Both original artifacts are installed locally as ghw0093-wellen-issue-90 and ghw0094-surfer-issue-547; sidecars await the fixture commit and factory-oracle import.
 
 GHW has no separate complete frozen standard. The GHDL documentation says that its writer and ghw utilities evolve together. Use the pinned writer and reader as the executable format specification, with the wire rules embedded below. An unofficial Kaitai description is incomplete and assigns some numeric tags differently; it is not normative.
 
@@ -664,3 +667,5 @@ Private wire/type/body/hierarchy modules may share concrete enums and structs fo
 2026-10-12: Apply the user's local fixture workflow. Create feat/ghw-oracles in the submodule and neighboring factory, move delivered oracle/source generation into the factory, add its missing GHW/grouped-layout work, specify explicit verified imports and post-import receipt rebinding, and remove remote publication as a local acceptance prerequisite. Apply the user's follow-up by requiring only the grouped layout, without a legacy fallback or compatibility tests. Preserve task branches during submodule recovery. No push, tags or releases are authorized. Fix the focused Astra high review's full-suite gate finding; its targeted re-check and a fresh independent control pass report no substantive findings.
 
 Revision (2026-10-12): Start implementation under an active goal. Review completed milestones with OCR, use no Astra agents, and commit independently verified work locally. Execute benchmarks only to verify that they work; ignore timing results and defer tuning and query continuation to a separate pass.
+
+Revision (2026-10-12): Implement the independent factory foundation and four native wire tests; import the two original issue attachments without changing their payloads. Focused factory tests pass (10); full factory before/after suites have the same one failure and 17 errors. Image build, OCR reviews and fixture gates are still in progress.

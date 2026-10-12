@@ -4,6 +4,8 @@ pub(crate) mod fsdb;
 pub(crate) mod fst;
 #[cfg(test)]
 pub(crate) mod generated;
+#[cfg(test)]
+mod ghw;
 pub(crate) mod vcd;
 
 use std::{
