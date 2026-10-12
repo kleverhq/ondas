@@ -44,6 +44,10 @@ name = "fst"
 harness = false
 
 [[bench]]
+name = "ghw"
+harness = false
+
+[[bench]]
 name = "fsdb"
 harness = false
 required-features = ["fsdb-lib"]

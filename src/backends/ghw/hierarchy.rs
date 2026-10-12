@@ -591,6 +591,144 @@ mod tests {
     }
 
     #[test]
+    fn ordered_overlap_ports_and_enum_generate_traversal() {
+        let strings = [
+            "",
+            "std_ulogic",
+            "'U'",
+            "'X'",
+            "'0'",
+            "'1'",
+            "'Z'",
+            "'W'",
+            "'L'",
+            "'H'",
+            "'-'",
+            "array",
+            "top",
+            "scalar",
+            "whole",
+            "alias",
+            "reversed",
+            "subset",
+            "overlap",
+            "repeated",
+            "input",
+            "output",
+            "inout",
+            "buffer",
+            "linkage",
+            "gen",
+            "color",
+            "red",
+            "blue",
+            "integer",
+        ];
+        let sid = |name| strings.iter().position(|&s| s == name).unwrap() as u8;
+        let mut bytes = b"TYP\0\0\0\0\0\x06\0\0\0".to_vec();
+        bytes.extend([23, sid("std_ulogic"), 9, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        // I32 index, unbounded logic array, 2 downto 0 and 1 downto 0 bounds.
+        bytes.extend([
+            25,
+            sid("integer"),
+            31,
+            sid("array"),
+            1,
+            1,
+            2,
+            35,
+            0,
+            3,
+            153,
+            2,
+            0,
+            35,
+            0,
+            3,
+            153,
+            1,
+            0,
+        ]);
+        bytes.extend([23, sid("color"), 2, sid("red"), sid("blue"), 0]);
+        let mut wire = Wire::new(Box::new(Cursor::new(bytes))).unwrap();
+        let mut types =
+            Types::read(&mut wire, strings.into_iter().map(str::to_owned).collect()).unwrap();
+        let mut wire = Wire::new(Box::new(Cursor::new(vec![0, 0, 0, 0, 3, 1, 0]))).unwrap();
+        types.wkt(&mut wire).unwrap();
+        let mut bytes = vec![0; 4];
+        bytes.extend(2u32.to_le_bytes());
+        bytes.extend(13u32.to_le_bytes());
+        bytes.extend(4u32.to_le_bytes());
+        bytes.extend([3, sid("top")]);
+        for (name, ty, ids) in [
+            ("scalar", 1, vec![1]),
+            ("whole", 4, vec![3, 1, 4]),
+            ("alias", 4, vec![3, 1, 4]),
+            ("reversed", 4, vec![4, 1, 3]),
+            ("subset", 5, vec![3, 1]),
+            ("overlap", 5, vec![1, 4]),
+            ("repeated", 4, vec![1, 1, 4]),
+        ] {
+            bytes.extend([16, sid(name), ty]);
+            bytes.extend(ids);
+        }
+        for (tag, name) in [
+            (17, "input"),
+            (18, "output"),
+            (19, "inout"),
+            (20, "buffer"),
+            (21, "linkage"),
+        ] {
+            bytes.extend([tag, sid(name), 1, 1]);
+        }
+        bytes.extend([5, sid("gen"), 6, 1, 16, sid("scalar"), 1, 1, 15, 15, 0]);
+        let mut wire = Wire::new(Box::new(Cursor::new(bytes))).unwrap();
+        let declarations = read(&mut wire, &types).unwrap();
+        let h = &declarations.hierarchy;
+        assert_eq!(
+            h.signal("top.whole").unwrap(),
+            h.signal("top.alias").unwrap()
+        );
+        let recipes = [
+            "scalar", "whole", "reversed", "subset", "overlap", "repeated",
+        ]
+        .map(|name| h.signal(&format!("top.{name}")).unwrap());
+        assert_eq!(
+            recipes
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            6
+        );
+        assert_eq!(h.signals().count(), 6);
+        for (name, direction) in [
+            ("input", Direction::Input),
+            ("output", Direction::Output),
+            ("inout", Direction::InOut),
+            ("buffer", Direction::Buffer),
+            ("linkage", Direction::Linkage),
+        ] {
+            assert_eq!(
+                h.variable(&format!("top.{name}")).unwrap().direction(),
+                direction
+            );
+        }
+        assert_eq!(h.signal("top.gen(blue).scalar").unwrap(), recipes[0]);
+        let mut stack = h.roots().collect::<Vec<_>>();
+        let mut paths = Vec::new();
+        while let Some(item) = stack.pop() {
+            match item {
+                crate::Item::Scope(scope) => stack.extend(scope.children()),
+                crate::Item::Variable(variable) => paths.push(variable.path()),
+            }
+        }
+        paths.sort_by_key(ToString::to_string);
+        let mut expected = h.variables().map(|v| v.path()).collect::<Vec<_>>();
+        expected.sort_by_key(ToString::to_string);
+        assert_eq!(paths, expected);
+    }
+
+    #[test]
     fn extent_respects_direction_including_i64_limits() {
         let wire = Wire::new(Box::new(Cursor::new(Vec::new()))).unwrap();
         let range = super::super::types::Range {

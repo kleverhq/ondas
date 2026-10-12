@@ -29,6 +29,11 @@ fn public_opening_aliases_slices_batches_and_replay() {
         .unwrap();
         assert_eq!(wave.format(), Format::Ghw);
         assert_eq!(wave.backend(), "ghw-native");
+        let scale = wave.metadata().timescale().unwrap();
+        assert_eq!(
+            (scale.factor(), scale.unit()),
+            (1, ondas::TimeUnit::Femtosecond)
+        );
         assert_eq!(wave.metadata().time_span().unwrap().last().ticks(), 4);
         let wide = wave.hierarchy().signal("top.wide").unwrap();
         assert_eq!(wide, wave.hierarchy().signal("top.alias").unwrap());
@@ -299,13 +304,20 @@ fn context_bits(
 #[test]
 fn both_versions_and_byte_orders_preserve_binary64_payloads() {
     for big in [false, true] {
-        for version in [0, 1] {
-            let mut wave =
-                ondas::open_bytes("real.ghw", ghw_bytes::real_recording(big, version).into())
-                    .unwrap();
+        for (version, payload) in [
+            (0, 0x7ff8000000001234_u64),
+            (1, 0x7ff8000000001234),
+            (0, f64::INFINITY.to_bits()),
+            (1, f64::NEG_INFINITY.to_bits()),
+        ] {
+            let mut wave = ondas::open_bytes(
+                "real.ghw",
+                ghw_bytes::real_recording(big, version, payload).into(),
+            )
+            .unwrap();
             let r = wave.hierarchy().signal("top.r").unwrap();
             assert_eq!(r.encoding(), Encoding::Real);
-            for (time, bits) in [(3, 0x8000000000000000u64), (4, 0x7ff8000000001234)] {
+            for (time, bits) in [(3, 0x8000000000000000u64), (4, payload)] {
                 let value = wave.sample(r, Time::from_ticks(time)).unwrap();
                 assert!(
                     matches!(value,Sample::Value { value: Value::Real(real),.. } if real.to_bits()==bits)

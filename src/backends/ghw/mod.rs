@@ -274,7 +274,7 @@ mod tests {
             let (mut reader, hierarchy, _) = Reader::open(
                 Box::new(BufReader::with_capacity(
                     capacity,
-                    Cursor::new(test_bytes::real_recording(true, 1)),
+                    Cursor::new(test_bytes::real_recording(true, 1, 0x7ff8000000001234)),
                 )),
                 "real.ghw".into(),
             )

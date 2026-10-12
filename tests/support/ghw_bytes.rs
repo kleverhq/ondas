@@ -62,7 +62,7 @@ pub fn recording(noise: usize) -> Vec<u8> {
     bytes
 }
 
-pub fn real_recording(big: bool, version: u8) -> Vec<u8> {
+pub fn real_recording(big: bool, version: u8, payload: u64) -> Vec<u8> {
     fn word(bytes: &mut Vec<u8>, n: u32, big: bool) {
         bytes.extend(if big {
             n.to_be_bytes()
@@ -96,7 +96,7 @@ pub fn real_recording(big: bool, version: u8) -> Vec<u8> {
     bytes.extend(b"ESN\0CYC\0");
     wide(&mut bytes, 4, big);
     bytes.push(1);
-    wide(&mut bytes, 0x7ff8000000001234, big);
+    wide(&mut bytes, payload, big);
     bytes.extend([0, 127]);
     bytes.extend(b"ECY\0");
     bytes

@@ -1,6 +1,6 @@
-//! Full-pool conformance plus focused FST public-API regressions.
+//! Full-pool conformance plus focused public-API regressions.
 //! The independent oracle is sparse: only listed declarations and observations
-//! are assertions. Every discovered FST/VCD runs in file and bytes modes.
+//! are assertions. Every discovered FST/VCD/GHW runs in file and bytes modes.
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fs,
@@ -23,10 +23,14 @@ mod fsdb_compatibility;
 mod fsdb_workload_tests;
 #[path = "support/fst_workload_checks.rs"]
 mod fst_workload_checks;
-#[path = "support/fst_workloads.rs"]
-mod fst_workloads;
+#[path = "support/ghw_workload_checks.rs"]
+mod ghw_workload_checks;
+#[path = "support/ghw_workloads.rs"]
+mod ghw_workloads;
 #[path = "support/normalized_oracle.rs"]
 mod normalized_oracle;
+#[path = "support/query_workloads.rs"]
+mod query_workloads;
 #[path = "support/vcd_workload_checks.rs"]
 mod vcd_workload_checks;
 #[path = "support/vcd_workloads.rs"]
@@ -54,6 +58,7 @@ impl Fixture {
         match self.format {
             Format::Fst => "fst-lib",
             Format::Vcd => "vcd-native",
+            Format::Ghw => "ghw-native",
             Format::Fsdb => "fsdb-lib",
             _ => unreachable!(),
         }
@@ -63,6 +68,7 @@ impl Fixture {
         match self.format {
             Format::Fst => "conformance.fst",
             Format::Vcd => "conformance.vcd",
+            Format::Ghw => "conformance.ghw",
             Format::Fsdb => "conformance.fsdb",
             _ => unreachable!(),
         }
@@ -195,7 +201,10 @@ fn check_oracle_support(oracle: &Json, positive: bool) {
     assert!(!signals.is_empty(), "empty positive oracle");
     let mut referenced = BTreeSet::new();
     for (key, allowed) in [
-        ("scopes", &["path", "kind", "definition_name"][..]),
+        (
+            "scopes",
+            &["path", "kind", "definition_name", "packing"][..],
+        ),
         (
             "variables",
             &[
@@ -204,6 +213,7 @@ fn check_oracle_support(oracle: &Json, positive: bool) {
                 "direction",
                 "range",
                 "type_name",
+                "enumeration",
                 "is_constant",
                 "signal",
             ][..],
@@ -217,6 +227,17 @@ fn check_oracle_support(oracle: &Json, positive: bool) {
             assert!(paths.insert(components), "duplicate {key} path");
             if let Some(range) = item.get("range").filter(|v| !v.is_null()) {
                 fields(range, &["msb", "lsb"]);
+            }
+            if let Some(enumeration) = item.get("enumeration").filter(|v| !v.is_null()) {
+                fields(enumeration, &["name", "variants"]);
+                for variant in enumeration["variants"]
+                    .as_array()
+                    .expect("enum variants are required by schema 1")
+                {
+                    fields(variant, &["encoded", "label"]);
+                    variant["encoded"].as_str().unwrap();
+                    variant["label"].as_str().unwrap();
+                }
             }
             if let Some(id) = item.get("signal").and_then(Json::as_str) {
                 assert!(signals.contains_key(id), "unresolved oracle signal {id}");
@@ -302,6 +323,7 @@ fn load_conformance_fixture(root: &Path, name: &str) -> Option<Fixture> {
     let format = match artifact["format"].as_str().unwrap() {
         "fst" => Format::Fst,
         "vcd" => Format::Vcd,
+        "ghw" => Format::Ghw,
         "fsdb" if cfg!(feature = "fsdb-lib") => Format::Fsdb,
         other => panic!("{name}: unexpected selected format {other}"),
     };
@@ -470,6 +492,16 @@ fn hierarchy(wave: &Waveform, oracle: &Json, check_lookups: bool) -> BTreeMap<St
                 "scope {path} definition"
             );
         }
+        if let Some(packing) = expected.get("packing") {
+            let actual = scope.packing().map(|p| match p {
+                ondas::Packing::Packed => "packed",
+                ondas::Packing::Unpacked => "unpacked",
+                ondas::Packing::Sparse => "sparse",
+                ondas::Packing::TaggedPacked => "tagged-packed",
+                _ => panic!("unexpected packing"),
+            });
+            assert_eq!(json!(actual), *packing, "scope {path} packing");
+        }
     }
     let mut signals = BTreeMap::new();
     for expected in list(&oracle["hierarchy"], "variables") {
@@ -509,6 +541,27 @@ fn hierarchy(wave: &Waveform, oracle: &Json, check_lookups: bool) -> BTreeMap<St
         }
         if let Some(name) = expected.get("type_name") {
             assert_eq!(json!(variable.type_name()), *name, "{path} type name");
+        }
+        if let Some(expected) = expected.get("enumeration") {
+            if expected.is_null() {
+                assert!(variable.enumeration().is_none(), "{path} enumeration");
+            } else {
+                let actual = variable
+                    .enumeration()
+                    .unwrap_or_else(|| panic!("{path}: missing enumeration"));
+                if let Some(name) = expected.get("name") {
+                    assert_eq!(json!(actual.name()), *name, "{path} enum name");
+                }
+                let variants = actual
+                    .variants()
+                    .map(|v| json!({"encoded":v.encoded,"label":v.label}))
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    json!(variants),
+                    expected["variants"],
+                    "{path} enum variants"
+                );
+            }
         }
         if let Some(constant) = expected.get("is_constant") {
             assert_eq!(json!(variable.is_constant()), *constant, "{path} constancy");
@@ -1288,7 +1341,7 @@ fn pool_queries(fixture: &Fixture, bytes: bool, context: &str) -> bool {
         }
     }
     for (time, mut entries) in samples {
-        if fixture.format == Format::Fsdb {
+        if matches!(fixture.format, Format::Fsdb | Format::Ghw) {
             entries.extend_from_within(..);
         }
         let handles: Vec<_> = entries.iter().map(|(_, signal, _)| *signal).collect();
@@ -1310,12 +1363,12 @@ fn pool_queries(fixture: &Fixture, bytes: bool, context: &str) -> bool {
         }
     }
     for ((start, end), mut entries) in windows {
-        if fixture.format == Format::Fsdb {
+        if matches!(fixture.format, Format::Fsdb | Format::Ghw) {
             entries.extend_from_within(..);
         }
         let handles: Vec<_> = entries.iter().map(|(_, signal, _)| *signal).collect();
         let range = TimeRange::closed(Time::from_ticks(start), Time::from_ticks(end));
-        if fixture.format == Format::Fsdb {
+        if matches!(fixture.format, Format::Fsdb | Format::Ghw) {
             // Candidate-time and duplicate-selection assertions are derived from
             // supplied complete windows, without extending the oracle schema.
             let required: BTreeSet<_> = entries
@@ -1442,6 +1495,12 @@ fn full_fst_pool() {
 #[ignore = "requires installed fixtures; run just conformance"]
 fn full_vcd_pool() {
     full_pool("vcd");
+}
+
+#[test]
+#[ignore = "requires installed fixtures; run just conformance"]
+fn full_ghw_pool() {
+    full_pool("ghw");
 }
 
 #[cfg(not(feature = "fsdb-lib"))]
@@ -2384,6 +2443,9 @@ fn unsupported_oracle_assertions_and_schema_versions_fail_preflight() {
     });
     check_oracle_support(&oracle, true);
     let mut unsupported = oracle.clone();
+    unsupported["hierarchy"]["variables"][0]["enumeration"] = json!({"name": "state"});
+    assert!(std::panic::catch_unwind(|| check_oracle_support(&unsupported, true)).is_err());
+    unsupported = oracle.clone();
     // This is a producer-supported assertion that the runner cannot execute.
     unsupported["hierarchy"]["variables"][0]["spellings"] = json!({"canonical": "x"});
     assert!(std::panic::catch_unwind(|| check_oracle_support(&unsupported, true)).is_err());
