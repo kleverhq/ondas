@@ -58,6 +58,13 @@ pub(super) struct Range {
 impl Range {
     fn read(wire: &mut Wire) -> Result<Self> {
         let tag = wire.byte()?;
+        // These known type tags are not scalar storage; see Types::read's tag guard.
+        if matches!(tag & 0x7f, 31 | 32 | 34 | 35 | 37..=39) {
+            return Err(wire.malformed(format_args!(
+                "type tag {} cannot encode a scalar range",
+                tag & 0x7f
+            )));
+        }
         let storage = Storage::from_tag(tag & 0x7f, wire)?;
         let mut bound = || -> Result<Bound> {
             Ok(match storage {
@@ -656,6 +663,23 @@ mod tests {
         ));
         let mut wire = Wire::new(Box::new(Cursor::new(vec![0, 0, 0, 0, 3, 1, 0]))).unwrap();
         assert!(types.wkt(&mut wire).is_err());
+    }
+
+    #[test]
+    fn known_type_entries_are_invalid_ranges_and_unknown_storage_stays_unsupported() {
+        for tag in [31, 32, 34, 35, 37, 38, 39] {
+            let mut wire = Wire::new(Box::new(Cursor::new(vec![tag]))).unwrap();
+            assert!(matches!(
+                Range::read(&mut wire),
+                Err(crate::Error::Malformed { .. })
+            ));
+            assert_eq!(wire.offset, 1);
+        }
+        let mut wire = Wire::new(Box::new(Cursor::new(vec![63]))).unwrap();
+        assert!(matches!(
+            Range::read(&mut wire),
+            Err(crate::Error::Backend { .. })
+        ));
     }
 
     #[test]

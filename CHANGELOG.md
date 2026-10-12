@@ -13,6 +13,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Check native GHW values with independent fixture oracles and execute GHW
   benchmark workloads through the default CI gate.
 
+### Fixed
+
+- Classify missing GHW inner-array bounds as malformed data and require oracle
+  evidence for every GHW artifact in conformance.
+
 ## [1.0.2] - 2026-10-07
 
 ### Changed

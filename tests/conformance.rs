@@ -1978,6 +1978,12 @@ fn run_pool(root: &Path, extension: &str) {
         "{extension} pool failures:\n{}",
         failures.join("\n")
     );
+    if extension == "ghw" {
+        assert_eq!(
+            skipped, 0,
+            "every GHW artifact must have independent oracle evidence"
+        );
+    }
     assert!(passed > 0, "no {extension} conformance cases executed");
 }
 

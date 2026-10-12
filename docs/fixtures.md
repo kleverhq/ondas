@@ -48,6 +48,8 @@ The fixture repository validates metadata, including provenance, tags and
 relations. These fields supply no reader observations. An absent oracle and `{}`
 supply no conformance evidence. The runner still verifies the required artifact,
 then reports it as skipped. A required pool must execute at least one case with evidence.
+The GHW pool requires a nonempty profile for every artifact and rejects any
+no-oracle skip.
 
 Conformance executes FST, VCD and GHW in file and bytes modes. The explicit `fsdb-lib`
 suite executes FSDB in file mode with the vendor runtime. WLF and SHM

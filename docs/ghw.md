@@ -98,9 +98,11 @@ Unsupported versions, descriptors, type tags, hierarchy tags and layouts return
 `Error::Backend` with an explicit unsupported-GHW message. Gzip and bzip2 outer
 containers are unsupported. The reader does not decompress through a subprocess.
 
-Historical range tag 35 in `ghw0002-ghdl-issue-538` is unsupported. The format
-boundary does not include arbitrary historical producer grammars, access/file
-types or repair of broken recordings. Derived empty layouts are limited to
+`ghw0002-ghdl-issue-538` omits required bounds for its unbounded inner vector.
+The next TYP entry appears where a scalar range is required. It returns
+`Error::Malformed`. The format boundary does not include arbitrary historical
+producer grammars, access/file types or repair of broken recordings.
+Derived empty layouts are limited to
 1,000,000 scopes. This checked limit prevents a compact empty-element array from
 creating an unbounded hierarchy. It returns an explicit unsupported-layout error.
 
@@ -111,11 +113,11 @@ literal bytes. Private wire tests cover checked integers, tiny buffers, both byt
 orders and versions, real payloads, deep constraints, aliases and section errors.
 Test counters check selected storage, shared scalar decoding and early stopping.
 
-The [fixture suite](fixtures.md) verifies the complete discovered GHW pool. Its
-eighteen positive profiles use independent oracles from the pinned native GHDL
-reader. Three hash-bound truncated cycle recordings assert malformed opening.
-Other artifacts have no oracle and are reported as skipped after hash validation.
-The historical unsupported range has a separate mandatory file/bytes check.
+The [fixture suite](fixtures.md) executes every GHW artifact in file/bytes modes.
+All 102 have independent profiles from the pinned native GHDL reader: 98 positive
+and four hash-bound malformed recordings. Three negative inputs end inside a
+cycle; the fourth lacks nested bounds. Positive profiles remain sparse. They
+assert only listed declarations and complete selected windows.
 
 [`ghw_workload_checks.rs`](../tests/support/ghw_workload_checks.rs) checks source
 bit order, issue-99 neighbors, nested raw/resolved vectors, numeric storage,

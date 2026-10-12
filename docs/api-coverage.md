@@ -88,10 +88,11 @@ completed-tick stopping and repeat/backstep queries with independent literal byt
 Private GHW tests count scalar decoding and selected assembly storage. They check
 that a callback break avoids an unrelated suffix and that duplicates share work.
 [`ghw_workload_checks.rs`](../tests/support/ghw_workload_checks.rs) adds fixture
-checks for numeric metadata, nulls, processes, exact names, historical limits and
-issues 99/146. Its wide and topology consumers are shared with the GHW benchmark.
+checks for numeric metadata, nulls, processes, exact names, issues 99/146 and
+the missing nested bounds in historical issue 538. Its wide and
+topology consumers are shared with the GHW benchmark.
 Native-reader oracle profiles supply the additional type and issue observations;
-the full pool reports artifacts with no oracle as skipped.
+all 102 GHW artifacts have nonempty profiles (98 positive, four malformed).
 
 Memory tests do not prove FST buffer reuse, resource bounds, malformed-input
 hardening or vendor behavior. Oracles cover supplied observations, not every

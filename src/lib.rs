@@ -195,9 +195,9 @@ establish the time span. [`read_metadata`] uses the same full opening path.
   A narrow slice still needs its whole vector. There is no retained history store
   or query checkpoint. Callback termination stops before the next tick's values.
 - The wire does not encode time resolution. Ticks remain unchanged; the reported
-  unit of one femtosecond is conventional. Compression containers, unknown layouts
-  and historical range tag 35 are unsupported. Empty derived layouts have a
-  checked limit of 1,000,000 scopes.
+  unit of one femtosecond is conventional. Compression containers and unknown
+  layouts are unsupported. Missing required nested array bounds are malformed.
+  Empty derived layouts have a checked limit of 1,000,000 scopes.
 
 ### FSDB
 

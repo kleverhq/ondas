@@ -363,7 +363,7 @@ fn ghw_issue_99_point_neighbors_and_projected_complete_window() {
 
 #[test]
 #[ignore = "requires installed fixtures; run just conformance"]
-fn ghw_historical_issue_538_has_an_explicit_format_limit() {
+fn ghw_historical_issue_538_has_missing_nested_bounds() {
     let (path, _) = fixtures::load_artifact(&fixtures::root(), "ghw/ghw0002-ghdl-issue-538");
     for result in [
         ondas::open_with(&path, "ghw-native"),
@@ -373,13 +373,16 @@ fn ghw_historical_issue_538_has_an_explicit_format_limit() {
             "ghw-native",
         ),
     ] {
-        let Err(Error::Backend {
-            backend, message, ..
+        let Err(Error::Malformed {
+            backend,
+            message,
+            format,
         }) = result
         else {
-            panic!("historical range must fail explicitly")
+            panic!("missing inner bounds must be malformed")
         };
         assert_eq!(backend, "ghw-native");
-        assert!(message.contains("range"));
+        assert_eq!(format, ondas::Format::Ghw);
+        assert!(message.contains("byte 909") && message.contains("type tag 35"));
     }
 }

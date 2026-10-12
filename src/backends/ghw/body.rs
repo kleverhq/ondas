@@ -487,13 +487,7 @@ mod tests {
             let strings = wire.strings().unwrap();
             let parsed = Types::read(&mut wire, strings);
             if path.file_name().unwrap() == "ghw0002-ghdl-issue-538" {
-                assert!(matches!(
-                    parsed,
-                    Err(crate::Error::Backend {
-                        operation: "open",
-                        ..
-                    })
-                ));
+                assert!(matches!(parsed, Err(crate::Error::Malformed { .. })));
                 continue;
             }
             let mut types = parsed.unwrap_or_else(|e| panic!("{}: {e}", path.display()));
@@ -531,7 +525,7 @@ mod tests {
         }
         assert_eq!(passed + 4, paths.len());
         eprintln!(
-            "GHW source body probe: {passed} complete, 3 malformed cycles, 1 unsupported historical range"
+            "GHW source body probe: {passed} complete, 3 malformed cycles, 1 malformed missing nested range"
         );
     }
 }
