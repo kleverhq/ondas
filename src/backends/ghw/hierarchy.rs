@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 
+#[cfg(test)]
+use super::types::Bound;
 use super::{
-    types::{Bound, Shape, Storage, Types},
+    types::{Shape, Storage, Types},
     wire::Wire,
 };
 use crate::{

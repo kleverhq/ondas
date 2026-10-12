@@ -163,6 +163,9 @@ impl Wire {
 
     pub(super) fn header(&mut self) -> Result<()> {
         let header = self.fixed::<16>()?;
+        if header.starts_with(&[0x1f, 0x8b]) || header.starts_with(b"BZ") {
+            return Err(self.unsupported("outer gzip/bzip2 compression"));
+        }
         if &header[..9] != b"GHDLwave\n" || header[9] != 16 || header[15] != 0 {
             return Err(self.malformed("invalid file header"));
         }

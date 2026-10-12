@@ -4,8 +4,7 @@ pub(crate) mod fsdb;
 pub(crate) mod fst;
 #[cfg(test)]
 pub(crate) mod generated;
-#[cfg(test)]
-mod ghw;
+pub(crate) mod ghw;
 pub(crate) mod vcd;
 
 use std::{
@@ -21,6 +20,7 @@ use crate::{Result, Signal, Time, ValueRef};
 pub(crate) enum Reader {
     Fst(Box<fst::Reader>),
     Vcd(Box<vcd::Reader>),
+    Ghw(Box<ghw::Reader>),
     #[cfg(feature = "fsdb-lib")]
     Fsdb(Box<fsdb::Reader>),
     #[cfg(test)]
@@ -45,6 +45,13 @@ impl Reader {
         match self {
             Self::Fst(reader) => reader.read(signals, Time::from_ticks(0), end, visitor),
             Self::Vcd(reader) => reader.read(signals, end, visitor),
+            Self::Ghw(reader) => {
+                let mut visitor = visitor;
+                reader.read(signals, end, |event| match event {
+                    ghw::Notification::Value { index, time, value } => visitor(index, time, value),
+                    ghw::Notification::Tick(_) => ControlFlow::Continue(()),
+                })
+            }
             #[cfg(feature = "fsdb-lib")]
             Self::Fsdb(reader) => reader.read(signals, end, visitor),
             #[cfg(test)]

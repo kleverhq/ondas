@@ -9,12 +9,13 @@ use std::{
 use crate::{
     Error, Hierarchy, Result, Sample, ScanRef, Selection, Signal, Time, TimeRange, TimeSpan,
     Timescale, Trace,
-    backends::{Input, Reader, fst, vcd},
+    backends::{Input, Reader, fst, ghw, vcd},
 };
 
 /// Opens a waveform file with an automatically selected available backend.
 ///
-/// FST uses `fst-lib`. VCD uses `vcd-native`. FSDB uses `fsdb-lib` when the
+/// FST uses `fst-lib`. VCD uses `vcd-native`. GHW uses `ghw-native`.
+/// FSDB uses `fsdb-lib` when the
 /// optional feature of the same name is enabled. Content recognition takes
 /// priority over the filename. A recognized extension is a fallback hint.
 /// A recognized format without a reader returns [`Error::NoBackend`].
@@ -30,7 +31,7 @@ pub fn open(path: impl AsRef<Path>) -> Result<Waveform> {
 /// Reads owned source metadata without retaining a waveform or hierarchy.
 ///
 /// FSDB reads the SDK's file metadata without materializing declarations. FST and
-/// VCD currently use their regular readers, so this is not a fast path for those
+/// VCD and GHW use their regular readers, so this is not a fast path for those
 /// formats. Format detection matches [`open`], as do metadata values for files
 /// that open successfully. Unlike [`open`], it does not validate an FSDB
 /// declaration tree. Use [`open`] for validated hierarchy or signal access.
@@ -46,6 +47,7 @@ pub fn read_metadata(path: impl AsRef<Path>) -> Result<Metadata> {
     match format {
         Format::Fst => fst::Reader::open(input, name).map(|(_, _, metadata)| metadata),
         Format::Vcd => vcd::Reader::open(input, name, vcd_file).map(|(_, _, metadata)| metadata),
+        Format::Ghw => ghw::Reader::open(input, name).map(|(_, _, metadata)| metadata),
         #[cfg(feature = "fsdb-lib")]
         Format::Fsdb => crate::backends::fsdb::read_metadata(path, name),
         _ => Err(Error::NoBackend { format }),
@@ -54,7 +56,7 @@ pub fn read_metadata(path: impl AsRef<Path>) -> Result<Metadata> {
 
 /// Opens a waveform file with only the named backend, without fallback.
 ///
-/// Available names are `fst-lib`, `vcd-native`, and feature-enabled `fsdb-lib`.
+/// Available names are `fst-lib`, `vcd-native`, `ghw-native`, and feature-enabled `fsdb-lib`.
 /// A disabled optional backend is an unknown name. Unknown names return
 /// [`Error::UnknownBackend`]. A format unsupported by the selected backend returns
 /// [`Error::BackendDoesNotSupport`]. See [`open`] for detection and reader limits.
@@ -66,7 +68,7 @@ pub fn open_with(path: impl AsRef<Path>, backend: &str) -> Result<Waveform> {
 ///
 /// `name` is the logical [`Metadata::source_name`] and a format-detection hint.
 /// The input stays alive through the shared ownership of `bytes`. Detection,
-/// errors, and reader limitations are the same as [`open`]. Both FST and VCD readers
+/// errors, and reader limitations are the same as [`open`]. FST, VCD and GHW readers
 /// support file and byte input. `fsdb-lib` reads files only. FSDB selected by the
 /// filename hint returns [`Error::UnsupportedInput`] when that feature is enabled.
 /// The SDK's content probe is only available for file paths.
@@ -95,7 +97,7 @@ pub fn open_bytes_with(
 
 fn check_backend(backend: Option<&str>) -> Result<()> {
     if let Some(backend) = backend
-        && !matches!(backend, "fst-lib" | "vcd-native")
+        && !matches!(backend, "fst-lib" | "vcd-native" | "ghw-native")
         && !(cfg!(feature = "fsdb-lib") && backend == "fsdb-lib")
     {
         return Err(Error::UnknownBackend {
@@ -142,6 +144,10 @@ fn open_input(
         (Format::Vcd, None | Some("vcd-native")) => {
             let (reader, hierarchy, metadata) = vcd::Reader::open(input, name, vcd_file)?;
             (Reader::Vcd(Box::new(reader)), hierarchy, metadata)
+        }
+        (Format::Ghw, None | Some("ghw-native")) => {
+            let (reader, hierarchy, metadata) = ghw::Reader::open(input, name)?;
+            (Reader::Ghw(Box::new(reader)), hierarchy, metadata)
         }
         #[cfg(feature = "fsdb-lib")]
         (Format::Fsdb, None | Some("fsdb-lib")) => {
@@ -304,6 +310,7 @@ impl Waveform {
         match self.reader {
             Reader::Vcd(_) => Format::Vcd,
             Reader::Fst(_) => Format::Fst,
+            Reader::Ghw(_) => Format::Ghw,
             #[cfg(feature = "fsdb-lib")]
             Reader::Fsdb(_) => Format::Fsdb,
             #[cfg(test)]
@@ -319,6 +326,7 @@ impl Waveform {
         match self.reader {
             Reader::Fst(_) => "fst-lib",
             Reader::Vcd(_) => "vcd-native",
+            Reader::Ghw(_) => "ghw-native",
             #[cfg(feature = "fsdb-lib")]
             Reader::Fsdb(_) => "fsdb-lib",
             #[cfg(test)]
@@ -513,14 +521,14 @@ mod tests {
             ("dump.WLF", &b""[..], Format::Wlf),
         ] {
             let result = open_bytes(name, bytes(content));
-            if format == Format::Vcd {
+            if matches!(format, Format::Vcd | Format::Ghw) {
                 assert!(
                     matches!(
                         result,
                         Err(Error::Malformed {
-                            format: Format::Vcd,
+                            format: actual,
                             ..
-                        })
+                        }) if actual == format
                     ),
                     "{name}"
                 );

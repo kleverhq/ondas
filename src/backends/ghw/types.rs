@@ -14,6 +14,7 @@ pub(super) enum Storage {
 }
 
 impl Storage {
+    #[cfg(test)]
     pub(super) fn tag(self) -> u8 {
         match self {
             Self::B2 => 22,
@@ -103,7 +104,7 @@ pub(super) enum Shape {
     Scalar {
         storage: Storage,
         literals: Vec<usize>,
-        units: Vec<(usize, i64)>,
+        _units: Vec<(usize, i64)>,
         wkt: u8,
     },
     Alias {
@@ -180,7 +181,7 @@ impl Types {
                         Shape::Scalar {
                             storage,
                             literals,
-                            units,
+                            _units: units,
                             wkt: 0,
                         },
                         wire,
@@ -616,7 +617,9 @@ mod tests {
     #[test]
     fn physical_versions_and_real_constraints() {
         let (_, types) = parse(&[28, 1, 29, 1, 27, 1], 3);
-        assert!(matches!(&types.nodes[0].shape, Shape::Scalar { units, .. } if units.is_empty()));
+        assert!(
+            matches!(&types.nodes[0].shape, Shape::Scalar { _units: units, .. } if units.is_empty())
+        );
         let mut bytes = b"TYP\0\0\0\0\0\x01\0\0\0\x1c\x01\x01\x03\x7e\0".to_vec();
         let mut wire = Wire::new(Box::new(Cursor::new(bytes.clone()))).unwrap();
         wire.version = 1;
@@ -626,7 +629,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            matches!(&types.nodes[0].shape, Shape::Scalar { units, .. } if units == &[(3, -2)])
+            matches!(&types.nodes[0].shape, Shape::Scalar { _units: units, .. } if units == &[(3, -2)])
         );
         bytes = vec![27];
         bytes.extend(0x8000000000000000u64.to_le_bytes());
