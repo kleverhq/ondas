@@ -71,16 +71,20 @@ Declaration types keep their original metadata.
 
 ## Query cost and storage
 
-Each query replays the body from its start through the required prefix. A late
-window must establish earlier state. Selection does not avoid reading unrelated
-encoded records. It limits assembled runtime values to the distinct selected
-whole recipes. A narrow vector slice still requires its whole source recipe.
+Opening can build an index of validated scalar payload positions and ticks.
+The index shares source scalars across overlapping recipes. It keeps only the
+last source payload at each tick. Files must remain unchanged while open.
+Small selections read selected positions in chronological order through the
+required prefix. Broad selections use sequential replay. A late window must
+still establish earlier selected state. A narrow vector slice still requires
+its whole source recipe.
 
 Each query builds one sorted list of source scalar dependencies. Its size is
 proportional to the selected recipe positions. Repeated positions for one source
 scalar share first-observation tracking. A whole value remains missing until
 all its recipe positions have been observed. Each touched whole value is
-delivered once per change list. Repeated lists at one tick remain ordered.
+delivered once per change list during sequential replay. Indexed reads combine
+the final source payloads from all lists at one tick before assembly.
 The common query engine observes the final tick state and compares projections
 before emitting changes. Equal ticks can span snapshot and cycle sections.
 
@@ -89,12 +93,15 @@ at the next tick, including an unrelated-only suffix. Scans, candidates and
 composed queries use the common engine. Callback values borrow current buffers;
 owned traces retain their requested output.
 
-The reader retains hierarchy, type layouts and ordered recipes, plus input
-buffers. A fixed-size buffer batches wire reads. Queries retain selected current
-values and common query state. They do not retain all source histories or a
-global timestamp index. There is no query
-checkpoint or continuation cache. Benchmark warm cases distinguish a reused
-waveform or selection from a reader that retains full histories.
+The reader retains hierarchy, type layouts, ordered recipes and input buffers.
+The optional payload index has a 64 MiB limit, including vector capacities.
+If it reaches this limit or cannot allocate storage, opening still validates
+the body and queries use sequential replay. Each indexed entry holds a source
+tick and byte offset, not a decoded value. Index construction adds work to
+opening. A fixed-size buffer batches wire reads and nearby indexed seeks retain
+buffered bytes. Queries retain selected current values and common query state.
+There is no retained value history, query checkpoint or continuation cache.
+Benchmark warm cases distinguish a reused waveform from retained full values.
 
 ## Errors and limits
 

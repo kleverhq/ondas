@@ -182,6 +182,7 @@ produce extra candidates. These costs do not change observation semantics.
 `ghw-native` is a private Rust reader for uncompressed GHW versions 0 and 1.
 It supports files and shared bytes. Opening validates the complete body to
 establish the time span. [`read_metadata`] uses the same full opening path.
+Source files must remain unchanged while open.
 
 - Integer and physical scalars use signed 32- or 64-bit bits. Real values preserve
   binary64 payloads and byte order. Explicit source markers establish two- or
@@ -191,9 +192,12 @@ establish the time span. [`read_metadata`] uses the same full opening path.
   a declaration without a signal or range. Null arrays keep an empty scope.
 - Exact names retain VHDL extended identifier delimiters. Ordered scalar recipes
   establish whole alias identity. Type layouts and native IDs remain private.
-- Queries replay the source prefix and assemble only selected whole recipes.
-  A narrow slice still needs its whole vector. There is no retained history store
-  or query checkpoint. Callback termination stops before the next tick's values.
+- Opening can retain a bounded index of source payload positions. Small selections
+  read selected positions in tick order; broad selections and inputs that exceed
+  the index limit replay the source prefix. Queries assemble selected whole recipes.
+  A narrow slice still needs its whole vector. Values stay in the source; there is
+  no retained value history or query checkpoint. Callback termination stops before
+  the next tick's values.
 - The wire does not encode time resolution. Ticks remain unchanged; the reported
   unit of one femtosecond is conventional. Compression containers and unknown
   layouts are unsupported. Missing required nested array bounds are malformed.

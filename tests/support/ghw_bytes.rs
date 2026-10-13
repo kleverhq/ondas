@@ -62,6 +62,37 @@ pub fn recording(noise: usize) -> Vec<u8> {
     bytes
 }
 
+/// Add independent static sources so selected vectors exercise selective reads.
+pub fn padded_recording(noise: usize) -> Vec<u8> {
+    let mut bytes = recording(noise);
+    let strings_end = bytes.windows(4).position(|b| b == b"EOS\0").unwrap();
+    let mut names = Vec::new();
+    for i in 0..8 {
+        names.extend(format!("pad{i}\0").as_bytes());
+    }
+    let added_size = names.len() as u32 - 8; // Exclude each string terminator.
+    bytes.splice(strings_end..strings_end, names);
+    let count = u32::from_le_bytes(bytes[24..28].try_into().unwrap());
+    bytes[24..28].copy_from_slice(&(count + 8).to_le_bytes());
+    let size = u32::from_le_bytes(bytes[28..32].try_into().unwrap());
+    bytes[28..32].copy_from_slice(&(size + added_size).to_le_bytes());
+    let hie = bytes.windows(4).position(|b| b == b"HIE\0").unwrap();
+    for field in [hie + 12, hie + 16] {
+        let count = u32::from_le_bytes(bytes[field..field + 4].try_into().unwrap());
+        bytes[field..field + 4].copy_from_slice(&(count + 8).to_le_bytes());
+    }
+    let end = bytes.windows(4).position(|b| b == b"EOH\0").unwrap() - 2;
+    assert_eq!(&bytes[end..end + 2], &[15, 0]); // Scope pop and hierarchy end.
+    // Signal tag, string ID, std_ulogic type ID, and new source scalar ID.
+    let declarations = (0..8)
+        .flat_map(|i| [16, 19 + i, 1, 6 + i])
+        .collect::<Vec<_>>();
+    bytes.splice(end..end, declarations);
+    let snapshot_end = bytes.windows(4).position(|b| b == b"ESN\0").unwrap();
+    bytes.splice(snapshot_end..snapshot_end, [2; 8]); // std_ulogic ordinal for zero.
+    bytes
+}
+
 pub fn real_recording(big: bool, version: u8, payload: u64) -> Vec<u8> {
     fn word(bytes: &mut Vec<u8>, n: u32, big: bool) {
         bytes.extend(if big {

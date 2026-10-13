@@ -53,6 +53,17 @@ impl Wire {
         Ok(())
     }
 
+    /// Keep buffered bytes when indexed payloads are close to the current read.
+    pub(super) fn seek_value(&mut self, offset: u64) -> Result<()> {
+        if let Ok(delta) = i64::try_from(i128::from(offset) - i128::from(self.offset)) {
+            self.input.seek_relative(delta)?;
+            self.offset = offset;
+            Ok(())
+        } else {
+            self.seek(offset)
+        }
+    }
+
     pub(super) fn at_eof(&mut self) -> Result<bool> {
         Ok(self.input.fill_buf()?.is_empty())
     }

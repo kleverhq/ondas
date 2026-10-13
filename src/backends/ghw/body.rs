@@ -15,7 +15,13 @@ pub(super) enum Scalar {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Event {
-    Scalar { id: u32, value: Scalar },
+    Scalar {
+        id: u32,
+        rank: usize,
+        time: Time,
+        offset: u64,
+        value: Scalar,
+    },
     ListEnd(Time),
     Tick(Time),
 }
@@ -115,9 +121,16 @@ pub(super) fn walk<B>(
                 if let Some(flow) = clock.enter(time, end, wire, &mut visitor)? {
                     return Ok((flow, clock.span()));
                 }
-                for &(id, ty) in active {
+                for (rank, &(id, ty)) in active.iter().enumerate() {
+                    let offset = wire.offset;
                     let value = scalar(wire, types, ty)?;
-                    if let ControlFlow::Break(value) = visitor(Event::Scalar { id, value }) {
+                    if let ControlFlow::Break(value) = visitor(Event::Scalar {
+                        id,
+                        rank,
+                        time: Time::from_ticks(time as u64),
+                        offset,
+                        value,
+                    }) {
                         return Ok((ControlFlow::Break(value), clock.span()));
                     }
                 }
@@ -146,8 +159,15 @@ pub(super) fn walk<B>(
                         let &(id, ty) = active.get(rank - 1).ok_or_else(|| {
                             wire.malformed("cycle scalar rank exceeds active table")
                         })?;
+                        let offset = wire.offset;
                         let value = scalar(wire, types, ty)?;
-                        if let ControlFlow::Break(value) = visitor(Event::Scalar { id, value }) {
+                        if let ControlFlow::Break(value) = visitor(Event::Scalar {
+                            id,
+                            rank: rank - 1,
+                            time: Time::from_ticks(time as u64),
+                            offset,
+                            value,
+                        }) {
                             return Ok((ControlFlow::Break(value), clock.span()));
                         }
                     }
@@ -314,7 +334,7 @@ mod tests {
             let scalars = events
                 .iter()
                 .filter_map(|e| {
-                    if let Event::Scalar { id, value } = e {
+                    if let Event::Scalar { id, value, .. } = e {
                         Some((*id, *value))
                     } else {
                         None

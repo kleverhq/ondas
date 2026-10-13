@@ -2,7 +2,7 @@
 
 ## Purpose / Big Picture
 
-Make small selections in GHW recordings with substantial unrelated activity practical. The measured native reader can cost more than1200times FST for one late probe and about50times FST for a CPU address. Improve the production reader incrementally until the measured worst comparable operations cost at most5times FST. Preserve public waveform observations and complete opening validation. Measure first-query cost as well as prepared reuse, retained memory and opening work. User clarification is pending on whether the same5times threshold also includes unequal-work opening cases; query optimization does not depend on that answer.
+Make small selections in GHW recordings with substantial unrelated activity practical. The measured native reader can cost more than1200times FST for one late probe and about50times FST for a CPU address. Improve the production reader incrementally until the measured worst comparable operations cost at most5times FST. Preserve public waveform observations and complete opening validation. Measure first-query cost as well as prepared reuse, retained memory and opening work. The stated working threshold applies to comparable queries in the preceding results table. Opening is measured and reported separately because the converted FST hierarchy and validation work differ. An explicit user instruction to include opening will extend the acceptance gate.
 
 Use KISS and YAGNI: concrete private GHW structures, one hypothesis at a time, no public tuning API, backend framework, format conversion at runtime or speculative cache. Accepted changes need behavior checks, repeated measurements, medium peer review and local commits. Do not push or release.
 
@@ -10,9 +10,9 @@ Use KISS and YAGNI: concrete private GHW structures, one hypothesis at a time, n
 
 - [x] Created the active optimization goal; confirmed clean c922048a37d94821f28684ed4f9a2389e75384c2 and fixtures4ce2f4ea6a034f1db335cc96ba9e67e6dcbb2a38.
 - [x] Two Astra medium lanes independently inspected index alternatives and correctness boundaries. Both recommend indexing source scalar payload locations during required opening validation.
-- [ ] Preserve initial executable and measurement evidence; implement the first isolated source-offset-index experiment.
-- [ ] Check selected-only decoding, equal ticks, missing state, overlap/repeated IDs, early stop, retries and actual selected-payload I/O failures.
-- [ ] Measure the first experiment with unchanged FST and initial executable controls; accept, revise or discard based on evidence.
+- [x] Preserved the initial executable and measurement evidence in tmp/ghw-five-times/. Implemented the first isolated bounded source-offset-index experiment; broad selections still replay.
+- [x] Unit/public tests and full fixture conformance pass. Indexed tests cover partial/no-SNP repeated/reversed recipes, cross-section equal ticks, projected times, early stopping and errors after partial selected assembly. Both medium lanes reviewed H1; focused correctness recheck is clean.
+- [x] Measured H1 twice with reversed backend order and a live unchanged baseline. Small selections are below the query threshold; dense broad scans remain above it. OCR completed all eight Rust files without correctness findings. Fixed helper-header derivation and test/comment nits; the eager metadata-open index cost is documented and retained to avoid a second opening policy. Acceptance awaits commit.
 - [ ] Reduce dense whole-vector routing/decoding cost in a separate experiment; repeat the full matched matrix and add fresh-query controls.
 - [ ] Resolve remaining cases above5times, measure storage and opening, and complete all quality gates and medium reviews.
 - [ ] Promote durable implementation/storage conclusions to docs/ghw.md and docs/benchmarking.md, remove this tracked temporary task directory, commit and write the final report.
@@ -74,7 +74,11 @@ Start with opening-built scalar offsets because a200–300times selective improv
 
 ## Surprises & Discoveries
 
-The prior private injected-I/O test fails inside a following CYC header after a completely read SNP. An immutable-source index can know that earlier tick is complete without reading that header. Move failure coverage to an actually selected payload and preserve the public unfinished-tick rule. The two medium reviewers agree that errors in skipped bytes cannot be reproduced while skipping them; actual selected-read errors must propagate.
+The prior private injected-I/O test fails inside a following CYC header after a completely read SNP. Broad replay retains that test. Indexed failure tests instead fail inside selected payloads, including after another selected source has updated a partial whole value; they preserve the public unfinished-tick rule and recovery. Errors in skipped bytes cannot be reproduced while skipping them; actual selected-read errors propagate.
+
+The common query engine reports unknown changed_at for its first known state, including a delayed complete recipe. Later observed changes have exact times. Indexed tests preserve this contract, including stable projections and backsteps. No shared-engine behavior was changed to make the experiment pass.
+
+The first longer H1 process reduces dense unrelated-noise one-probe late scans from12.7ms to4.83microseconds and the CPU active address window fromabout2ms to5.75microseconds. Their within-process FST ratios are0.51and0.17. Whole dense/many-noise scans remain24.6and27.2times slower and need the next independent hypothesis. Dense opening rises fromabout8ms to21.9ms; this cost is retained in the report.
 
 ## Idempotence and Recovery
 
@@ -82,10 +86,12 @@ Keep rejected patches, executables and logs only in ignored tmp/ghw-five-times/,
 
 ## Outcomes & Retrospective
 
-Implementation and new measurements are pending. The goal remains active until all scoped failing cases reach5times FST and required checks/reviews pass. The final report must expose the cost of the index and any remaining limitations, not only prepared-query wins.
+H1 is implemented and passes all focused tests, full conformance, Clippy, documentation tests and 180 comparison smoke IDs. Two longer measurement processes and an unchanged baseline confirm the selected-query gain. OCR review is still running; broad selected-vector work is the next isolated milestone. The goal remains active until all scoped failing cases reach5times FST and required checks/reviews pass. The final report must expose the cost of the index and any remaining limitations, not only prepared-query wins.
 
 ## Interfaces and Dependencies
 
 All changes remain inside the concrete private GHW reader and its tests/docs. Keep Notification, source buffers, indexed positions and handles private. The public Selection/Waveform interface and the shared normalization engine remain unchanged. Add no third-party reader, runtime converter, public policy switch or generic backend abstraction.
 
 Revision note (2026-10-13): created the executable optimization plan from measured failures and two independent Astra medium source/index reviews. Query implementation proceeds while opening-threshold scope is clarified.
+
+Revision note (2026-10-13): recorded two longer H1 measurements and the live initial-executable control. Saved the next rank-routing experiment in ignored scratch only while OCR reviews the frozen H1 runtime diff. Prepared eleven fresh-reader controls with forty alternating pairs each; these time selection construction and the first query, while opening, lookup and reader destruction are separate.

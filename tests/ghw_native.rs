@@ -15,7 +15,7 @@ fn sample_bits(sample: Sample) -> String {
 
 #[path = "support/ghw_bytes.rs"]
 mod ghw_bytes;
-use ghw_bytes::recording;
+use ghw_bytes::{padded_recording, recording};
 
 #[test]
 fn public_opening_aliases_slices_batches_and_replay() {
@@ -218,7 +218,7 @@ fn file_and_metadata_opening_match_bytes() {
 
 #[test]
 fn partial_cycle_values_wait_for_every_recipe_position() {
-    let mut bytes = recording(0);
+    let mut bytes = padded_recording(0);
     // Use shared source IDs inside each three-bit recipe, including its reverse.
     for (declaration, ids) in [
         ([16, 14, 4, 3, 1, 4], [3, 3, 4]),
@@ -235,7 +235,8 @@ fn partial_cycle_values_wait_for_every_recipe_position() {
     bytes.truncate(body);
     bytes.extend(b"CYC\0");
     bytes.extend(0i64.to_le_bytes());
-    // Active IDs are 3,4,5. ID 3 changes at ticks 0 and 1; ID 4 starts at 2.
+    // Active IDs start 3, 4, 5, followed by unused padding sources.
+    // ID 3 changes at ticks 0 and 1; ID 4 starts at 2.
     bytes.extend([1, 3, 0, 1, 1, 2, 0, 1, 2, 3, 0, 127]);
     bytes.extend(b"ECY\0");
     let mut wave = ondas::open_bytes("partial.ghw", bytes.into()).unwrap();

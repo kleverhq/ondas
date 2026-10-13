@@ -1,5 +1,6 @@
 mod body;
 mod hierarchy;
+mod index;
 #[cfg(test)]
 #[path = "../../../tests/support/ghw_bytes.rs"]
 mod test_bytes;
@@ -30,6 +31,7 @@ pub(crate) struct Reader {
     recipes: Vec<Recipe>,
     active: Vec<(u32, usize)>,
     body_start: u64,
+    index: Option<index::Index>,
     #[cfg(test)]
     pub(crate) records_read: usize,
     #[cfg(test)]
@@ -105,12 +107,23 @@ impl Reader {
         let declarations = hierarchy::read(&mut wire, &types)?;
         wire.marker(b"EOH\0")?;
         let body_start = wire.offset;
+        let mut index = index::Index::new(declarations.active.len());
         let (_, time_span) = body::walk(
             &mut wire,
             &types,
             &declarations.active,
             Time::from_ticks(u64::MAX),
-            |_| ControlFlow::<()>::Continue(()),
+            |event| {
+                if let body::Event::Scalar {
+                    rank, time, offset, ..
+                } = event
+                    && let Some(positions) = &mut index
+                    && !positions.push(rank, time, offset)
+                {
+                    index = None;
+                }
+                ControlFlow::<()>::Continue(())
+            },
         )?;
         let metadata = Metadata {
             source_name,
@@ -127,6 +140,7 @@ impl Reader {
                 recipes: declarations.recipes,
                 active: declarations.active,
                 body_start,
+                index,
                 #[cfg(test)]
                 records_read: 0,
                 #[cfg(test)]
@@ -192,9 +206,14 @@ impl Reader {
         }
         let mut marks = vec![false; buffers.len()];
         let mut touched = Vec::new();
-        let (flow, _) = body::walk(&mut self.wire, &self.types, &self.active, end, |event| {
+        let mut ids = dependencies
+            .iter()
+            .map(|dependency| dependency.id)
+            .collect::<Vec<_>>();
+        ids.dedup(); // Dependencies are already sorted by source ID.
+        let mut consume = |event| {
             match event {
-                body::Event::Scalar { id, value } => {
+                body::Event::Scalar { id, value, .. } => {
                     #[cfg(test)]
                     {
                         self.records_read += 1;
@@ -235,179 +254,26 @@ impl Reader {
                 }
             }
             ControlFlow::Continue(())
-        })?;
-        Ok(flow)
+        };
+        // Broad selections keep the sequential path without a many-chain merge.
+        if let Some(index) = &self.index
+            && ids.len() < self.active.len().div_ceil(2)
+        {
+            index.read(
+                &mut self.wire,
+                &self.types,
+                &self.active,
+                &ids,
+                end,
+                consume,
+            )
+        } else {
+            let (flow, _) =
+                body::walk(&mut self.wire, &self.types, &self.active, end, &mut consume)?;
+            Ok(flow)
+        }
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{ScanRef, TimeRange};
-
-    #[test]
-    fn early_break_has_a_scalar_read_budget_and_bounded_assembly() {
-        for length in [10, 10000] {
-            let mut wave =
-                crate::open_bytes("budget.ghw", test_bytes::recording(length).into()).unwrap();
-            let wide = wave.hierarchy().signal("top.wide").unwrap();
-            let low = wide.slice(0, 0).unwrap();
-            let signals = [wide, low, wide, low];
-            let result = wave
-                .scan(&signals, TimeRange::all(), |record| {
-                    if let ScanRef::Change { time, .. } = record
-                        && time.ticks() == 1
-                    {
-                        ControlFlow::Break(7)
-                    } else {
-                        ControlFlow::Continue(())
-                    }
-                })
-                .unwrap();
-            assert_eq!(result, ControlFlow::Break(7));
-            let crate::backends::Reader::Ghw(reader) = &wave.reader else {
-                panic!("GHW");
-            };
-            assert_eq!(
-                reader.records_read, 5,
-                "four snapshot scalars and one selected change; no unrelated suffix"
-            );
-            assert_eq!(
-                reader.assembly_bytes, 3,
-                "one whole recipe despite projections and duplicates"
-            );
-        }
-    }
-
-    #[test]
-    fn binary64_reads_cross_tiny_wire_buffers() {
-        use std::io::{BufReader, Cursor};
-        for capacity in [1, 2] {
-            let (mut reader, hierarchy, _) = Reader::open(
-                Box::new(BufReader::with_capacity(
-                    capacity,
-                    Cursor::new(test_bytes::real_recording(true, 1, 0x7ff8000000001234)),
-                )),
-                "real.ghw".into(),
-            )
-            .unwrap();
-            reader.wire = reader.wire.with_buffer_capacity(capacity);
-            let r = hierarchy.signal("top.r").unwrap();
-            let mut values = Vec::new();
-            let flow = reader
-                .read(&[r], Time::from_ticks(4), |event| {
-                    if let Notification::Value {
-                        time,
-                        value: ValueRef::Real(real),
-                        ..
-                    } = event
-                    {
-                        values.push((time.ticks(), real.to_bits()));
-                    }
-                    ControlFlow::<()>::Continue(())
-                })
-                .unwrap();
-            assert!(flow.is_continue());
-            assert_eq!(values, [(3, 0x8000000000000000), (4, 0x7ff8000000001234)]);
-        }
-    }
-
-    #[test]
-    fn batch_shares_decoding_and_fresh_reads_survive_unwinding() {
-        let mut wave = crate::open_bytes("reuse.ghw", test_bytes::recording(0).into()).unwrap();
-        let wide = wave.hierarchy().signal("top.wide").unwrap();
-        let low = wide.slice(0, 0).unwrap();
-        let _ = wave
-            .samples(&[wide, low, wide], Time::from_ticks(4))
-            .unwrap();
-        let crate::backends::Reader::Ghw(reader) = &wave.reader else {
-            panic!("GHW");
-        };
-        assert_eq!(reader.records_read, 9);
-        assert_eq!(reader.assembly_bytes, 3);
-        let stopped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = wave.scan(&[wide], TimeRange::all(), |_| -> ControlFlow<()> {
-                panic!("visitor");
-            });
-        }));
-        assert!(stopped.is_err());
-        let sample = wave.sample(wide, Time::from_ticks(1)).unwrap();
-        assert!(
-            matches!(sample, crate::Sample::Value { value: crate::Value::Bits(bits), .. } if bits.as_ref().to_string()=="101")
-        );
-    }
-
-    #[test]
-    fn late_io_failure_does_not_publish_an_unfinished_tick() {
-        use std::io::{self, BufRead, Cursor, Read, Seek, SeekFrom};
-        use std::sync::{
-            Arc,
-            atomic::{AtomicU64, Ordering},
-        };
-        struct Failing {
-            input: Cursor<Vec<u8>>,
-            cutoff: Arc<AtomicU64>,
-        }
-        impl Read for Failing {
-            fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
-                let bytes = self.fill_buf()?;
-                let n = output.len().min(bytes.len());
-                output[..n].copy_from_slice(&bytes[..n]);
-                self.consume(n);
-                Ok(n)
-            }
-        }
-        impl BufRead for Failing {
-            fn fill_buf(&mut self) -> io::Result<&[u8]> {
-                let remaining = self
-                    .cutoff
-                    .load(Ordering::Relaxed)
-                    .checked_sub(self.input.position())
-                    .ok_or_else(|| io::Error::other("injected read failure"))?;
-                if remaining == 0 {
-                    return Err(io::Error::other("injected read failure"));
-                }
-                let bytes = self.input.fill_buf()?;
-                Ok(&bytes[..bytes
-                    .len()
-                    .min(usize::try_from(remaining).unwrap_or(usize::MAX))])
-            }
-            fn consume(&mut self, n: usize) {
-                self.input.consume(n);
-            }
-        }
-        impl Seek for Failing {
-            fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
-                self.input.seek(from)
-            }
-        }
-        let data = test_bytes::recording(0);
-        let mut wave = crate::open_bytes("failing.ghw", data.clone().into()).unwrap();
-        let cutoff = Arc::new(AtomicU64::new(u64::MAX));
-        let fail_at = data.windows(4).position(|b| b == b"ESN\0").unwrap() + 4 + 4 + 2;
-        let (reader, _, _) = Reader::open(
-            Box::new(Failing {
-                input: Cursor::new(data),
-                cutoff: cutoff.clone(),
-            }),
-            "failing.ghw".into(),
-        )
-        .unwrap();
-        // The diagnostic input has exactly the same declared recipes.
-        wave.reader = crate::backends::Reader::Ghw(Box::new(reader));
-        let wide = wave.hierarchy().signal("top.wide").unwrap();
-        cutoff.store(fail_at as u64, Ordering::Relaxed);
-        let mut delivered = 0;
-        let result = wave.scan(&[wide], TimeRange::all(), |_| {
-            delivered += 1;
-            ControlFlow::<()>::Continue(())
-        });
-        assert!(matches!(result, Err(crate::Error::Io(_))));
-        assert_eq!(delivered, 0);
-        cutoff.store(u64::MAX, Ordering::Relaxed);
-        let sample = wave.sample(wide, Time::from_ticks(3)).unwrap();
-        assert!(
-            matches!(sample, crate::Sample::Value { value: crate::Value::Bits(bits), .. } if bits.as_ref().to_string()=="111")
-        );
-    }
-}
+mod tests;
