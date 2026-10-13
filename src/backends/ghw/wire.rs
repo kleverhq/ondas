@@ -85,8 +85,14 @@ impl Wire {
         Ok(result)
     }
 
+    #[inline]
     pub(super) fn byte(&mut self) -> Result<u8> {
-        Ok(self.fixed::<1>()?[0])
+        let Some(&byte) = self.input.fill_buf()?.first() else {
+            return Err(self.malformed("truncated field"));
+        };
+        self.input.consume(1);
+        self.offset += 1;
+        Ok(byte)
     }
 
     pub(super) fn u32(&mut self) -> Result<u32> {
