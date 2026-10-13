@@ -15,7 +15,10 @@ Improve opening and public waveform queries for GHW without changing returned va
 - [x] Hypothesis 1 minimal buffering patch passed 25 private tests, seven public GHW tests and all 204 GHW file/bytes conformance cases. Astra found no production defect; tiny-buffer tests now set the concrete wire buffer capacity.
 - [x] Measured buffering and two old/new pairs in opposite orders. Accept the tiny production change for repeated scalar/dense decode and real-file opening gains; wide-query results remain noisy/neutral.
 - [x] Buffering Astra and OCR reviews completed. OCR found only a test-helper precondition comment, which is now documented.
-- [ ] Commit buffering before implementing hypothesis 2.
+- [x] Committed buffering as 6f9768f after host quality hooks.
+- [x] Hypothesis 2 passed 25 private tests, GHW conformance (204 cases), and Astra review. Two opposite-order pairs confirm short whole-vector scans 1.20–1.29x and repeat-point series 1.26–1.40x versus buffering alone; opening is unchanged.
+- [x] Hypothesis 2 OCR completed with zero findings.
+- [ ] Commit hypothesis 2; then test flat dependency positions independently.
 - [ ] Rank hypotheses against observed costs and check one minimal change at a time.
 - [ ] Review, validate, and commit each accepted optimization; record rejected experiments.
 - [ ] Re-measure final representative cases against the initial implementation and analogous FST/FSDB cases.
@@ -44,6 +47,10 @@ Use Astra high only for hypothesis search and focused review. Review agents may 
 Hypothesis 1: put a concrete standard BufReader around Wire's boxed input, leaving checked reads and absolute seeks unchanged. Expected benefit: amortize virtual input calls over chunks during opening and replay. Controls: bytes input and small/scalar points. Risks: extra copy/bounded buffer, seek invalidation, tiny inner buffers and injected I/O errors. Test before timing.
 
 Accept hypothesis 1 after two adjacent pairs with opposite order. Real ws2815b opening improved by 1.31x and 1.45x. Dense constant replay improved by 1.37x and 1.36x; file scalar late scan by 1.28x and 1.21x. Wide-query ratios varied from modest wins to about 5% regression and do not support a separate claim. Production cost is one standard bounded input buffer and three changed lines. Existing record budget and I/O tests still pass. OCR precedes the commit.
+
+Hypothesis 2 keeps the dependency map and position vectors, but puts the seen flag beside the positions. It removes the separate HashSet and its per-selected-record lookup. Expected gains are wide setup/short-prefix queries and repeated points; opening is an unchanged control. All dependent positions must share one first-seen result, including repeated IDs. This is independent of flattening positions or retaining state.
+
+Accept hypothesis 2 from paired evidence, not its more optimistic exploratory sweep. Whole early scans improved 1.26x/1.20x in file mode and 1.26x/1.29x in bytes. Repeat-point series improved 1.27x/1.26x (file) and 1.40x/1.38x (bytes). Dense 64-probe scan improved about 1.10x/1.11x; full late whole scan has only a small or inconclusive gain. Opening controls moved within about 3%. Keep each claim scoped to the affected setup work.
 
 Do not require a universal numerical acceptance threshold. Prefer repeatable double-digit improvements or changes that remove substantial work with simpler code. Treat a few-percent change as noise unless controlled repeats distinguish it clearly. Check regressions in unaffected cases. Rationale: implementation cost and absolute workload cost matter alongside ratios.
 
@@ -124,3 +131,7 @@ Revision note (2026-10-13): saved the two initial timing sets and executable, do
 Revision note (2026-10-13): accepted buffering from repeated decoder-focused evidence, scoped its claims, and started milestone OCR before committing.
 
 Revision note (2026-10-13): buffering review completed without production findings; documented the test-only buffer reset precondition from OCR.
+
+Revision note (2026-10-13): recorded buffering commit and began the separate seen-state simplification experiment.
+
+Revision note (2026-10-13): accepted combined seen/dependency state from two paired runs and recorded conservative effects and unchanged opening controls.

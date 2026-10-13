@@ -11,10 +11,7 @@ use crate::{
     BitsRef, Encoding, Hierarchy, Metadata, Result, Signal, Time, TimeUnit, Timescale, ValueRef,
 };
 use hierarchy::Recipe;
-use std::{
-    collections::{HashMap, HashSet},
-    ops::ControlFlow,
-};
+use std::{collections::HashMap, ops::ControlFlow};
 use types::Types;
 use wire::Wire;
 
@@ -47,6 +44,12 @@ struct Buffer {
     known: usize,
     wkt: u8,
     vector: bool,
+}
+
+#[derive(Default)]
+struct Dependents {
+    positions: Vec<(usize, usize)>,
+    seen: bool,
 }
 
 impl Buffer {
@@ -144,7 +147,7 @@ impl Reader {
         }
         self.wire.seek(self.body_start)?;
         let mut buffers = Vec::new();
-        let mut dependencies = HashMap::<u32, Vec<(usize, usize)>>::new();
+        let mut dependencies = HashMap::<u32, Dependents>::new();
         for signal in signals {
             let recipe = self
                 .recipes
@@ -156,7 +159,11 @@ impl Reader {
                 .ok_or_else(|| self.wire.malformed("non-scalar recipe encoding"))?;
             let slot = buffers.len();
             for (position, &id) in recipe.ids.iter().enumerate() {
-                dependencies.entry(id).or_default().push((slot, position));
+                dependencies
+                    .entry(id)
+                    .or_default()
+                    .positions
+                    .push((slot, position));
             }
             let width = match recipe.encoding {
                 Encoding::Bits { width } => width as usize,
@@ -180,7 +187,6 @@ impl Reader {
                 .map(|b| b.digits.len() + usize::from(b.digits.is_empty()) * 8)
                 .sum();
         }
-        let mut known = HashSet::new();
         let mut marks = vec![false; buffers.len()];
         let mut touched = Vec::new();
         let (flow, _) = body::walk(&mut self.wire, &self.types, &self.active, end, |event| {
@@ -190,9 +196,9 @@ impl Reader {
                     {
                         self.records_read += 1;
                     }
-                    if let Some(positions) = dependencies.get(&id) {
-                        let first = known.insert(id);
-                        for &(slot, position) in positions {
+                    if let Some(dependents) = dependencies.get_mut(&id) {
+                        let first = !std::mem::replace(&mut dependents.seen, true);
+                        for &(slot, position) in &dependents.positions {
                             buffers[slot].update(position, value, first);
                             if !marks[slot] {
                                 marks[slot] = true;
