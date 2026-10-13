@@ -100,6 +100,9 @@ owned traces retain their requested output.
 
 The reader retains hierarchy, type layouts, ordered recipes and input buffers.
 The optional payload index has a 64 MiB limit, including vector capacities.
+Each nonempty source chain reserves at least eight entries at first. This avoids
+repeated small allocations for short histories. Histories with few entries use
+more capacity and can reach the index limit earlier.
 If it reaches this limit or cannot allocate storage, opening still validates
 the body and queries use sequential replay. Each indexed entry holds a source
 tick and byte offset, not a decoded value. Index construction adds work to

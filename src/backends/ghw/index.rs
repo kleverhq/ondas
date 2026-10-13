@@ -4,6 +4,8 @@ use super::{body, types::Types, wire::Wire};
 use crate::{Result, Time};
 
 const INDEX_BYTES: usize = 64 * 1024 * 1024;
+// Avoid repeated small allocations while opening short histories.
+const INITIAL_POSTINGS: usize = 8;
 
 #[derive(Clone, Copy)]
 struct Posting {
@@ -54,7 +56,7 @@ impl Index {
             return true;
         }
         if history.len() == history.capacity() {
-            let additional = history.capacity().max(1);
+            let additional = history.capacity().max(INITIAL_POSTINGS);
             let Some(bytes) = additional.checked_mul(size_of::<Posting>()) else {
                 return false;
             };
