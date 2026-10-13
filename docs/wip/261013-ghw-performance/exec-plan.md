@@ -26,9 +26,10 @@ Improve opening and public waveform queries for GHW without changing returned va
 - [x] Hypothesis 4 full descriptor trial passed tests/Astra but paired results were mixed: some wide queries improved 10–22%, opening was neutral or ~5% slower, dense controls were inconsistent. Saved its patch/binary and removed the full descriptor change.
 - [x] Minimal effective-type normalization passed 25 private, eight public and 204 conformance cases; Astra confirmed semantics. Opposite-order pairs show repeat series +12–16% file and +6–8% bytes, with other cases noisy or neutral. Accept this small map-only refinement with scoped claims.
 - [x] Effective-type OCR completed with zero findings.
-- [ ] Commit effective-type normalization. Then test a projected-value copy shortcut with an active-wide counterexample.
-- [ ] Rank hypotheses against observed costs and check one minimal change at a time.
-- [ ] Review, validate, and commit each accepted optimization; record rejected experiments.
+- [x] Committed minimal effective-type normalization as f4487fa after host quality hooks.
+- [x] Hypothesis 5 passed full default tests and conformance but was rejected after two timing pairs. Stable-high improved, while changing-wide regressed in both pairs. Saved the patch and restored the common engine; retain its benchmark counterexample.
+- [x] Ranked and tested the useful simple hypotheses independently. Rejected a most-recent-ID cache after source inspection showed almost no hits in the principal workload.
+- [x] OCR completed the retained changing-wide benchmark review with zero findings. Commit the control separately from the rejected common-engine patch.
 - [ ] Re-measure final representative cases against the initial implementation and analogous FST/FSDB cases.
 - [ ] Run final gates, write the report, promote durable backend conclusions, and remove this tracked WIP after saving an ignored copy.
 
@@ -72,11 +73,19 @@ Reject the full descriptor form for its larger source/type changes without a suf
 
 Accept the effective-ID refinement for its low code cost and repeated point-series gains: file 708 to 613 us and 588 to 527 us per three visits; bytes 569 to 537 us and 614 to 569 us. Broad exploratory runs were heavily contaminated by load and are not evidence of regressions. Other paired cases have neutral or noisy results, so do not claim faster full opening or general dense throughput from this step. Preserve full descriptor rejection separately rather than combining the two implementations.
 
+Hypothesis 5 compares a projection against committed state before allocating its pending value, only when no pending value exists. Apply it only to slices so changing whole vectors do not gain an extra comparison. Keep pending_time and same-tick pending overwrites unchanged. Owned Bits are already lowercase, so same_value's case-insensitive comparison preserves representation. Missing state must follow the normal first-value path. Extra projection-only query candidates may disappear, which the documented superset contract permits. Astra verified these semantics and pointed to existing current/predecessor, entering-state, same-tick restoration and projection changed_at tests.
+
+Add a changing-wide benchmark selection using wide.slice(4094,0), retaining the LSB changes while omitting one MSB. Its width matches the existing stable-high projection. Capture the updated benchmark on the unchanged f4487fa backend before modifying the common query engine. This control tests whether an early comparison merely shifts cost to changing wide projections. Reject the shortcut rather than add width/activity heuristics if it materially regresses that case.
+
+Do not implement a most-recent scalar-ID lookup cache without an existing useful workload. Astra checked the principal wide-toggle recording: every tick writes both the vector LSB and an independent control, and body decoding visits both even if the control is unselected. A one-entry cache therefore misses on almost every cycle. It is semantically possible but adds a branch and state write without evidence of benefit. Do not invent a special fixture to justify it.
+
+Reject hypothesis 5. The first whole-vector control changed by 2.5x, so its isolated exploratory run is not causal evidence. Two opposite-order pairs give old/new ratios of 1.37x/1.90x for stable-high, but 0.80x/0.55x for changing-wide. Whole-vector controls give 0.94x/1.08x, while low-bit results remain noisy. The shortcut trades owned copies for an extra full equality comparison on active projections. Save rejected-projection.patch and restore the common engine completely. Retain only the two-line benchmark addition as a regression control; do not introduce activity or width heuristics.
+
 Do not require a universal numerical acceptance threshold. Prefer repeatable double-digit improvements or changes that remove substantial work with simpler code. Treat a few-percent change as noise unless controlled repeats distinguish it clearly. Check regressions in unaffected cases. Rationale: implementation cost and absolute workload cost matter alongside ratios.
 
 ## Outcomes & Retrospective
 
-No optimization has been accepted yet.
+Four local optimization commits are accepted so far. The final implementation uses a bounded concrete wire buffer, flat selected dependency positions with shared first-seen tracking, and effective scalar type IDs in the active source table. Public APIs, fixture inputs, full body validation and prefix replay are unchanged. Final paired timings and the report remain pending.
 
 ## Context and Orientation
 
@@ -165,3 +174,9 @@ Revision note (2026-10-13): recorded flat dependency commit and began one-time s
 Revision note (2026-10-13): saved and rejected the full descriptor experiment, and replaced it with the independently measured minimal effective-type-ID normalization trial.
 
 Revision note (2026-10-13): accepted the minimal normalization from repeated query evidence, with no new descriptors/state and explicitly limited performance claims.
+
+Revision note (2026-10-13): committed normalization and added a concrete active-wide projection counterexample before testing the common-engine copy shortcut.
+
+Revision note (2026-10-13): rejected the projection shortcut from paired counterexample evidence, declined an unsupported one-entry lookup cache, and moved to final combined measurements.
+
+Revision note (2026-10-13): OCR approved the retained benchmark control. Selected 21 original IDs for final opposite-order pairs, including a bytes-query control and six shared conditional-consumer cases.

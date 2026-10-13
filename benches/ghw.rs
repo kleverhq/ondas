@@ -71,6 +71,7 @@ fn wide(c: &mut Criterion) {
         let control = wave.hierarchy().signal(coordinates::CONTROL_PATH).unwrap();
         let low = wide.slice(0, 0).unwrap();
         let high = wide.slice(4095, 1).unwrap();
+        let changing_wide = wide.slice(4094, 0).unwrap();
         let mut group = c.benchmark_group(format!("{}/{mode}", coordinates::WIDE));
         group.bench_function("open-drop", |b| b.iter(|| drop(black_box(open()))));
         group.bench_function("hierarchy/traverse", |b| {
@@ -99,6 +100,7 @@ fn wide(c: &mut Criterion) {
             ("whole", vec![wide]),
             ("low", vec![low]),
             ("stable-high", vec![high]),
+            ("changing-wide", vec![changing_wide]),
             ("scalar", vec![control]),
             ("duplicate-projections", vec![wide, low, high, wide, low]),
         ] {
