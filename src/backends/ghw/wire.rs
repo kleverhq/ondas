@@ -122,9 +122,19 @@ impl Wire {
         })
     }
 
+    #[inline]
     pub(super) fn uleb(&mut self) -> Result<u32> {
-        let mut value = 0u32;
-        for group in 0..5 {
+        let first = self.byte()?;
+        if first & 0x80 == 0 {
+            Ok(u32::from(first))
+        } else {
+            self.uleb_continued(first)
+        }
+    }
+
+    fn uleb_continued(&mut self, first: u8) -> Result<u32> {
+        let mut value = u32::from(first & 0x7f);
+        for group in 1..5 {
             let byte = self.byte()?;
             if group == 4 && byte & 0xf0 != 0 {
                 return Err(self.malformed("ULEB128 exceeds 32 bits"));
