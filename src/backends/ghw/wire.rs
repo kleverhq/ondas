@@ -1,10 +1,10 @@
 //! Checked access to the GHDL wire format. No native reader is linked here.
-use std::io::SeekFrom;
+use std::io::{BufRead, BufReader, Seek, SeekFrom};
 
 use crate::{Error, Format, Result, backends::Input};
 
 pub(super) struct Wire {
-    input: Box<dyn Input>,
+    input: BufReader<Box<dyn Input>>,
     pub(super) offset: u64,
     pub(super) len: u64,
     pub(super) big_endian: bool,
@@ -16,12 +16,19 @@ impl Wire {
         let len = input.seek(SeekFrom::End(0))?;
         input.seek(SeekFrom::Start(0))?;
         Ok(Self {
-            input,
+            input: BufReader::new(input),
             offset: 0,
             len,
             big_endian: false,
             version: 0,
         })
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_buffer_capacity(mut self, capacity: usize) -> Self {
+        // Call before parsing or before an absolute seek; this drops read-ahead.
+        self.input = BufReader::with_capacity(capacity, self.input.into_inner());
+        self
     }
 
     pub(super) fn malformed(&self, message: impl std::fmt::Display) -> Error {
@@ -263,6 +270,7 @@ mod tests {
             Cursor::new(bytes.to_vec()),
         )))
         .unwrap()
+        .with_buffer_capacity(capacity)
     }
 
     #[test]

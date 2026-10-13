@@ -268,7 +268,7 @@ mod tests {
     }
 
     #[test]
-    fn binary64_reads_cross_tiny_input_buffers() {
+    fn binary64_reads_cross_tiny_wire_buffers() {
         use std::io::{BufReader, Cursor};
         for capacity in [1, 2] {
             let (mut reader, hierarchy, _) = Reader::open(
@@ -279,6 +279,7 @@ mod tests {
                 "real.ghw".into(),
             )
             .unwrap();
+            reader.wire = reader.wire.with_buffer_capacity(capacity);
             let r = hierarchy.signal("top.r").unwrap();
             let mut values = Vec::new();
             let flow = reader

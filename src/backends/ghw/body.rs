@@ -281,7 +281,8 @@ mod tests {
                 capacity,
                 Cursor::new(bytes.clone()),
             )))
-            .unwrap();
+            .unwrap()
+            .with_buffer_capacity(capacity);
             let mut events = Vec::new();
             let (flow, span) = walk(
                 &mut wire,
@@ -448,8 +449,9 @@ mod tests {
         let mut bytes = Vec::new();
         snapshot(0, &[2], &mut bytes);
         bytes.extend(b"DIR\0\x01\x04\x01\0\0\0\0\0EOD\0TAI\0\x01\x04\x01\0\0\0\0\0");
-        let mut wire =
-            Wire::new(Box::new(BufReader::with_capacity(1, Cursor::new(bytes)))).unwrap();
+        let mut wire = Wire::new(Box::new(BufReader::with_capacity(1, Cursor::new(bytes))))
+            .unwrap()
+            .with_buffer_capacity(1);
         let mut ticks = 0;
         let (flow, _) = walk(
             &mut wire,
