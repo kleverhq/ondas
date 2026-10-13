@@ -19,6 +19,7 @@ handles, native callbacks and format-local indices stay private.
 | GHW | `ghw-native` | Files and shared in-memory bytes | Included; reads GHW directly without conversion |
 | FSDB | `fsdb-lib` | Files only | Optional Cargo feature; requires a local FSDB Reader SDK |
 | SHM | `shm-lib` | Database directories only | Optional Cargo feature; requires a compatible Xcelium reader (2021+) |
+| WLF | `wlf-lib` | Files only | Optional Cargo feature; requires a local Questa SDK |
 
 Other formats have no reader in this release. The minimum supported Rust version
 is 1.88. See [reader details](#reader-details) for format limits and native reader setup.
@@ -285,6 +286,71 @@ SDK diagnostics may appear on stdout/stderr.
 C++ exceptions become backend errors. The adapter does not contain native
 crashes or aborts. SDK permissions and runtime dependencies remain the caller's
 responsibility. Ondas distributes no vendor files.
+
+</details>
+
+### WLF
+
+<details>
+<summary>SDK setup, supported values and runtime requirements</summary>
+
+Enable Cargo feature `wlf-lib` and use a recent Questa SDK (2020 or newer) on
+Linux x86-64 GNU. Set `QUESTA_HOME` to its installation directory when building.
+The directory must contain `include/wlf_api.h` and `linux_x86_64/libwlf.so`.
+Building requires a C11 compiler and binutils. Verify each selected SDK with
+conformance and downstream checks.
+SDK headers and vendor binaries are not distributed with Ondas. The compiled shim
+is included in the Rust crate.
+No separate Ondas shim shared library is required.
+
+```no_run
+# #[cfg(feature = "wlf-lib")]
+# fn example() -> Result<(), Box<dyn std::error::Error>> {
+let mut wave = ondas::open_with("dump.wlf", "wlf-lib")?;
+let clock = wave.hierarchy().signal("top.clock")?;
+let sample = wave.sample(clock, ondas::Time::from_ticks(10))?;
+# Ok(())
+# }
+```
+
+The executable retains the SDK library's absolute path. Keep that installation
+available at runtime. A missing library can prevent startup even for an
+application that opens VCD or FST. Rebuild after moving or changing the SDK;
+changing `QUESTA_HOME` after compilation does not switch the linked runtime.
+SDK initialization failures after startup return [`Error::BackendUnavailable`].
+
+Input is file-only. Bytes return [`Error::UnsupportedInput`]. Automatic WLF
+detection uses the case-insensitive filename extension as a fallback, after
+recognized FST/VCD contents. Without the feature, the `wlf-lib` name returns
+[`Error::UnknownBackend`] and automatic WLF opening returns [`Error::NoBackend`].
+
+Logic vectors preserve the represented nine-state domain. Native binary64 reals
+preserve signed zeros and NaN payloads. Native SystemVerilog strings require valid
+UTF-8. Named events count recorded EVENT callbacks; logging notifications add no
+occurrences. Writer collapse settings can remove activity before reading. Unsupported
+value classes remain visible and return [`Error::UnsupportedSignal`]. Delayed
+logging leaves state missing until its first record. Persistent values hold the
+last recorded state over logging gaps and after EOF. This does not describe
+unrecorded activity. Event counts do not persist.
+
+One private worker owns SDK objects and calls on one thread. Rust visitors run
+on the caller thread outside native callbacks. Independent waveforms can be
+interleaved, moved between threads and queried from callbacks. Cold bit-only
+points share a short range read. Unresolved change times use one chronological
+pass over the remaining base signals. Cold bit-only windows can read entering
+state and traverse only their requested range. Other cold queries read
+from the recorded beginning. Records skipped by a seek are not decoded or
+validated. Prepared selections can reuse one bounded normalized state snapshot.
+The adapter keeps selected current values and counts, and transfers bounded
+batches of completed ticks. It does not collect a full history. The SDK keeps its
+own caches. It permits one resolution at a time. The worker releases all native
+owners before a resolution switch or new header read. SDK initialization stays
+active for the process lifetime. A suspended query
+reopens its file and replays from its query start, skipping its already returned
+completed-tick slots. Logical sessions retain no SDK pointers.
+The adapter releases file and query resources after errors, breaks and caller
+panic. It does not contain vendor crashes or aborts. SDK diagnostics can appear
+on stdout or stderr. Input files must remain unchanged and available.
 
 </details>
 

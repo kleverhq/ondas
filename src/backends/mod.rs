@@ -9,6 +9,9 @@ pub(crate) mod ghw;
 #[allow(unsafe_code)] // Private C ABI; native sessions end before user callbacks.
 pub(crate) mod shm;
 pub(crate) mod vcd;
+#[cfg(feature = "wlf-lib")]
+#[allow(unsafe_code)] // The private, audited C ABI boundary only.
+pub(crate) mod wlf;
 
 use std::{
     io::{BufRead, Seek},
@@ -28,6 +31,8 @@ pub(crate) enum Reader {
     Fsdb(Box<fsdb::Reader>),
     #[cfg(feature = "shm-lib")]
     Shm(Box<shm::Reader>),
+    #[cfg(feature = "wlf-lib")]
+    Wlf(Box<wlf::Reader>),
     #[cfg(test)]
     Generated(generated::Reader),
     #[cfg(test)]
@@ -66,6 +71,10 @@ impl Reader {
             }),
             #[cfg(feature = "shm-lib")]
             Self::Shm(reader) => reader.read(signals, end, visitor),
+            #[cfg(feature = "wlf-lib")]
+            Self::Wlf(reader) => reader.read(signals, end, |index, time, value| {
+                visitor(index, time, Ok(value))
+            }),
             #[cfg(test)]
             Self::Generated(reader) => reader.read(signals, end, |index, time, value| {
                 visitor(index, time, Ok(value))

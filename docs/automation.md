@@ -142,6 +142,13 @@ prepends its directory to `LD_LIBRARY_PATH`. It does not add the whole vendor
 library directory, which can select an older C++ runtime. Missing readers fail.
 Failures, cancellation and baseline order follow the FSDB sweep rules above.
 
+For WLF, use `QUESTA_HOME` or a whitespace-separated `QUESTA_HOMES` list.
+Forward `QUESTA_HOMES` through the ignored local profile in the same way.
+The selection, failure and cancellation rules are the same as for FSDB.
+`ci-wlf`, `conformance-wlf`, `bench-build-wlf`, `bench-smoke-wlf` and `bench-wlf`
+run once per selected SDK. Each run sets `QUESTA_HOME` and uses
+`${CARGO_TARGET_DIR:-target}/wlf-sdk/<position>` for build and Criterion output.
+
 The launcher does not discover EDA installations, select versions, configure
 licenses or branch on backend names. Profiles and recipes own those choices.
 Private CI topology is outside the public contract.
@@ -245,6 +252,17 @@ vendor tools. See [SHM linking and reader limits](shm-lib.md).
 Benchmark smoke recipes set `CARGO_TARGET_DIR` to `target` when it is unset.
 They preserve an explicit value. This prevents Criterion from starting a nested
 `cargo metadata` command to find its output directory.
+
+`just ci-wlf` enables `wlf-lib` and checks conformance, development Rust, MSRV,
+Rustdoc, Criterion smoke and a standalone consumer. Supply `QUESTA_HOME` or
+`QUESTA_HOMES` and a read-only SDK mount through an ignored local profile.
+Install the pinned fixtures explicitly before running the gate.
+`just bench-build-wlf` compiles the Criterion target without running it.
+`just bench-smoke-wlf` executes workloads with `--test`; it does not measure
+performance. Use `just bench-wlf` for measurements on an idle machine.
+The vendor features are additive; combined builds need each selected SDK. See
+[WLF](wlf.md) for deployment and ownership limits. Fixture payloads and temporary
+`docs/wip/` work are excluded from the crate package.
 
 Compatibility covers released public signatures and documented observations,
 including value identity and query semantics. Successful consumer compilation

@@ -28,6 +28,9 @@ included, even with `default-features = false`.
 - `shm-lib`: adds the SHM directory reader. Requires a compatible Xcelium reader (2021+)
   selected by `XCELIUM_HOME`; see [reader requirements](docs/shm-lib.md#dependencies-and-deployment).
 
+- `wlf-lib`: adds the file-only WLF reader. Requires a local Questa SDK selected
+  by `QUESTA_HOME`; see [SDK requirements](docs/wlf.md#build-and-input).
+
 ```toml
 [dependencies]
 ondas = { version = "1", features = ["fsdb-lib"] }
@@ -42,6 +45,8 @@ ondas = { version = "1", features = ["fsdb-lib"] }
 | `ghw-native` | GHW | Built-in Rust parser; no external parser dependency | [docs/ghw.md](docs/ghw.md) |
 | `fsdb-lib` | FSDB | Optional `fsdb-lib` feature; local Verdi FSDB Reader SDK, file-only | [docs/fsdb-lib.md](docs/fsdb-lib.md) |
 | `shm-lib` | SHM | Optional `shm-lib` feature; local Xcelium reader, directory-only | [docs/shm-lib.md](docs/shm-lib.md) |
+
+| `wlf-lib` | WLF | Optional `wlf-lib` feature; local Questa SDK, file-only | [docs/wlf.md](docs/wlf.md) |
 
 ## Development
 

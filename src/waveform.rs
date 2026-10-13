@@ -15,9 +15,8 @@ use crate::{
 /// Opens a waveform source with an automatically selected available backend.
 ///
 /// FST uses `fst-lib`. VCD uses `vcd-native`. GHW uses `ghw-native`.
-/// FSDB uses `fsdb-lib` when the
-/// optional feature of the same name is enabled. SHM directories use the optional
-/// `shm-lib` feature. Content recognition takes
+/// FSDB and WLF files use the optional `fsdb-lib` and `wlf-lib` features.
+/// SHM directories use the optional `shm-lib` feature. Content recognition takes
 /// priority over the filename. A recognized extension is a fallback hint.
 /// A recognized format without a reader returns [`Error::NoBackend`].
 /// Unrecognized input returns
@@ -31,10 +30,10 @@ pub fn open(path: impl AsRef<Path>) -> Result<Waveform> {
 
 /// Reads owned source metadata without retaining a waveform or hierarchy.
 ///
-/// FSDB and SHM read native source metadata without materializing declarations.
+/// FSDB, SHM and WLF read native source metadata without materializing declarations.
 /// FST, VCD and GHW use their regular readers, so this is not a fast path for those
-/// formats. Format detection matches [`open`], as do metadata values for files
-/// that open successfully. Unlike [`open`], it does not validate an FSDB or SHM
+/// formats. Format detection matches [`open`], as do metadata values for sources
+/// that open successfully. Unlike [`open`], it does not validate a vendor
 /// declaration tree. Use [`open`] for validated hierarchy or signal access.
 ///
 /// This function accepts filesystem paths, including SHM directories, not bytes.
@@ -61,14 +60,17 @@ pub fn read_metadata(path: impl AsRef<Path>) -> Result<Metadata> {
         Format::Fsdb => crate::backends::fsdb::read_metadata(path, name),
         #[cfg(feature = "shm-lib")]
         Format::Shm => crate::backends::shm::read_metadata(path, name),
+        #[cfg(feature = "wlf-lib")]
+        Format::Wlf => crate::backends::wlf::read_metadata(path, name),
+        #[cfg(not(all(feature = "fsdb-lib", feature = "shm-lib", feature = "wlf-lib")))]
         _ => Err(Error::NoBackend { format }),
     }
 }
 
 /// Opens a waveform source with only the named backend, without fallback.
 ///
-/// Available names are `fst-lib`, `vcd-native`, `ghw-native`, and feature-enabled `fsdb-lib`
-/// and `shm-lib`. SHM input must be a database directory.
+/// Available names are `fst-lib`, `vcd-native`, `ghw-native`, and feature-enabled
+/// `fsdb-lib`, `shm-lib` and `wlf-lib`. SHM input must be a database directory.
 /// A disabled optional backend is an unknown name. Unknown names return
 /// [`Error::UnknownBackend`]. A format unsupported by the selected backend returns
 /// [`Error::BackendDoesNotSupport`]. See [`open`] for detection and reader limits.
@@ -81,8 +83,8 @@ pub fn open_with(path: impl AsRef<Path>, backend: &str) -> Result<Waveform> {
 /// `name` is the logical [`Metadata::source_name`] and a format-detection hint.
 /// The input stays alive through the shared ownership of `bytes`. Detection,
 /// errors, and reader limitations are the same as [`open`]. FST, VCD and GHW readers
-/// support file and byte input. `fsdb-lib` reads files only. `shm-lib` reads
-/// directories only. An enabled FSDB or SHM filename hint returns
+/// support file and byte input. `fsdb-lib` and `wlf-lib` read files only. `shm-lib`
+/// reads directories only. An enabled FSDB, SHM or WLF filename hint returns
 /// [`Error::UnsupportedInput`].
 /// The SDK's content probe is only available for file paths.
 pub fn open_bytes(name: impl Into<String>, bytes: Arc<[u8]>) -> Result<Waveform> {
@@ -92,8 +94,8 @@ pub fn open_bytes(name: impl Into<String>, bytes: Arc<[u8]>) -> Result<Waveform>
 /// Opens shared in-memory bytes with only the named backend, without fallback.
 ///
 /// Combines [`open_bytes`]' input ownership with [`open_with`]'s explicit reader
-/// selection and error categories. Selecting enabled `fsdb-lib` or `shm-lib` returns
-/// [`Error::UnsupportedInput`] without creating a temporary file.
+/// selection and error categories. Selecting enabled `fsdb-lib`, `shm-lib` or
+/// `wlf-lib` returns [`Error::UnsupportedInput`] without creating a temporary file.
 pub fn open_bytes_with(
     name: impl Into<String>,
     bytes: Arc<[u8]>,
@@ -113,6 +115,7 @@ fn check_backend(backend: Option<&str>) -> Result<()> {
         && !matches!(backend, "fst-lib" | "vcd-native" | "ghw-native")
         && !(cfg!(feature = "fsdb-lib") && backend == "fsdb-lib")
         && !(cfg!(feature = "shm-lib") && backend == "shm-lib")
+        && !(cfg!(feature = "wlf-lib") && backend == "wlf-lib")
     {
         return Err(Error::UnknownBackend {
             backend: backend.into(),
@@ -169,6 +172,13 @@ fn open_input(
     vcd_file: Option<File>,
 ) -> Result<Waveform> {
     check_backend(backend)?;
+    #[cfg(feature = "wlf-lib")]
+    if backend == Some("wlf-lib") && _path.is_none() {
+        return Err(Error::UnsupportedInput {
+            backend: "wlf-lib".into(),
+            input: crate::InputKind::Bytes,
+        });
+    }
     #[cfg(feature = "fsdb-lib")]
     if backend == Some("fsdb-lib") && _path.is_none() {
         return Err(Error::UnsupportedInput {
@@ -215,12 +225,22 @@ fn open_input(
             let (reader, hierarchy, metadata) = crate::backends::shm::Reader::open(path, name)?;
             (Reader::Shm(Box::new(reader)), hierarchy, metadata)
         }
+        #[cfg(feature = "wlf-lib")]
+        (Format::Wlf, None | Some("wlf-lib")) => {
+            let path = _path.ok_or_else(|| Error::UnsupportedInput {
+                backend: "wlf-lib".into(),
+                input: crate::InputKind::Bytes,
+            })?;
+            let (reader, hierarchy, metadata) = crate::backends::wlf::Reader::open(path, name)?;
+            (Reader::Wlf(Box::new(reader)), hierarchy, metadata)
+        }
         (_, Some(backend)) => {
             return Err(Error::BackendDoesNotSupport {
                 backend: backend.into(),
                 format,
             });
         }
+        #[cfg(not(all(feature = "fsdb-lib", feature = "shm-lib", feature = "wlf-lib")))]
         (_, None) => return Err(Error::NoBackend { format }),
     };
     Ok(Waveform {
@@ -412,6 +432,8 @@ impl Waveform {
             Reader::Fsdb(_) => Format::Fsdb,
             #[cfg(feature = "shm-lib")]
             Reader::Shm(_) => Format::Shm,
+            #[cfg(feature = "wlf-lib")]
+            Reader::Wlf(_) => Format::Wlf,
             #[cfg(test)]
             Reader::Memory { .. } | Reader::Generated(_) => Format::Fst,
         }
@@ -430,6 +452,8 @@ impl Waveform {
             Reader::Fsdb(_) => "fsdb-lib",
             #[cfg(feature = "shm-lib")]
             Reader::Shm(_) => "shm-lib",
+            #[cfg(feature = "wlf-lib")]
+            Reader::Wlf(_) => "wlf-lib",
             #[cfg(test)]
             Reader::Memory { .. } => "memory",
             #[cfg(test)]
@@ -701,7 +725,9 @@ mod tests {
                     ),
                     "{name}"
                 );
-            } else if cfg!(feature = "fsdb-lib") && format == Format::Fsdb {
+            } else if (cfg!(feature = "fsdb-lib") && format == Format::Fsdb)
+                || (cfg!(feature = "wlf-lib") && format == Format::Wlf)
+            {
                 assert!(matches!(
                     result,
                     Err(Error::UnsupportedInput {

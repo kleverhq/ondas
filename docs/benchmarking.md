@@ -383,6 +383,70 @@ Criterion group names start with `<format>/<fixture>` and add input modes or
 workload names. Changing group IDs requires new baselines. Existing result
 directories can remain. Comparisons require matching IDs and corpus revisions.
 
+## WLF workload design
+
+`benches/wlf.rs` measures file inputs with the explicit `wlf-lib` reader.
+Enable the feature and supply `QUESTA_HOME` and its SDK runtime. See
+[WLF setup and limits](wlf.md). The target uses an imported ModelSim counter,
+controlled recordings, and existing real, event and string recordings.
+
+| Fixtures | Controlled comparison |
+|---|---|
+| `wlf0074-history-short`, `wlf0075-history-long` | Identical early histories, different suffix lengths, 64 distinct words, selection sizes, matched individual/batch samples, and repeated queries |
+| `wlf0076-topology-small`, `wlf0077-topology-many-handles`, `wlf0078-topology-many-times` | Equal sparse/constant probes with more unrelated histories or denser unrelated activity |
+| `wlf0079-wide-compact-toggle` | Sustained 4096-bit low-bit changes versus a scalar, changing/stable slices, borrowed/owned samples, duplicates and overlapping entries |
+| `wlf0080-topology-many-aliases` | More declarations at a fixed unique-history count, shared identity and separate selection entries |
+
+Independent native Reader tests check source values and the controlled pairs.
+Ordinary WLF tests check active and quiet windows, alias identity, projections,
+and matched borrowed/owned results. Sparse conformance oracles prove only their
+declared samples and complete windows. Concrete workload parameters stay in
+`benches/wlf.rs` and `benches/wlf/controlled.rs`.
+
+Metadata-only and open/drop cases include SDK setup and cleanup. Open/drop also
+includes owned declarations. Lookup on a fresh waveform excludes opening and
+destruction. Hierarchy traversal and repeated lookup reuse an opened waveform.
+Selection cases include selection construction and destruction. One-shot samples
+include selection setup and result destruction; prepared queries exclude
+selection setup. Owned traces include result creation and destruction. Scans and
+candidate callbacks count records without retaining histories. Early-stop cases
+include cleanup after the callback returns.
+
+Cold bit-only points share a short recent range read. Unresolved projected change
+times require a shared chronological pass over their remaining bases. Stable high
+slices of the word bank measure that fallback on the same source activity. Cold
+bit-only windows first establish entering state, then read their bounded range.
+Other cold queries start from the recorded beginning. A prepared selection can
+reuse one bounded normalized snapshot; repeated identical points can avoid SDK
+traversal. Fresh-selection scans measure entering-state work separately from
+prepared scans. Timings include worker communication whenever SDK work is needed.
+Equal-width early and late clock windows expose prefix work. Topology probes retain equal histories across files;
+their early quiet and late active windows test different output volumes.
+Repeated-query iterations contain 8 or 32 queries over the same eight-timestamp block.
+Throughput counts queries. These cases do not measure cold disk access or compare
+Writer and simulator storage policies.
+
+Compile without executing the runner when measurement conditions are unsuitable:
+
+```sh
+./dev just bench-build-wlf
+```
+
+Run conformance and a manual smoke before measuring on an idle machine. Record
+the SDK version, code revision and fixture commit. Use Criterion baselines:
+
+```sh
+./dev just conformance-wlf
+./dev just bench-smoke-wlf
+./dev just bench-wlf --save-baseline wlf-initial
+./dev just bench-wlf --baseline wlf-initial
+```
+
+Compilation does not prove runner execution or supply timing evidence. The
+current benchmark dev-dependencies require Rust 1.90 or later. The library's
+MSRV check remains separate. Install the pinned fixture payloads before running
+conformance, smoke or measurements.
+
 ## Automation
 
 The existing `just check` compiles benchmark targets with `cargo check --all-targets`.
@@ -398,8 +462,8 @@ For FSDB, first run conformance, then smoke the feature-gated target:
 ```
 
 These recipes use the [local SDK selection](automation.md#proprietary-environments).
-`bench-fsdb` forwards its arguments to Criterion and measures each selected SDK
-in a separate target directory. Criterion IDs and baseline names stay the same.
+`bench-fsdb` and `bench-wlf` forward their arguments to Criterion. They measure
+each selected SDK in a separate target directory. Criterion IDs and baseline names stay the same.
 Keep the SDK list order stable when comparing results, or choose fresh output.
 
 For SHM, run `conformance-shm` and `bench-smoke-shm` before measurement.
@@ -412,7 +476,11 @@ newer file version, preparation prints `SKIP` and omits that fixture's workload
 groups. Other failures still fail. A successful
 smoke run covers only registered workloads; skipped groups supply no evidence.
 
-Default all-target checks skip the FSDB and SHM feature-gated targets. SDK-enabled
+`just bench-build-wlf` compiles WLF without executing Criterion.
+`just bench-smoke-wlf` executes workloads with `--test`. `just ci-wlf` runs this
+smoke after WLF conformance. These WLF recipes use the same SDK selection rules
+and separate output directories as `bench-wlf`.
+Default all-target checks skip the FSDB, SHM and WLF feature-gated targets. SDK-enabled
 checks must compile the selected target explicitly. Smoke timings are not regression evidence. A proprietary
 target must not prevent unrelated public targets from compiling. An explicit
 request for that target must fail clearly if its fixtures or runtime are missing.

@@ -116,8 +116,8 @@ and is the fixture-free pre-commit gate. `just ci` also requires conformance.
 Formatting, Clippy, compilation and Rustdoc do not replace runtime tests.
 
 `./dev just conformance` runs the ignored FST/VCD/GHW integration tests and
-feature-disabled FSDB routing against the pinned fixtures. The routing check also
-requires its FSDB artifact. Missing artifacts or required oracle observations
+feature-disabled FSDB/WLF routing against the pinned fixtures. Routing checks also
+require their artifacts. Missing artifacts or required oracle observations
 fail the suite. Default test runs leave these external tests ignored
 and do not claim their coverage.
 
@@ -159,8 +159,8 @@ library, runtime dependencies and tests. Debug assertions and integer overflow
 checks remain enabled. Self-contained tests use the default test profile.
 
 The fixture-backed gate executes `just bench-smoke` after conformance;
-the vendor gate runs `just bench-smoke-fsdb` after its conformance. Criterion
-`--test` checks that registered workloads execute. It uses no timing thresholds
+the vendor gates run `just bench-smoke-fsdb` or `just bench-smoke-wlf` after
+their conformance. Criterion `--test` checks that registered workloads execute. It uses no timing thresholds
 and does not prove a speedup. New sparse/dense file/bytes and adapter diagnostic tests
 require the pinned corpus; local submodule edits supply only
 development evidence. The conflict fixture asserts a malformed opening error
@@ -214,3 +214,22 @@ Public examples should be doctests: runnable for self-contained behavior,
 `no_run` when they need external artifacts. Check them directly with
 `./dev cargo test --doc --locked`. [Performance measurements](benchmarking.md)
 are neither correctness tests nor timing-based CI gates.
+
+`./dev just conformance-wlf` checks WLF in file mode with `wlf-lib`. Positive
+metadata/hierarchy oracles can have no value assertions. Every supplied reference
+still needs to resolve. Directed WLF tests check SDK thread ownership, caller
+reentrancy, panic recovery, cross-thread use/drop, compiled ABI layouts and bounded
+selected-value storage. Exact NaN payload transitions use native literal evidence
+and directed API assertions because version-1 oracle equality cannot assert them.
+The WLF recipes run once per SDK selected by `QUESTA_HOMES`, with `QUESTA_HOME`
+as the single-path fallback. See [local SDK selection](automation.md#proprietary-environments).
+WLF opening errors fail unless a negative oracle requires that error. There is
+no SDK-version skip rule for WLF.
+`./dev just ci-wlf` adds static, unit, Rustdoc, MSRV, Criterion smoke and
+standalone consumer checks. It adds no performance measurement gate.
+
+With both SDKs installed, run
+`./dev cargo test --locked --all-features --test wlf_lib -- --ignored`.
+The combined test reads FSDB from a WLF visitor and WLF from an FSDB visitor.
+This checks both readers in one process. The SDK-specific pools still need their
+separate conformance runs.

@@ -73,6 +73,8 @@ impl Fixture {
             Format::Ghw => "ghw-native",
             Format::Fsdb => "fsdb-lib",
             Format::Shm => "shm-lib",
+
+            Format::Wlf => "wlf-lib",
             _ => unreachable!(),
         }
     }
@@ -84,6 +86,8 @@ impl Fixture {
             Format::Ghw => "conformance.ghw",
             Format::Fsdb => "conformance.fsdb",
             Format::Shm => "conformance.shm",
+
+            Format::Wlf => "conformance.wlf",
             _ => unreachable!(),
         }
     }
@@ -212,7 +216,6 @@ fn check_oracle_support(oracle: &Json, positive: bool) {
     let signals = oracle["signals"]
         .as_object()
         .expect("positive oracle signals");
-    assert!(!signals.is_empty(), "empty positive oracle");
     let mut referenced = BTreeSet::new();
     for (key, allowed) in [
         (
@@ -340,6 +343,8 @@ fn load_conformance_fixture(root: &Path, name: &str) -> Option<Fixture> {
         "ghw" => Format::Ghw,
         "fsdb" if cfg!(feature = "fsdb-lib") => Format::Fsdb,
         "shm" if cfg!(feature = "shm-lib") => Format::Shm,
+
+        "wlf" if cfg!(feature = "wlf-lib") => Format::Wlf,
         other => panic!("{name}: unexpected selected format {other}"),
     };
     let oracle = sidecar.get("oracle").cloned().unwrap_or_else(|| json!({}));
@@ -1382,7 +1387,7 @@ fn pool_queries(fixture: &Fixture, bytes: bool, context: &str) -> bool {
         }
     }
     for (time, mut entries) in samples {
-        if matches!(fixture.format, Format::Fsdb | Format::Ghw) {
+        if matches!(fixture.format, Format::Fsdb | Format::Ghw | Format::Wlf) {
             entries.extend_from_within(..);
         }
         let handles: Vec<_> = entries.iter().map(|(_, signal, _)| *signal).collect();
@@ -1404,12 +1409,12 @@ fn pool_queries(fixture: &Fixture, bytes: bool, context: &str) -> bool {
         }
     }
     for ((start, end), mut entries) in windows {
-        if matches!(fixture.format, Format::Fsdb | Format::Ghw) {
+        if matches!(fixture.format, Format::Fsdb | Format::Ghw | Format::Wlf) {
             entries.extend_from_within(..);
         }
         let handles: Vec<_> = entries.iter().map(|(_, signal, _)| *signal).collect();
         let range = TimeRange::closed(Time::from_ticks(start), Time::from_ticks(end));
-        if matches!(fixture.format, Format::Fsdb | Format::Ghw) {
+        if matches!(fixture.format, Format::Fsdb | Format::Ghw | Format::Wlf) {
             // Candidate-time and duplicate-selection assertions are derived from
             // supplied complete windows, without extending the oracle schema.
             let required: BTreeSet<_> = entries
@@ -1986,7 +1991,7 @@ fn run_pool(root: &Path, extension: &str) {
             skipped += 1;
             continue;
         };
-        let modes: &[bool] = if matches!(fixture.format, Format::Fsdb | Format::Shm) {
+        let modes: &[bool] = if matches!(fixture.format, Format::Fsdb | Format::Shm | Format::Wlf) {
             &[false]
         } else {
             &[false, true]
@@ -2482,6 +2487,17 @@ fn empty_pool_and_missing_format_directory_fail() {
 }
 
 #[test]
+fn metadata_hierarchy_oracles_keep_reference_checks() {
+    let mut oracle = json!({
+        "schema": 1, "open": {"result": "ok"}, "metadata": {},
+        "hierarchy": {"variables": [{"path": ["unlogged"]}]}, "signals": {}
+    });
+    check_oracle_support(&oracle, true);
+    oracle["hierarchy"]["variables"][0]["signal"] = json!("missing");
+    assert!(std::panic::catch_unwind(|| check_oracle_support(&oracle, true)).is_err());
+}
+
+#[test]
 fn unsupported_oracle_assertions_and_schema_versions_fail_preflight() {
     let oracle = json!({
         "schema": 1, "open": {"result": "ok"}, "metadata": {},
@@ -2835,4 +2851,50 @@ fn shm_directory_manifest_rejects_changed_or_missing_components() {
         assert!(std::panic::catch_unwind(|| verify(&artifact)).is_err());
     }
     fs::remove_dir_all(directory).unwrap();
+}
+
+#[cfg(feature = "wlf-lib")]
+#[test]
+#[ignore = "requires Questa and installed fixtures; run just conformance-wlf"]
+fn full_wlf_pool() {
+    full_pool("wlf");
+}
+
+#[cfg(not(feature = "wlf-lib"))]
+#[test]
+#[ignore = "requires installed fixtures; run just conformance"]
+fn wlf_disabled_routing() {
+    let path = root().join("wlf/wlf0038-count4b-3-2-vsim/waveform.wlf");
+    assert!(matches!(
+        ondas::open(&path),
+        Err(Error::NoBackend {
+            format: Format::Wlf
+        })
+    ));
+    assert!(matches!(
+        ondas::open_with(&path, "wlf-lib"),
+        Err(Error::UnknownBackend { .. })
+    ));
+    assert!(matches!(
+        ondas::open_bytes("dump.WLF", fs::read(&path).unwrap().into()),
+        Err(Error::NoBackend {
+            format: Format::Wlf
+        })
+    ));
+}
+
+#[cfg(feature = "wlf-lib")]
+#[test]
+#[ignore = "requires Questa and installed fixtures; run just conformance-wlf"]
+fn wlf_authored_integration_windows() {
+    for name in [
+        "wlf0070-typed-deltas-aliases",
+        "wlf0071-event-occurrences",
+        "wlf0072-strings-and-names",
+        "wlf0073-delayed-logging",
+    ] {
+        let name = format!("wlf/{name}");
+        let fixture = load_fixture(&root(), &name);
+        pool_queries(&fixture, false, &name);
+    }
 }

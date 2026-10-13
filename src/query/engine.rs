@@ -22,6 +22,8 @@ enum Position {
     Fsdb(Time),
     #[cfg(feature = "shm-lib")]
     Shm(Time),
+    #[cfg(feature = "wlf-lib")]
+    Wlf(Time),
 }
 
 impl Position {
@@ -32,6 +34,8 @@ impl Position {
             Self::Fsdb(time) => time,
             #[cfg(feature = "shm-lib")]
             Self::Shm(time) => time,
+            #[cfg(feature = "wlf-lib")]
+            Self::Wlf(time) => time,
         }
     }
 }
@@ -506,7 +510,7 @@ impl<'w> Selection<'w> {
         )
     }
 
-    #[cfg(any(feature = "fsdb-lib", feature = "shm-lib"))]
+    #[cfg(any(feature = "fsdb-lib", feature = "shm-lib", feature = "wlf-lib"))]
     fn point_states(
         &mut self,
         time: Time,
@@ -525,6 +529,8 @@ impl<'w> Selection<'w> {
         match &self.waveform.reader {
             #[cfg(feature = "fsdb-lib")]
             crate::backends::Reader::Fsdb(_) => {}
+            #[cfg(feature = "wlf-lib")]
+            crate::backends::Reader::Wlf(_) => {}
             #[cfg(feature = "shm-lib")]
             crate::backends::Reader::Shm(_)
                 if time.ticks() != u64::MAX
@@ -557,6 +563,21 @@ impl<'w> Selection<'w> {
         let slots: Vec<_> = match &mut self.waveform.reader {
             #[cfg(feature = "fsdb-lib")]
             crate::backends::Reader::Fsdb(reader) => reader
+                .sample_bits(&self.bases, &self.retained_signals, time)?
+                .into_iter()
+                .map(|sample| Slot {
+                    state: match sample {
+                        Sample::Value {
+                            value, changed_at, ..
+                        } => Some(State { value, changed_at }),
+                        Sample::Missing { .. } => None,
+                        Sample::Event { .. } => unreachable!("bit-only point selection"),
+                    },
+                    ..Slot::default()
+                })
+                .collect(),
+            #[cfg(feature = "wlf-lib")]
+            crate::backends::Reader::Wlf(reader) => reader
                 .sample_bits(&self.bases, &self.retained_signals, time)?
                 .into_iter()
                 .map(|sample| Slot {
@@ -611,6 +632,8 @@ impl<'w> Selection<'w> {
                 position: match &self.waveform.reader {
                     #[cfg(feature = "fsdb-lib")]
                     crate::backends::Reader::Fsdb(_) => Position::Fsdb(next),
+                    #[cfg(feature = "wlf-lib")]
+                    crate::backends::Reader::Wlf(_) => Position::Wlf(next),
                     #[cfg(feature = "shm-lib")]
                     crate::backends::Reader::Shm(_) => Position::Shm(next),
                     _ => unreachable!("point reader was checked above"),
@@ -683,7 +706,7 @@ impl<'w> Selection<'w> {
         if let Some(result) = self.shm_replay_sample_visit(time, &mut visitor) {
             return Ok(result);
         }
-        #[cfg(any(feature = "fsdb-lib", feature = "shm-lib"))]
+        #[cfg(any(feature = "fsdb-lib", feature = "shm-lib", feature = "wlf-lib"))]
         let (point_sampled, mut states) = {
             let states = self.point_states(time, true)?;
             (
@@ -691,7 +714,7 @@ impl<'w> Selection<'w> {
                 states.unwrap_or_else(|| vec![None; self.signals.len()]),
             )
         };
-        #[cfg(not(any(feature = "fsdb-lib", feature = "shm-lib")))]
+        #[cfg(not(any(feature = "fsdb-lib", feature = "shm-lib", feature = "wlf-lib")))]
         let (point_sampled, mut states) = (false, vec![None; self.signals.len()]);
         let mut events = vec![0u64; self.signals.len()];
         if !point_sampled {
@@ -957,9 +980,9 @@ impl<'w> Selection<'w> {
     ) -> Result<ControlFlow<B>> {
         let eligible =
             |replay: &Replay| start.is_some_and(|start| replay.start <= start) && replay.end <= end;
-        #[cfg(not(any(feature = "fsdb-lib", feature = "shm-lib")))]
+        #[cfg(not(any(feature = "fsdb-lib", feature = "shm-lib", feature = "wlf-lib")))]
         let _ = seed_point;
-        #[cfg(any(feature = "fsdb-lib", feature = "shm-lib"))]
+        #[cfg(any(feature = "fsdb-lib", feature = "shm-lib", feature = "wlf-lib"))]
         if seed_point
             && let Some(start) = start.filter(|start| *start > Time::ZERO)
             && !self.replay.as_ref().is_some_and(eligible)
@@ -1134,6 +1157,8 @@ impl<'w> Selection<'w> {
                     Position::Fsdb(_) => unreachable!("reader is fixed for a selection"),
                     #[cfg(feature = "shm-lib")]
                     Position::Shm(_) => unreachable!("reader is fixed for a selection"),
+                    #[cfg(feature = "wlf-lib")]
+                    Position::Wlf(_) => unreachable!("reader is fixed for a selection"),
                 });
                 reader.read_from(&self.bases, end, position, |base, time, value, position| {
                     consume(Some((base, Ok(value))), time, Some(Position::Vcd(position)))
@@ -1155,6 +1180,8 @@ impl<'w> Selection<'w> {
                     Some(Position::Vcd(_)) => unreachable!("reader is fixed for a selection"),
                     #[cfg(feature = "shm-lib")]
                     Some(Position::Shm(_)) => unreachable!("reader is fixed for a selection"),
+                    #[cfg(feature = "wlf-lib")]
+                    Some(Position::Wlf(_)) => unreachable!("reader is fixed for a selection"),
                 };
                 // A boundary checkpoint does not retain the preceding tick's
                 // event counts. Event selections keep the full reference path.
@@ -1191,6 +1218,22 @@ impl<'w> Selection<'w> {
                     },
                 )
             }
+            #[cfg(feature = "wlf-lib")]
+            crate::backends::Reader::Wlf(reader) => {
+                let from = match position {
+                    Some(Position::Wlf(time)) => time,
+                    None => Time::ZERO,
+                    _ => unreachable!("reader is fixed for a selection"),
+                };
+                let cacheable = !self.bases.iter().any(|s| s.encoding() == Encoding::Event);
+                reader.read_from(&self.bases, from, end, |base, time, value| {
+                    consume(
+                        Some((base, Ok(value))),
+                        time,
+                        cacheable.then_some(Position::Wlf(time)),
+                    )
+                })
+            }
             reader => reader.read(&self.bases, end, |base, time, value| {
                 consume(Some((base, value)), time, None)
             }),
@@ -1226,6 +1269,19 @@ impl<'w> Selection<'w> {
             {
                 end.ticks().checked_add(1).map(|next| Replay {
                     position: Position::Shm(Time::from_ticks(next)),
+                    start: pending_time.unwrap_or(replay_start),
+                    end,
+                    time: pending_time,
+                    slots: slots.to_vec(),
+                })
+            }
+            #[cfg(feature = "wlf-lib")]
+            crate::backends::Reader::Wlf(_)
+                if !self.bases.iter().any(|s| s.encoding() == Encoding::Event)
+                    && checkpoint_bytes(slots) <= CHECKPOINT_BYTES =>
+            {
+                end.ticks().checked_add(1).map(|next| Replay {
+                    position: Position::Wlf(Time::from_ticks(next)),
                     start: pending_time.unwrap_or(replay_start),
                     end,
                     time: pending_time,

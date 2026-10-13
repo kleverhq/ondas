@@ -12,11 +12,12 @@ readme = "README.md"
 documentation = "https://docs.rs/ondas"
 keywords = ["waveform", "vcd", "fst", "rtl", "eda"]
 categories = ["development-tools"]
-exclude = ["fixtures/**"]
+exclude = ["fixtures/**", "docs/wip/**"]
 
 [features]
 fsdb-lib = ["dep:cc"]
 shm-lib = ["dep:cc"]
+wlf-lib = ["dep:cc"]
 
 [build-dependencies]
 cc = { version = "1", optional = true }
@@ -57,6 +58,11 @@ required-features = ["fsdb-lib"]
 name = "shm"
 harness = false
 required-features = ["shm-lib"]
+
+[[bench]]
+name = "wlf"
+harness = false
+required-features = ["wlf-lib"]
 
 [package.metadata.docs.rs]
 all-features = false

@@ -62,6 +62,16 @@ _conformance-shm: _inside
 shm-consumer: _inside
     python3 tools/repo/check_shm_consumer.py
 
+
+# Check every WLF in the pinned fixtures, plus directed SDK regressions.
+conformance-wlf: _inside
+    tools/repo/wlf-sweep just _conformance-wlf
+
+_conformance-wlf: _inside
+    cargo test --locked --profile conformance --features wlf-lib --test conformance wlf_ -- --ignored --nocapture
+    cargo test --locked --profile conformance --features wlf-lib --test wlf_lib -- --ignored
+    cargo test --locked --profile conformance --features wlf-lib --lib wlf_ -- --ignored
+
 # Execute VCD/FST/GHW Criterion workloads without timing thresholds.
 bench-smoke: _inside
     CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}" cargo bench --locked --bench vcd -- --test
@@ -110,9 +120,48 @@ _ci-shm: _inside
     just shm-consumer
     RUSTUP_TOOLCHAIN={{msrv}} just shm-consumer
 
+# Compile WLF workloads without executing Criterion or opening fixtures.
+bench-build-wlf: _inside
+    tools/repo/wlf-sweep just _bench-build-wlf
+
+_bench-build-wlf: _inside
+    cargo bench --locked --features wlf-lib --bench wlf --no-run
+
+# Execute WLF Criterion workloads without timing thresholds.
+bench-smoke-wlf: _inside
+    tools/repo/wlf-sweep just _bench-smoke-wlf
+
+_bench-smoke-wlf: _inside
+    CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}" cargo bench --locked --features wlf-lib --bench wlf -- --test
+
+# Measure WLF workloads for each selected SDK; accepts Criterion arguments.
+bench-wlf *args: _inside
+    tools/repo/wlf-sweep just _bench-wlf "$@"
+
+_bench-wlf *args: _inside
+    cargo bench --locked --features wlf-lib --bench wlf -- "$@"
+
 # Verify actual downstream linking, independent of Cargo's runtime environment.
 fsdb-consumer: _inside
     python3 tools/repo/check_fsdb_consumer.py
+
+# Verify WLF linking in a separate downstream executable.
+wlf-consumer: _inside
+    python3 tools/repo/check_wlf_consumer.py
+
+# Validate each SDK in QUESTA_HOMES, or the single QUESTA_HOME.
+ci-wlf: _inside
+    tools/repo/wlf-sweep just _ci-wlf
+
+_ci-wlf: _inside
+    cargo clippy --locked --all-targets --features wlf-lib -- -D warnings
+    cargo test --locked --features wlf-lib
+    cargo +{{msrv}} check --locked --lib --features wlf-lib
+    RUSTDOCFLAGS="-D warnings" cargo doc --locked --lib --features wlf-lib --no-deps
+    just _conformance-wlf
+    just _bench-smoke-wlf
+    just wlf-consumer
+    RUSTUP_TOOLCHAIN={{msrv}} just wlf-consumer
 
 # Validate each SDK in VERDI_HOMES, or the single VERDI_HOME.
 ci-fsdb: _inside

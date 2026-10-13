@@ -109,6 +109,21 @@ pub(super) fn history(c: &mut Criterion, fixture: &str, end: u64) {
             })
         },
     );
+    for count in [1, 4] {
+        let high = words[..count]
+            .iter()
+            .map(|s| s.slice(31, 16).unwrap())
+            .collect::<Vec<_>>();
+        group.bench_function(
+            BenchmarkId::new(
+                format!("samples-batch/stable-high/top.word_00/prefix{count}/t{end}"),
+                BACKEND,
+            ),
+            |b| {
+                b.iter(|| black_box(wave.samples(black_box(&high), black_box(time)).unwrap()));
+            },
+        );
+    }
     // Full traversal is streamed; owned results remain bounded to a 32-tick window.
     let mut selection = wave.select(&[clock]).unwrap();
     let full = TimeRange::closed(Time::from_ticks(17), time);

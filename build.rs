@@ -7,6 +7,8 @@ fn main() {
     fsdb();
     #[cfg(feature = "shm-lib")]
     shm();
+    #[cfg(feature = "wlf-lib")]
+    wlf();
 }
 
 #[cfg(feature = "shm-lib")]
@@ -88,6 +90,70 @@ fn shm() {
     println!("cargo:rustc-link-search=native={}", out.display());
     println!("cargo:rustc-link-lib=dylib=ondas_shm_reader");
     println!("cargo:rustc-link-lib=z");
+}
+
+#[cfg(feature = "wlf-lib")]
+fn wlf() {
+    use std::{env, fs, path::PathBuf, process::Command};
+    println!("cargo:rerun-if-env-changed=QUESTA_HOME");
+    println!("cargo:rerun-if-changed=native/wlf.c");
+    println!("cargo:rerun-if-changed=native/wlf.h");
+    assert_eq!(
+        env::var("TARGET").unwrap(),
+        "x86_64-unknown-linux-gnu",
+        "wlf-lib requires x86_64-unknown-linux-gnu"
+    );
+    let sdk = PathBuf::from(
+        env::var_os("QUESTA_HOME")
+            .expect("wlf-lib requires QUESTA_HOME pointing to an installed Questa SDK"),
+    )
+    .canonicalize()
+    .expect("wlf-lib: QUESTA_HOME is not an accessible directory");
+    for header in ["wlf_api.h", "mti.h", "acc_user.h", "acc_vhdl.h"] {
+        let path = sdk.join("include").join(header);
+        fs::File::open(&path)
+            .unwrap_or_else(|error| panic!("wlf-lib: {}: {error}", path.display()));
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
+    let library = sdk
+        .join("linux_x86_64/libwlf.so")
+        .canonicalize()
+        .expect("wlf-lib: missing linux_x86_64/libwlf.so in QUESTA_HOME");
+    println!("cargo:rerun-if-changed={}", library.display());
+    let elf = Command::new("readelf")
+        .arg("-d")
+        .arg(&library)
+        .output()
+        .expect("wlf-lib: readelf (binutils) is required to check SDK linking");
+    assert!(elf.status.success(), "wlf-lib: cannot inspect SDK library");
+    assert!(
+        !String::from_utf8_lossy(&elf.stdout).contains("(SONAME)"),
+        "wlf-lib: SDK library with SONAME is unsupported"
+    );
+    let library = library.to_str().expect("wlf-lib: SDK path must be UTF-8");
+    assert!(
+        !library.contains(['\n', '\r']),
+        "wlf-lib: newline in SDK path"
+    );
+    cc::Build::new()
+        .std("c11")
+        .define("__64BIT__", None)
+        .flag("-isystem")
+        .flag(sdk.join("include").to_str().unwrap())
+        .file("native/wlf.c")
+        .compile("ondas_wlf_shim");
+    let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
+    // A no-SONAME SDK records its absolute path in downstream DT_NEEDED entries.
+    fs::write(
+        out.join("libondas_wlf_sdk.so"),
+        format!(
+            "INPUT (\"{}\")\n",
+            library.replace('\\', "\\\\").replace('"', "\\\"")
+        ),
+    )
+    .expect("wlf-lib: write SDK linker script");
+    println!("cargo:rustc-link-search=native={}", out.display());
+    println!("cargo:rustc-link-lib=dylib=ondas_wlf_sdk");
 }
 
 #[cfg(feature = "fsdb-lib")]
