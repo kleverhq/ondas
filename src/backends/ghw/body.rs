@@ -26,6 +26,7 @@ pub(super) enum Event {
     Tick(Time),
 }
 
+// Keep checked buffered decoding inside the caller's scalar loop.
 #[inline(always)]
 pub(super) fn scalar(wire: &mut Wire, types: &Types, id: usize) -> Result<Scalar> {
     let (storage, literals, _) = types

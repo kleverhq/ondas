@@ -230,60 +230,67 @@ impl Reader {
         ids.dedup(); // Dependencies are already sorted by source ID.
         let broad = ids.len() >= self.active.len().div_ceil(2);
         let routes = broad.then(|| dependency_ranges(&self.active, &dependencies));
-        let mut consume = |event| {
-            match event {
-                body::Event::Scalar {
-                    id, rank, value, ..
-                } => {
-                    #[cfg(test)]
-                    {
-                        self.records_read += 1;
-                    }
-                    let range = if let Some(routes) = &routes {
-                        routes[rank].clone()
-                    } else {
-                        let start = dependencies.partition_point(|dependency| dependency.id < id);
-                        let mut end = start;
-                        while dependencies.get(end).is_some_and(|d| d.id == id) {
-                            end += 1;
+        // The block permits the closure attribute on MSRV. Force scalar-event
+        // specialization in the walker instead of a per-record callback.
+        let consume = {
+            #[inline(always)]
+            |event| {
+                match event {
+                    body::Event::Scalar {
+                        id, rank, value, ..
+                    } => {
+                        #[cfg(test)]
+                        {
+                            self.records_read += 1;
                         }
-                        start..end
-                    };
-                    if !range.is_empty() {
-                        // The first entry owns this source scalar's seen flag.
-                        let first = !std::mem::replace(&mut dependencies[range.start].seen, true);
-                        for dependency in &dependencies[range] {
-                            let slot = dependency.slot;
-                            buffers[slot].update(dependency.position, value, first);
-                            if !marks[slot] {
-                                marks[slot] = true;
-                                touched.push(slot);
+                        let range = if let Some(routes) = &routes {
+                            routes[rank].clone()
+                        } else {
+                            let start =
+                                dependencies.partition_point(|dependency| dependency.id < id);
+                            let mut end = start;
+                            while dependencies.get(end).is_some_and(|d| d.id == id) {
+                                end += 1;
+                            }
+                            start..end
+                        };
+                        if !range.is_empty() {
+                            // The first entry owns this source scalar's seen flag.
+                            let first =
+                                !std::mem::replace(&mut dependencies[range.start].seen, true);
+                            for dependency in &dependencies[range] {
+                                let slot = dependency.slot;
+                                buffers[slot].update(dependency.position, value, first);
+                                if !marks[slot] {
+                                    marks[slot] = true;
+                                    touched.push(slot);
+                                }
                             }
                         }
                     }
-                }
-                body::Event::ListEnd(time) => {
-                    for slot in touched.drain(..) {
-                        marks[slot] = false;
-                        let buffer = &buffers[slot];
-                        if buffer.known == buffer.required
-                            && let ControlFlow::Break(value) = visitor(Notification::Value {
-                                index: buffer.index,
-                                time,
-                                value: buffer.value(),
-                            })
-                        {
+                    body::Event::ListEnd(time) => {
+                        for slot in touched.drain(..) {
+                            marks[slot] = false;
+                            let buffer = &buffers[slot];
+                            if buffer.known == buffer.required
+                                && let ControlFlow::Break(value) = visitor(Notification::Value {
+                                    index: buffer.index,
+                                    time,
+                                    value: buffer.value(),
+                                })
+                            {
+                                return ControlFlow::Break(value);
+                            }
+                        }
+                    }
+                    body::Event::Tick(time) => {
+                        if let ControlFlow::Break(value) = visitor(Notification::Tick(time)) {
                             return ControlFlow::Break(value);
                         }
                     }
                 }
-                body::Event::Tick(time) => {
-                    if let ControlFlow::Break(value) = visitor(Notification::Tick(time)) {
-                        return ControlFlow::Break(value);
-                    }
-                }
+                ControlFlow::Continue(())
             }
-            ControlFlow::Continue(())
         };
         // Broad selections keep the sequential path without a many-chain merge.
         if let Some(index) = &self.index
@@ -298,8 +305,7 @@ impl Reader {
                 consume,
             )
         } else {
-            let (flow, _) =
-                body::walk(&mut self.wire, &self.types, &self.active, end, &mut consume)?;
+            let (flow, _) = body::walk(&mut self.wire, &self.types, &self.active, end, consume)?;
             Ok(flow)
         }
     }
