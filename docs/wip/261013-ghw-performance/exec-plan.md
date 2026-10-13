@@ -18,7 +18,11 @@ Improve opening and public waveform queries for GHW without changing returned va
 - [x] Committed buffering as 6f9768f after host quality hooks.
 - [x] Hypothesis 2 passed 25 private tests, GHW conformance (204 cases), and Astra review. Two opposite-order pairs confirm short whole-vector scans 1.20–1.29x and repeat-point series 1.26–1.40x versus buffering alone; opening is unchanged.
 - [x] Hypothesis 2 OCR completed with zero findings.
-- [ ] Commit hypothesis 2; then test flat dependency positions independently.
+- [x] Committed hypothesis 2 as 83c1bcd after host quality hooks and zero OCR findings.
+- [x] Added a public repeated-ID partial-CYC initialization test and confirmed it passes before the structural change.
+- [x] Hypothesis 3 passed 25 private tests, eight public tests, 204 conformance cases, Astra and OCR (zero findings).
+- [x] Two main pairs confirm early whole scans 1.89–2.06x and repeat series 1.99–2.25x versus hypothesis 2. A noisy many-scalar case was repeated in two additional pairs: scan/1 improved 1.45x/1.50x and scan/64 1.29x/1.25x. Accept flat dependencies.
+- [ ] Commit hypothesis 3; then resolve source decode descriptors once at opening as hypothesis 4.
 - [ ] Rank hypotheses against observed costs and check one minimal change at a time.
 - [ ] Review, validate, and commit each accepted optimization; record rejected experiments.
 - [ ] Re-measure final representative cases against the initial implementation and analogous FST/FSDB cases.
@@ -51,6 +55,12 @@ Accept hypothesis 1 after two adjacent pairs with opposite order. Real ws2815b o
 Hypothesis 2 keeps the dependency map and position vectors, but puts the seen flag beside the positions. It removes the separate HashSet and its per-selected-record lookup. Expected gains are wide setup/short-prefix queries and repeated points; opening is an unchanged control. All dependent positions must share one first-seen result, including repeated IDs. This is independent of flattening positions or retaining state.
 
 Accept hypothesis 2 from paired evidence, not its more optimistic exploratory sweep. Whole early scans improved 1.26x/1.20x in file mode and 1.26x/1.29x in bytes. Repeat-point series improved 1.27x/1.26x (file) and 1.40x/1.38x (bytes). Dense 64-probe scan improved about 1.10x/1.11x; full late whole scan has only a small or inconclusive gain. Opening controls moved within about 3%. Keep each claim scoped to the affected setup work.
+
+Hypothesis 3 uses one sorted Vec of source-ID/slot/position entries, with the seen flag on the first entry of each equal-ID group. A lower-bound partition_point finds that first entry; do not use an arbitrary binary-search match. This removes per-scalar position-vector allocations and hash-table storage while keeping memory proportional to selected positions. It adds logarithmic lookup work for every decoded source record. Measure dense/many topology, long whole prefixes, scalar controls and early wide setup before acceptance. Preserve list/tick order and all selected positions.
+
+The added public test changes independent literal HIE recipes to [3,3,4] and [4,3,3], omits SNP, writes ID 3 twice before ID 4, and checks Missing at ticks 0/1 and complete values at tick 2 across backward reads. It protects initialization and grouping behavior rather than internal data structure details.
+
+Accept flat dependencies after repeated wide setup and miss-heavy controls. Main pair 2 had pronounced late-run noise, including a 7% apparent regression in many-scalar scan/1 and large shifts in unchanged bytes cases. Two extra opposite-order miss-focused pairs instead showed scan/1 gains of 1.45x/1.50x, scan/64 1.29x/1.25x, and dense constant gains 1.38x/1.45x. Opening controls are unchanged within the observed variation. Long whole scans are near neutral or modestly faster, not the main claim.
 
 Do not require a universal numerical acceptance threshold. Prefer repeatable double-digit improvements or changes that remove substantial work with simpler code. Treat a few-percent change as noise unless controlled repeats distinguish it clearly. Check regressions in unaffected cases. Rationale: implementation cost and absolute workload cost matter alongside ratios.
 
@@ -135,3 +145,7 @@ Revision note (2026-10-13): buffering review completed without production findin
 Revision note (2026-10-13): recorded buffering commit and began the separate seen-state simplification experiment.
 
 Revision note (2026-10-13): accepted combined seen/dependency state from two paired runs and recorded conservative effects and unchanged opening controls.
+
+Revision note (2026-10-13): committed seen-state simplification, verified the new partial-initialization behavior test on that version, and began the independent flat-position experiment.
+
+Revision note (2026-10-13): accepted flat positions after additional noisy-control checks and clean peer/OCR review, preserving all test evidence and the intermediate binary.

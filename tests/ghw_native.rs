@@ -217,6 +217,46 @@ fn file_and_metadata_opening_match_bytes() {
 }
 
 #[test]
+fn partial_cycle_values_wait_for_every_recipe_position() {
+    let mut bytes = recording(0);
+    // Use shared source IDs inside each three-bit recipe, including its reverse.
+    for (declaration, ids) in [
+        ([16, 14, 4, 3, 1, 4], [3, 3, 4]),
+        ([16, 15, 4, 3, 1, 4], [3, 3, 4]),
+        ([16, 16, 4, 4, 1, 3], [4, 3, 3]),
+    ] {
+        let offset = bytes
+            .windows(declaration.len())
+            .position(|entry| entry == declaration)
+            .unwrap();
+        bytes[offset + 3..offset + 6].copy_from_slice(&ids);
+    }
+    let body = bytes.windows(4).position(|tag| tag == b"SNP\0").unwrap();
+    bytes.truncate(body);
+    bytes.extend(b"CYC\0");
+    bytes.extend(0i64.to_le_bytes());
+    // Active IDs are 3,4,5. ID 3 changes at ticks 0 and 1; ID 4 starts at 2.
+    bytes.extend([1, 3, 0, 1, 1, 2, 0, 1, 2, 3, 0, 127]);
+    bytes.extend(b"ECY\0");
+    let mut wave = ondas::open_bytes("partial.ghw", bytes.into()).unwrap();
+    let wide = wave.hierarchy().signal("top.wide").unwrap();
+    let reversed = wave.hierarchy().signal("top.reversed").unwrap();
+    for tick in [0, 1, 2, 1, 0, 2] {
+        let samples = wave
+            .samples(&[wide, reversed], Time::from_ticks(tick))
+            .unwrap();
+        if tick < 2 {
+            assert!(samples.iter().all(|s| matches!(s, Sample::Missing { .. })));
+        } else {
+            assert_eq!(
+                samples.into_iter().map(sample_bits).collect::<Vec<_>>(),
+                ["001", "100"]
+            );
+        }
+    }
+}
+
+#[test]
 fn empty_delayed_and_equal_timestamp_sections_preserve_recorded_state() {
     let original = recording(0);
     let body_start = original.windows(4).position(|b| b == b"SNP\0").unwrap();

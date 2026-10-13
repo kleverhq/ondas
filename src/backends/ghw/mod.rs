@@ -11,7 +11,7 @@ use crate::{
     BitsRef, Encoding, Hierarchy, Metadata, Result, Signal, Time, TimeUnit, Timescale, ValueRef,
 };
 use hierarchy::Recipe;
-use std::{collections::HashMap, ops::ControlFlow};
+use std::ops::ControlFlow;
 use types::Types;
 use wire::Wire;
 
@@ -46,9 +46,10 @@ struct Buffer {
     vector: bool,
 }
 
-#[derive(Default)]
-struct Dependents {
-    positions: Vec<(usize, usize)>,
+struct Dependency {
+    id: u32,
+    slot: usize,
+    position: usize,
     seen: bool,
 }
 
@@ -147,7 +148,7 @@ impl Reader {
         }
         self.wire.seek(self.body_start)?;
         let mut buffers = Vec::new();
-        let mut dependencies = HashMap::<u32, Dependents>::new();
+        let mut dependencies = Vec::new();
         for signal in signals {
             let recipe = self
                 .recipes
@@ -159,11 +160,12 @@ impl Reader {
                 .ok_or_else(|| self.wire.malformed("non-scalar recipe encoding"))?;
             let slot = buffers.len();
             for (position, &id) in recipe.ids.iter().enumerate() {
-                dependencies
-                    .entry(id)
-                    .or_default()
-                    .positions
-                    .push((slot, position));
+                dependencies.push(Dependency {
+                    id,
+                    slot,
+                    position,
+                    seen: false,
+                });
             }
             let width = match recipe.encoding {
                 Encoding::Bits { width } => width as usize,
@@ -180,6 +182,7 @@ impl Reader {
                 vector: recipe.vector,
             });
         }
+        dependencies.sort_unstable_by_key(|dependency| dependency.id);
         #[cfg(test)]
         {
             self.assembly_bytes = buffers
@@ -196,10 +199,13 @@ impl Reader {
                     {
                         self.records_read += 1;
                     }
-                    if let Some(dependents) = dependencies.get_mut(&id) {
-                        let first = !std::mem::replace(&mut dependents.seen, true);
-                        for &(slot, position) in &dependents.positions {
-                            buffers[slot].update(position, value, first);
+                    let start = dependencies.partition_point(|dependency| dependency.id < id);
+                    if dependencies.get(start).is_some_and(|d| d.id == id) {
+                        // The first entry owns this source scalar's seen flag.
+                        let first = !std::mem::replace(&mut dependencies[start].seen, true);
+                        for dependency in dependencies[start..].iter().take_while(|d| d.id == id) {
+                            let slot = dependency.slot;
+                            buffers[slot].update(dependency.position, value, first);
                             if !marks[slot] {
                                 marks[slot] = true;
                                 touched.push(slot);
