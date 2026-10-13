@@ -66,6 +66,8 @@ Exact aliases share a signal. Reversed, subset, superset and overlapping recipes
 remain distinct when their ordered recipes differ. Scalar-ID holes are resolved
 through active ranks. They do not cause a repeated search through unused IDs.
 Declaration metadata remains independent of shared signal identity.
+The active source table resolves scalar type aliases once for body decoding.
+Declaration types keep their original metadata.
 
 ## Query cost and storage
 
@@ -74,8 +76,11 @@ window must establish earlier state. Selection does not avoid reading unrelated
 encoded records. It limits assembled runtime values to the distinct selected
 whole recipes. A narrow vector slice still requires its whole source recipe.
 
-Reverse scalar dependencies update selected positions. Each touched whole value
-is delivered once per change list. Repeated lists at one tick remain ordered.
+Each query builds one sorted list of source scalar dependencies. Its size is
+proportional to the selected recipe positions. Repeated positions for one source
+scalar share first-observation tracking. A whole value remains missing until
+all its recipe positions have been observed. Each touched whole value is
+delivered once per change list. Repeated lists at one tick remain ordered.
 The common query engine observes the final tick state and compares projections
 before emitting changes. Equal ticks can span snapshot and cycle sections.
 
@@ -85,8 +90,9 @@ composed queries use the common engine. Callback values borrow current buffers;
 owned traces retain their requested output.
 
 The reader retains hierarchy, type layouts and ordered recipes, plus input
-buffers. Queries retain selected current values and common query state. They do
-not retain all source histories or a global timestamp index. There is no query
+buffers. A fixed-size buffer batches wire reads. Queries retain selected current
+values and common query state. They do not retain all source histories or a
+global timestamp index. There is no query
 checkpoint or continuation cache. Benchmark warm cases distinguish a reused
 waveform or selection from a reader that retains full histories.
 
