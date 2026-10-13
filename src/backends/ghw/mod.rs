@@ -12,7 +12,7 @@ use crate::{
     BitsRef, Encoding, Hierarchy, Metadata, Result, Signal, Time, TimeUnit, Timescale, ValueRef,
 };
 use hierarchy::Recipe;
-use std::ops::ControlFlow;
+use std::ops::{ControlFlow, Range};
 use types::Types;
 use wire::Wire;
 
@@ -53,6 +53,23 @@ struct Dependency {
     slot: usize,
     position: usize,
     seen: bool,
+}
+
+// The active table and dependencies both use ascending source IDs.
+fn dependency_ranges(active: &[(u32, usize)], dependencies: &[Dependency]) -> Vec<Range<usize>> {
+    let mut cursor = 0;
+    let ranges = active
+        .iter()
+        .map(|&(id, _)| {
+            let start = cursor;
+            while dependencies.get(cursor).is_some_and(|d| d.id == id) {
+                cursor += 1;
+            }
+            start..cursor
+        })
+        .collect();
+    debug_assert_eq!(cursor, dependencies.len());
+    ranges
 }
 
 impl Buffer {
@@ -211,18 +228,31 @@ impl Reader {
             .map(|dependency| dependency.id)
             .collect::<Vec<_>>();
         ids.dedup(); // Dependencies are already sorted by source ID.
+        let broad = ids.len() >= self.active.len().div_ceil(2);
+        let routes = broad.then(|| dependency_ranges(&self.active, &dependencies));
         let mut consume = |event| {
             match event {
-                body::Event::Scalar { id, value, .. } => {
+                body::Event::Scalar {
+                    id, rank, value, ..
+                } => {
                     #[cfg(test)]
                     {
                         self.records_read += 1;
                     }
-                    let start = dependencies.partition_point(|dependency| dependency.id < id);
-                    if dependencies.get(start).is_some_and(|d| d.id == id) {
+                    let range = if let Some(routes) = &routes {
+                        routes[rank].clone()
+                    } else {
+                        let start = dependencies.partition_point(|dependency| dependency.id < id);
+                        let mut end = start;
+                        while dependencies.get(end).is_some_and(|d| d.id == id) {
+                            end += 1;
+                        }
+                        start..end
+                    };
+                    if !range.is_empty() {
                         // The first entry owns this source scalar's seen flag.
-                        let first = !std::mem::replace(&mut dependencies[start].seen, true);
-                        for dependency in dependencies[start..].iter().take_while(|d| d.id == id) {
+                        let first = !std::mem::replace(&mut dependencies[range.start].seen, true);
+                        for dependency in &dependencies[range] {
                             let slot = dependency.slot;
                             buffers[slot].update(dependency.position, value, first);
                             if !marks[slot] {
@@ -257,7 +287,7 @@ impl Reader {
         };
         // Broad selections keep the sequential path without a many-chain merge.
         if let Some(index) = &self.index
-            && ids.len() < self.active.len().div_ceil(2)
+            && !broad
         {
             index.read(
                 &mut self.wire,

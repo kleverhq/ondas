@@ -89,63 +89,70 @@ fn indexed_values_preserve_final_tick_states_across_tiny_buffers() {
 }
 
 #[test]
-fn indexed_partial_repeated_and_reversed_recipes_preserve_missing_and_projection_time() {
-    let mut bytes = test_bytes::padded_recording(0);
-    for (declaration, ids) in [
-        ([16, 14, 4, 3, 1, 4], [3, 3, 4]),
-        ([16, 15, 4, 3, 1, 4], [3, 3, 4]),
-        ([16, 16, 4, 4, 1, 3], [4, 3, 3]),
-    ] {
-        let at = bytes
-            .windows(declaration.len())
-            .position(|b| b == declaration)
-            .unwrap();
-        bytes[at + 3..at + 6].copy_from_slice(&ids);
-    }
-    let body = bytes.windows(4).position(|b| b == b"SNP\0").unwrap();
-    bytes.truncate(body);
-    bytes.extend(b"CYC\0");
-    bytes.extend(0i64.to_le_bytes());
-    // Active source IDs start 3, 4, 5. Source 4 appears only at tick 2.
-    bytes.extend([1, 3, 0, 1, 1, 2, 0, 1, 2, 3, 0, 1, 2, 2, 0, 127]);
-    bytes.extend(b"ECY\0");
-    let mut wave = crate::open_bytes("indexed-partial.ghw", bytes.into()).unwrap();
-    let wide = wave.hierarchy().signal("top.wide").unwrap();
-    let reversed = wave.hierarchy().signal("top.reversed").unwrap();
-    let low = wide.slice(0, 0).unwrap();
-    for tick in [0, 1, 2, 3, 1, 0, 3, 2] {
-        let samples = wave
-            .samples(&[wide, reversed, low], Time::from_ticks(tick))
-            .unwrap();
-        if tick < 2 {
-            assert!(
-                samples
-                    .iter()
-                    .all(|sample| matches!(sample, crate::Sample::Missing { .. }))
-            );
+fn partial_repeated_and_reversed_recipes_preserve_missing_and_projection_time() {
+    for selective in [false, true] {
+        let mut bytes = if selective {
+            test_bytes::padded_recording(0)
         } else {
-            let expected = if tick == 2 {
-                ["001", "100", "1"]
-            } else {
-                ["000", "000", "0"]
-            };
-            for (sample, expected) in samples.iter().zip(expected) {
+            test_bytes::recording(0)
+        };
+        for (declaration, ids) in [
+            ([16, 14, 4, 3, 1, 4], [3, 3, 4]),
+            ([16, 15, 4, 3, 1, 4], [3, 3, 4]),
+            ([16, 16, 4, 4, 1, 3], [4, 3, 3]),
+        ] {
+            let at = bytes
+                .windows(declaration.len())
+                .position(|b| b == declaration)
+                .unwrap();
+            bytes[at + 3..at + 6].copy_from_slice(&ids);
+        }
+        let body = bytes.windows(4).position(|b| b == b"SNP\0").unwrap();
+        bytes.truncate(body);
+        bytes.extend(b"CYC\0");
+        bytes.extend(0i64.to_le_bytes());
+        // Active source IDs start 3, 4, 5. Source 4 appears only at tick 2.
+        bytes.extend([1, 3, 0, 1, 1, 2, 0, 1, 2, 3, 0, 1, 2, 2, 0, 127]);
+        bytes.extend(b"ECY\0");
+        let mut wave = crate::open_bytes("indexed-partial.ghw", bytes.into()).unwrap();
+        let wide = wave.hierarchy().signal("top.wide").unwrap();
+        let reversed = wave.hierarchy().signal("top.reversed").unwrap();
+        let low = wide.slice(0, 0).unwrap();
+        for tick in [0, 1, 2, 3, 1, 0, 3, 2] {
+            let samples = wave
+                .samples(&[wide, reversed, low], Time::from_ticks(tick))
+                .unwrap();
+            if tick < 2 {
                 assert!(
-                    matches!(sample, crate::Sample::Value { value: crate::Value::Bits(bits), changed_at, .. }
-                    if bits.as_ref().to_string() == expected && changed_at.map(|time| time.ticks()) == (tick > 2).then_some(3)),
-                    "{sample:?}; expected {expected} at tick{tick}"
+                    samples
+                        .iter()
+                        .all(|sample| matches!(sample, crate::Sample::Missing { .. }))
                 );
+            } else {
+                let expected = if tick == 2 {
+                    ["001", "100", "1"]
+                } else {
+                    ["000", "000", "0"]
+                };
+                for (sample, expected) in samples.iter().zip(expected) {
+                    assert!(
+                        matches!(sample, crate::Sample::Value { value: crate::Value::Bits(bits), changed_at, .. }
+                    if bits.as_ref().to_string() == expected && changed_at.map(|time| time.ticks()) == (tick > 2).then_some(3)),
+                        "{sample:?}; expected {expected} at tick{tick}"
+                    );
+                }
             }
         }
+        let crate::backends::Reader::Ghw(reader) = &wave.reader else {
+            panic!("GHW")
+        };
+        assert!(reader.index.is_some());
+        assert_eq!(
+            2 < reader.active.len().div_ceil(2),
+            selective,
+            "exercise both selective and broad routing with an unused source and ID holes"
+        );
     }
-    let crate::backends::Reader::Ghw(reader) = &wave.reader else {
-        panic!("GHW")
-    };
-    assert!(reader.index.is_some());
-    assert!(
-        2 < reader.active.len().div_ceil(2),
-        "this case must take indexed routing"
-    );
 }
 
 #[test]

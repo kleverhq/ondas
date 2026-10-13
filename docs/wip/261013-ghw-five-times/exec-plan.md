@@ -12,8 +12,10 @@ Use KISS and YAGNI: concrete private GHW structures, one hypothesis at a time, n
 - [x] Two Astra medium lanes independently inspected index alternatives and correctness boundaries. Both recommend indexing source scalar payload locations during required opening validation.
 - [x] Preserved the initial executable and measurement evidence in tmp/ghw-five-times/. Implemented the first isolated bounded source-offset-index experiment; broad selections still replay.
 - [x] Unit/public tests and full fixture conformance pass. Indexed tests cover partial/no-SNP repeated/reversed recipes, cross-section equal ticks, projected times, early stopping and errors after partial selected assembly. Both medium lanes reviewed H1; focused correctness recheck is clean.
-- [x] Measured H1 twice with reversed backend order and a live unchanged baseline. Small selections are below the query threshold; dense broad scans remain above it. OCR completed all eight Rust files without correctness findings. Fixed helper-header derivation and test/comment nits; the eager metadata-open index cost is documented and retained to avoid a second opening policy. Acceptance awaits commit.
-- [ ] Reduce dense whole-vector routing/decoding cost in a separate experiment; repeat the full matched matrix and add fresh-query controls.
+- [x] Measured H1 twice with reversed backend order and a live unchanged baseline. Small selections are below the query threshold; dense broad scans remain above it. OCR completed all eight Rust files without correctness findings. Fixed helper-header derivation and test/comment nits; the eager metadata-open index cost is documented and retained to avoid a second opening policy. Accepted and committed after OCR, medium recheck and host hook checks.
+- [x] H2 direct active-rank routing passes focused tests, full conformance, Clippy, 180 benchmark smoke IDs, two medium lanes and complete OCR with no findings. First measurement and a live H1 control show dense39.4ms to15.85ms and many3.41ms to1.23ms; a reversed-order second process confirms dense16.02ms/FST1.597ms and many1.282ms/FST128us. Accepted: about2.5–2.8times faster, with narrow controls preserved.
+- [x] Accepted H2 after two processes, live previous-version control, full conformance, medium reviews and OCR. Commit before H3.
+- [ ] Test one-byte checked-reader specialization as H3. Repeat the full matched matrix and fresh-reader controls after the scoped threshold is reached.
 - [ ] Resolve remaining cases above5times, measure storage and opening, and complete all quality gates and medium reviews.
 - [ ] Promote durable implementation/storage conclusions to docs/ghw.md and docs/benchmarking.md, remove this tracked temporary task directory, commit and write the final report.
 
@@ -70,6 +72,8 @@ Build the writer in the FST image with cc -O2 -Wall -Wextra -Werror -D_GNU_SOURC
 
 ## Decision Log
 
+H2 uses a temporary rank-to-dependency-range table only for broad selections. The measured bottleneck repeats source-ID lookup for each scalar; the active rank is already known and validated. A medium review caught and removed extra binary search introduced in the narrow fallback. Two repeated wide cases remain near ten times FST, so H3 will specialize the checked one-byte read with ordinary inline guidance. It will preserve scalar type dispatch and every error check; do not simultaneously inline the scalar decoder or add codec caching.
+
 Start with opening-built scalar offsets because a200–300times selective improvement is needed to reach5times FST. A decoder micro-optimization alone cannot avoid unrelated work. Global list membership also still scans unrelated lists and decodes dense shared lists. Source offsets are concrete and preserve shared source identity. Keep values on source, expose no backend option and document storage/build costs. Defer compact run/index designs until the first measured result establishes need.
 
 ## Surprises & Discoveries
@@ -95,3 +99,11 @@ All changes remain inside the concrete private GHW reader and its tests/docs. Ke
 Revision note (2026-10-13): created the executable optimization plan from measured failures and two independent Astra medium source/index reviews. Query implementation proceeds while opening-threshold scope is clarified.
 
 Revision note (2026-10-13): recorded two longer H1 measurements and the live initial-executable control. Saved the next rank-routing experiment in ignored scratch only while OCR reviews the frozen H1 runtime diff. Prepared eleven fresh-reader controls with forty alternating pairs each; these time selection construction and the first query, while opening, lookup and reader destruction are separate.
+
+Revision note (2026-10-13): H1 committed. H2 implements a per-query linear merge from sorted active source IDs to contiguous selected-dependency ranges. Only broad selections allocate this sixteen-byte-per-active-source table; narrow indexed or over-budget fallback selections retain source-ID search. The decoder, value conversion and shared normalization engine are unchanged. One test now exercises the same literal no-snapshot repeated/reversed recipe through broad and selective routes.
+
+Revision note (2026-10-13): medium review caught a second binary search introduced while forming narrow dependency ranges. Replaced it with a walk over equal IDs that stops at the first mismatch, preserving the narrow fallback's work on unrelated records. Restarted the not-yet-complete H2 OCR review against this corrected single-hypothesis diff.
+
+Revision note (2026-10-13): H2 first measured result and live H1 control confirm a large routing improvement, while two whole-vector cases remain above five times. Astra medium recommends the isolated checked-byte experiment; outlined byte-call overhead is the hypothesis, not allocation on successful reads (large assembly error copies are only error branches).
+
+Revision note (2026-10-13): accepted H2 after reversed-order confirmation. The two remaining wide scans are near ten times FST, so the goal is still active.
