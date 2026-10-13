@@ -527,7 +527,11 @@ pub(super) fn read(wire: &mut Wire, types: &Types) -> Result<Declarations> {
     if !stack.is_empty() {
         return Err(wire.malformed("unclosed hierarchy scopes"));
     }
-    let mut active = mapper.scalar_types.into_iter().collect::<Vec<_>>();
+    let mut active = mapper
+        .scalar_types
+        .into_iter()
+        .map(|(id, ty)| (id, types.effective(ty)))
+        .collect::<Vec<_>>();
     active.sort_unstable_by_key(|&(id, _)| id);
     let encodings = mapper.recipes.iter().map(|r| r.encoding).collect();
     Ok(Declarations {

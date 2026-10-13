@@ -22,7 +22,11 @@ Improve opening and public waveform queries for GHW without changing returned va
 - [x] Added a public repeated-ID partial-CYC initialization test and confirmed it passes before the structural change.
 - [x] Hypothesis 3 passed 25 private tests, eight public tests, 204 conformance cases, Astra and OCR (zero findings).
 - [x] Two main pairs confirm early whole scans 1.89–2.06x and repeat series 1.99–2.25x versus hypothesis 2. A noisy many-scalar case was repeated in two additional pairs: scan/1 improved 1.45x/1.50x and scan/64 1.29x/1.25x. Accept flat dependencies.
-- [ ] Commit hypothesis 3; then resolve source decode descriptors once at opening as hypothesis 4.
+- [x] Committed flat dependencies as b39e87d after quality hooks.
+- [x] Hypothesis 4 full descriptor trial passed tests/Astra but paired results were mixed: some wide queries improved 10–22%, opening was neutral or ~5% slower, dense controls were inconsistent. Saved its patch/binary and removed the full descriptor change.
+- [x] Minimal effective-type normalization passed 25 private, eight public and 204 conformance cases; Astra confirmed semantics. Opposite-order pairs show repeat series +12–16% file and +6–8% bytes, with other cases noisy or neutral. Accept this small map-only refinement with scoped claims.
+- [x] Effective-type OCR completed with zero findings.
+- [ ] Commit effective-type normalization. Then test a projected-value copy shortcut with an active-wide counterexample.
 - [ ] Rank hypotheses against observed costs and check one minimal change at a time.
 - [ ] Review, validate, and commit each accepted optimization; record rejected experiments.
 - [ ] Re-measure final representative cases against the initial implementation and analogous FST/FSDB cases.
@@ -61,6 +65,12 @@ Hypothesis 3 uses one sorted Vec of source-ID/slot/position entries, with the se
 The added public test changes independent literal HIE recipes to [3,3,4] and [4,3,3], omits SNP, writes ID 3 twice before ID 4, and checks Missing at ticks 0/1 and complete values at tick 2 across backward reads. It protects initialization and grouping behavior rather than internal data structure details.
 
 Accept flat dependencies after repeated wide setup and miss-heavy controls. Main pair 2 had pronounced late-run noise, including a 7% apparent regression in many-scalar scan/1 and large shifts in unchanged bytes cases. Two extra opposite-order miss-focused pairs instead showed scan/1 gains of 1.45x/1.50x, scan/64 1.29x/1.25x, and dense constant gains 1.38x/1.45x. Opening controls are unchanged within the observed variation. Long whole scans are near neutral or modestly faster, not the main claim.
+
+Hypothesis 4 replaces the existing active table with SourceScalar descriptors (source ID, Storage, base literal count as usize). Resolve types once at hierarchy completion; remove repeated Types::scalar/alias traversal from body decoding. This does not add another index or retain values. Keep original types and recipes for declaration metadata and selected assembly. Preserve the exact ordinal, signed width and real-bit checks; 256 enum literals must remain representable. Tests of the body state machine now construct explicit descriptors instead of parsing a synthetic type table; full corpus tests still parse original types/hierarchy.
+
+Reject the full descriptor form for its larger source/type changes without a sufficiently broad stable improvement. Test the smaller refinement alone: map (source_id, type_id) to (source_id, types.effective(type_id)) when building the active table. Keep recipes' original type IDs and all decoder code unchanged. Types::scalar already applies effective before decoding, so this preserves the base ordinal count, WKT, numeric widths, metadata and offsets. Astra confirmed that the graph is immutable after WKT and hierarchy parsing. The minimal transformation costs one map operation, adds no table or cached state, and can recover alias-heavy wins with much lower code cost. It still requires paired evidence before acceptance.
+
+Accept the effective-ID refinement for its low code cost and repeated point-series gains: file 708 to 613 us and 588 to 527 us per three visits; bytes 569 to 537 us and 614 to 569 us. Broad exploratory runs were heavily contaminated by load and are not evidence of regressions. Other paired cases have neutral or noisy results, so do not claim faster full opening or general dense throughput from this step. Preserve full descriptor rejection separately rather than combining the two implementations.
 
 Do not require a universal numerical acceptance threshold. Prefer repeatable double-digit improvements or changes that remove substantial work with simpler code. Treat a few-percent change as noise unless controlled repeats distinguish it clearly. Check regressions in unaffected cases. Rationale: implementation cost and absolute workload cost matter alongside ratios.
 
@@ -149,3 +159,9 @@ Revision note (2026-10-13): accepted combined seen/dependency state from two pai
 Revision note (2026-10-13): committed seen-state simplification, verified the new partial-initialization behavior test on that version, and began the independent flat-position experiment.
 
 Revision note (2026-10-13): accepted flat positions after additional noisy-control checks and clean peer/OCR review, preserving all test evidence and the intermediate binary.
+
+Revision note (2026-10-13): recorded flat dependency commit and began one-time source decoding descriptor resolution after Astra confirmed the active table previously retained original alias IDs.
+
+Revision note (2026-10-13): saved and rejected the full descriptor experiment, and replaced it with the independently measured minimal effective-type-ID normalization trial.
+
+Revision note (2026-10-13): accepted the minimal normalization from repeated query evidence, with no new descriptors/state and explicitly limited performance claims.
