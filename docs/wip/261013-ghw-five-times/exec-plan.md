@@ -1,0 +1,91 @@
+# Reduce native GHW slow tails to five times FST
+
+## Purpose / Big Picture
+
+Make small selections in GHW recordings with substantial unrelated activity practical. The measured native reader can cost more than1200times FST for one late probe and about50times FST for a CPU address. Improve the production reader incrementally until the measured worst comparable operations cost at most5times FST. Preserve public waveform observations and complete opening validation. Measure first-query cost as well as prepared reuse, retained memory and opening work. User clarification is pending on whether the same5times threshold also includes unequal-work opening cases; query optimization does not depend on that answer.
+
+Use KISS and YAGNI: concrete private GHW structures, one hypothesis at a time, no public tuning API, backend framework, format conversion at runtime or speculative cache. Accepted changes need behavior checks, repeated measurements, medium peer review and local commits. Do not push or release.
+
+## Progress
+
+- [x] Created the active optimization goal; confirmed clean c922048a37d94821f28684ed4f9a2389e75384c2 and fixtures4ce2f4ea6a034f1db335cc96ba9e67e6dcbb2a38.
+- [x] Two Astra medium lanes independently inspected index alternatives and correctness boundaries. Both recommend indexing source scalar payload locations during required opening validation.
+- [ ] Preserve initial executable and measurement evidence; implement the first isolated source-offset-index experiment.
+- [ ] Check selected-only decoding, equal ticks, missing state, overlap/repeated IDs, early stop, retries and actual selected-payload I/O failures.
+- [ ] Measure the first experiment with unchanged FST and initial executable controls; accept, revise or discard based on evidence.
+- [ ] Reduce dense whole-vector routing/decoding cost in a separate experiment; repeat the full matched matrix and add fresh-query controls.
+- [ ] Resolve remaining cases above5times, measure storage and opening, and complete all quality gates and medium reviews.
+- [ ] Promote durable implementation/storage conclusions to docs/ghw.md and docs/benchmarking.md, remove this tracked temporary task directory, commit and write the final report.
+
+## Context and Orientation
+
+Ondas is a read-only waveform library. Public contracts are in src/lib.rs and src/query.rs. src/query/engine.rs normalizes final states at each tick, projections and exact change times. Do not bypass this engine. src/backends/ghw/mod.rs assembles selected recipes from raw source scalars. A recipe is an ordered list of source scalar IDs; aliases with an identical list share a public signal, while reversed or overlapping lists remain distinct. src/backends/ghw/body.rs validates SNP snapshots, CYC change lists, times and footer fields. src/backends/ghw/wire.rs supplies checked byte/LEB/fixed reads and absolute seeks.
+
+Opening currently walks the complete body, then drops all source values and positions. Every query seeks to body_start and walks all preceding scalar records, including unselected data. Selected dependencies use binary search per scalar. Full validation is existing behavior; skipping unrelated records during later queries is permitted if public observations, actual-read errors and completed-tick publication remain correct. Source files must remain unchanged while an indexed reader is open; document this GHW requirement alongside the existing VCD requirement.
+
+Initial matched timings are local data in tmp/ghw-comparison/report.md, pairs.csv, raw-estimates.csv and manifest.json. Eight pinned sources are ghw0097-wide-toggle, ghw0098-topology-short, ghw0099-topology-long, ghw0100-topology-many, ghw0101-topology-dense, ghw0001-wellen-ghw-bug, ghw0090-ws2815b-driver and ghw0094-surfer-issue-547. The ninth control uses existing topology.vhd with pad_count4096, tick_count256 and dense_noise=true. It toggles all noise bits each tick and64independent probes at ticks congruent to1modulo64. Source GHW files are fixtures/ghw/<name>/waveform.ghw, except the dense control in tmp/ghw-comparison/dense4096/waveform.ghw. Temporary FST counterparts are tmp/ghw-comparison/<name>/waveform.fst.
+
+Each FST counterpart retains all canonical whole histories, including unselected data, integer ticks, widths and exact real bits. Full per-signal normalized SHA-256/count verification and query preflight pass. Export removes redundant/same-tick intermediate activity and flattens declarations, so these are equal observable histories, not equal raw parsing or opening work. Dense synchronized values compress strongly in FST. Treat these as concrete measured patterns, not an estimate of their frequency in all real workloads.
+
+## Initial Costs and Acceptance
+
+For the longer confirmation processes: dense4096 one-probe late scan costs12.69–12.71ms versus9.22–10.25microseconds FST; dense whole-vector full scan38.74–38.82ms versus1.59–1.60ms; topology-many one-probe late scan0.96–1.05ms versusabout6microseconds; long one-probe late scan140–147microseconds versus13–14; CPU verified-active address scan1.85–2.22ms versus35–43microseconds. These are the first failing cases. Sparse whole-wide late scan is already about14times faster than FST, and the full million-change clock scan is within1.3times. Preserve these countervailing controls.
+
+Compare GHW/FST within each measurement process. Ratios above1mean GHW is slower. Final acceptance requires at most5for all registered comparable query cases in repeated runs, matching outputs, no hidden first-query/build cost, documented bounded retained storage and no material loss in the already good controls. Original noisy observations remain in the final report. Opening is measured explicitly and its threshold follows the user's scope answer. Do not mark the goal achieved while any required case still fails. Larger unmeasured inputs need documented bounds/fallback rather than an unsupported universal performance guarantee.
+
+## Plan of Work
+
+### Milestone1: index only selected scalar reads
+
+Build a private source-scalar payload-position index during the existing opening walk. Index by active rank, not maximum raw ID and not public recipe, so ID holes and overlapping recipes do not duplicate source decoding. Store chronological absolute ticks and value offsets; preserve final same-tick source values or raw order until normalization is proved. Use an explicit private memory bound and a sequential fallback if the index exceeds it. Measure allocated capacity, not only logical entry count. A naive16byte posting for the dense control is about16.8MB before per-source vector capacity; this is a cost to report, not negligible metadata.
+
+Queries merge selected source postings in file/tick order, read only selected payloads and retain the existing recipe conversion and common engine. Avoid a filesystem seek for every adjacent scalar by preserving buffered forward reads. Keep broad selections on the existing sequential path initially if merging thousands of chains costs more; this first experiment addresses selective replay only. Do not add a history cache or checkpoint in this milestone. Its proof is fast first queries for dense unrelated activity and the real CPU selection, with the same values and changed_at.
+
+Update the meaningful private counters: the indexed read budget counts selected decoded payloads, assembly remains limited to selected whole recipes, and early stop reads no later selected tick. Keep complete opening failures. An injected query I/O failure must occur inside an actually required selected payload, not skipped unrelated headers; the failed tick must not publish partial state, and fresh retry must recover. Existing next-header delivered==0 is tied to sequential traversal and is not a public rule. Review this adjustment rather than weakening an error assertion silently.
+
+### Milestone2: dense whole-vector routing and decoding
+
+After the first experiment is measured and committed, address selected wide/dense work separately. First test routing dependencies by already decoded active rank rather than a source-ID binary search for each scalar. Bound auxiliary storage by active or selected sources and measure setup cost for tiny selections. Retain the existing checked grammar and typed conversion. If this does not reach the dense ceiling of about8ms, inspect the remaining measured decode cost and test one further hypothesis. Coalesced runs or compact postings are later alternatives only if actual memory/merge costs justify them. Do not stack several unmeasured optimizations.
+
+### Milestone3: complete coverage and quality
+
+Run all90matched operation pairs and the selected first/fresh-query controls with reversed backend order, then repeat remaining severe cases with longer sampling. Check every full normalized history against the fixed FST counterpart, all fixture conformance and literal edge cases. Record index storage/build time, full open/drop cost, cold first query and prepared repeated queries. Final medium lanes cover implementation correctness, complexity/storage and measurement claims; use one fresh independent control on the consolidated change. Promote durable model changes and remove tracked temporary plans before the branch is ready to merge.
+
+## Commands and Validation
+
+Run project commands through ./dev from the repository root. The current devcontainer is running and host hooks are installed. Do not bypass hooks. Use ./dev just --list for available recipes. Host Git manages commits and the already pinned fixtures; no fixture update or release is part of this optimization.
+
+Focused implementation checks are ./dev cargo test --locked --lib backends::ghw and ./dev cargo test --locked --test ghw_native. Existing complete fixture/API checks are ./dev just conformance. Final required gates are ./dev just fixtures-install, ./dev just ci, ./dev just msrv and ./dev cargo test --doc --locked after Rustdoc changes. Conformance must include all204GHWfile/bytes cases and existing FST/VCD regressions. The smoke target must still execute. Tests should verify semantics or selected-work bounds, not mirror an implementation layout.
+
+The existing standalone comparison harness is tmp/ghw-comparison/bench.rs, linked with optimized ondas, sha2, serde_json and criterion release libraries. Preserve its initial executable in tmp/ghw-five-times/baseline-bench before rebuilding the production library. Use ./dev cargo build --release --locked --all-targets, then compile this harness with rustc --edition=2024 -C opt-level=3 and --extern entries from target/release/deps. Save each candidate executable under a distinct name in tmp/ghw-five-times/. New full timing invocations use unique names:
+
+    ./dev env ONDAS_COMPARISON_ROUND=five-index-r1 tmp/ghw-five-times/index-bench --bench --save-baseline ghw-five-index-r1 --nresamples 10000
+    ./dev env ONDAS_COMPARISON_ROUND=five-index-r2 ONDAS_COMPARISON_FST_FIRST=1 tmp/ghw-five-times/index-bench --bench --save-baseline ghw-five-index-r2 --nresamples 10000
+
+The harness writes preflight TSV under tmp/ghw-comparison/ for the round label; preserve it with the matching log. Use its existing confirmation regex for the first targeted iteration, ONDAS_COMPARISON_CONFIRM=1 for longer sampling, and --test for smoke execution. Serialize measurement processes; do not run root builds/tests/generation/reviews concurrently with timings. Bracket candidates with the unchanged initial executable when drift is material. Criterion intervals within a process do not measure between-process drift. Update the harness to cover first query with fresh setup separately; do not let preflight/warmup disguise a lazy build or cache miss.
+
+The four temporary tool sources are also retained beside this plan for branch recovery: bench.rs, export.rs, fst-writer.c and topology.vhd. They are investigation code, not library interfaces. If ignored artifacts are absent, create tmp/ghw-comparison/<name>/ for all nine sources and copy these tool sources into tmp/ghw-comparison/. Compile export.rs against ondas and sha2 release rlibs and bench.rs against ondas, sha2, serde_json and criterion, using the rustc flags above. Existing reviewed public factory images ondas-oracle-fst and ondas-oracle-ghw are local prerequisites. They contain pinned native libfst74301348450701727776c1a0522a3f512738e9ae objects and GHDL2c451de76b07b73fd338c91d68fd5cefcb152512. Do not edit the factory or image infrastructure.
+
+Build the writer in the FST image with cc -O2 -Wall -Wextra -Werror -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64 -I/opt/libfst/src, linking fst-writer.c with /opt/libfst/fstapi.o, fastlz.o, lz4.o and -lz. Mount source read-only and tmp/ghw-comparison/ writable, set the host UID/GID and --network none. In the GHDL image, copy topology.vhd into a neutral /tmp/work.* directory and run ghdl -a --std=08, ghdl -e --std=08 top, then ghdl -r --std=08 top -gpad_count=4096 -gtick_count=256 -gdense_noise=true --wave=/output/waveform.ghw --vcd=/output/source.vcd, mounting only the dense4096 output directory writable. For each pinned/temporary source run export export SOURCE values.bin, fst-writer values.bin waveform.fst, then export verify SOURCE waveform.fst. All commands must succeed with the full signal/row count. Run export verify-dense-vcd on the dense GHW/VCD pair; it checks all4096bits at seven authored ticks. Artifact data stays ignored. Preserve source/output hashes and complete logs before timing.
+
+## Decision Log
+
+Start with opening-built scalar offsets because a200–300times selective improvement is needed to reach5times FST. A decoder micro-optimization alone cannot avoid unrelated work. Global list membership also still scans unrelated lists and decodes dense shared lists. Source offsets are concrete and preserve shared source identity. Keep values on source, expose no backend option and document storage/build costs. Defer compact run/index designs until the first measured result establishes need.
+
+## Surprises & Discoveries
+
+The prior private injected-I/O test fails inside a following CYC header after a completely read SNP. An immutable-source index can know that earlier tick is complete without reading that header. Move failure coverage to an actually selected payload and preserve the public unfinished-tick rule. The two medium reviewers agree that errors in skipped bytes cannot be reproduced while skipping them; actual selected-read errors must propagate.
+
+## Idempotence and Recovery
+
+Keep rejected patches, executables and logs only in ignored tmp/ghw-five-times/, with distinct hypothesis names. Preserve previous evidence and do not delete another task's files. If an experiment fails correctness, restore only this task's edits and rerun the smallest failing case. If an index reaches its budget, validation still completes and queries use the documented sequential fallback; allocation/count overflow must not produce incorrect observations. Do not change source files, fixture pins, proprietary infrastructure or the FST dependency to improve ratios.
+
+## Outcomes & Retrospective
+
+Implementation and new measurements are pending. The goal remains active until all scoped failing cases reach5times FST and required checks/reviews pass. The final report must expose the cost of the index and any remaining limitations, not only prepared-query wins.
+
+## Interfaces and Dependencies
+
+All changes remain inside the concrete private GHW reader and its tests/docs. Keep Notification, source buffers, indexed positions and handles private. The public Selection/Waveform interface and the shared normalization engine remain unchanged. Add no third-party reader, runtime converter, public policy switch or generic backend abstraction.
+
+Revision note (2026-10-13): created the executable optimization plan from measured failures and two independent Astra medium source/index reviews. Query implementation proceeds while opening-threshold scope is clarified.
