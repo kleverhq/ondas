@@ -26,6 +26,7 @@ pub(super) enum Event {
     Tick(Time),
 }
 
+#[inline(always)]
 pub(super) fn scalar(wire: &mut Wire, types: &Types, id: usize) -> Result<Scalar> {
     let (storage, literals, _) = types
         .scalar(id)

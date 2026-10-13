@@ -17,7 +17,11 @@ Use KISS and YAGNI: concrete private GHW structures, one hypothesis at a time, n
 - [x] Accepted H2 after two processes, live previous-version control, full conformance, medium reviews and OCR. Commit before H3.
 - [x] H3 checked one-byte specialization passes all behavior gates, medium review and OCR. Two preliminary processes plus normalized all-targets confirmation show dense cost near9times FST versus H2near10; broad many remains9–10. Accepted the small simple improvement; commit before next hypothesis.
 - [x] H4 ordinary inline hint rejected by assembly; short one-byte ULEB entry accepted after two measurement processes, all180smokeIDs, focused tests, full corpus conformance, medium review and complete OCR. Remaining broad cases cost8.4times FST.
-- [ ] H5 tests passing the existing consumer by value to the sequential walker, with exact assembly and paired measurements before acceptance. Repeat the full matched matrix and fresh-reader controls after the scoped threshold is reached.
+- [x] H5 by-value consumer experiment rejected after normalized assembly: the same per-scalar outlined consumer remains. Restored the accepted source without timing an unproved change.
+- [x] H6 ordinary scalar-inline hint rejected after exact normalized assembly; both per-scalar decoder calls remain. Restored source without timing.
+- [x] H7 notification helper rejected: exact normalized assembly still calls the event consumer on every scalar. Restore the accepted implementation.
+- [x] H8 forced scalar inlining removes both decoder calls, passes focused tests, Clippy, all180smokeIDs, complete OCR and full corpus conformance. Two processes confirm broad ratios5.9–6.2and improved clock controls; accept and commit.
+- [ ] H9 forces inlining of the unchanged concrete consumer using the MSRV-supported block-tail closure attribute. Verify scalar callback removal, bounded code-size growth and all important controls before acceptance. Repeat the full matched matrix and fresh-reader controls after the scoped threshold is reached.
 - [ ] Resolve remaining cases above5times, measure storage and opening, and complete all quality gates and medium reviews.
 - [ ] Promote durable implementation/storage conclusions to docs/ghw.md and docs/benchmarking.md, remove this tracked temporary task directory, commit and write the final report.
 
@@ -125,3 +129,17 @@ Revision note (2026-10-13): exact normalized H4 assembly now inlines the one-byt
 Revision note (2026-10-13): H4 second longer reversed-order process confirms dense13.16ms/FST1.566ms=8.40times and many1.037ms/FST124us=8.36times; WS candidate control remains3.3times. Full corpus conformance is running before acceptance. Next H5 will pass the existing event consumer by value to the sequential walker (as already done for indexed reads) and remove the unused mutable binding. This is static dispatch already: test potential inlining/ownership improvement, not removal of virtual dispatch. If the hot scalar callback stays outlined, do not claim that the call boundary was eliminated.
 
 Revision note (2026-10-13): H4 complete conformance passed204GHW/176FST/198VCD with no skips. Accept and commit the small ULEB entry/tail split before starting H5.
+
+Revision note (2026-10-13): H4 committed. H5 changes only consumer ownership at sequential dispatch: pass consume by value and remove the unnecessary mut binding. Captured query state and callback behavior remain the same. Inspect the exact hot scalar callback before timing.
+
+Revision note (2026-10-13): rejected H5 because the former FnMut reference shim becomes a direct closure call at every scalar; the intended hot boundary persists. H6 adds only ordinary #[inline] to body::scalar and will be inspected before timing.
+
+Revision note (2026-10-13): H6 left both scalar calls and the event-consumer call intact. H7 adds a private notify helper with inline(never) around the existing Value/Tick visitor calls. Scalar routing, event ordering and assembly are unchanged; the hypothesis is smaller per-scalar consumption code, while notification dispatch stays separate. Million-change clock controls guard against extra per-notification overhead.
+
+Revision note (2026-10-13): H7 preserved correctness but did not remove the intended call boundary, so discarded without timing. H8 uses inline(always) only on body::scalar; no helper, codec, bulk-read, visitor or storage changes are retained from the rejected experiments. Check code-size growth and high-frequency controls alongside the remaining two broad cases.
+
+Revision note (2026-10-13): H8 exact normalized assembly removes both scalar decoder calls; the event consumer remains outlined. Complete OCR reports no findings; units, public tests and Clippy pass. The matched standalone benchmark text shrinks from3681177to3632561bytes (whole-program codegen, not a claim about every consumer binary). Measure the two broad cases plus narrow and million-change controls before accepting this one-attribute change.
+
+Revision note (2026-10-13): H8 reversed-order repeat confirms dense9.55ms/FST1.605ms=5.95times and many774us/FST127.5us=6.07times; WS clock candidates improve to78.4ms/FST25.95ms=3.02times. Full conformance is running before accepting. The remaining consumer is still outlined. A disposable compiler probe confirms #[inline(always)] on a block's tail closure compiles on MSRV1.88. Direct placement in a let initializer is unstable, so do not use that form. H9 will test the supported block-tail form around the unchanged consumer, with code-size and high-frequency controls.
+
+Revision note (2026-10-13): H8 full conformance completed204GHW/176FST/198VCD with no failures or skips. Astra medium recommends H9 after checking the supported syntax; the expected gain is constant-event specialization, without new state or helpers.
