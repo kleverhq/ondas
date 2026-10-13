@@ -73,6 +73,7 @@ fn dependency_ranges(active: &[(u32, usize)], dependencies: &[Dependency]) -> Ve
 }
 
 impl Buffer {
+    #[inline(always)]
     fn update(&mut self, position: usize, value: body::Scalar, first: bool) {
         if first {
             self.known += 1;
