@@ -161,9 +161,15 @@ Concrete fixtures, paths, bounds and sample counts remain in `benches/fst.rs`,
 
 `benches/ghw.rs` uses the [native GHW reader](ghw.md). Fixture preflight verifies
 size and SHA-256 before registration. Opening includes full body validation and
-destruction. Bytes cases allocate their shared input before the timed operation.
+optional payload-index construction, then destruction. Bytes cases allocate
+their shared input before the timed operation.
 Fresh first-lookup cases create a waveform in untimed setup and leave its lookup
 index unused. Repeated lookup cases reuse an initialized index.
+
+The optional GHW payload index stores validated positions, not decoded histories.
+Measure the first query on a fresh waveform separately. Keep opening outside
+that query measurement and report its cost alongside the query results. State
+whether selection creation and output destruction are inside timing.
 
 The sustained 4096-bit fixture changes its low bit and an independent scalar at
 each tick from 1 through 4096. Whole, low and stable-high selections separate
@@ -187,7 +193,8 @@ Original realistic recordings add full opening, selected prefix and backstep cas
 
 The wellen 0.25.6 reference uses a compatible wide fixture and the same owned
 point value. Cold cases include header/body reading and selected-history loading.
-Warm cases label wellen's retained history separately from native source replay.
+Warm cases label wellen's retained history separately from native selected
+payload reads or sequential replay.
 Unsupported type cases are conformance evidence, not benchmark competitors.
 
 Run `./dev cargo bench --locked --bench ghw -- --test` to check execution. The

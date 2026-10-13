@@ -88,6 +88,11 @@ the final source payloads from all lists at one tick before assembly.
 The common query engine observes the final tick state and compares projections
 before emitting changes. Equal ticks can span snapshot and cycle sections.
 
+Broad replay maps each active source rank to its selected dependency range once
+per query. This table avoids a source-ID search for every scalar payload. Its
+size is proportional to the number of active source scalars. Small selections
+keep sparse dependency lookup, including when the payload index is unavailable.
+
 Explicit completed-tick notifications allow callback termination before values
 at the next tick, including an unrelated-only suffix. Scans, candidates and
 composed queries use the common engine. Callback values borrow current buffers;

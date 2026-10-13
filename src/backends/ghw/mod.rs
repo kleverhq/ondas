@@ -257,8 +257,10 @@ impl Reader {
                         };
                         if !range.is_empty() {
                             // The first entry owns this source scalar's seen flag.
-                            let first =
-                                !std::mem::replace(&mut dependencies[range.start].seen, true);
+                            let first = !dependencies[range.start].seen;
+                            if first {
+                                dependencies[range.start].seen = true;
+                            }
                             for dependency in &dependencies[range] {
                                 let slot = dependency.slot;
                                 buffers[slot].update(dependency.position, value, first);
