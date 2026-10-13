@@ -132,6 +132,16 @@ Later SDKs still run after a failed command; any failure fails the sweep.
 Cancellation stops the sweep. Keep the list order stable when comparing local
 baselines, or use a fresh output directory after changing it.
 
+For SHM, use `XCELIUM_HOMES` and `XCELIUM_HOME` with the same selection rules.
+Forward them through the ignored local profile and mount the installations
+read-only. `ci-shm`, `conformance-shm`, `bench-smoke-shm` and `bench-shm` run once
+per selected SDK. Each child sets `XCELIUM_HOME`, clears `XCELIUM_HOMES`, and uses
+`${CARGO_TARGET_DIR:-target}/shm-sdk/<position>` for build and Criterion output.
+The wrapper creates a `runtime/libsst2.so` symlink in that output directory and
+prepends its directory to `LD_LIBRARY_PATH`. It does not add the whole vendor
+library directory, which can select an older C++ runtime. Missing readers fail.
+Failures, cancellation and baseline order follow the FSDB sweep rules above.
+
 The launcher does not discover EDA installations, select versions, configure
 licenses or branch on backend names. Profiles and recipes own those choices.
 Private CI topology is outside the public contract.
@@ -225,6 +235,16 @@ and runs real FSDB conformance. Supply a complete read-only SDK mount and
 fixtures explicitly before running conformance. Tests do not download data. See
 [fsdb-lib](fsdb-lib.md) for the source-build deployment contract and
 [fixtures](fixtures.md) for installation and validation.
+
+`just ci-shm` enables `shm-lib` and runs its static, runtime, fixture,
+benchmark-smoke, and downstream checks for each selected SDK. Set `XCELIUM_HOME`
+or `XCELIUM_HOMES` through an ignored local profile. Run
+`just fixtures-install` explicitly first. The public gate does not require
+vendor tools. See [SHM linking and reader limits](shm-lib.md).
+
+Benchmark smoke recipes set `CARGO_TARGET_DIR` to `target` when it is unset.
+They preserve an explicit value. This prevents Criterion from starting a nested
+`cargo metadata` command to find its output directory.
 
 Compatibility covers released public signatures and documented observations,
 including value identity and query semantics. Successful consumer compilation

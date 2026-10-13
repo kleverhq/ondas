@@ -27,10 +27,22 @@ mod fst_workload_checks;
 mod ghw_workload_checks;
 #[path = "support/ghw_workloads.rs"]
 mod ghw_workloads;
+#[path = "support/matched_active4_tests.rs"]
+mod matched_active4_tests;
+#[cfg(any(feature = "fsdb-lib", feature = "shm-lib"))]
+#[path = "support/matched_clock_tests.rs"]
+mod matched_clock_tests;
+#[path = "support/matched_constant_tests.rs"]
+mod matched_constant_tests;
+#[path = "support/matched_wide_tests.rs"]
+mod matched_wide_tests;
 #[path = "support/normalized_oracle.rs"]
 mod normalized_oracle;
 #[path = "support/query_workloads.rs"]
 mod query_workloads;
+#[cfg(feature = "shm-lib")]
+#[path = "support/shm_workload_tests.rs"]
+mod shm_workload_tests;
 #[path = "support/vcd_workload_checks.rs"]
 mod vcd_workload_checks;
 #[path = "support/vcd_workloads.rs"]
@@ -60,6 +72,7 @@ impl Fixture {
             Format::Vcd => "vcd-native",
             Format::Ghw => "ghw-native",
             Format::Fsdb => "fsdb-lib",
+            Format::Shm => "shm-lib",
             _ => unreachable!(),
         }
     }
@@ -70,6 +83,7 @@ impl Fixture {
             Format::Vcd => "conformance.vcd",
             Format::Ghw => "conformance.ghw",
             Format::Fsdb => "conformance.fsdb",
+            Format::Shm => "conformance.shm",
             _ => unreachable!(),
         }
     }
@@ -325,6 +339,7 @@ fn load_conformance_fixture(root: &Path, name: &str) -> Option<Fixture> {
         "vcd" => Format::Vcd,
         "ghw" => Format::Ghw,
         "fsdb" if cfg!(feature = "fsdb-lib") => Format::Fsdb,
+        "shm" if cfg!(feature = "shm-lib") => Format::Shm,
         other => panic!("{name}: unexpected selected format {other}"),
     };
     let oracle = sidecar.get("oracle").cloned().unwrap_or_else(|| json!({}));
@@ -428,7 +443,16 @@ fn metadata(wave: &Waveform, expected: &Json, bytes: bool, fixture: &Fixture) {
     }
 }
 
-fn hierarchy(wave: &Waveform, oracle: &Json, check_lookups: bool) -> BTreeMap<String, Signal> {
+fn has_alias_identity(wave: &Waveform) -> bool {
+    #[cfg(feature = "shm-lib")]
+    if wave.backend() == "shm-lib" {
+        return env!("ONDAS_SHM_ALIAS_PATH") == "shared";
+    }
+    let _ = wave;
+    true
+}
+
+fn hierarchy(wave: &Waveform, oracle: &Json, check_lookups: bool) -> BTreeMap<String, Vec<Signal>> {
     let hierarchy = wave.hierarchy();
     // Index only oracle-listed declarations from public traversal. Large FSTs
     // can list thousands of aliases; repeated linear lookups would be quadratic.
@@ -503,7 +527,7 @@ fn hierarchy(wave: &Waveform, oracle: &Json, check_lookups: bool) -> BTreeMap<St
             assert_eq!(json!(actual), *packing, "scope {path} packing");
         }
     }
-    let mut signals = BTreeMap::new();
+    let mut signals = BTreeMap::<String, Vec<Signal>>::new();
     for expected in list(&oracle["hierarchy"], "variables") {
         let path = path(&expected["path"]);
         let variable = variables
@@ -577,11 +601,19 @@ fn hierarchy(wave: &Waveform, oracle: &Json, check_lookups: bool) -> BTreeMap<St
                 assert_eq!(hierarchy.signal_path(&path).unwrap(), signal);
                 assert_eq!(hierarchy.signal(&path.to_string()).unwrap(), signal);
             }
-            assert_eq!(
-                *signals.entry(id.to_owned()).or_insert(signal),
-                signal,
-                "{path}: alias {id}"
-            );
+            let handles = signals.entry(id.to_owned()).or_default();
+            if has_alias_identity(wave) && !handles.is_empty() {
+                assert_eq!(handles[0], signal, "{path}: alias {id}");
+            }
+            if !has_alias_identity(wave) {
+                assert!(
+                    !handles.contains(&signal),
+                    "{path}: unconfirmed alias merged"
+                );
+            }
+            if !handles.contains(&signal) {
+                handles.push(signal);
+            }
             if check_lookups {
                 assert!(
                     hierarchy
@@ -594,8 +626,13 @@ fn hierarchy(wave: &Waveform, oracle: &Json, check_lookups: bool) -> BTreeMap<St
         }
     }
     assert_eq!(
-        signals.values().copied().collect::<HashSet<_>>().len(),
-        signals.len(),
+        signals
+            .values()
+            .flatten()
+            .copied()
+            .collect::<HashSet<_>>()
+            .len(),
+        signals.values().map(Vec::len).sum::<usize>(),
         "distinct oracle signals merged"
     );
     let all: Vec<_> = hierarchy.signals().collect();
@@ -609,22 +646,24 @@ fn hierarchy(wave: &Waveform, oracle: &Json, check_lookups: bool) -> BTreeMap<St
         "whole signal iterator"
     );
     // Membership only: a sparse oracle never asserts complete file hierarchy size.
-    for (id, signal) in &signals {
-        assert!(all.contains(signal), "{id}: missing from unique signals");
-        let expected = &oracle["signals"][id]["encoding"];
-        let actual = match signal.encoding() {
-            Encoding::Bits { width } => json!({"kind": "bits", "width": width}),
-            Encoding::Real => json!({"kind": "real"}),
-            Encoding::String => json!({"kind": "string"}),
-            Encoding::Event => json!({"kind": "event"}),
-            Encoding::Unsupported => json!({"kind": "unsupported"}),
-            _ => panic!("unknown encoding"),
-        };
-        assert_eq!(actual, *expected, "{id}: encoding");
-        assert_eq!(
-            signal.width().map(u64::from),
-            expected.get("width").and_then(Json::as_u64)
-        );
+    for (id, handles) in &signals {
+        for signal in handles {
+            assert!(all.contains(signal), "{id}: missing from unique signals");
+            let expected = &oracle["signals"][id]["encoding"];
+            let actual = match signal.encoding() {
+                Encoding::Bits { width } => json!({"kind": "bits", "width": width}),
+                Encoding::Real => json!({"kind": "real"}),
+                Encoding::String => json!({"kind": "string"}),
+                Encoding::Event => json!({"kind": "event"}),
+                Encoding::Unsupported => json!({"kind": "unsupported"}),
+                _ => panic!("unknown encoding"),
+            };
+            assert_eq!(actual, *expected, "{id}: encoding");
+            assert_eq!(
+                signal.width().map(u64::from),
+                expected.get("width").and_then(Json::as_u64)
+            );
+        }
     }
     signals
 }
@@ -1198,39 +1237,40 @@ fn run_case(index: usize, bytes: bool) {
     let mut change_count = 0;
     let mut groups: BTreeMap<(u64, u64), Vec<Signal>> = BTreeMap::new();
     for (id, expected) in fixture.oracle["signals"].as_object().unwrap() {
-        let signal = signals[id];
-        for point in list(expected, "samples") {
-            let point = normalized_oracle::sample_assertions(
-                point,
-                list(expected, "windows"),
-                tick(&point["time"]),
-            );
-            sample_queries(
-                &mut wave,
-                signal,
-                &point,
-                tick(&point["time"]),
-                &format!("{context} / {id}"),
-            );
-            samples += 1;
-        }
-        for (index, window) in list(expected, "windows").iter().enumerate() {
-            window_queries(
-                &mut wave,
-                signal,
-                window,
-                list(expected, "windows"),
-                &format!(
-                    "{context} / {id} / window {index} [{}..{}]",
-                    window["start"], window["end"]
-                ),
-            );
-            windows += 1;
-            change_count += list(window, "changes").len();
-            groups
-                .entry((tick(&window["start"]), tick(&window["end"])))
-                .or_default()
-                .push(signal);
+        for &signal in &signals[id] {
+            for point in list(expected, "samples") {
+                let point = normalized_oracle::sample_assertions(
+                    point,
+                    list(expected, "windows"),
+                    tick(&point["time"]),
+                );
+                sample_queries(
+                    &mut wave,
+                    signal,
+                    &point,
+                    tick(&point["time"]),
+                    &format!("{context} / {id}"),
+                );
+                samples += 1;
+            }
+            for (index, window) in list(expected, "windows").iter().enumerate() {
+                window_queries(
+                    &mut wave,
+                    signal,
+                    window,
+                    list(expected, "windows"),
+                    &format!(
+                        "{context} / {id} / window {index} [{}..{}]",
+                        window["start"], window["end"]
+                    ),
+                );
+                windows += 1;
+                change_count += list(window, "changes").len();
+                groups
+                    .entry((tick(&window["start"]), tick(&window["end"])))
+                    .or_default()
+                    .push(signal);
+            }
         }
     }
     for ((start, end), mut handles) in groups {
@@ -1245,7 +1285,7 @@ fn run_case(index: usize, bytes: bool) {
     }
     scan_queries(
         &mut wave,
-        &signals.values().copied().collect::<Vec<_>>(),
+        &signals.values().flatten().copied().collect::<Vec<_>>(),
         TimeRange::closed(Time::from_ticks(2), Time::from_ticks(1)),
         &context,
     );
@@ -1326,18 +1366,19 @@ fn pool_queries(fixture: &Fixture, bytes: bool, context: &str) -> bool {
     let mut samples = BTreeMap::<_, Vec<_>>::new();
     let mut windows = BTreeMap::<_, Vec<_>>::new();
     for (id, expected) in fixture.oracle["signals"].as_object().unwrap() {
-        let signal = signals[id];
-        for expected in list(expected, "samples") {
-            samples
-                .entry(tick(&expected["time"]))
-                .or_default()
-                .push((id, signal, expected));
-        }
-        for window in list(expected, "windows") {
-            windows
-                .entry((tick(&window["start"]), tick(&window["end"])))
-                .or_default()
-                .push((id, signal, window));
+        for &signal in &signals[id] {
+            for expected in list(expected, "samples") {
+                samples
+                    .entry(tick(&expected["time"]))
+                    .or_default()
+                    .push((id, signal, expected));
+            }
+            for window in list(expected, "windows") {
+                windows
+                    .entry((tick(&window["start"]), tick(&window["end"])))
+                    .or_default()
+                    .push((id, signal, window));
+            }
         }
     }
     for (time, mut entries) in samples {
@@ -1811,7 +1852,7 @@ fn fsdb_queries_routing_and_lifecycle() {
         return;
     };
     let signals = hierarchy(&wave, &fixture.oracle, true);
-    let handles: Vec<_> = signals.values().take(3).copied().collect();
+    let handles: Vec<_> = signals.values().flatten().take(3).copied().collect();
     assert!(!handles.is_empty());
     let first = handles[0];
     let mut selected = handles.clone();
@@ -1945,7 +1986,7 @@ fn run_pool(root: &Path, extension: &str) {
             skipped += 1;
             continue;
         };
-        let modes: &[bool] = if fixture.format == Format::Fsdb {
+        let modes: &[bool] = if matches!(fixture.format, Format::Fsdb | Format::Shm) {
             &[false]
         } else {
             &[false, true]
@@ -2517,4 +2558,281 @@ fn oracle_comparison_rules() {
         true,
         "unknown oracle timestamp",
     );
+}
+
+#[cfg(feature = "shm-lib")]
+#[test]
+#[ignore = "requires Xcelium and installed fixtures; run just conformance-shm"]
+fn full_shm_pool() {
+    println!(
+        "SHM reader: {}; aliases: {}",
+        env!("ONDAS_SHM_READER"),
+        env!("ONDAS_SHM_ALIAS_PATH")
+    );
+    full_pool("shm");
+}
+
+#[cfg(feature = "shm-lib")]
+#[test]
+#[ignore = "requires Xcelium and installed fixtures"]
+fn shm_authored_bit_oracles() {
+    for id in [
+        "shm0080-history-short",
+        "shm0081-history-long",
+        "shm0082-sparse-dense-bank",
+        "shm0083-topology-many-handles",
+        "shm0084-wide-compact-toggle",
+        "shm0085-typed-records",
+        "shm0086-nine-state",
+        "shm0087-large-ticks",
+        "shm0088-time-scale",
+        "shm0089-probe-gap",
+        "shm0090-multi-trn",
+        "shm0091-late-history",
+    ] {
+        let name = format!("shm/{id}");
+        pool_queries(&load_fixture(&root(), &name), false, &name);
+    }
+}
+
+#[cfg(feature = "shm-lib")]
+#[test]
+#[ignore = "requires Xcelium and installed fixtures"]
+fn shm_lifecycle_and_typed_values() {
+    let (path, _) = fixture_support::load_artifact(&root(), "shm/shm0085-typed-records");
+    let mut wave = ondas::open_with(&path, "shm-lib").unwrap();
+    let alias = wave.hierarchy().signal("top.alias_value").unwrap();
+    let input = wave.hierarchy().signal("top.inst.in_bus").unwrap();
+    assert_eq!(alias == input, has_alias_identity(&wave));
+    assert_ne!(alias, wave.hierarchy().signal("top.equal_value").unwrap());
+    let histories = wave
+        .traces(&[alias, input, alias], TimeRange::all())
+        .unwrap();
+    assert_eq!(histories.len(), 3);
+    let changes = |trace: &Trace| {
+        trace
+            .changes()
+            .iter()
+            .map(|c| (c.time(), value_json(c.value())))
+            .collect::<Vec<_>>()
+    };
+    for history in &histories[1..] {
+        assert_eq!(changes(history), changes(&histories[0]));
+    }
+    metadata_matches_open(&path);
+    let real = wave.hierarchy().signal("top.real_value").unwrap();
+    let text = wave.hierarchy().signal("top.text_long").unwrap();
+    let pulse = wave.hierarchy().signal("top.pulse").unwrap();
+    let time = Time::from_ticks(3);
+    let samples = wave.samples(&[real, text, pulse], time).unwrap();
+    assert!(
+        matches!(samples[0].as_ref(), SampleRef::Value { value: ValueRef::Real(v), .. } if v.to_bits() == 1.2345678901234567_f64.to_bits())
+    );
+    assert!(
+        matches!(samples[1].as_ref(), SampleRef::Value { value: ValueRef::String(v), .. } if v == "A".repeat(2048))
+    );
+    assert!(matches!(
+        samples[2].as_ref(),
+        SampleRef::Event { occurrences: 3, .. }
+    ));
+    let signed_zero = wave.sample(real, Time::from_ticks(5)).unwrap();
+    assert!(
+        matches!(signed_zero.as_ref(), SampleRef::Value { value: ValueRef::Real(v), .. } if v.to_bits() == (-0.0_f64).to_bits())
+    );
+    let stop = wave
+        .scan(&[alias], TimeRange::all(), |_| {
+            let mut other = ondas::open_with(&path, "shm-lib").unwrap();
+            let signal = other.hierarchy().signal("top.alias_value").unwrap();
+            other.sample(signal, time).unwrap();
+            let (fs_path, _) = fixture_support::load_artifact(&root(), "shm/shm0086-nine-state");
+            let mut fs_wave = ondas::open(fs_path).unwrap();
+            let signal = fs_wave.hierarchy().signal("\"top(test)\".value").unwrap();
+            fs_wave.sample(signal, Time::from_ticks(1_000_000)).unwrap();
+            ControlFlow::Break(7)
+        })
+        .unwrap();
+    assert_eq!(stop, ControlFlow::Break(7));
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = wave.scan(&[alias], TimeRange::all(), |_| -> ControlFlow<()> {
+            panic!("visitor panic");
+        });
+    }));
+    assert!(panic.is_err());
+    wave.sample(alias, time).unwrap();
+    std::thread::spawn(move || wave.sample(alias, time).unwrap())
+        .join()
+        .unwrap();
+}
+
+#[cfg(feature = "shm-lib")]
+#[test]
+#[ignore = "requires Xcelium and installed fixtures"]
+fn shm_gap_reports_error_after_a_valid_prefix() {
+    let (path, _) = fixture_support::load_artifact(&root(), "shm/shm0089-probe-gap");
+    let mut wave = ondas::open(path).unwrap();
+    let signal = wave.hierarchy().signal("top.alias_value").unwrap();
+    wave.trace(signal, TimeRange::closed(Time::ZERO, Time::from_ticks(1)))
+        .unwrap();
+    assert!(matches!(
+        wave.trace(signal, TimeRange::all()),
+        Err(Error::Backend { .. })
+    ));
+    assert_eq!(
+        wave.scan(&[signal], TimeRange::all(), |_| ControlFlow::Break(7))
+            .unwrap(),
+        ControlFlow::Break(7)
+    );
+    wave.sample(signal, Time::from_ticks(1)).unwrap();
+}
+
+#[cfg(feature = "shm-lib")]
+#[test]
+#[ignore = "requires Xcelium and installed fixtures"]
+fn shm_late_and_empty_histories() {
+    let (path, _) = fixture_support::load_artifact(&root(), "shm/shm0091-late-history");
+    let mut wave = ondas::open_with(path, "shm-lib").unwrap();
+    let late = wave.hierarchy().signal("top.late").unwrap();
+    let silent = wave.hierarchy().signal("top.silent").unwrap();
+    for tick in [0, 4] {
+        assert!(matches!(
+            wave.sample(late, Time::from_ticks(tick)).unwrap().as_ref(),
+            SampleRef::Missing { .. }
+        ));
+    }
+    // Starting a probe observes a value; it does not prove a signal change.
+    for (tick, value, changed) in [(5, "0", None), (6, "1", Some(Time::from_ticks(6)))] {
+        assert!(matches!(
+            wave.sample(late, Time::from_ticks(tick)).unwrap().as_ref(),
+            SampleRef::Value { value: ValueRef::Bits(bits), changed_at, .. }
+                if bits.to_string() == value && changed_at == changed
+        ));
+    }
+    let mut candidates = Vec::new();
+    let _ = wave
+        .scan_candidate_times(&[late, silent], TimeRange::all(), |time| {
+            candidates.push(time.ticks());
+            ControlFlow::<()>::Continue(())
+        })
+        .unwrap();
+    assert_eq!(candidates, [5, 6]);
+    for tick in [0, 5, 8] {
+        assert!(matches!(
+            wave.sample(silent, Time::from_ticks(tick))
+                .unwrap()
+                .as_ref(),
+            SampleRef::Event { occurrences: 0, .. }
+        ));
+    }
+    assert_eq!(
+        wave.scan(&[silent], TimeRange::all(), |_| -> ControlFlow<()> {
+            panic!("silent event must produce no scan record")
+        })
+        .unwrap(),
+        ControlFlow::Continue(())
+    );
+}
+
+#[cfg(all(feature = "fsdb-lib", feature = "shm-lib"))]
+#[test]
+#[ignore = "requires both native runtimes and installed fixtures"]
+fn shm_and_fsdb_native_readers_coexist() {
+    let (shm_path, _) = fixture_support::load_artifact(&root(), "shm/shm0080-history-short");
+    let (fsdb_path, _) = fixture_support::load_artifact(&root(), "fsdb/fsdb0004-compare");
+    let mut shm = ondas::open_with(shm_path, "shm-lib").unwrap();
+    let mut fsdb = ondas::open_with(fsdb_path, "fsdb-lib").unwrap();
+    let phase = shm.hierarchy().signal("top.phase_0").unwrap();
+    let counter = fsdb.hierarchy().signal("compare_tb.dut.counter").unwrap();
+    let expected = fsdb.sample(counter, Time::ZERO).unwrap();
+    assert!(
+        matches!(expected.as_ref(), SampleRef::Value { value: ValueRef::Bits(bits), .. } if bits.to_string() == "0000")
+    );
+    let _ = shm.scan(&[phase], TimeRange::point(Time::from_ticks(3)), |_| {
+        let sample = fsdb.sample(counter, Time::from_ticks(195)).unwrap();
+        assert!(matches!(sample.as_ref(), SampleRef::Value { value: ValueRef::Bits(bits), .. } if bits.to_string() == "0011"));
+        ControlFlow::<()>::Continue(())
+    }).unwrap();
+    let value = shm.sample(phase, Time::from_ticks(3)).unwrap();
+    assert!(
+        matches!(value.as_ref(), SampleRef::Value { value: ValueRef::Bits(bits), .. } if bits.to_string() == "1")
+    );
+    drop(shm);
+    let sample = fsdb.sample(counter, Time::ZERO).unwrap();
+    assert!(
+        matches!(sample.as_ref(), SampleRef::Value { value: ValueRef::Bits(bits), .. } if bits.to_string() == "0000")
+    );
+}
+
+#[test]
+fn shm_manifest_ascii_hash_matches_independent_python_digest() {
+    let files = json!([
+        {"file":"я😀.dsn", "size":3, "sha256":"0".repeat(64)},
+        {"file":"a.trn", "size":4, "sha256":"1".repeat(64)}
+    ]);
+    assert_eq!(
+        fixture_support::manifest_sha256(files.as_array().unwrap()),
+        "feca85238b68c6d5d6bb801ff936d1c0c0bb4939fa9253b40039cabfd032cb7a"
+    );
+    let files = json!([
+        {"file":"\u{7f}.dsn", "size":3, "sha256":"0".repeat(64)},
+        {"file":"a.trn", "size":4, "sha256":"1".repeat(64)}
+    ]);
+    assert_eq!(
+        fixture_support::manifest_sha256(files.as_array().unwrap()),
+        "b4b696398185b95b230062f9c1144ef76e9cef5ecb19aca1f4ef8a6e5a2ce1bd"
+    );
+}
+
+#[test]
+fn shm_directory_manifest_rejects_changed_or_missing_components() {
+    use sha2::{Digest, Sha256};
+    let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tmp")
+        .join(format!("shm-manifest-negative-{}", std::process::id()));
+    fs::create_dir_all(directory.join("waveform.shm")).unwrap();
+    let directory = directory.canonicalize().unwrap();
+    let path = directory.join("waveform.shm");
+    for name in ["top.dsn", "top.trn"] {
+        fs::write(path.join(name), b"fixture component").unwrap();
+    }
+    let files = json!(["top.dsn", "top.trn"].map(|name| json!({
+        "file": name, "size": 17,
+        "sha256": format!("{:x}", Sha256::digest(b"fixture component"))
+    })));
+    let artifact = json!({"file":"waveform.shm", "format":"shm", "size":34,
+        "sha256":fixture_support::manifest_sha256(files.as_array().unwrap()), "files":files});
+    let verify =
+        |artifact: &Json| fixture_support::verify_artifact(&directory, artifact, "negative SHM");
+    assert_eq!(verify(&artifact), path);
+    for case in 0..8 {
+        let mut invalid = artifact.clone();
+        match case {
+            0 => invalid["files"] = json!([]),
+            1 => invalid["files"][1] = invalid["files"][0].clone(),
+            2 => invalid["files"][0]["file"] = json!("../top.dsn"),
+            3 => invalid["files"][0]["size"] = json!(0),
+            4 => invalid["files"][0]["sha256"] = json!("0".repeat(64)),
+            5 => invalid["size"] = json!(33),
+            6 => invalid["sha256"] = json!("0".repeat(64)),
+            7 => invalid["files"][0]["extra"] = json!(true),
+            _ => unreachable!(),
+        }
+        assert!(
+            std::panic::catch_unwind(|| verify(&invalid)).is_err(),
+            "case {case}"
+        );
+    }
+    fs::write(path.join("extra.trn"), b"extra").unwrap();
+    assert!(std::panic::catch_unwind(|| verify(&artifact)).is_err());
+    fs::remove_file(path.join("extra.trn")).unwrap();
+    fs::write(path.join("top.trn"), b"truncated").unwrap();
+    assert!(std::panic::catch_unwind(|| verify(&artifact)).is_err());
+    fs::remove_file(path.join("top.trn")).unwrap();
+    assert!(std::panic::catch_unwind(|| verify(&artifact)).is_err());
+    #[cfg(unix)]
+    {
+        fs::write(directory.join("outside.trn"), b"fixture component").unwrap();
+        std::os::unix::fs::symlink(directory.join("outside.trn"), path.join("top.trn")).unwrap();
+        assert!(std::panic::catch_unwind(|| verify(&artifact)).is_err());
+    }
+    fs::remove_dir_all(directory).unwrap();
 }

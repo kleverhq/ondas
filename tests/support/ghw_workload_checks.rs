@@ -34,7 +34,7 @@ fn ghw_wide_consumers_match_authored_and_native_evidence() {
         let mut wave = open(&fixture, bytes).unwrap();
         let wide = wave.hierarchy().signal(coordinates::WIDE_PATH).unwrap();
         let expected_signals = hierarchy(&wave, &fixture.oracle, false);
-        assert_eq!(expected_signals["signal-1"], wide, "oracle wide identity");
+        assert_eq!(expected_signals["signal-1"], [wide], "oracle wide identity");
         let scalar = wave.hierarchy().signal(coordinates::CONTROL_PATH).unwrap();
         let low = wide.slice(0, 0).unwrap();
         let high = wide.slice(4095, 1).unwrap();

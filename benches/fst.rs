@@ -9,6 +9,12 @@ mod composed;
 mod fixtures;
 #[path = "fst/hotpaths.rs"]
 mod hotpaths;
+#[path = "support/matched_active4.rs"]
+mod matched_active4;
+#[path = "support/matched_constant.rs"]
+mod matched_constant;
+#[path = "support/matched_wide.rs"]
+mod matched_wide;
 #[path = "../tests/support/query_workloads.rs"]
 mod workloads;
 
@@ -353,6 +359,45 @@ fn picorv32(c: &mut Criterion) {
     group.finish();
 }
 
+fn matched_widths(c: &mut Criterion) {
+    let fixture = "fst/fst0083-wide-compact-toggle";
+    let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
+    matched_wide::register(
+        c,
+        fixture,
+        BACKEND,
+        ondas::open_with(path, BACKEND).unwrap(),
+    );
+}
+
+fn matched_active_bases(c: &mut Criterion) {
+    let fixture = "fst/fst0087-sparse-dense-active";
+    let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
+    matched_active4::register(
+        c,
+        fixture,
+        BACKEND,
+        [
+            "top.dense.bit_00",
+            "top.dense.bit_01",
+            "top.dense.bit_63",
+            "top.sparse.bit_00",
+        ],
+        ondas::open_with(path, BACKEND).unwrap(),
+    );
+}
+
+fn matched_constant_history(c: &mut Criterion) {
+    let fixture = "fst/fst0084-topology-small";
+    let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
+    matched_constant::register(
+        c,
+        fixture,
+        BACKEND,
+        ondas::open_with(path, BACKEND).unwrap(),
+    );
+}
+
 criterion_group!(
     benches,
     scr1,
@@ -365,6 +410,9 @@ criterion_group!(
     hotpaths::strings,
     composed::wide,
     composed::sections,
-    composed::wrapped
+    composed::wrapped,
+    matched_widths,
+    matched_active_bases,
+    matched_constant_history
 );
 criterion_main!(benches);

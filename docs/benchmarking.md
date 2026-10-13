@@ -74,6 +74,14 @@ A fresh waveform may use a warm filesystem cache. This is not a cold-disk test.
 Prepared queries measure reuse, not first-query cost. Compare cases with the same
 setup and destruction boundaries.
 
+The FSDB and SHM targets include `matched-clock` cases. Their selected one-bit
+histories alternate every tick through tick 1048576. The cases use the same
+query boundaries and consumer. They cover a first query on a fresh reader,
+fresh selections, and prepared repeated queries. The fixtures use different
+time units and surrounding designs. Compare selected records and tick positions,
+not physical durations or total file sizes. Independent conformance tests check
+the selected values and timestamps.
+
 ## VCD workload design
 
 Combine real recordings with compact diagnostic fixtures. Real recordings show
@@ -292,6 +300,46 @@ First-result timing includes query cleanup, not just time to the callback.
 Selective payload access does not imply skipped native decoding. The bounded
 sequential comparison retains owned current values instead of an output list.
 
+## SHM workload design
+
+`benches/shm.rs` uses the explicit `shm-lib` reader and complete directory inputs.
+It requires the selected Xcelium installation and installed pinned fixtures.
+See [SHM setup and limits](shm-lib.md). Preflight prints the build-selected reader
+path, verifies artifact hashes, resolves handles, and checks selection identities
+and widths before executing cases. It does not generate or install fixtures.
+
+The controlled history pair keeps early activity equal while changing the unused
+suffix and the selected prefix. Equal-width early and late windows compare scans,
+candidate times, bounded owned traces, and first-change stops. Individual, batch,
+prepared, and mixed-order sample series distinguish query setup and reuse.
+Fresh-reader point cases open and resolve handles outside timing. Prepared
+warm-repeat cases prime the selection first. Open/drop cases include destruction.
+
+The bank and topology inputs keep selected histories equal while changing
+activity or unrelated declarations. The wide input compares opposite changing
+ends, a scalar, changing and stable projections, and repeated overlapping slots.
+Composed cases compare selective and eager public payload access with shared or
+distinct driver bases, including first-result stops. The typed input covers
+logic, binary64 real values, UTF-8 strings, and events. Unsupported classes have
+no replacement-value benchmark.
+
+Ordinary cold queries copy and merge selected prefix records before calling
+visitors. Qualified bit-only points can seek values and walk backwards to find
+their last normalized change. Other points keep ordinary reading. Prepared
+selections can reuse a bounded normalized state snapshot for compatible points
+or resume a window at its validated entering boundary. Benchmark warmup can
+establish this state. Prepared results therefore do not measure cold late entry.
+Selections retain no native history cache. `Break` stops callback delivery after
+native collection. Selective payload access does not establish that native
+decoding was skipped. Ordinary memory use grows with the selected prefix; these
+cases do not measure memory or lock contention.
+
+`tests/support/shm_workloads.rs` contains the shared callback consumers.
+`just conformance-shm` checks them against independent stimulus formulas.
+Run `just bench-smoke-shm` after conformance to execute the registered cases with
+Criterion `--test`. This smoke run supplies no performance comparison.
+Concrete parameters and measurement boundaries remain in the benchmark source.
+
 ## Local baselines
 
 Use Criterion's normal baseline mechanism for an existing format target, for
@@ -312,6 +360,9 @@ example from the repository root:
 # FSDB corpus, with the SDK feature enabled:
 ./dev just bench-fsdb --save-baseline fsdb-initial
 ./dev just bench-fsdb --baseline fsdb-initial
+# SHM corpus, with the SDK feature enabled:
+./dev just bench-shm --save-baseline shm-initial
+./dev just bench-shm --baseline shm-initial
 ```
 
 Select revisions with host Git and preserve Criterion output between runs.
@@ -351,13 +402,18 @@ These recipes use the [local SDK selection](automation.md#proprietary-environmen
 in a separate target directory. Criterion IDs and baseline names stay the same.
 Keep the SDK list order stable when comparing results, or choose fresh output.
 
-Preparation validates each artifact before opening it. If the Reader rejects a
+For SHM, run `conformance-shm` and `bench-smoke-shm` before measurement.
+`bench-shm` follows the same argument and baseline rules, using the SDKs selected
+by `XCELIUM_HOMES` or `XCELIUM_HOME`. A failed SHM input remains a failure;
+the SHM target has no newer-file skip rule.
+
+FSDB preparation validates each artifact before opening it. If the Reader rejects a
 newer file version, preparation prints `SKIP` and omits that fixture's workload
 groups. Other failures still fail. A successful
 smoke run covers only registered workloads; skipped groups supply no evidence.
 
-Default all-target checks skip FSDB's feature-gated target. SDK-enabled checks
-must compile it explicitly. Smoke timings are not regression evidence. A proprietary
+Default all-target checks skip the FSDB and SHM feature-gated targets. SDK-enabled
+checks must compile the selected target explicitly. Smoke timings are not regression evidence. A proprietary
 target must not prevent unrelated public targets from compiling. An explicit
 request for that target must fail clearly if its fixtures or runtime are missing.
 Missing or invalid fixture inputs fail before measurement.

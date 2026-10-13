@@ -1,6 +1,6 @@
 use std::{
     fs::File,
-    io::{BufReader, Cursor},
+    io::{BufReader, Cursor, Read},
     ops::ControlFlow,
     path::Path,
     sync::Arc,
@@ -12,11 +12,12 @@ use crate::{
     backends::{Input, Reader, fst, ghw, vcd},
 };
 
-/// Opens a waveform file with an automatically selected available backend.
+/// Opens a waveform source with an automatically selected available backend.
 ///
 /// FST uses `fst-lib`. VCD uses `vcd-native`. GHW uses `ghw-native`.
 /// FSDB uses `fsdb-lib` when the
-/// optional feature of the same name is enabled. Content recognition takes
+/// optional feature of the same name is enabled. SHM directories use the optional
+/// `shm-lib` feature. Content recognition takes
 /// priority over the filename. A recognized extension is a fallback hint.
 /// A recognized format without a reader returns [`Error::NoBackend`].
 /// Unrecognized input returns
@@ -30,16 +31,24 @@ pub fn open(path: impl AsRef<Path>) -> Result<Waveform> {
 
 /// Reads owned source metadata without retaining a waveform or hierarchy.
 ///
-/// FSDB reads the SDK's file metadata without materializing declarations. FST and
-/// VCD and GHW use their regular readers, so this is not a fast path for those
+/// FSDB and SHM read native source metadata without materializing declarations.
+/// FST, VCD and GHW use their regular readers, so this is not a fast path for those
 /// formats. Format detection matches [`open`], as do metadata values for files
-/// that open successfully. Unlike [`open`], it does not validate an FSDB
+/// that open successfully. Unlike [`open`], it does not validate an FSDB or SHM
 /// declaration tree. Use [`open`] for validated hierarchy or signal access.
 ///
-/// This function accepts file paths, not byte inputs.
+/// This function accepts filesystem paths, including SHM directories, not bytes.
 pub fn read_metadata(path: impl AsRef<Path>) -> Result<Metadata> {
     let path = path.as_ref();
     let name = path.to_string_lossy().into_owned();
+    if std::fs::metadata(path)?.is_dir() {
+        let format = directory_format(path)?;
+        #[cfg(feature = "shm-lib")]
+        if format == Format::Shm {
+            return crate::backends::shm::read_metadata(path, name);
+        }
+        return Err(Error::NoBackend { format });
+    }
     let file = File::open(path)?;
     let vcd_file = file.try_clone().ok();
     let mut input: Box<dyn Input> = Box::new(BufReader::new(file));
@@ -50,13 +59,16 @@ pub fn read_metadata(path: impl AsRef<Path>) -> Result<Metadata> {
         Format::Ghw => ghw::Reader::open(input, name).map(|(_, _, metadata)| metadata),
         #[cfg(feature = "fsdb-lib")]
         Format::Fsdb => crate::backends::fsdb::read_metadata(path, name),
+        #[cfg(feature = "shm-lib")]
+        Format::Shm => crate::backends::shm::read_metadata(path, name),
         _ => Err(Error::NoBackend { format }),
     }
 }
 
-/// Opens a waveform file with only the named backend, without fallback.
+/// Opens a waveform source with only the named backend, without fallback.
 ///
-/// Available names are `fst-lib`, `vcd-native`, `ghw-native`, and feature-enabled `fsdb-lib`.
+/// Available names are `fst-lib`, `vcd-native`, `ghw-native`, and feature-enabled `fsdb-lib`
+/// and `shm-lib`. SHM input must be a database directory.
 /// A disabled optional backend is an unknown name. Unknown names return
 /// [`Error::UnknownBackend`]. A format unsupported by the selected backend returns
 /// [`Error::BackendDoesNotSupport`]. See [`open`] for detection and reader limits.
@@ -69,8 +81,9 @@ pub fn open_with(path: impl AsRef<Path>, backend: &str) -> Result<Waveform> {
 /// `name` is the logical [`Metadata::source_name`] and a format-detection hint.
 /// The input stays alive through the shared ownership of `bytes`. Detection,
 /// errors, and reader limitations are the same as [`open`]. FST, VCD and GHW readers
-/// support file and byte input. `fsdb-lib` reads files only. FSDB selected by the
-/// filename hint returns [`Error::UnsupportedInput`] when that feature is enabled.
+/// support file and byte input. `fsdb-lib` reads files only. `shm-lib` reads
+/// directories only. An enabled FSDB or SHM filename hint returns
+/// [`Error::UnsupportedInput`].
 /// The SDK's content probe is only available for file paths.
 pub fn open_bytes(name: impl Into<String>, bytes: Arc<[u8]>) -> Result<Waveform> {
     open_input(name.into(), Box::new(Cursor::new(bytes)), None, None, None)
@@ -79,7 +92,7 @@ pub fn open_bytes(name: impl Into<String>, bytes: Arc<[u8]>) -> Result<Waveform>
 /// Opens shared in-memory bytes with only the named backend, without fallback.
 ///
 /// Combines [`open_bytes`]' input ownership with [`open_with`]'s explicit reader
-/// selection and error categories. Selecting enabled `fsdb-lib` always returns
+/// selection and error categories. Selecting enabled `fsdb-lib` or `shm-lib` returns
 /// [`Error::UnsupportedInput`] without creating a temporary file.
 pub fn open_bytes_with(
     name: impl Into<String>,
@@ -99,6 +112,7 @@ fn check_backend(backend: Option<&str>) -> Result<()> {
     if let Some(backend) = backend
         && !matches!(backend, "fst-lib" | "vcd-native" | "ghw-native")
         && !(cfg!(feature = "fsdb-lib") && backend == "fsdb-lib")
+        && !(cfg!(feature = "shm-lib") && backend == "shm-lib")
     {
         return Err(Error::UnknownBackend {
             backend: backend.into(),
@@ -109,6 +123,33 @@ fn check_backend(backend: Option<&str>) -> Result<()> {
 
 fn open_file(path: &Path, backend: Option<&str>) -> Result<Waveform> {
     check_backend(backend)?;
+    if std::fs::metadata(path)?.is_dir() {
+        let format = if backend == Some("shm-lib") {
+            Format::Shm
+        } else {
+            directory_format(path)?
+        };
+        if let Some(backend) = backend
+            && backend != "shm-lib"
+        {
+            return Err(Error::BackendDoesNotSupport {
+                backend: backend.into(),
+                format,
+            });
+        }
+        #[cfg(feature = "shm-lib")]
+        {
+            let (reader, hierarchy, metadata) =
+                crate::backends::shm::Reader::open(path, path.to_string_lossy().into_owned())?;
+            return Ok(Waveform {
+                reader: Reader::Shm(Box::new(reader)),
+                hierarchy,
+                metadata,
+            });
+        }
+        #[cfg(not(feature = "shm-lib"))]
+        return Err(Error::NoBackend { format });
+    }
     let file = File::open(path)?;
     let vcd_file = file.try_clone().ok();
     open_input(
@@ -135,6 +176,13 @@ fn open_input(
             input: crate::InputKind::Bytes,
         });
     }
+    #[cfg(feature = "shm-lib")]
+    if backend == Some("shm-lib") && _path.is_none() {
+        return Err(Error::UnsupportedInput {
+            backend: "shm-lib".into(),
+            input: crate::InputKind::Bytes,
+        });
+    }
     let format = detect_format(&mut *input, &name, _path)?;
     let (reader, hierarchy, metadata) = match (format, backend) {
         (Format::Fst, None | Some("fst-lib")) => {
@@ -158,6 +206,15 @@ fn open_input(
             let (reader, hierarchy, metadata) = crate::backends::fsdb::Reader::open(path, name)?;
             (Reader::Fsdb(Box::new(reader)), hierarchy, metadata)
         }
+        #[cfg(feature = "shm-lib")]
+        (Format::Shm, None | Some("shm-lib")) => {
+            let path = _path.ok_or_else(|| Error::UnsupportedInput {
+                backend: "shm-lib".into(),
+                input: crate::InputKind::Bytes,
+            })?;
+            let (reader, hierarchy, metadata) = crate::backends::shm::Reader::open(path, name)?;
+            (Reader::Shm(Box::new(reader)), hierarchy, metadata)
+        }
         (_, Some(backend)) => {
             return Err(Error::BackendDoesNotSupport {
                 backend: backend.into(),
@@ -171,6 +228,43 @@ fn open_input(
         hierarchy,
         metadata,
     })
+}
+
+fn directory_format(path: &Path) -> Result<Format> {
+    if path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("shm"))
+    {
+        return Ok(Format::Shm);
+    }
+    // Confirmed SST2 DSN/TRN headers, independent of the directory suffix.
+    let mut designs = 0;
+    let mut transitions = 0;
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        let component = entry.path();
+        let expected = match component.extension().and_then(|s| s.to_str()) {
+            Some("dsn") => [0xa1, 0x95, 0x11, 0xbf, 0, 0, 0, 1],
+            Some("trn") => [0xa1, 0x95, 0x11, 0xbf, 0, 0, 0, 4],
+            _ => continue,
+        };
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let mut header = [0; 8];
+        if File::open(component)?.read_exact(&mut header).is_ok() && header == expected {
+            if expected[7] == 1 {
+                designs += 1;
+            } else {
+                transitions += 1;
+            }
+        }
+    }
+    if designs == 1 && transitions > 0 {
+        Ok(Format::Shm)
+    } else {
+        Err(Error::UnknownFormat)
+    }
 }
 
 fn detect_format(input: &mut dyn Input, name: &str, _path: Option<&Path>) -> Result<Format> {
@@ -226,6 +320,7 @@ fn detect_format(input: &mut dyn Input, name: &str, _path: Option<&Path>) -> Res
             "ghw" => Ok(Format::Ghw),
             "fsdb" => Ok(Format::Fsdb),
             "wlf" => Ok(Format::Wlf),
+            "shm" => Ok(Format::Shm),
             _ => Err(Error::UnknownFormat),
         }
     }
@@ -247,6 +342,8 @@ pub enum Format {
     Fsdb,
     /// Wave Log Format.
     Wlf,
+    /// Simulation History Manager database directory.
+    Shm,
 }
 
 /// An opened, read-only waveform and its query interface.
@@ -313,6 +410,8 @@ impl Waveform {
             Reader::Ghw(_) => Format::Ghw,
             #[cfg(feature = "fsdb-lib")]
             Reader::Fsdb(_) => Format::Fsdb,
+            #[cfg(feature = "shm-lib")]
+            Reader::Shm(_) => Format::Shm,
             #[cfg(test)]
             Reader::Memory { .. } | Reader::Generated(_) => Format::Fst,
         }
@@ -329,6 +428,8 @@ impl Waveform {
             Reader::Ghw(_) => "ghw-native",
             #[cfg(feature = "fsdb-lib")]
             Reader::Fsdb(_) => "fsdb-lib",
+            #[cfg(feature = "shm-lib")]
+            Reader::Shm(_) => "shm-lib",
             #[cfg(test)]
             Reader::Memory { .. } => "memory",
             #[cfg(test)]
@@ -508,6 +609,74 @@ mod tests {
 
     fn bytes(text: &[u8]) -> Arc<[u8]> {
         Arc::from(text)
+    }
+
+    #[test]
+    fn shm_routing_distinguishes_directories_and_bytes() {
+        if cfg!(feature = "shm-lib") {
+            assert!(matches!(
+                open_bytes_with("unrecognized", bytes(b""), "shm-lib"),
+                Err(Error::UnsupportedInput {
+                    input: crate::InputKind::Bytes,
+                    ..
+                })
+            ));
+            assert!(matches!(
+                open_bytes("dump.SHM", bytes(b"")),
+                Err(Error::UnsupportedInput {
+                    input: crate::InputKind::Bytes,
+                    ..
+                })
+            ));
+        } else {
+            assert!(matches!(
+                open_with("", "shm-lib"),
+                Err(Error::UnknownBackend { .. })
+            ));
+            assert!(matches!(
+                open_bytes("dump.SHM", bytes(b"")),
+                Err(Error::NoBackend {
+                    format: Format::Shm
+                })
+            ));
+        }
+        let wave = open_bytes(
+            "dump.shm",
+            bytes(b"$var wire 1 ! a $end $enddefinitions $end #0 1!"),
+        )
+        .unwrap();
+        assert_eq!(wave.format(), Format::Vcd);
+
+        let root = std::env::temp_dir().join(format!("ondas-shm-routing-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        // Own this newly created directory; remove it even if an assertion fails.
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(root.clone());
+        assert!(matches!(directory_format(&root), Err(Error::UnknownFormat)));
+        std::fs::write(root.join("wave.dsn"), [0xa1, 0x95, 0x11, 0xbf, 0, 0, 0, 1]).unwrap();
+        std::fs::write(root.join("wave.trn"), [0xa1, 0x95, 0x11, 0xbf, 0, 0, 0, 4]).unwrap();
+        assert_eq!(directory_format(&root).unwrap(), Format::Shm);
+        assert!(matches!(
+            open_with(&root, "vcd-native"),
+            Err(Error::BackendDoesNotSupport {
+                format: Format::Shm,
+                ..
+            })
+        ));
+        #[cfg(not(feature = "shm-lib"))]
+        assert!(matches!(
+            open(&root),
+            Err(Error::NoBackend {
+                format: Format::Shm
+            })
+        ));
+        std::fs::write(root.join("wave.trn"), b"invalid").unwrap();
+        assert!(matches!(directory_format(&root), Err(Error::UnknownFormat)));
     }
 
     #[test]

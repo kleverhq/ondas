@@ -18,11 +18,41 @@ handles, native callbacks and format-local indices stay private.
 | VCD | `vcd-native` | Files and shared in-memory bytes | Included; reads VCD directly without conversion |
 | GHW | `ghw-native` | Files and shared in-memory bytes | Included; reads GHW directly without conversion |
 | FSDB | `fsdb-lib` | Files only | Optional Cargo feature; requires a local FSDB Reader SDK |
+| SHM | `shm-lib` | Database directories only | Optional Cargo feature; requires a compatible Xcelium reader (2021+) |
 
 Other formats have no reader in this release. The minimum supported Rust version
-is 1.88. See [reader details](#reader-details) for format limits and FSDB setup.
+is 1.88. See [reader details](#reader-details) for format limits and native reader setup.
 In particular, the FST reader can panic on malformed input; it is not a hardened
 parser for untrusted files.
+
+### SHM setup
+
+Enable `shm-lib` and set `XCELIUM_HOME` to the selected Xcelium installation when
+building on Linux x86_64 GNU. Building requires a C++17 compiler, binutils and
+zlib development files. The selected library must remain at its build-time path.
+Use a compatible reader from Xcelium (2021+).
+Readers with an ELF `SONAME` also require explicit runtime lookup, for example
+through `LD_LIBRARY_PATH`. Use a directory with a symlink to the selected
+`libsst2.so` to avoid selecting an older bundled C++ runtime.
+
+SHM input is a complete database directory. Byte input is unsupported. The
+adapter reads the latest matching recording across its TRN components.
+It preserves bits, real values, UTF-8 strings and event occurrences.
+Confirmed aliases share a handle. If the reader does not provide
+alias identity, each declaration has a separate handle. Queries collect the
+selected history prefixes before calling users. Memory grows with those prefixes.
+Recording gaps and invalid strings return
+errors. Keep the directory and its components unchanged and available.
+
+```no_run
+# #[cfg(feature = "shm-lib")]
+# fn example() -> Result<(), Box<dyn std::error::Error>> {
+let mut wave = ondas::open_with("waveform.shm", "shm-lib")?;
+let signal = wave.hierarchy().signal("top.ready")?;
+let sample = wave.sample(signal, ondas::Time::from_ticks(10))?;
+# Ok(())
+# }
+```
 
 ## How the API fits together
 

@@ -52,6 +52,17 @@ The following tests in [`src/query/tests.rs`](../src/query/tests.rs) use
 observations. `full_fst_pool`, `full_vcd_pool` and `full_ghw_pool` discover all artifacts of their
 format. `pool_queries` batches listed samples/windows and reports each case,
 without a failure allowlist.
+`full_shm_pool` checks all SHM directories with the explicit optional reader.
+`shm_authored_bit_oracles` checks the controlled sources against independent
+oracles. `shm_lifecycle_and_typed_values` checks real bits, long strings, event
+counts, confirmed alias identity or separate handles with matching values,
+metadata-only reads, reentrant callbacks, thread transfer,
+and cleanup after `Break` or panic. `shm_gap_reports_error_after_a_valid_prefix`
+checks a valid prefix and a later recording failure. The SHM workload tests check
+benchmark consumers against stimulus formulas outside timing. Negative manifest
+tests require no native reader.
+`shm_late_and_empty_histories` checks a missing prefix, a later first value,
+and an event history with no occurrences.
 The runner matches listed declarations through public traversal. Focused cases also
 exercise exact lookup and alias iterators. Native kind normalization has regressions
 `real_parameter_kind_is_canonical` and `compound_scope_kinds_are_canonical` in

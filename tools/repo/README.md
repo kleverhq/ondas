@@ -57,6 +57,23 @@ failure aggregation and cancellation with fake commands through `just tools-test
 and launches it without Cargo's loader environment. A confirmed newer-file error
 prints a skip after process startup. All other failures remain failures.
 
+## SHM SDK sweep
+
+`shm-sweep` follows the FSDB sweep rules with `XCELIUM_HOMES`, `XCELIUM_HOME`,
+and `${CARGO_TARGET_DIR:-target}/shm-sdk/<position>`. It requires the selected
+`tools/lib/64bit/libsst2.so`. Each child gets a runtime directory with a symlink
+to that reader at the front of `LD_LIBRARY_PATH`. Existing loader paths follow
+it. The wrapper needs Bash, `env`, `mkdir`, `ln`, and `realpath`. It modifies only
+build output and its runtime symlink.
+
+Use `./dev just ci-shm`, `conformance-shm`, `bench-smoke-shm` or `bench-shm`.
+The recipes select locally supplied paths without a fixed version list. Each
+reader uses the same quoted-value transport.
+`test_shm_sweep.py` checks selection, argument preservation, build and loader
+isolation, missing readers, failure aggregation and cancellation with fake commands.
+`check_shm_consumer.py` verifies a separately built application's selected native
+dependency and launches it without Cargo's runtime environment.
+
 ## Release metadata
 
 `check_release.py` reads `Cargo.toml`, `Cargo.lock` and `CHANGELOG.md` from the

@@ -5,6 +5,9 @@ pub(crate) mod fst;
 #[cfg(test)]
 pub(crate) mod generated;
 pub(crate) mod ghw;
+#[cfg(feature = "shm-lib")]
+#[allow(unsafe_code)] // Private C ABI; native sessions end before user callbacks.
+pub(crate) mod shm;
 pub(crate) mod vcd;
 
 use std::{
@@ -23,6 +26,8 @@ pub(crate) enum Reader {
     Ghw(Box<ghw::Reader>),
     #[cfg(feature = "fsdb-lib")]
     Fsdb(Box<fsdb::Reader>),
+    #[cfg(feature = "shm-lib")]
+    Shm(Box<shm::Reader>),
     #[cfg(test)]
     Generated(generated::Reader),
     #[cfg(test)]
@@ -37,31 +42,39 @@ impl Reader {
         &mut self,
         signals: &[Signal],
         end: Time,
-        visitor: impl for<'v> FnMut(usize, Time, ValueRef<'v>) -> ControlFlow<B>,
+        mut visitor: impl for<'v> FnMut(usize, Time, Result<ValueRef<'v>>) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>> {
         if signals.is_empty() {
             return Ok(ControlFlow::Continue(()));
         }
         match self {
-            Self::Fst(reader) => reader.read(signals, Time::from_ticks(0), end, visitor),
-            Self::Vcd(reader) => reader.read(signals, end, visitor),
-            Self::Ghw(reader) => {
-                let mut visitor = visitor;
-                reader.read(signals, end, |event| match event {
-                    ghw::Notification::Value { index, time, value } => visitor(index, time, value),
-                    ghw::Notification::Tick(_) => ControlFlow::Continue(()),
+            Self::Fst(reader) => {
+                reader.read(signals, Time::from_ticks(0), end, |index, time, value| {
+                    visitor(index, time, Ok(value))
                 })
             }
+            Self::Vcd(reader) => reader.read(signals, end, |index, time, value| {
+                visitor(index, time, Ok(value))
+            }),
+            Self::Ghw(reader) => reader.read(signals, end, |event| match event {
+                ghw::Notification::Value { index, time, value } => visitor(index, time, Ok(value)),
+                ghw::Notification::Tick(_) => ControlFlow::Continue(()),
+            }),
             #[cfg(feature = "fsdb-lib")]
-            Self::Fsdb(reader) => reader.read(signals, end, visitor),
+            Self::Fsdb(reader) => reader.read(signals, end, |index, time, value| {
+                visitor(index, time, Ok(value))
+            }),
+            #[cfg(feature = "shm-lib")]
+            Self::Shm(reader) => reader.read(signals, end, visitor),
             #[cfg(test)]
-            Self::Generated(reader) => reader.read(signals, end, visitor),
+            Self::Generated(reader) => reader.read(signals, end, |index, time, value| {
+                visitor(index, time, Ok(value))
+            }),
             #[cfg(test)]
             Self::Memory {
                 records,
                 fail_after,
             } => {
-                let mut visitor = visitor;
                 for (position, (index, time, value)) in records.iter().enumerate() {
                     if *time > end {
                         break;
@@ -74,7 +87,8 @@ impl Reader {
                         });
                     }
                     if signals.iter().any(|signal| signal.index() == *index)
-                        && let ControlFlow::Break(value) = visitor(*index, *time, value.as_ref())
+                        && let ControlFlow::Break(value) =
+                            visitor(*index, *time, Ok(value.as_ref()))
                     {
                         return Ok(ControlFlow::Break(value));
                     }

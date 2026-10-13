@@ -20,6 +20,8 @@ enum Position {
     Vcd(crate::backends::vcd::Position),
     #[cfg(feature = "fsdb-lib")]
     Fsdb(Time),
+    #[cfg(feature = "shm-lib")]
+    Shm(Time),
 }
 
 impl Position {
@@ -28,6 +30,8 @@ impl Position {
             Self::Vcd(position) => Time::from_ticks(position.time),
             #[cfg(feature = "fsdb-lib")]
             Self::Fsdb(time) => time,
+            #[cfg(feature = "shm-lib")]
+            Self::Shm(time) => time,
         }
     }
 }
@@ -473,6 +477,7 @@ impl<'w> Selection<'w> {
             range.start().ticks().checked_sub(1).map(Time::from_ticks),
             end,
             &mut slots,
+            true,
             |time, signals, slots| {
                 if time >= range.start()
                     && drivers.iter().any(|&index| {
@@ -501,16 +506,32 @@ impl<'w> Selection<'w> {
         )
     }
 
-    #[cfg(feature = "fsdb-lib")]
-    fn fsdb_point_states(&mut self, time: Time) -> Result<Option<Vec<Option<State>>>> {
+    #[cfg(any(feature = "fsdb-lib", feature = "shm-lib"))]
+    fn point_states(
+        &mut self,
+        time: Time,
+        prepare_shm_fallback: bool,
+    ) -> Result<Option<Vec<Option<State>>>> {
+        #[cfg(not(feature = "shm-lib"))]
+        let _ = prepare_shm_fallback;
         if self.signals.is_empty()
             || !self
                 .bases
                 .iter()
                 .all(|signal| matches!(signal.encoding(), Encoding::Bits { .. }))
-            || !matches!(self.waveform.reader, crate::backends::Reader::Fsdb(_))
         {
             return Ok(None);
+        }
+        match &self.waveform.reader {
+            #[cfg(feature = "fsdb-lib")]
+            crate::backends::Reader::Fsdb(_) => {}
+            #[cfg(feature = "shm-lib")]
+            crate::backends::Reader::Shm(_)
+                if time.ticks() != u64::MAX
+                    && self.retained_signals.iter().all(|s| {
+                        !s.is_slice() || s.base().encoding() == Encoding::Bits { width: 1 }
+                    }) => {}
+            _ => return Ok(None),
         }
         let next = time.ticks().checked_add(1).map(Time::from_ticks);
         if let Some(replay) = self.replay.as_ref().filter(|replay| {
@@ -533,23 +554,51 @@ impl<'w> Selection<'w> {
         }
         self.replay = None;
         self.checkpoint = None;
-        let crate::backends::Reader::Fsdb(reader) = &mut self.waveform.reader else {
-            unreachable!()
+        let slots: Vec<_> = match &mut self.waveform.reader {
+            #[cfg(feature = "fsdb-lib")]
+            crate::backends::Reader::Fsdb(reader) => reader
+                .sample_bits(&self.bases, &self.retained_signals, time)?
+                .into_iter()
+                .map(|sample| Slot {
+                    state: match sample {
+                        Sample::Value {
+                            value, changed_at, ..
+                        } => Some(State { value, changed_at }),
+                        Sample::Missing { .. } => None,
+                        Sample::Event { .. } => unreachable!("bit-only point selection"),
+                    },
+                    ..Slot::default()
+                })
+                .collect(),
+            #[cfg(feature = "shm-lib")]
+            crate::backends::Reader::Shm(reader) => {
+                let Some(samples) = reader.sample_bits(&self.bases, time, prepare_shm_fallback)?
+                else {
+                    return Ok(None);
+                };
+                let mut slots = vec![Slot::default(); self.retained_signals.len()];
+                for sample in samples {
+                    let Sample::Value {
+                        signal,
+                        value,
+                        changed_at,
+                    } = sample
+                    else {
+                        unreachable!("certified bit point");
+                    };
+                    // Whole bases and scalar slices share the certified value,
+                    // while retained entries keep their separate identities.
+                    for &index in &self.groups[&signal.index()] {
+                        slots[index].state = Some(State {
+                            value: value.clone(),
+                            changed_at,
+                        });
+                    }
+                }
+                slots
+            }
+            _ => unreachable!("point reader was checked above"),
         };
-        let samples = reader.sample_bits(&self.bases, &self.retained_signals, time)?;
-        let slots: Vec<_> = samples
-            .into_iter()
-            .map(|sample| Slot {
-                state: match sample {
-                    Sample::Value {
-                        value, changed_at, ..
-                    } => Some(State { value, changed_at }),
-                    Sample::Missing { .. } => None,
-                    Sample::Event { .. } => unreachable!("bit-only point selection"),
-                },
-                ..Slot::default()
-            })
-            .collect();
         let states = self
             .slot_indices
             .iter()
@@ -559,7 +608,13 @@ impl<'w> Selection<'w> {
             // This is state AFTER time, not entering time. Only later scans may
             // reuse it; same-tick point reads are handled explicitly above.
             self.replay = Some(Replay {
-                position: Position::Fsdb(next),
+                position: match &self.waveform.reader {
+                    #[cfg(feature = "fsdb-lib")]
+                    crate::backends::Reader::Fsdb(_) => Position::Fsdb(next),
+                    #[cfg(feature = "shm-lib")]
+                    crate::backends::Reader::Shm(_) => Position::Shm(next),
+                    _ => unreachable!("point reader was checked above"),
+                },
                 start: next,
                 end: time,
                 time: None,
@@ -569,43 +624,107 @@ impl<'w> Selection<'w> {
         Ok(Some(states))
     }
 
+    #[cfg(feature = "shm-lib")]
+    fn shm_replay_sample_visit<B>(
+        &mut self,
+        time: Time,
+        visitor: &mut impl for<'v> FnMut(SampleRef<'v>) -> ControlFlow<B>,
+    ) -> Option<ControlFlow<B>> {
+        if !matches!(self.waveform.reader, crate::backends::Reader::Shm(_))
+            || !self
+                .replay
+                .as_ref()
+                .is_some_and(|replay| replay.end == time)
+        {
+            return None;
+        }
+        // The snapshot precedes completion of its final pending tick. Borrow
+        // the resulting value without changing the entering state for later scans.
+        let replay = self.replay.take().unwrap();
+        let checkpoint = self.checkpoint.take();
+        for (index, &signal) in self.signals.iter().enumerate() {
+            let slot = &replay.slots[self.slot_indices[index]];
+            let value = slot
+                .pending
+                .as_ref()
+                .or_else(|| slot.state.as_ref().map(|state| &state.value));
+            let changed_at = match (slot.pending.as_ref(), slot.state.as_ref()) {
+                (Some(value), Some(state)) if !state.value.as_ref().same_value(value.as_ref()) => {
+                    replay.time
+                }
+                (_, Some(state)) => state.changed_at,
+                _ => None,
+            };
+            let sample = if let Some(value) = value {
+                SampleRef::Value {
+                    signal,
+                    value: value.as_ref(),
+                    changed_at,
+                }
+            } else {
+                SampleRef::Missing { signal }
+            };
+            if let ControlFlow::Break(value) = visitor(sample) {
+                return Some(ControlFlow::Break(value));
+            }
+        }
+        // Keep caches provisional through user callbacks, including unwinding.
+        self.replay = Some(replay);
+        self.checkpoint = checkpoint;
+        Some(ControlFlow::Continue(()))
+    }
+
     pub(super) fn sample_visit<B>(
         &mut self,
         time: Time,
         mut visitor: impl for<'v> FnMut(SampleRef<'v>) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>> {
-        #[cfg(feature = "fsdb-lib")]
+        #[cfg(feature = "shm-lib")]
+        if let Some(result) = self.shm_replay_sample_visit(time, &mut visitor) {
+            return Ok(result);
+        }
+        #[cfg(any(feature = "fsdb-lib", feature = "shm-lib"))]
         let (point_sampled, mut states) = {
-            let states = self.fsdb_point_states(time)?;
+            let states = self.point_states(time, true)?;
             (
                 states.is_some(),
                 states.unwrap_or_else(|| vec![None; self.signals.len()]),
             )
         };
-        #[cfg(not(feature = "fsdb-lib"))]
+        #[cfg(not(any(feature = "fsdb-lib", feature = "shm-lib")))]
         let (point_sampled, mut states) = (false, vec![None; self.signals.len()]);
         let mut events = vec![0u64; self.signals.len()];
         if !point_sampled {
-            let _ = self.scan_each(TimeRange::point(time), |index, record| {
-                match record {
-                    ScanRef::Initial {
-                        value, changed_at, ..
-                    } => {
-                        states[index] = Some(State {
-                            value: value.to_owned(),
-                            changed_at,
-                        });
-                    }
-                    ScanRef::Change { time, value, .. } => {
-                        if let ValueRef::Event { occurrences } = value {
-                            events[index] = occurrences;
-                        } else {
-                            update(&mut states[index], value.to_owned(), time);
+            // SHM already tried this point. Its fallback must not retry the
+            // same certificate while initializing the ordinary point scan.
+            #[cfg(feature = "shm-lib")]
+            let seed_point = !matches!(&self.waveform.reader, crate::backends::Reader::Shm(_));
+            #[cfg(not(feature = "shm-lib"))]
+            let seed_point = true;
+            let _ = self.scan_each_with_point_seed(
+                TimeRange::point(time),
+                seed_point,
+                |index, record| {
+                    match record {
+                        ScanRef::Initial {
+                            value, changed_at, ..
+                        } => {
+                            states[index] = Some(State {
+                                value: value.to_owned(),
+                                changed_at,
+                            });
+                        }
+                        ScanRef::Change { time, value, .. } => {
+                            if let ValueRef::Event { occurrences } = value {
+                                events[index] = occurrences;
+                            } else {
+                                update(&mut states[index], value.to_owned(), time);
+                            }
                         }
                     }
-                }
-                ControlFlow::<()>::Continue(())
-            })?;
+                    ControlFlow::<()>::Continue(())
+                },
+            )?;
         }
         // User callbacks also run after traversal has completed. Keep caches
         // provisional until they return, so unwinding cannot retain them.
@@ -761,6 +880,15 @@ impl<'w> Selection<'w> {
     pub fn scan_each<B>(
         &mut self,
         range: TimeRange,
+        visitor: impl for<'v> FnMut(usize, ScanRef<'v>) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>> {
+        self.scan_each_with_point_seed(range, true, visitor)
+    }
+
+    fn scan_each_with_point_seed<B>(
+        &mut self,
+        range: TimeRange,
+        seed_point: bool,
         mut visitor: impl for<'v> FnMut(usize, ScanRef<'v>) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>> {
         let end = range
@@ -779,6 +907,7 @@ impl<'w> Selection<'w> {
             Some(range.start()),
             end,
             &mut slots,
+            seed_point,
             |time, signals, slots| {
                 Ok(scan_tick(
                     signals,
@@ -815,7 +944,7 @@ impl<'w> Selection<'w> {
         slots: &mut [Slot],
         visitor: impl FnMut(Time, &[Signal], &[Slot]) -> Result<ControlFlow<B>>,
     ) -> Result<ControlFlow<B>> {
-        self.read_ticks_from(None, end, slots, visitor)
+        self.read_ticks_from(None, end, slots, true, visitor)
     }
 
     fn read_ticks_from<B>(
@@ -823,18 +952,22 @@ impl<'w> Selection<'w> {
         start: Option<Time>,
         end: Time,
         slots: &mut [Slot],
+        seed_point: bool,
         mut visitor: impl FnMut(Time, &[Signal], &[Slot]) -> Result<ControlFlow<B>>,
     ) -> Result<ControlFlow<B>> {
         let eligible =
             |replay: &Replay| start.is_some_and(|start| replay.start <= start) && replay.end <= end;
-        #[cfg(feature = "fsdb-lib")]
-        if let Some(start) = start.filter(|start| *start > Time::ZERO)
+        #[cfg(not(any(feature = "fsdb-lib", feature = "shm-lib")))]
+        let _ = seed_point;
+        #[cfg(any(feature = "fsdb-lib", feature = "shm-lib"))]
+        if seed_point
+            && let Some(start) = start.filter(|start| *start > Time::ZERO)
             && !self.replay.as_ref().is_some_and(eligible)
             && !self.checkpoint.as_ref().is_some_and(eligible)
         {
             // Seek the entering state, then traverse only the bounded window.
             // Mixed values and events retain the chronological reference path.
-            self.fsdb_point_states(Time::from_ticks(start.ticks() - 1))?;
+            self.point_states(Time::from_ticks(start.ticks() - 1), false)?;
         }
         #[cfg(unix)]
         if self.replay.is_none()
@@ -884,6 +1017,12 @@ impl<'w> Selection<'w> {
         let replay_start = replay.map(|replay| replay.start).unwrap_or(Time::ZERO);
         let mut pending_time = replay.and_then(|replay| replay.time);
         let position = replay.map(|replay| replay.position);
+        #[cfg(feature = "shm-lib")]
+        let shm_resume = replay.is_some_and(|replay| {
+            matches!(replay.position, Position::Shm(time) if time > Time::ZERO)
+                && replay.time.is_none()
+                && replay.slots.iter().all(|slot| slot.state.is_some())
+        });
         if let Some(replay) = replay {
             slots.clone_from_slice(&replay.slots);
         }
@@ -901,7 +1040,7 @@ impl<'w> Selection<'w> {
         #[cfg(test)]
         let probe = streaming_tests::probe(&self.waveform.reader);
         // One entering/final value and event count per slot, never intra-tick writes.
-        let mut consume = |record: Option<(usize, ValueRef<'_>)>,
+        let mut consume = |record: Option<(usize, Result<ValueRef<'_>>)>,
                            time,
                            position: Option<Position>| {
             let Some((base, value)) = record else {
@@ -938,6 +1077,12 @@ impl<'w> Selection<'w> {
                     outcome => return ControlFlow::Break(outcome),
                 }
             }
+            // A timed decoding failure proves that an earlier tick is complete.
+            // Do not publish any unfinished values at the failed tick itself.
+            let value = match value {
+                Ok(value) => value,
+                Err(error) => return ControlFlow::Break(Err(error)),
+            };
             if !checkpoint_considered
                 && let (Some(start), Some(position)) = (start, position)
                 && time >= start
@@ -987,15 +1132,17 @@ impl<'w> Selection<'w> {
                     Position::Vcd(position) => position,
                     #[cfg(feature = "fsdb-lib")]
                     Position::Fsdb(_) => unreachable!("reader is fixed for a selection"),
+                    #[cfg(feature = "shm-lib")]
+                    Position::Shm(_) => unreachable!("reader is fixed for a selection"),
                 });
                 reader.read_from(&self.bases, end, position, |base, time, value, position| {
-                    consume(Some((base, value)), time, Some(Position::Vcd(position)))
+                    consume(Some((base, Ok(value))), time, Some(Position::Vcd(position)))
                 })
             }
             crate::backends::Reader::Ghw(reader) => {
                 reader.read(&self.bases, end, |event| match event {
                     crate::backends::ghw::Notification::Value { index, time, value } => {
-                        consume(Some((index, value)), time, None)
+                        consume(Some((index, Ok(value))), time, None)
                     }
                     crate::backends::ghw::Notification::Tick(time) => consume(None, time, None),
                 })
@@ -1006,17 +1153,43 @@ impl<'w> Selection<'w> {
                     Some(Position::Fsdb(time)) => time,
                     None => Time::ZERO,
                     Some(Position::Vcd(_)) => unreachable!("reader is fixed for a selection"),
+                    #[cfg(feature = "shm-lib")]
+                    Some(Position::Shm(_)) => unreachable!("reader is fixed for a selection"),
                 };
                 // A boundary checkpoint does not retain the preceding tick's
                 // event counts. Event selections keep the full reference path.
                 let cacheable = !self.bases.iter().any(|s| s.encoding() == Encoding::Event);
                 reader.read_from(&self.bases, from, end, |base, time, value| {
                     consume(
-                        Some((base, value)),
+                        Some((base, Ok(value))),
                         time,
                         cacheable.then_some(Position::Fsdb(time)),
                     )
                 })
+            }
+            #[cfg(feature = "shm-lib")]
+            crate::backends::Reader::Shm(reader) => {
+                let from = match position {
+                    Some(Position::Shm(time)) => time,
+                    None => Time::ZERO,
+                    _ => unreachable!("reader is fixed for a selection"),
+                };
+                // Successful boundary and completed-point snapshots can resume.
+                // Pending ticks or unknown values keep full prefix validation.
+                let cacheable = !self.bases.iter().any(|s| s.encoding() == Encoding::Event);
+                reader.read_from_with_resume(
+                    &self.bases,
+                    from,
+                    end,
+                    shm_resume && cacheable,
+                    |base, time, value| {
+                        consume(
+                            Some((base, value)),
+                            time,
+                            cacheable.then_some(Position::Shm(time)),
+                        )
+                    },
+                )
             }
             reader => reader.read(&self.bases, end, |base, time, value| {
                 consume(Some((base, value)), time, None)
@@ -1040,6 +1213,19 @@ impl<'w> Selection<'w> {
             {
                 end.ticks().checked_add(1).map(|next| Replay {
                     position: Position::Fsdb(Time::from_ticks(next)),
+                    start: pending_time.unwrap_or(replay_start),
+                    end,
+                    time: pending_time,
+                    slots: slots.to_vec(),
+                })
+            }
+            #[cfg(feature = "shm-lib")]
+            crate::backends::Reader::Shm(_)
+                if !self.bases.iter().any(|s| s.encoding() == Encoding::Event)
+                    && checkpoint_bytes(slots) <= CHECKPOINT_BYTES =>
+            {
+                end.ticks().checked_add(1).map(|next| Replay {
+                    position: Position::Shm(Time::from_ticks(next)),
                     start: pending_time.unwrap_or(replay_start),
                     end,
                     time: pending_time,
@@ -1806,6 +1992,698 @@ mod tests {
         );
         assert!(selection.replay.is_none());
         assert!(selection.checkpoint.is_none());
+    }
+
+    #[cfg(feature = "shm-lib")]
+    #[test]
+    #[ignore = "requires real SHM runtime and installed fixtures"]
+    fn shm_replay_preserves_points_and_invalidates() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/shm");
+        fn observe(samples: Vec<Sample>) -> Vec<String> {
+            samples
+                .iter()
+                .map(|sample| match sample.as_ref() {
+                    SampleRef::Value {
+                        value, changed_at, ..
+                    } => format!("{value:?}@{changed_at:?}"),
+                    SampleRef::Event { occurrences, .. } => format!("event:{occurrences}"),
+                    SampleRef::Missing { .. } => "missing".into(),
+                })
+                .collect()
+        }
+        fn reads(selection: &Selection<'_>) -> usize {
+            let crate::backends::Reader::Shm(reader) = &selection.waveform.reader else {
+                unreachable!()
+            };
+            reader.native_reads
+        }
+        let path = root.join("shm0080-history-short/waveform.shm");
+        let mut wave = crate::open_with(&path, "shm-lib").unwrap();
+        let mut reference = crate::open_with(&path, "shm-lib").unwrap();
+        let signals = |wave: &crate::Waveform| {
+            let phase = wave.hierarchy().signal("top.phase_0").unwrap();
+            let step = wave.hierarchy().signal("top.step").unwrap();
+            [
+                phase,
+                step.slice(0, 0).unwrap(),
+                step.slice(31, 16).unwrap(),
+                step.slice(0, 0).unwrap(),
+            ]
+        };
+        let expected = signals(&reference);
+        let mut selection = wave.select(&signals(&wave)).unwrap();
+        for tick in [4090, 4090, 4091, 4089, 4096, 4096, 0, 63] {
+            let time = Time::from_ticks(tick);
+            let before = reads(&selection);
+            assert_eq!(
+                observe(selection.samples(time).unwrap()),
+                observe(reference.samples(&expected, time).unwrap())
+            );
+            let after = reads(&selection);
+            assert_eq!(
+                observe(selection.samples(time).unwrap()),
+                observe(reference.samples(&expected, time).unwrap())
+            );
+            assert_eq!(
+                reads(&selection),
+                after,
+                "repeat must not enter native traversal"
+            );
+            assert!(after >= before);
+        }
+        selection.samples(Time::from_ticks(4096)).unwrap();
+        let before = reads(&selection);
+        for tick in 4089..=4096 {
+            let time = Time::from_ticks(tick);
+            assert_eq!(
+                observe(selection.samples(time).unwrap()),
+                observe(reference.samples(&expected, time).unwrap())
+            );
+        }
+        assert_eq!(
+            reads(&selection) - before,
+            8,
+            "each query in the eight-point block traverses native histories"
+        );
+        selection.samples(Time::from_ticks(u64::MAX)).unwrap();
+        assert!(
+            selection.replay.is_none(),
+            "maximum tick must not wrap its position"
+        );
+        assert!(
+            selection
+                .scan(TimeRange::all(), |_| ControlFlow::Break(()))
+                .unwrap()
+                .is_break()
+        );
+        assert!(selection.replay.is_none());
+        let time = Time::from_ticks(31);
+        assert_eq!(
+            observe(selection.samples(time).unwrap()),
+            observe(reference.samples(&expected, time).unwrap())
+        );
+
+        let mut wave =
+            crate::open_with(root.join("shm0085-typed-records/waveform.shm"), "shm-lib").unwrap();
+        let event = wave.hierarchy().signal("top.pulse").unwrap();
+        let mut selection = wave.select(&[event]).unwrap();
+        for _ in 0..2 {
+            assert!(matches!(
+                selection.samples(Time::from_ticks(3)).unwrap()[0],
+                Sample::Event { occurrences: 3, .. }
+            ));
+            assert!(selection.replay.is_none());
+            assert!(selection.checkpoint.is_none());
+        }
+        assert_eq!(reads(&selection), 2);
+
+        let mut wave =
+            crate::open_with(root.join("shm0089-probe-gap/waveform.shm"), "shm-lib").unwrap();
+        let signal = wave.hierarchy().signal("top.alias_value").unwrap();
+        let mut selection = wave.select(&[signal]).unwrap();
+        selection.samples(Time::from_ticks(1)).unwrap();
+        assert!(selection.samples(Time::from_ticks(10)).is_err());
+        assert!(selection.replay.is_none());
+        selection.samples(Time::from_ticks(1)).unwrap();
+        drop(selection);
+        // A private delivery boundary must never hide an earlier source error.
+        let crate::backends::Reader::Shm(reader) = &mut wave.reader else {
+            unreachable!()
+        };
+        assert!(
+            reader
+                .read_from(
+                    &[signal],
+                    Time::from_ticks(10),
+                    Time::from_ticks(10),
+                    |_, _, _| { ControlFlow::<()>::Continue(()) }
+                )
+                .is_err()
+        );
+        // A validated entering value must not hide a later recording gap.
+        assert!(
+            reader
+                .read(&[signal], Time::ZERO, |_, _, value| {
+                    value.unwrap();
+                    ControlFlow::<()>::Continue(())
+                })
+                .unwrap()
+                .is_continue()
+        );
+        assert_eq!(
+            reader
+                .read_from_with_resume(
+                    &[signal],
+                    Time::from_ticks(1),
+                    Time::from_ticks(10),
+                    true,
+                    |_, time, value| {
+                        if let Err(error) = value {
+                            assert!(error.to_string().contains("unavailable recording interval"));
+                            return ControlFlow::Break(time);
+                        }
+                        ControlFlow::Continue(())
+                    },
+                )
+                .unwrap(),
+            ControlFlow::Break(Time::from_ticks(2))
+        );
+        assert!(
+            reader
+                .read(&[signal], Time::ZERO, |_, _, value| {
+                    value.unwrap();
+                    ControlFlow::<()>::Continue(())
+                })
+                .unwrap()
+                .is_continue()
+        );
+    }
+
+    #[cfg(feature = "shm-lib")]
+    #[test]
+    #[ignore = "requires real SHM runtime and installed fixtures"]
+    fn shm_certified_points_preserve_completed_state() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/shm");
+        fn reads(selection: &Selection<'_>) -> usize {
+            let crate::backends::Reader::Shm(reader) = &selection.waveform.reader else {
+                unreachable!()
+            };
+            reader.native_reads
+        }
+        fn observed(sample: SampleRef<'_>) -> (String, Option<Time>) {
+            match sample {
+                SampleRef::Value {
+                    value, changed_at, ..
+                } => (format!("{value:?}"), changed_at),
+                SampleRef::Missing { .. } => ("missing".into(), None),
+                SampleRef::Event { .. } => panic!("persistent scalar"),
+            }
+        }
+        // Starting at zero forces the chronological path. Positive-start scans
+        // and fresh points now use the candidate and are not independent references.
+        fn reference(
+            wave: &mut crate::Waveform,
+            signals: &[Signal],
+            end: Time,
+        ) -> Vec<(String, Option<Time>)> {
+            wave.select(signals)
+                .unwrap()
+                .traces(TimeRange::closed(Time::ZERO, end))
+                .unwrap()
+                .into_iter()
+                .map(|trace| {
+                    assert!(trace.initial().is_none());
+                    trace
+                        .changes()
+                        .last()
+                        .map_or(("missing".into(), None), |last| {
+                            (
+                                format!("{:?}", last.value()),
+                                (trace.changes().len() > 1).then_some(last.time()),
+                            )
+                        })
+                })
+                .collect()
+        }
+        let mut wave =
+            crate::open_with(root.join("shm0085-typed-records/waveform.shm"), "shm-lib").unwrap();
+        let glitch = wave.hierarchy().signal("top.glitch").unwrap();
+        let signals = [glitch, glitch.slice(0, 0).unwrap(), glitch];
+        let time = Time::from_ticks(3);
+        let expected = reference(&mut wave, &signals, time);
+        for range in [
+            TimeRange::point(time),
+            TimeRange::closed(Time::from_ticks(4), Time::from_ticks(7)),
+        ] {
+            let mut selection = wave.select(&signals).unwrap();
+            let samples = selection.samples(time).unwrap();
+            for (sample, &signal) in samples.iter().zip(&signals) {
+                assert_eq!(sample.signal(), signal);
+            }
+            assert_eq!(
+                samples
+                    .iter()
+                    .map(|s| observed(s.as_ref()))
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            let mut seen = Vec::new();
+            let _ = selection
+                .scan_each(range, |index, record| {
+                    let ScanRef::Initial {
+                        signal,
+                        value: ValueRef::Bits(bits),
+                        changed_at,
+                    } = record
+                    else {
+                        panic!("return-to-initial glitch must emit only entering state");
+                    };
+                    assert_eq!(signal, signals[index]);
+                    assert_eq!(bits.bit(0), Some(crate::Logic::Zero));
+                    assert_eq!(changed_at, None);
+                    seen.push(index);
+                    ControlFlow::<()>::Continue(())
+                })
+                .unwrap();
+            assert_eq!(seen, [0, 1, 2]);
+        }
+        {
+            let mut selection = wave.select(&signals).unwrap();
+            assert_eq!(
+                selection
+                    .sample_visit(time, |_| ControlFlow::Break(13))
+                    .unwrap(),
+                ControlFlow::Break(13)
+            );
+            assert!(selection.replay.is_none() && selection.checkpoint.is_none());
+            assert_eq!(
+                selection
+                    .samples(time)
+                    .unwrap()
+                    .iter()
+                    .map(|s| observed(s.as_ref()))
+                    .collect::<Vec<_>>(),
+                expected
+            );
+        }
+        {
+            let mut selection = wave.select(&signals).unwrap();
+            assert!(
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _ = selection.sample_visit(time, |_| -> ControlFlow<()> {
+                        panic!("fresh certified point callback");
+                    });
+                }))
+                .is_err()
+            );
+            assert!(selection.replay.is_none() && selection.checkpoint.is_none());
+            assert_eq!(
+                selection
+                    .samples(time)
+                    .unwrap()
+                    .iter()
+                    .map(|s| observed(s.as_ref()))
+                    .collect::<Vec<_>>(),
+                expected
+            );
+        }
+        let mut other = crate::open_with(
+            root.join("shm0000-csce714project-project-sim-waves/waveform.shm"),
+            "shm-lib",
+        )
+        .unwrap();
+        assert_ne!(wave.metadata().timescale(), other.metadata().timescale());
+        let clock = other.hierarchy().signal("top.clk").unwrap();
+        let nested = reference(&mut other, &[clock], Time::ZERO);
+        {
+            let mut selection = wave.select(&signals).unwrap();
+            let mut seen = 0;
+            let _ = selection
+                .sample_visit(time, |sample| {
+                    assert_eq!(observed(sample), expected[seen]);
+                    assert_eq!(
+                        observed(other.sample(clock, Time::ZERO).unwrap().as_ref()),
+                        nested[0]
+                    );
+                    seen += 1;
+                    ControlFlow::<()>::Continue(())
+                })
+                .unwrap();
+            assert_eq!(seen, 3);
+            assert_eq!(
+                selection
+                    .samples(time)
+                    .unwrap()
+                    .iter()
+                    .map(|s| observed(s.as_ref()))
+                    .collect::<Vec<_>>(),
+                expected
+            );
+        }
+        let mut gap =
+            crate::open_with(root.join("shm0089-probe-gap/waveform.shm"), "shm-lib").unwrap();
+        let scalar = gap.hierarchy().signal("top.glitch").unwrap();
+        gap.sample(scalar, Time::from_ticks(1)).unwrap();
+        assert!(gap.sample(scalar, Time::from_ticks(3)).is_err());
+        gap.sample(scalar, Time::from_ticks(1)).unwrap();
+
+        // A changed clock makes incorrect same-tick completed-state reuse visible.
+        let mut clock_wave =
+            crate::open_with(root.join("shm0080-history-short/waveform.shm"), "shm-lib").unwrap();
+        let clock = clock_wave.hierarchy().signal("top.phase_0").unwrap();
+        for tick in [63, 64] {
+            let mut selection = clock_wave.select(&[clock]).unwrap();
+            let sample = selection.samples(Time::from_ticks(63)).unwrap();
+            assert!(
+                matches!(sample[0].as_ref(), SampleRef::Value { changed_at: Some(at), .. } if at == Time::from_ticks(63))
+            );
+            let mut records = Vec::new();
+            let _ = selection
+                .scan(TimeRange::point(Time::from_ticks(tick)), |record| {
+                    records.push(match record {
+                        ScanRef::Initial {
+                            value: ValueRef::Bits(bits),
+                            changed_at,
+                            ..
+                        } => (true, changed_at, bits.bit(0).unwrap()),
+                        ScanRef::Change {
+                            time,
+                            value: ValueRef::Bits(bits),
+                            ..
+                        } => (false, Some(time), bits.bit(0).unwrap()),
+                        _ => panic!("clock must have bit records"),
+                    });
+                    ControlFlow::<()>::Continue(())
+                })
+                .unwrap();
+            let (before, after) = if tick == 63 {
+                (crate::Logic::Zero, crate::Logic::One)
+            } else {
+                (crate::Logic::One, crate::Logic::Zero)
+            };
+            assert_eq!(
+                records,
+                [
+                    (true, Some(Time::from_ticks(tick - 1)), before),
+                    (false, Some(Time::from_ticks(tick)), after)
+                ]
+            );
+        }
+
+        // The first base can certify, but late initialization of the second
+        // must discard the entire native batch and preserve missing/first values.
+        let mut wave =
+            crate::open_with(root.join("shm0091-late-history/waveform.shm"), "shm-lib").unwrap();
+        let marker = wave.hierarchy().signal("top.marker").unwrap();
+        let late = wave.hierarchy().signal("top.late").unwrap();
+        let signals = [marker, late, marker.slice(0, 0).unwrap()];
+        for tick in [4, 5, 6, 7, 10] {
+            let time = Time::from_ticks(tick);
+            let expected = reference(&mut wave, &signals, time);
+            let mut selection = wave.select(&signals).unwrap();
+            for repeat in 0..2 {
+                let before = reads(&selection);
+                let samples = selection.samples(time).unwrap();
+                // One failed point certificate, then ordinary traversal.
+                // Repeated points borrow the completed saved result.
+                assert_eq!(reads(&selection) - before, if repeat == 0 { 2 } else { 0 });
+                assert_eq!(
+                    samples
+                        .iter()
+                        .map(|s| observed(s.as_ref()))
+                        .collect::<Vec<_>>(),
+                    expected
+                );
+            }
+        }
+    }
+
+    #[cfg(feature = "shm-lib")]
+    #[test]
+    #[ignore = "requires real SHM runtime and installed fixtures"]
+    fn shm_certified_whole_points_preserve_owned_values_and_projections() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures/shm/shm0084-wide-compact-toggle/waveform.shm");
+        let mut wave = crate::open_with(path, "shm-lib").unwrap();
+        let wide = wave.hierarchy().signal("top.wide").unwrap();
+        let control = wave.hierarchy().signal("top.control").unwrap();
+        fn reads(selection: &Selection<'_>) -> usize {
+            let crate::backends::Reader::Shm(reader) = &selection.waveform.reader else {
+                unreachable!()
+            };
+            reader.native_reads
+        }
+        fn check(samples: &[Sample], signals: &[Signal], active: &[bool], tick: u64) {
+            assert_eq!(samples.len(), signals.len());
+            for ((sample, signal), active) in samples.iter().zip(signals).zip(active) {
+                let SampleRef::Value {
+                    signal: sampled,
+                    value: ValueRef::Bits(bits),
+                    changed_at,
+                } = sample.as_ref()
+                else {
+                    panic!("whole point must have bits");
+                };
+                assert_eq!(sampled, *signal);
+                let Encoding::Bits { width } = signal.encoding() else {
+                    unreachable!()
+                };
+                assert_eq!(bits.width(), width);
+                for bit in 0..width {
+                    assert_eq!(
+                        bits.bit(bit),
+                        Some(if *active && bit == 0 && tick % 2 == 1 {
+                            crate::Logic::One
+                        } else {
+                            crate::Logic::Zero
+                        })
+                    );
+                }
+                assert_eq!(
+                    changed_at,
+                    (*active && tick > 0).then_some(Time::from_ticks(tick))
+                );
+            }
+        }
+        let signals = [wide, control, wide];
+        for tick in [0, 1, 4088, 4096] {
+            let mut selection = wave.select(&signals).unwrap();
+            let before = reads(&selection);
+            let samples = selection.samples(Time::from_ticks(tick)).unwrap();
+            assert_eq!(reads(&selection) - before, 1);
+            check(&samples, &signals, &[true; 3], tick);
+            drop(selection);
+            wave.sample(control, Time::from_ticks(2)).unwrap();
+            // Native buffers have ended and another operation has replaced them.
+            check(&samples, &signals, &[true; 3], tick);
+        }
+        let mixed = [wide, wide.slice(4095, 1).unwrap()];
+        let mut selection = wave.select(&mixed).unwrap();
+        for repeat in 0..2 {
+            let before = reads(&selection);
+            let samples = selection.samples(Time::from_ticks(4089)).unwrap();
+            assert_eq!(reads(&selection) - before, usize::from(repeat == 0));
+            check(&samples, &mixed, &[true, false], 4089);
+        }
+        drop(selection);
+        for (start, end, expected_initial) in [(4088, 4088, 4087), (4089, 4090, 4088)] {
+            let mut selection = wave.select(&[wide]).unwrap();
+            selection.samples(Time::from_ticks(4088)).unwrap();
+            let mut changes = start;
+            let mut initials = 0;
+            let outcome = selection
+                .scan(
+                    TimeRange::closed(Time::from_ticks(start), Time::from_ticks(end)),
+                    |record| {
+                        let (value, tick) = match record {
+                            ScanRef::Initial {
+                                value, changed_at, ..
+                            } => {
+                                assert_eq!(initials, 0);
+                                initials += 1;
+                                assert_eq!(changed_at, Some(Time::from_ticks(expected_initial)));
+                                (value, expected_initial)
+                            }
+                            ScanRef::Change { value, time, .. } => {
+                                assert_eq!(time.ticks(), changes);
+                                changes += 1;
+                                (value, time.ticks())
+                            }
+                        };
+                        let ValueRef::Bits(bits) = value else {
+                            panic!("whole scan must have bits")
+                        };
+                        assert_eq!(bits.width(), 4096);
+                        for bit in 0..4096 {
+                            assert_eq!(
+                                bits.bit(bit),
+                                Some(if bit == 0 && tick % 2 == 1 {
+                                    crate::Logic::One
+                                } else {
+                                    crate::Logic::Zero
+                                })
+                            );
+                        }
+                        ControlFlow::<()>::Continue(())
+                    },
+                )
+                .unwrap();
+            assert!(outcome.is_continue());
+            assert_eq!(initials, 1);
+            assert_eq!(changes, end + 1);
+        }
+    }
+
+    #[cfg(feature = "shm-lib")]
+    #[test]
+    #[ignore = "requires real SHM runtime and installed fixtures"]
+    fn shm_cached_points_preserve_types_and_callbacks() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/shm");
+        fn value(value: ValueRef<'_>) -> String {
+            match value {
+                ValueRef::Real(real) => format!("real:{:016x}", real.to_bits()),
+                _ => format!("{value:?}"),
+            }
+        }
+        fn observe(samples: Vec<Sample>) -> Vec<String> {
+            samples
+                .iter()
+                .map(|sample| match sample.as_ref() {
+                    SampleRef::Value {
+                        value: v,
+                        changed_at,
+                        ..
+                    } => format!("{}@{changed_at:?}", value(v)),
+                    SampleRef::Missing { .. } => "missing".into(),
+                    SampleRef::Event { .. } => panic!("persistent selection"),
+                })
+                .collect()
+        }
+        fn reads(selection: &Selection<'_>) -> usize {
+            let crate::backends::Reader::Shm(reader) = &selection.waveform.reader else {
+                unreachable!()
+            };
+            reader.native_reads
+        }
+        fn scanned(
+            selection: &mut Selection<'_>,
+            range: TimeRange,
+        ) -> Vec<(usize, bool, Option<Time>, String)> {
+            let mut records = Vec::new();
+            let _ = selection
+                .scan_each(range, |index, record| {
+                    records.push(match record {
+                        ScanRef::Initial {
+                            value: v,
+                            changed_at,
+                            ..
+                        } => (index, true, changed_at, value(v)),
+                        ScanRef::Change { time, value: v, .. } => {
+                            (index, false, Some(time), value(v))
+                        }
+                    });
+                    ControlFlow::<()>::Continue(())
+                })
+                .unwrap();
+            records
+        }
+        let path = root.join("shm0085-typed-records/waveform.shm");
+        let mut wave = crate::open_with(&path, "shm-lib").unwrap();
+        let mut reference = crate::open_with(&path, "shm-lib").unwrap();
+        let signals = |wave: &crate::Waveform| {
+            [
+                "top.glitch",
+                "top.alias_value",
+                "top.real_value",
+                "top.text_short",
+                "top.text_long",
+            ]
+            .map(|name| wave.hierarchy().signal(name).unwrap())
+        };
+        let expected_signals = signals(&reference);
+        let mut selection = wave.select(&signals(&wave)).unwrap();
+        for tick in [0, 3, 4, 5, 6, 7] {
+            let time = Time::from_ticks(tick);
+            let expected = observe(reference.samples(&expected_signals, time).unwrap());
+            assert_eq!(observe(selection.samples(time).unwrap()), expected);
+            let before = reads(&selection);
+            let repeated = selection.samples(time).unwrap();
+            assert_eq!(observe(repeated), expected);
+            assert_eq!(reads(&selection), before);
+            if tick == 3 {
+                assert!(matches!(
+                    selection.samples(time).unwrap()[0],
+                    Sample::Value {
+                        changed_at: None,
+                        ..
+                    }
+                ));
+            }
+            if tick == 4 {
+                assert!(
+                    matches!(selection.samples(time).unwrap()[1], Sample::Value { changed_at: Some(t), .. } if t == Time::from_ticks(3))
+                );
+            }
+        }
+        let time = Time::from_ticks(7);
+        assert_eq!(
+            selection
+                .visit_samples(time, |_| ControlFlow::Break(7))
+                .unwrap(),
+            ControlFlow::Break(7)
+        );
+        assert!(selection.replay.is_none() && selection.checkpoint.is_none());
+        selection.samples(time).unwrap();
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = selection.visit_samples(time, |_| -> ControlFlow<()> {
+                panic!("cached sample callback")
+            });
+        }));
+        assert!(panic.is_err());
+        assert!(selection.replay.is_none() && selection.checkpoint.is_none());
+        assert_eq!(
+            observe(selection.samples(time).unwrap()),
+            observe(reference.samples(&expected_signals, time).unwrap())
+        );
+        // A repeated point must not consume the snapshot's last pending tick.
+        let before = reads(&selection);
+        selection.samples(time).unwrap();
+        assert_eq!(reads(&selection), before);
+        let actual = scanned(&mut selection, TimeRange::point(time));
+        let expected = scanned(
+            &mut reference.select(&expected_signals).unwrap(),
+            TimeRange::point(time),
+        );
+        assert_eq!(actual, expected);
+        let window = TimeRange::closed(Time::from_ticks(3), time);
+        let expected = scanned(&mut reference.select(&expected_signals).unwrap(), window);
+        for _ in 0..2 {
+            assert_eq!(scanned(&mut selection, window), expected);
+        }
+        assert!(
+            selection
+                .scan(window, |_| ControlFlow::Break(()))
+                .unwrap()
+                .is_break()
+        );
+        assert!(selection.replay.is_none() && selection.checkpoint.is_none());
+        assert_eq!(scanned(&mut selection, window), expected);
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = selection.scan(window, |_| -> ControlFlow<()> {
+                panic!("cached scan callback")
+            });
+        }));
+        assert!(panic.is_err());
+        assert!(selection.replay.is_none() && selection.checkpoint.is_none());
+        assert_eq!(scanned(&mut selection, window), expected);
+        let mut wave =
+            crate::open_with(root.join("shm0091-late-history/waveform.shm"), "shm-lib").unwrap();
+        let late = wave.hierarchy().signal("top.late").unwrap();
+        let mut selection = wave.select(&[late]).unwrap();
+        for (tick, expected, changed) in [
+            (4, None, None),
+            (5, Some("0"), None),
+            (6, Some("1"), Some(Time::from_ticks(6))),
+            (7, Some("1"), Some(Time::from_ticks(6))),
+        ] {
+            let time = Time::from_ticks(tick);
+            selection.samples(time).unwrap();
+            let before = reads(&selection);
+            let repeated = selection.samples(time).unwrap();
+            assert_eq!(reads(&selection), before);
+            match repeated[0].as_ref() {
+                SampleRef::Missing { .. } => assert!(expected.is_none()),
+                SampleRef::Value {
+                    value: ValueRef::Bits(bits),
+                    changed_at,
+                    ..
+                } => {
+                    assert_eq!(Some(bits.to_string().as_str()), expected);
+                    assert_eq!(changed_at, changed);
+                }
+                _ => panic!("unexpected delayed sample"),
+            }
+        }
     }
 
     #[test]
