@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+(( $# )) || { echo "usage: shm-sweep <command> [args...]" >&2; exit 2; }
+if [[ -n ${XCELIUM_HOMES:-} ]]; then
+    IFS=$' \t\n' read -r -d '' -a homes < <(printf '%s\0' "$XCELIUM_HOMES")
+else
+    [[ -n ${XCELIUM_HOME:-} ]] || {
+        echo "error: set XCELIUM_HOMES or XCELIUM_HOME in the local container environment" >&2
+        exit 1
+    }
+    homes=("$XCELIUM_HOME")
+fi
+(( ${#homes[@]} )) || { echo "error: XCELIUM_HOMES contains no SDK paths" >&2; exit 1; }
+
+target_base=${CARGO_TARGET_DIR:-target}/shm-sdk
+result=0
+for index in "${!homes[@]}"; do
+    home_path=${homes[$index]}
+    printf 'SHM SDK %s/%s: %s\n' "$((index + 1))" "${#homes[@]}" "$home_path"
+    if [[ ! -d $home_path ]]; then
+        echo "error: SDK directory is absent: $home_path" >&2
+        result=1
+        continue
+    fi
+    reader="$home_path/tools/lib/64bit/libsst2.so"
+    if [[ ! -f $reader ]]; then
+        echo "error: SHM reader is absent: $reader" >&2
+        result=1
+        continue
+    fi
+    runtime="$target_base/$((index + 1))/runtime"
+    mkdir -p "$runtime"
+    ln -sfn "$(realpath "$reader")" "$runtime/libsst2.so"
+    runtime=$(realpath "$runtime")
+    if env -u XCELIUM_HOMES XCELIUM_HOME="$home_path" \
+        LD_LIBRARY_PATH="$runtime${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+        CARGO_TARGET_DIR="$target_base/$((index + 1))" "$@"; then
+        printf 'PASS SDK %s\n' "$((index + 1))"
+    else
+        status=$?
+        (( status != 130 && status != 143 )) || exit "$status"
+        printf 'FAIL SDK %s (exit %s)\n' "$((index + 1))" "$status" >&2
+        result=1
+    fi
+done
+exit "$result"

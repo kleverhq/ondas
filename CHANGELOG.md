@@ -12,6 +12,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   backend, including composite VHDL declarations and the existing query APIs.
 - Check native GHW values with independent fixture oracles and execute GHW
   benchmark workloads through the default CI gate.
+- Read recorded SHM directories with the optional `shm-lib` backend through a
+  compatible Xcelium reader (2021+), using the existing waveform query APIs.
+- Add SHM fixture conformance, SDK sweeps, downstream linking checks, and
+  controlled benchmark workloads.
 
 ### Fixed
 

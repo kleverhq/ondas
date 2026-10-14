@@ -7,6 +7,12 @@ use ondas::{ScanRef, Selection, Time, TimeRange};
 mod fixtures;
 #[path = "../tests/support/fsdb_compatibility.rs"]
 mod fsdb_compatibility;
+#[path = "support/matched_clock.rs"]
+mod matched_clock;
+#[path = "support/matched_constant.rs"]
+mod matched_constant;
+#[path = "support/matched_wide.rs"]
+mod matched_wide;
 
 #[path = "fsdb/composed.rs"]
 mod composed;
@@ -363,6 +369,33 @@ fn controlled_corpus(c: &mut Criterion) {
     );
 }
 
+fn matched(c: &mut Criterion) {
+    let fixture = "fsdb/fsdb0011-history-long";
+    let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
+    let Some(wave) = fsdb_compatibility::open(ondas::open_with(&path, BACKEND), &path) else {
+        return;
+    };
+    matched_clock::register(c, fixture, &path, BACKEND, "top.clock", wave);
+}
+
+fn matched_widths(c: &mut Criterion) {
+    let fixture = "fsdb/fsdb0015-wide-compact-toggle";
+    let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
+    let Some(wave) = fsdb_compatibility::open(ondas::open_with(&path, BACKEND), &path) else {
+        return;
+    };
+    matched_wide::register(c, fixture, BACKEND, wave);
+}
+
+fn matched_constant_history(c: &mut Criterion) {
+    let fixture = "fsdb/fsdb0012-topology-small";
+    let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
+    let Some(wave) = fsdb_compatibility::open(ondas::open_with(&path, BACKEND), &path) else {
+        return;
+    };
+    matched_constant::register(c, fixture, BACKEND, wave);
+}
+
 criterion_group!(
     benches,
     compare,
@@ -371,6 +404,9 @@ criterion_group!(
     controlled_corpus,
     composed::temporal,
     composed::payload,
-    composed::typed
+    composed::typed,
+    matched,
+    matched_widths,
+    matched_constant_history
 );
 criterion_main!(benches);

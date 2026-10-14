@@ -16,6 +16,7 @@ exclude = ["fixtures/**"]
 
 [features]
 fsdb-lib = ["dep:cc"]
+shm-lib = ["dep:cc"]
 
 [build-dependencies]
 cc = { version = "1", optional = true }
@@ -51,6 +52,11 @@ harness = false
 name = "fsdb"
 harness = false
 required-features = ["fsdb-lib"]
+
+[[bench]]
+name = "shm"
+harness = false
+required-features = ["shm-lib"]
 
 [package.metadata.docs.rs]
 all-features = false

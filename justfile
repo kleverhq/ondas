@@ -50,18 +50,30 @@ _conformance-fsdb: _inside
     cargo test --locked --profile conformance --features fsdb-lib --test conformance fsdb_ -- --ignored --nocapture
     cargo test --locked --profile conformance --features fsdb-lib --lib fsdb_ -- --ignored --nocapture
 
+# Check every SHM directory and focused native-reader regressions.
+conformance-shm: _inside
+    tools/repo/shm-sweep just _conformance-shm
+
+_conformance-shm: _inside
+    cargo test --locked --profile conformance --features shm-lib --test conformance shm_ -- --ignored --nocapture
+    cargo test --locked --profile conformance --features shm-lib --lib shm_ -- --ignored --nocapture
+
+# Launch a SHM application without Cargo's runtime environment.
+shm-consumer: _inside
+    python3 tools/repo/check_shm_consumer.py
+
 # Execute VCD/FST/GHW Criterion workloads without timing thresholds.
 bench-smoke: _inside
-    cargo bench --locked --bench vcd -- --test
-    cargo bench --locked --bench fst -- --test
-    cargo bench --locked --bench ghw -- --test
+    CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}" cargo bench --locked --bench vcd -- --test
+    CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}" cargo bench --locked --bench fst -- --test
+    CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}" cargo bench --locked --bench ghw -- --test
 
 # Execute vendor Criterion workloads against pinned fixtures.
 bench-smoke-fsdb: _inside
     tools/repo/fsdb-sweep just _bench-smoke-fsdb
 
 _bench-smoke-fsdb: _inside
-    cargo bench --locked --features fsdb-lib --bench fsdb -- --test
+    CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}" cargo bench --locked --features fsdb-lib --bench fsdb -- --test
 
 # Measure FSDB workloads for each selected SDK; accepts Criterion arguments.
 bench-fsdb *args: _inside
@@ -69,6 +81,34 @@ bench-fsdb *args: _inside
 
 _bench-fsdb *args: _inside
     cargo bench --locked --features fsdb-lib --bench fsdb -- "$@"
+
+# Execute SHM workloads for each selected SDK without measurements.
+bench-smoke-shm: _inside
+    tools/repo/shm-sweep just _bench-smoke-shm
+
+_bench-smoke-shm: _inside
+    CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}" cargo bench --locked --features shm-lib --bench shm -- --test
+
+# Measure SHM workloads for each selected SDK; accepts Criterion arguments.
+bench-shm *args: _inside
+    tools/repo/shm-sweep just _bench-shm "$@"
+
+_bench-shm *args: _inside
+    cargo bench --locked --features shm-lib --bench shm -- "$@"
+
+# Validate each SDK in XCELIUM_HOMES, or the single XCELIUM_HOME.
+ci-shm: _inside
+    tools/repo/shm-sweep just _ci-shm
+
+_ci-shm: _inside
+    cargo clippy --locked --all-targets --features shm-lib -- -D warnings
+    cargo test --locked --features shm-lib
+    cargo +{{msrv}} check --locked --lib --features shm-lib
+    RUSTDOCFLAGS="-D warnings" cargo doc --locked --lib --features shm-lib --no-deps
+    just _conformance-shm
+    just _bench-smoke-shm
+    just shm-consumer
+    RUSTUP_TOOLCHAIN={{msrv}} just shm-consumer
 
 # Verify actual downstream linking, independent of Cargo's runtime environment.
 fsdb-consumer: _inside

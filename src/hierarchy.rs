@@ -184,8 +184,9 @@ impl fmt::Display for HierarchyPath {
 /// its [`Waveform`](crate::Waveform). See the example on that type.
 ///
 /// Declarations and histories are distinct. [`Self::variables`] includes aliases.
-/// [`Self::signals`] lists unique whole histories. Lookup failures use
-/// [`LookupError`], not opening or backend errors.
+/// [`Self::signals`] lists whole histories with distinct handles. A reader can
+/// leave aliases separate when it cannot establish their shared history.
+/// Lookup failures use [`LookupError`], not opening or backend errors.
 #[derive(Clone)]
 pub struct Hierarchy {
     data: Arc<HierarchyData>,
@@ -258,8 +259,10 @@ pub struct Variable<'h> {
 /// A handle can have [`Encoding::Unsupported`]. Value queries then return
 /// [`Error::UnsupportedSignal`](crate::Error::UnsupportedSignal).
 ///
-/// Whole aliases of the same underlying history compare equal. Distinct histories
-/// have distinct whole handles. Handles belong to their source hierarchy and waveform.
+/// Whole aliases compare equal when the reader establishes their shared history.
+/// Otherwise, declarations have separate handles. Unequal handles do not prove
+/// independent histories. Distinct histories have distinct whole handles.
+/// Handles belong to their source hierarchy and waveform.
 /// Using one with another source returns [`Error::InvalidSignal`](crate::Error::InvalidSignal).
 /// Backend-local identifiers and projection representation are not public contracts.
 ///
@@ -369,7 +372,9 @@ impl Hierarchy {
         })
     }
 
-    /// Iterates over unique whole signals in the hierarchy.
+    /// Iterates over whole signals with distinct handles in the hierarchy.
+    ///
+    /// Aliases share a handle only when the reader establishes their shared history.
     pub fn signals(&self) -> impl Iterator<Item = Signal> + '_ {
         (0..self.data.encodings.len()).map(|index| self.signal_at(index))
     }
@@ -484,7 +489,10 @@ impl Hierarchy {
             .ok_or_else(|| LookupError::NoSignal { path: path.clone() })
     }
 
-    /// Iterates over declarations that alias a signal valid for this hierarchy.
+    /// Iterates over declarations that share a signal valid for this hierarchy.
+    ///
+    /// This includes the reader's confirmed aliases. Unknown alias relationships
+    /// remain separate and do not appear in this iterator.
     ///
     /// For a sliced handle, returns the declarations of its base whole signal,
     /// ignoring the projection. Slicing does not create declarations. Whole,
@@ -627,8 +635,9 @@ impl<'h> Variable<'h> {
 
     /// Returns the declaration's whole signal handle, if it has one.
     ///
-    /// Aliases of the same underlying history return equal handles. A declaration
-    /// can exist without a waveform signal. An unsupported encoding still has a
+    /// Aliases return equal handles when the reader establishes their shared history.
+    /// Otherwise, the declarations have separate handles. A declaration can exist
+    /// without a waveform signal. An unsupported encoding still has a
     /// handle, but value queries return [`Error::UnsupportedSignal`](crate::Error::UnsupportedSignal).
     pub fn signal(&self) -> Option<Signal> {
         self.data()

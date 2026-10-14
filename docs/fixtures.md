@@ -43,6 +43,10 @@ format directory must agree with `artifact.format`. Paths, including symlinks,
 must resolve inside the fixture root and each fixture's boundaries. Selected
 single-file artifacts must be regular files. The shared loader in
 `tests/support/fixtures.rs` verifies artifact size and SHA-256 before execution.
+For SHM directories, it verifies every DSN/TRN component against `artifact.files`.
+The directory must contain exactly the listed components. The artifact size is
+their total size. Its SHA-256 covers the sorted canonical JSON manifest, with
+ASCII escapes, rather than concatenated waveform bytes.
 
 The fixture repository validates metadata, including provenance, tags and
 relations. These fields supply no reader observations. An absent oracle and `{}`
@@ -52,8 +56,9 @@ The GHW pool requires a nonempty profile for every artifact and rejects any
 no-oracle skip.
 
 Conformance executes FST, VCD and GHW in file and bytes modes. The explicit `fsdb-lib`
-suite executes FSDB in file mode with the vendor runtime. WLF and SHM
-sidecars in the submodule do not supply Ondas readers or conformance coverage.
+suite executes FSDB in file mode with the vendor runtime. The explicit `shm-lib`
+suite executes complete SHM directories with the selected Xcelium reader.
+WLF sidecars do not supply an Ondas reader or conformance coverage.
 Fixtures are excluded from the crate package and Docker build context. Downloaded
 payloads are ignored by the submodule's Git rules.
 
@@ -77,8 +82,10 @@ Never convert them to seconds for comparison. Declaration bounds are lossless i6
 JSON integers. They preserve ascending or descending direction. Paths are exact
 component arrays without Unicode normalization. Local oracle signal IDs are not
 backend handles. References must resolve. Every listed signal needs a variable
-through which it can be looked up. Variables with the same ID assert alias identity.
-Different IDs assert distinct whole signals.
+through which it can be looked up. Variables with the same ID describe aliases
+of one source history. The runner checks handle equality when the reader supplies
+alias identity. Otherwise, it checks each separate handle against that history's
+observations. Different IDs must have distinct whole handles.
 
 ### Current runner coverage
 

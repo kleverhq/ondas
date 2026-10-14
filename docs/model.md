@@ -30,14 +30,17 @@ does not require a public backend enum, a generic waveform type or a plugin ABI.
 Readers remain independent even when they share a dependency: changing one
 format's reader must not require changes to another's. Native readers and
 third-party adapters can coexist. Reader choices belong in [vcd-native](vcd-native.md),
-[fst-lib](fst-lib.md), [GHW](ghw.md), [fsdb-lib](fsdb-lib.md) and [WLF](wlf.md), not in the common
+[fst-lib](fst-lib.md), [GHW](ghw.md), [fsdb-lib](fsdb-lib.md), [shm-lib](shm-lib.md)
+and [WLF](wlf.md), not in the common
 model.
 
 ## Identity and ownership
 
 A hierarchy is immutable and can be cloned. Scopes and variables borrow it. A
-variable is a declaration. A signal identifies a history. Aliases can
-share a history without losing their separate declaration metadata. Some
+variable is a declaration. A signal identifies a history. Confirmed
+aliases share a signal without losing their separate declaration metadata.
+If the reader cannot establish an alias relationship, each declaration has a
+separate signal. Different handles do not prove independent histories. Some
 declarations have no queryable history. Known signedness and logic domain belong
 to each declaration. They do not belong to the shared signal or stored bits.
 Interpretation metadata remains absent when it is unavailable or does not apply.

@@ -133,7 +133,28 @@ return. The pool counts the case as skipped. See
 [fixture execution rules](fixtures.md#validation-and-execution) for skip conditions
 and required evidence.
 
-Both conformance recipes use the optimized `conformance` Cargo profile for the
+`./dev just conformance-shm` enables `shm-lib` and checks complete SHM directories.
+It also checks typed values, late and empty histories, callback reentrancy,
+thread transfer, panic cleanup, recording gaps, and the shared benchmark consumers.
+Component size, hash, set, and containment checks run before opening.
+Missing inputs fail.
+
+SHM build tests check defined exports, initializer linkage, optional alias
+identity, and required quoted-value exports without vendor libraries. The native
+decoder test checks quoted byte escapes and malformed transport without waveform
+inputs.
+Readers without alias identity keep declarations separate. Conformance checks
+each separate handle against its oracle history, including every listed alias.
+It still rejects merging different oracle histories.
+
+The SHM recipes run once per SDK selected by `XCELIUM_HOMES`, with
+`XCELIUM_HOME` as the single-path fallback. They isolate build and runtime
+lookup paths, continue after failures, and fail if any selected SDK fails.
+They do not require a fixed release list. Use `./dev just ci-shm` for the full
+gate on each selected reader. See
+[local SDK selection](automation.md#proprietary-environments).
+
+The conformance recipes use the optimized `conformance` Cargo profile for the
 library, runtime dependencies and tests. Debug assertions and integer overflow
 checks remain enabled. Self-contained tests use the default test profile.
 
@@ -163,6 +184,16 @@ after startup. This verifies loading, but supplies no query coverage for that SD
 The value classes asserted by supplied oracle observations, not merely successful
 opens, determine adapter coverage. Request missing cases from the fixture producer;
 never turn the new adapter's output into expected observations.
+
+`./dev just ci-shm` runs feature-enabled checks, SHM conformance, and
+`bench-smoke-shm` on development Rust. It also checks the library on MSRV and
+runs `shm-consumer` on development Rust and MSRV. The consumer
+launches without `XCELIUM_HOME` or Cargo's loader environment. For a reader with
+`SONAME`, it sets an explicit vendor search path and checks the resolved library.
+Select a validated reader before running the gate;
+see [SHM setup and limits](shm-lib.md).
+With both vendor features enabled, `shm_and_fsdb_native_readers_coexist` checks
+native calls in one process and an FSDB query from an SHM callback.
 
 `full_fst_pool` and `full_vcd_pool` discover matching artifacts inside the
 `fixtures/fst/` and `fixtures/vcd/` directories without a fixture whitelist. They validate
