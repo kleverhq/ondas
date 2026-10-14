@@ -17,6 +17,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Add SHM fixture conformance, SDK sweeps, downstream linking checks, and
   controlled benchmark workloads.
 
+- Optional file-only WLF reader through an installed Questa SDK, with metadata, declarations and common waveform queries.
+
 ### Fixed
 
 - Classify missing GHW inner-array bounds as malformed data and require oracle

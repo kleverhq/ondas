@@ -1,36 +1,118 @@
-# WLF integration
+# WLF backend
 
-WLF is the Questa/ModelSim waveform format. A reader may use a vendor library or
-an independent implementation. Format, reader, SDK version and runtime settings
-are separate choices. `vendor-wlf` is an example name, not a reserved backend.
+The optional `wlf-lib` backend reads Questa and ModelSim WLF files through a
+recent Questa SDK (2020+). It uses the [common model](model.md) for declarations,
+samples, traces, scans, projections, aliases and composed queries. The SDK API
+and handles stay private.
 
-Expose the read-only [common model](model.md). Keep the vendor database API private. Handles,
-callbacks, buffer layouts and native errors stay private. Record support and
-limits from verified integration evidence. Not every stored object is an Ondas
-signal.
+## Build and input
 
-## Mapping and resources
+Enable Cargo feature `wlf-lib`. Set `QUESTA_HOME` to the SDK directory that contains
+`include/wlf_api.h` and `linux_x86_64/libwlf.so`. The backend supports Linux x86-64
+with the GNU toolchain. The build compiles an Ondas C11 shim into the crate and
+links the vendor shared library. It requires the SDK headers, a C compiler and
+`readelf`. The SDK library must have no ELF SONAME. Libraries with a SONAME
+are not supported.
 
-Keep declarations separate from histories. Preserve aliases, ranges, constants,
-type metadata and unsupported classes. Map time to absolute ticks without adding
-a public delta-cycle coordinate.
+The executable records the vendor library's absolute path. Keep that installation
+available at runtime. A missing library prevents process startup, including an
+application that opens another waveform format. Rebuild after moving the SDK or
+selecting another SDK version. Changing `QUESTA_HOME` after compilation does not
+select another runtime. No separate Ondas shim shared library is needed.
 
-Verify input modes, lifetimes, threading and reentrancy against the chosen reader.
-File support does not imply bytes support. Release resources after failed opening,
-early termination and late query errors as well as normal completion. Missing
-libraries or licenses are availability errors, not malformed waveforms.
+The shim uses the exported `wlfFileOpenByMode` function with lite mode `7`.
+This entry point is absent from the SDK header and documentation. Qualify each
+selected SDK with the vendor gates below. A missing export fails at link time;
+a changed ABI or mode behavior requires a new compatibility check.
 
-## Environment and verification
+Input is file-only. Bytes return `UnsupportedInput` without a temporary file.
+Automatic detection uses the case-insensitive `.wlf` extension as a fallback.
+Recognized FST and VCD contents take priority over the name. Extensionless WLF
+content detection is not established. See the opening functions in Rustdoc for
+backend selection and error categories.
 
-Use an ignored local profile for vendor installations, network settings and
-licenses under [automation policy](automation.md). Keep private paths, SDK files
-and license topology out of public source/images. Separate SDK-dependent outputs
-across versions. Prefer runtime discovery at opening over build-time discovery.
+## Mapping and limits
 
-Test the actual adapter through [conformance](testing.md) and external
-[fixtures](fixtures.md). Preserve provenance and assert only established
-observations. A large vendor mock is not a substitute for real-artifact validation.
+The reader preserves SDK component names, scope and variable kinds, declared
+ranges, constants, directions and verified alias identities. Unlogged objects
+have no signal. Unsupported or incompatible value classes remain visible and
+fail queries. Type names, enum interpretations and aggregate packing stay absent
+when the SDK does not establish them.
 
-Explicit WLF suites fail on missing runtimes or fixtures and remain separate from
-public CI. Performance cases use a WLF target. Compare readers on the same
-artifact, parameters and [measurement boundaries](benchmarking.md).
+Verified values include logic vectors with all nine represented states, native
+binary64 reals, UTF-8 SystemVerilog strings and named events. Reals preserve signed
+zero and NaN payloads. Non-UTF-8 string contents return a reader error. The SDK's
+string formatter supplies literal contents for the native string type; arbitrary
+object display text is not treated as a string.
+
+Queries use exact integer ticks. Multiple delta writes yield the final persistent
+state at the tick. Event counts include native EVENT callbacks and exclude
+STARTLOG and ENDLOG notifications. Counts reflect the recording and its writer
+collapse settings. Initial logging establishes state; it is not an occurrence.
+Delayed logging leaves a sample missing until the first recorded value. Persistent
+values retain the last recorded state over a logging gap; this does not describe
+unrecorded circuit activity. Events do not persist. Queries after the stored end
+hold persistent state and return zero event occurrences.
+
+Header metadata preserves the recorded interval, including zero-signal files.
+A metadata-only read does not validate later hierarchy or value reads. Qualified
+unclosed snapshots return `Malformed`. Other SDK read failures remain `Backend`;
+SDK initialization failures return `BackendUnavailable`. A native SDK fault can
+terminate the process; Ondas cannot convert it into a Rust error. Active simulation
+reading is not supported. Files are never repaired, rewritten or converted implicitly.
+
+## Ownership and verification
+
+One private worker thread owns all WLF SDK objects and calls for the process
+lifetime. Requests return owned data. Caller visitors run on the caller thread,
+outside native callbacks, and need not be `Send`. Independent files can be
+interleaved. File, pack, iterator and owned value resources are released on normal
+completion, early break, error and caller panic.
+
+The SDK uses one active time resolution. Before switching resolutions or reading
+a new header, the worker closes every native owner. With no open files, the next
+header selects the resolution. SDK initialization stays active for the process
+lifetime. Normal SDK open installs a process-wide namespace pointer. Close leaves
+that pointer attached to freed storage, so a later hierarchy read can crash.
+The shim uses lite mode, which does not install this pointer. Lite files are absent
+from `wlfFileCount()`; the worker closes its owned handles directly.
+Logical sessions keep owned declarations and a small read position. A suspended
+query reopens its file and replays from its query start, discarding already returned
+completed-tick slots. This preserves event counts and pending caller state without
+a history buffer.
+
+Cold bit-only point queries first read a short range shared by the selected bases.
+A projected change proved inside this range supplies the exact value and change
+time. Unresolved projections share one chronological pass over their base signals.
+The reader retains each projected current value and its last change time. A
+constant projection can require all preceding source changes. This pass does not
+collect a history or repeat native positioning for each previous change.
+
+Cold bit-only windows with a nonzero start first read the state before their start,
+then traverse the requested window. Other cold queries traverse from the recorded
+beginning. Records skipped by a seek are not decoded or validated. A prepared
+selection can reuse one bounded normalized state snapshot for compatible reads;
+it does not retain a full history. Event selections keep chronological traversal.
+
+The shim collects completed ticks into a bounded batch. It stops at a tick boundary
+after 256 records or 64 KiB of value bytes; one larger complete tick can exceed
+these limits. It keeps selected current values and event counts. The worker copies
+the batch into one owned response. It delivers valid earlier records before a
+later conversion error. An earlier visitor break
+takes priority over that error. The SDK can keep its own caches. Caller-owned
+traces are separate storage.
+
+Use a worktree-local ignored SDK profile under the [automation policy](automation.md).
+Keep SDK files, fixture payloads, credentials and local paths out of source and
+images. Each build uses its selected SDK headers and library. SDK and
+producer-format combinations need separate conformance checks; an API version
+label is not an ABI guarantee. Keep SDK selection, test logs and independent
+oracle producer details in ignored local records. See [testing](testing.md) and
+[fixtures](fixtures.md) for oracle scope.
+
+Run `./dev just conformance-wlf` and `./dev just ci-wlf` in the selected profile.
+Select one SDK with `QUESTA_HOME` or several with `QUESTA_HOMES`. Each selected
+SDK gets a separate build directory. See [local SDK selection](automation.md#proprietary-environments).
+The vendor gates require installed payloads and fail on missing inputs. The
+standalone consumer checks propagated native dependencies and launches outside
+Cargo without its loader environment. Public CI remains free of WLF SDK inputs.

@@ -74,6 +74,16 @@ isolation, missing readers, failure aggregation and cancellation with fake comma
 `check_shm_consumer.py` verifies a separately built application's selected native
 dependency and launches it without Cargo's runtime environment.
 
+## WLF SDK sweep
+
+`wlf-sweep` applies the same rules as `fsdb-sweep`, using `QUESTA_HOMES` and
+`QUESTA_HOME`. It puts each build under
+`${CARGO_TARGET_DIR:-target}/wlf-sdk/<position>`. Use `./dev just ci-wlf`,
+`conformance-wlf`, `bench-build-wlf`, `bench-smoke-wlf` or `bench-wlf`.
+`ci-wlf` includes Criterion `--test` smoke, without performance measurements.
+`test_wlf_sweep.py` checks the same command behavior with fake SDK paths and
+commands through `just tools-test`.
+
 ## Release metadata
 
 `check_release.py` reads `Cargo.toml`, `Cargo.lock` and `CHANGELOG.md` from the
@@ -84,3 +94,11 @@ additionally checks the release tag. It uses only Python 3.11+'s standard librar
 
 `./dev just release-check` also lists and verifies the crates.io package with
 `cargo publish --dry-run`; it needs registry access but no publishing token.
+
+## Vendor consumers
+
+`check_fsdb_consumer.py` and `check_wlf_consumer.py` build a separate crate and
+launch its executable without Cargo's loader environment. They need the selected
+SDK and an installed fixture. The WLF check also verifies the propagated absolute
+vendor dependency and rejects a separate Ondas shim dependency. Run their Just
+recipes through the selected ignored SDK profile on development Rust and MSRV.

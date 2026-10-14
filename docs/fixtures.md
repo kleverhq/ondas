@@ -55,10 +55,10 @@ then reports it as skipped. A required pool must execute at least one case with 
 The GHW pool requires a nonempty profile for every artifact and rejects any
 no-oracle skip.
 
-Conformance executes FST, VCD and GHW in file and bytes modes. The explicit `fsdb-lib`
-suite executes FSDB in file mode with the vendor runtime. The explicit `shm-lib`
-suite executes complete SHM directories with the selected Xcelium reader.
-WLF sidecars do not supply an Ondas reader or conformance coverage.
+Conformance executes FST, VCD and GHW in file and bytes modes. The explicit
+`fsdb-lib` and `wlf-lib` suites execute files with their vendor runtimes. The
+explicit `shm-lib` suite executes complete SHM directories with the selected
+Xcelium reader.
 Fixtures are excluded from the crate package and Docker build context. Downloaded
 payloads are ignored by the submodule's Git rules.
 
@@ -95,7 +95,8 @@ Producer validation checks the full schema. The Ondas runner checks its executab
 profile and semantic evidence before opening selected waveforms.
 
 Nonempty successful pool oracles currently need explicit `metadata`, `hierarchy`
-and nonempty `signals` sections, with each signal ID referenced by a variable.
+and `signals` sections, with each signal ID referenced by a variable. An empty
+`signals` section asserts only the supplied metadata and hierarchy evidence.
 Supported scope assertions are `path`, `kind`, `packing` and `definition_name`. Supported
 variable assertions are `path`, `kind`, `direction`, `range`, `type_name`,
 `is_constant`, `enumeration` and `signal`. Those fields are checked during execution. Supported
@@ -224,6 +225,7 @@ git -C fixtures checkout --detach <commit>
 ./dev just bench-smoke
 # With the SDK profile selected:
 ./dev just ci-fsdb
+./dev just ci-wlf
 git add fixtures
 ```
 
@@ -240,3 +242,11 @@ parent Git entry. See [benchmarking](benchmarking.md#fixture-revisions).
 
 The runner reads installed data only. It never executes sidecar commands,
 simulates, repairs artifacts, updates hashes or publishes fixture releases.
+
+Local fixture branches can add unpublished recordings for development. Materialize
+their ignored payloads before running the installer or tests. Independent readers
+supply expected observations; Ondas output does not. Record local source and
+fixture commits, and distinguish these inputs from the released pin. Keep the
+parent Git entry at its released revision until publication is explicitly
+requested. Local success does not establish reproducibility from a remote clone.
+Do not run `git submodule update` over a fixture development branch.
