@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-14
+
 ### Added
 
 - Read uncompressed GHW files and shared bytes with the built-in `ghw-native`
@@ -17,7 +19,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Add SHM fixture conformance, SDK sweeps, downstream linking checks, and
   controlled benchmark workloads.
 
-- Optional file-only WLF reader through an installed Questa SDK, with metadata, declarations and common waveform queries.
+- Read WLF files with the optional `wlf-lib` backend through an installed Questa
+  SDK, including metadata, declarations and the existing waveform query APIs.
+- Add WLF fixture conformance, SDK sweeps, downstream linking checks, and
+  controlled benchmark workloads.
+
+### Changed
+
+- Run FSDB checks and benchmarks for each explicitly selected SDK.
+- Use optimized builds with debug assertions and overflow checks for fixture
+  conformance.
 
 ### Fixed
 
@@ -53,7 +64,8 @@ Initial release of Ondas, a read-only Rust library for waveform analysis.
 - Final-tick state normalization and event occurrence counts, with documented reader limits.
 - Fixture-backed conformance tests, performance benchmarks, and automated release checks.
 
-[Unreleased]: https://github.com/kleverhq/ondas/compare/v1.0.2...HEAD
+[Unreleased]: https://github.com/kleverhq/ondas/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/kleverhq/ondas/compare/v1.0.2...v1.1.0
 [1.0.2]: https://github.com/kleverhq/ondas/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/kleverhq/ondas/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/kleverhq/ondas/releases/tag/v1.0.0
