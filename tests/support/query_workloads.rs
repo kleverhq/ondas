@@ -1,4 +1,4 @@
-//! FST benchmark consumers, also exercised by fixture-backed conformance tests.
+//! Shared query benchmark consumers, also exercised by fixture-backed conformance tests.
 use std::ops::ControlFlow;
 
 use ondas::{Logic, Result, SampleRef, ScanRef, Selection, Time, TimeRange, Value, ValueRef};

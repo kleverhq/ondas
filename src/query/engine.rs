@@ -901,7 +901,28 @@ impl<'w> Selection<'w> {
         #[cfg(test)]
         let probe = streaming_tests::probe(&self.waveform.reader);
         // One entering/final value and event count per slot, never intra-tick writes.
-        let mut consume = |base, time, value: ValueRef<'_>, position: Option<Position>| {
+        let mut consume = |record: Option<(usize, ValueRef<'_>)>,
+                           time,
+                           position: Option<Position>| {
+            let Some((base, value)) = record else {
+                // GHW knows the physical tick boundary even when the next
+                // source list touches no selected recipe. Do not invent a value.
+                if let Some(previous) = pending_time {
+                    debug_assert_eq!(previous, time);
+                    match complete_tick(
+                        &self.signals,
+                        slots,
+                        &mut active_slots,
+                        previous,
+                        start,
+                        &mut visitor,
+                    ) {
+                        Ok(ControlFlow::Continue(())) => pending_time = None,
+                        outcome => return ControlFlow::Break(outcome),
+                    }
+                }
+                return ControlFlow::Continue(());
+            };
             if let Some(previous) = pending_time
                 && previous != time
             {
@@ -968,7 +989,15 @@ impl<'w> Selection<'w> {
                     Position::Fsdb(_) => unreachable!("reader is fixed for a selection"),
                 });
                 reader.read_from(&self.bases, end, position, |base, time, value, position| {
-                    consume(base, time, value, Some(Position::Vcd(position)))
+                    consume(Some((base, value)), time, Some(Position::Vcd(position)))
+                })
+            }
+            crate::backends::Reader::Ghw(reader) => {
+                reader.read(&self.bases, end, |event| match event {
+                    crate::backends::ghw::Notification::Value { index, time, value } => {
+                        consume(Some((index, value)), time, None)
+                    }
+                    crate::backends::ghw::Notification::Tick(time) => consume(None, time, None),
                 })
             }
             #[cfg(feature = "fsdb-lib")]
@@ -982,11 +1011,15 @@ impl<'w> Selection<'w> {
                 // event counts. Event selections keep the full reference path.
                 let cacheable = !self.bases.iter().any(|s| s.encoding() == Encoding::Event);
                 reader.read_from(&self.bases, from, end, |base, time, value| {
-                    consume(base, time, value, cacheable.then_some(Position::Fsdb(time)))
+                    consume(
+                        Some((base, value)),
+                        time,
+                        cacheable.then_some(Position::Fsdb(time)),
+                    )
                 })
             }
             reader => reader.read(&self.bases, end, |base, time, value| {
-                consume(base, time, value, None)
+                consume(Some((base, value)), time, None)
             }),
         }?;
         if let ControlFlow::Break(outcome) = result {

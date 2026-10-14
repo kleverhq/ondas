@@ -2,7 +2,7 @@ use std::ops::ControlFlow;
 
 use ondas::{Logic, SampleRef, Time, TimeRange, ValueRef};
 
-use super::{fixture_support as fixtures, fst_workloads as workloads};
+use super::{fixture_support as fixtures, query_workloads as workloads};
 
 fn range(start: u64, end: u64) -> TimeRange {
     TimeRange::closed(Time::from_ticks(start), Time::from_ticks(end))

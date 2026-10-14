@@ -16,6 +16,7 @@ handles, native callbacks and format-local indices stay private.
 |---|---|---|---|
 | FST | `fst-lib` | Files and shared in-memory bytes | Included; uses `fst-reader` 0.17.0 |
 | VCD | `vcd-native` | Files and shared in-memory bytes | Included; reads VCD directly without conversion |
+| GHW | `ghw-native` | Files and shared in-memory bytes | Included; reads GHW directly without conversion |
 | FSDB | `fsdb-lib` | Files only | Optional Cargo feature; requires a local FSDB Reader SDK |
 
 Other formats have no reader in this release. The minimum supported Rust version
@@ -175,6 +176,32 @@ without a separate activity index. Section frames and base activity may
 produce extra candidates. These costs do not change observation semantics.
 
 </details>
+
+### GHW
+
+`ghw-native` is a private Rust reader for uncompressed GHW versions 0 and 1.
+It supports files and shared bytes. Opening validates the complete body to
+establish the time span. [`read_metadata`] uses the same full opening path.
+Source files must remain unchanged while open.
+
+- Integer and physical scalars use signed 32- or 64-bit bits. Real values preserve
+  binary64 payloads and byte order. Explicit source markers establish two- or
+  nine-state logic domains. Enum labels keep their original ordinal encodings.
+- One-dimensional integer-indexed bit and std_ulogic vectors are whole signals.
+  Other arrays and records become scopes with readable leaves. Null vectors keep
+  a declaration without a signal or range. Null arrays keep an empty scope.
+- Exact names retain VHDL extended identifier delimiters. Ordered scalar recipes
+  establish whole alias identity. Type layouts and native IDs remain private.
+- Opening can retain a bounded index of source payload positions. Small selections
+  read selected positions in tick order; broad selections and inputs that exceed
+  the index limit replay the source prefix. Queries assemble selected whole recipes.
+  A narrow slice still needs its whole vector. Values stay in the source; there is
+  no retained value history or query checkpoint. Callback termination stops before
+  the next tick's values.
+- The wire does not encode time resolution. Ticks remain unchanged; the reported
+  unit of one femtosecond is conventional. Compression containers and unknown
+  layouts are unsupported. Missing required nested array bounds are malformed.
+  Empty derived layouts have a checked limit of 1,000,000 scopes.
 
 ### FSDB
 

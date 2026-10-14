@@ -1,12 +1,12 @@
 # Fixture integration and oracle evidence
 
 The `fixtures/` Git submodule owns the sidecar and sparse-oracle contract in
-[its unified fixture schema](https://github.com/kleverhq/ondas-fixtures/blob/aadb6d00597265fdef1a8227825465dbffecee43/schemas/fixture.schema.json).
+[its unified fixture schema](https://github.com/kleverhq/ondas-fixtures/blob/4ce2f4ea6a034f1db335cc96ba9e67e6dcbb2a38/schemas/fixture.schema.json).
 The oracle definition is under `$defs.oracle`. Sidecar and nonempty oracle
 `schema: 1` markers remain independent of the selected Git commit. Ondas keeps no
 schema copy. This document owns local integration, runner coverage and the
 interpretation of evidence through the Ondas API. See [testing](testing.md) for
-strategy and [the fixture README](https://github.com/kleverhq/ondas-fixtures/blob/aadb6d00597265fdef1a8227825465dbffecee43/README.md)
+strategy and [the fixture README](https://github.com/kleverhq/ondas-fixtures/blob/4ce2f4ea6a034f1db335cc96ba9e67e6dcbb2a38/README.md)
 for generation, validation and artifact delivery.
 
 ## Revision and installation
@@ -48,9 +48,11 @@ The fixture repository validates metadata, including provenance, tags and
 relations. These fields supply no reader observations. An absent oracle and `{}`
 supply no conformance evidence. The runner still verifies the required artifact,
 then reports it as skipped. A required pool must execute at least one case with evidence.
+The GHW pool requires a nonempty profile for every artifact and rejects any
+no-oracle skip.
 
-Conformance executes FST and VCD in file and bytes modes. The explicit `fsdb-lib`
-suite executes FSDB in file mode with the vendor runtime. GHW, WLF and SHM
+Conformance executes FST, VCD and GHW in file and bytes modes. The explicit `fsdb-lib`
+suite executes FSDB in file mode with the vendor runtime. WLF and SHM
 sidecars in the submodule do not supply Ondas readers or conformance coverage.
 Fixtures are excluded from the crate package and Docker build context. Downloaded
 payloads are ignored by the submodule's Git rules.
@@ -87,13 +89,13 @@ profile and semantic evidence before opening selected waveforms.
 
 Nonempty successful pool oracles currently need explicit `metadata`, `hierarchy`
 and nonempty `signals` sections, with each signal ID referenced by a variable.
-Supported scope assertions are `path`, `kind` and `definition_name`. Supported
+Supported scope assertions are `path`, `kind`, `packing` and `definition_name`. Supported
 variable assertions are `path`, `kind`, `direction`, `range`, `type_name`,
-`is_constant` and `signal`. Those fields are checked during execution. Supported
+`is_constant`, `enumeration` and `signal`. Those fields are checked during execution. Supported
 signal encodings are bits, real, string and event, with successful samples/windows.
 Opening-error oracles currently cover `malformed` only.
 
-The schema's additional sparse forms, packing/spelling/enumeration assertions,
+The schema's additional sparse forms, spelling assertions,
 unsupported encodings, `unknown-format` opening assertions and sample/window
 errors are not executable by this runner. Unsupported assertion forms are rejected
 rather than silently counted as passing observations. Local API tests cover

@@ -9,7 +9,7 @@ mod composed;
 mod fixtures;
 #[path = "fst/hotpaths.rs"]
 mod hotpaths;
-#[path = "../tests/support/fst_workloads.rs"]
+#[path = "../tests/support/query_workloads.rs"]
 mod workloads;
 
 const BACKEND: &str = "fst-lib";

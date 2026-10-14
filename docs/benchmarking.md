@@ -157,6 +157,50 @@ active and quiet cases remain distinct.
 Concrete fixtures, paths, bounds and sample counts remain in `benches/fst.rs`,
 `benches/fst/hotpaths.rs` and `benches/fst/composed.rs`.
 
+## GHW workload design
+
+`benches/ghw.rs` uses the [native GHW reader](ghw.md). Fixture preflight verifies
+size and SHA-256 before registration. Opening includes full body validation and
+optional payload-index construction, then destruction. Bytes cases allocate
+their shared input before the timed operation.
+Fresh first-lookup cases create a waveform in untimed setup and leave its lookup
+index unused. Repeated lookup cases reuse an initialized index.
+
+The optional GHW payload index stores validated positions, not decoded histories.
+Measure the first query on a fresh waveform separately. Keep opening outside
+that query measurement and report its cost alongside the query results. State
+whether selection creation and output destruction are inside timing.
+
+The sustained 4096-bit fixture changes its low bit and an independent scalar at
+each tick from 1 through 4096. Whole, low and stable-high selections separate
+assembly and projection costs. Duplicate entries share whole source recipes.
+Equal-width early and late windows distinguish suffix avoidance from required
+prefix replay. Owned trace output is created and dropped in the timed operation.
+
+The common consumers in `tests/support/query_workloads.rs` serve FST and GHW.
+Fixture-backed GHW checks verify their accepted rows against authored source
+values and independent complete windows. Conditional cases use a stride of 64,
+an independent scalar or a shared-base slice, borrowed payload access, eager
+owned copies and a sequential normalized scan. No-result and stop-after-rejection
+cases use the same consumers. Other cases cover repeat/forward/backward/backstep
+points, batched and individual reads, candidates and current/predecessor reads.
+
+Four topology controls keep 64 distinct probe histories. They vary recording
+length, unrelated scalar count and unrelated write density. Selections of 1, 16
+and 64 probes are distinct whole signals. Constant and noise selections expose
+prefix work without confusing declaration aliases with unique histories.
+Original realistic recordings add full opening, selected prefix and backstep cases.
+
+The wellen 0.25.6 reference uses a compatible wide fixture and the same owned
+point value. Cold cases include header/body reading and selected-history loading.
+Warm cases label wellen's retained history separately from native selected
+payload reads or sequential replay.
+Unsupported type cases are conformance evidence, not benchmark competitors.
+
+Run `./dev cargo bench --locked --bench ghw -- --test` to check execution. The
+implementation gate ignores timing output. Measurement, comparisons and tuning
+belong to a separate performance pass.
+
 ## FSDB workload design
 
 `benches/fsdb.rs` measures the public API with the explicit `fsdb-lib` reader
@@ -291,7 +335,7 @@ directories can remain. Comparisons require matching IDs and corpus revisions.
 ## Automation
 
 The existing `just check` compiles benchmark targets with `cargo check --all-targets`.
-The fixture-backed `./dev just ci` gate runs `just bench-smoke` (VCD and FST)
+The fixture-backed `./dev just ci` gate runs `just bench-smoke` (VCD, FST and GHW)
 after conformance. `./dev just ci-fsdb` runs `just bench-smoke-fsdb` after vendor
 conformance. For a focused local run, use `./dev cargo bench --locked --bench
 fst -- regression --test`, or the corresponding format and feature flags.

@@ -48,8 +48,8 @@ The following tests in [`src/query/tests.rs`](../src/query/tests.rs) use
 
 ## Reader-specific evidence and limits
 
-[`tests/conformance.rs`](../tests/conformance.rs) contains external FST and VCD
-observations. `full_fst_pool` and `full_vcd_pool` discover all artifacts of their
+[`tests/conformance.rs`](../tests/conformance.rs) contains external FST, VCD and GHW
+observations. `full_fst_pool`, `full_vcd_pool` and `full_ghw_pool` discover all artifacts of their
 format. `pool_queries` batches listed samples/windows and reports each case,
 without a failure allowlist.
 The runner matches listed declarations through public traversal. Focused cases also
@@ -81,6 +81,18 @@ zero-width signals, real/string classification, Latin-1 escapes/literal bytes,
 dumpall-only state, strict blackout-boundary entering states, event checkpoints,
 alias projections, same-tick ordering, Break/replay and output ownership. Run it
 with `./dev cargo test --locked --test vcd_native`.
+
+[`tests/ghw_native.rs`](../tests/ghw_native.rs) checks native GHW file/bytes opening,
+metadata, ordered aliases, projections, same-tick cancellation, real payloads,
+completed-tick stopping and repeat/backstep queries with independent literal bytes.
+Private GHW tests count scalar decoding and selected assembly storage. They check
+that a callback break avoids an unrelated suffix and that duplicates share work.
+[`ghw_workload_checks.rs`](../tests/support/ghw_workload_checks.rs) adds fixture
+checks for numeric metadata, nulls, processes, exact names, issues 99/146 and
+the missing nested bounds in historical issue 538. Its wide and
+topology consumers are shared with the GHW benchmark.
+Native-reader oracle profiles supply the additional type and issue observations;
+all 102 GHW artifacts have nonempty profiles (98 positive, four malformed).
 
 Memory tests do not prove FST buffer reuse, resource bounds, malformed-input
 hardening or vendor behavior. Oracles cover supplied observations, not every
