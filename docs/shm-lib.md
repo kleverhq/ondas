@@ -78,12 +78,24 @@ No vendor handle or borrowed vendor buffer survives that operation. Rust
 visitors run after the mutex is released. A visitor can query another waveform,
 including one with a different timescale. `Waveform` remains `Send + Sync`.
 
-Some bit-only points can certify continuous valid availability from tick zero
-through the requested tick. The adapter then seeks each whole value and walks
-back through equal values to find its normalized change time. It accepts only
-qualified four-state scalar and packed-array types. Projections of a non-scalar
-base use the ordinary path. A failed certificate discards the complete point
-batch and uses ordinary reading. Values remain Ondas-owned before callbacks.
+Opening imports the full public hierarchy. Selected queries follow owned
+enumeration routes from that import and check each selected declaration again.
+They share common ancestors and skip unrelated subtrees. The routes contain
+names and enumeration positions, not vendor handles. They require the unchanged
+input described above.
+
+Some bit-only points can certify continuous valid availability from the first
+recorded state through the requested tick. A leading interval without a state
+remains missing. The adapter then seeks each whole value and walks back through
+equal values to find its normalized change time. It accepts only
+qualified four-state scalar logic, wire, packed logic and integer layouts.
+Selections with projections of a non-scalar base use the ordinary path.
+In other bit-only selections, each unqualified history uses ordinary reading
+and common normalization. It does not force qualified
+histories in the same batch to collect their prefixes. Values remain
+Ondas-owned, and all selected reads must succeed before sample callbacks run.
+Certification can still process source history inside SST2. It does not promise
+constant-time points.
 
 An ordinary cold query reads selected histories from their beginning through the inclusive
 end. The adapter merges ordered histories by tick, signal, and source sequence.
@@ -96,7 +108,8 @@ A prepared selection can retain a bounded normalized state snapshot after a
 successful read. A compatible repeated point can use that state without another
 native call. A successful window can also retain its entering state. A compatible
 window read can seek to this validated boundary when all entering values are
-known. It still checks records and errors after the boundary. Other forward
+known. A cold bit-only window can also obtain this boundary from certified
+points. It still checks records and errors after the boundary. Other forward
 reads traverse and validate the native prefix, but retain only records from the
 saved boundary and earlier failures. Backward or incompatible reads use the full
 path. Event selections do not retain these snapshots. Errors and early

@@ -1456,7 +1456,6 @@ fn pool_queries(fixture: &Fixture, bytes: bool, context: &str) -> bool {
         assert_eq!(actual.len(), entries.len(), "{context}: trace count");
         // One driver, independently readable entries: compare composed reads to
         // oracle evidence, not to samples produced by the same implementation.
-        let mut selection = wave.select(&handles).unwrap();
         let indices = (0..handles.len()).collect::<Vec<_>>();
         let evidence = entries
             .iter()
@@ -1468,6 +1467,25 @@ fn pool_queries(fixture: &Fixture, bytes: bool, context: &str) -> bool {
                 )
             })
             .collect::<Vec<_>>();
+        if fixture.format == Format::Shm && start <= end {
+            // Imported SHM oracles often contain complete windows but no point
+            // assertions. Derive fresh one-shot points from that independent
+            // evidence; callback samples below reuse an existing traversal.
+            for time in BTreeSet::from([start, start + (end - start) / 2, end]) {
+                let actual = wave.samples(&handles, Time::from_ticks(time)).unwrap();
+                assert_eq!(actual.len(), handles.len(), "{context}: cold point count");
+                for (index, sample_value) in actual.iter().enumerate() {
+                    sample(
+                        sample_value.as_ref(),
+                        handles[index],
+                        &evidence[index].sample(time),
+                        time,
+                        &format!("{context} / cold point slot {index}"),
+                    );
+                }
+            }
+        }
+        let mut selection = wave.select(&handles).unwrap();
         let required = changes(entries[0].2)
             .into_iter()
             .map(|(time, _)| time)
@@ -2699,6 +2717,26 @@ fn shm_gap_reports_error_after_a_valid_prefix() {
         ControlFlow::Break(7)
     );
     wave.sample(signal, Time::from_ticks(1)).unwrap();
+}
+
+#[cfg(feature = "shm-lib")]
+#[test]
+#[ignore = "requires Xcelium and installed fixtures"]
+fn shm_empty_oracle_windows_skip_cold_points() {
+    let mut fixture = load_fixture(&root(), "shm/shm0080-history-short");
+    for signal in fixture.oracle["signals"]
+        .as_object_mut()
+        .unwrap()
+        .values_mut()
+    {
+        // An empty window is valid evidence about an empty API range. It has
+        // no point inside it, regardless of the recorded source values.
+        signal["windows"] = json!([{
+            "start": "2", "end": "1", "initial": null, "changes": []
+        }]);
+    }
+    check_oracle_support(&fixture.oracle, true);
+    assert!(pool_queries(&fixture, false, "SHM empty oracle windows"));
 }
 
 #[cfg(feature = "shm-lib")]

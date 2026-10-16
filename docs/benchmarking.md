@@ -315,6 +315,14 @@ prepared, and mixed-order sample series distinguish query setup and reuse.
 Fresh-reader point cases open and resolve handles outside timing. Prepared
 warm-repeat cases prime the selection first. Open/drop cases include destruction.
 
+`benches/shm/cold.rs` creates a fresh selection on every cold iteration. It
+compares one and four qualified bases with a five-base mixed batch, imported
+scalar wires, a 100-ID imported bit batch, equal-width early and late windows,
+and first-change stops.
+A separate warm-repeat control retains the selection. Disjoint-call cases
+retain the first trace while reading the second and compare this with one union
+call. Opening and handle resolution remain outside these measurements.
+
 The bank and topology inputs keep selected histories equal while changing
 activity or unrelated declarations. The wide input compares opposite changing
 ends, a scalar, changing and stable projections, and repeated overlapping slots.
@@ -325,8 +333,10 @@ no replacement-value benchmark.
 
 Ordinary cold queries copy and merge selected prefix records before calling
 visitors. Qualified bit-only points can seek values and walk backwards to find
-their last normalized change. Other points keep ordinary reading. Prepared
-selections can reuse a bounded normalized state snapshot for compatible points
+their last normalized change. Certification can still process the prefix inside
+SST2. Unqualified histories keep ordinary reading, including their portion of a
+mixed point batch. Prepared selections can reuse a bounded normalized state
+snapshot for compatible points
 or resume a window at its validated entering boundary. Benchmark warmup can
 establish this state. Prepared results therefore do not measure cold late entry.
 Selections retain no native history cache. `Break` stops callback delivery after

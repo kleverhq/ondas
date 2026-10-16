@@ -57,6 +57,16 @@ struct Point {
     data: *const u8,
     len: usize,
     changed: c_int,
+    certified: c_int,
+}
+#[cfg(test)]
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Work {
+    pub(crate) sessions: u64,
+    pub(crate) hierarchy_nodes: u64,
+    pub(crate) histories: u64,
+    pub(crate) history_records: u64,
 }
 unsafe extern "C" {
     fn ondas_shm_open(
@@ -68,6 +78,8 @@ unsafe extern "C" {
     ) -> c_int;
     fn ondas_shm_close(reader: *mut c_void);
     fn ondas_shm_metadata(reader: *const c_void, out: *mut Meta);
+    #[cfg(test)]
+    fn ondas_shm_work_done(reader: *const c_void, out: *mut Work);
     fn ondas_shm_decl_count(reader: *const c_void) -> usize;
     fn ondas_shm_declaration(reader: *const c_void, index: usize, out: *mut Declaration);
     fn ondas_shm_read(
@@ -214,10 +226,19 @@ pub(crate) struct Reader {
     ids: Vec<u64>,
     indices: Vec<Option<usize>>,
     encodings: Vec<Encoding>,
+    point_fallback: Option<(Vec<u64>, Time)>,
     #[cfg(test)]
     pub(crate) native_reads: usize,
 }
 impl Reader {
+    #[cfg(test)]
+    pub(crate) fn work(&self) -> Work {
+        let _lock = lock();
+        let mut work = Work::default();
+        // SAFETY: the live owner copies its own counters without SDK access.
+        unsafe { ondas_shm_work_done(self.handle.0.as_ptr(), &mut work) };
+        work
+    }
     pub(crate) fn open(path: &Path, name: String) -> Result<(Self, Hierarchy, Metadata)> {
         let handle = open_handle(path, false)?;
         let meta = metadata(&handle, name)?;
@@ -308,6 +329,7 @@ impl Reader {
                 ids,
                 indices,
                 encodings,
+                point_fallback: None,
                 #[cfg(test)]
                 native_reads: 0,
             },
@@ -320,22 +342,34 @@ impl Reader {
         bases: &[Signal],
         time: Time,
         prepare_fallback: bool,
-    ) -> Result<Option<Vec<crate::Sample>>> {
+    ) -> Result<Option<Vec<Option<crate::Sample>>>> {
         let ids: Vec<_> = bases.iter().map(|s| self.ids[s.index()]).collect();
+        // A mismatch continues into a new native point call below. That call
+        // discards every previous prepared batch before opening its session.
+        if self
+            .point_fallback
+            .take()
+            .is_some_and(|(prepared_ids, at)| prepared_ids == ids && at == time)
+        {
+            // A mixed point already collected this subset in the native call.
+            // Let the normalizer consume that handoff without trying it again.
+            return Ok(None);
+        }
         let mut points = vec![Point::default(); bases.len()];
         #[cfg(test)]
         {
             self.native_reads += 1;
         }
-        let _traversal;
+        let traversal = Traversal(&mut self.handle);
+        let mut keep_fallback = false;
         let samples = {
             let _lock = lock();
             // SAFETY: exclusive live owner, validated identities and a writable
             // descriptor array. Copy Ondas-owned bytes before unlocking/end;
-            // no SDK handle survives. Rejection discards the complete batch.
+            // no SDK handle survives. Partial success prepares only its subset.
             let code = unsafe {
                 ondas_shm_sample_bits(
-                    self.handle.0.as_ptr(),
+                    traversal.0.0.as_ptr(),
                     ids.as_ptr(),
                     ids.len(),
                     time.ticks(),
@@ -346,47 +380,87 @@ impl Reader {
             if code == 0 {
                 // The shim cleared point data or prepared owned ordinary rows
                 // for the immediate fallback. Its read guard will release them.
-                return Ok(None);
-            }
-            _traversal = Traversal(&mut self.handle);
-            if code != 1 {
-                return Err(error("invalid SHM point result"));
-            }
-            bases
-                .iter()
-                .zip(points)
-                .map(|(&signal, point)| {
-                    let Encoding::Bits { width } = signal.encoding() else {
-                        return Err(error("invalid SHM point encoding"));
-                    };
-                    if point.len != width as usize
-                        || point.data.is_null()
-                        || point.len > isize::MAX as usize
-                        || !matches!(point.changed, 0 | 1)
-                        || (point.changed == 1
-                            && (point.changed_at == 0 || point.changed_at > time.ticks()))
-                    {
-                        return Err(error("invalid SHM point value"));
-                    }
-                    // SAFETY: the successful shim result supplies exactly len
-                    // readable bytes until this traversal ends; owner is locked.
-                    let data = unsafe { std::slice::from_raw_parts(point.data, point.len) };
-                    if data
-                        .iter()
-                        .any(|byte| !matches!(byte, b'0' | b'1' | b'x' | b'z'))
-                    {
-                        return Err(error("invalid SHM point logic state"));
-                    }
-                    Ok(crate::Sample::Value {
-                        signal,
-                        value: crate::Value::Bits(BitsRef::from_validated_ascii(data).to_owned()),
-                        changed_at: (point.changed == 1)
-                            .then_some(Time::from_ticks(point.changed_at)),
+                if prepare_fallback {
+                    self.point_fallback = Some((ids, time));
+                    keep_fallback = true;
+                }
+                None
+            } else {
+                if !matches!(code, 1 | 2) {
+                    return Err(error("invalid SHM point result"));
+                }
+                let samples = bases
+                    .iter()
+                    .zip(points)
+                    .map(|(&signal, point)| {
+                        if point.certified == 0 {
+                            if !point.data.is_null()
+                                || point.len != 0
+                                || point.changed != 0
+                                || point.changed_at != 0
+                            {
+                                return Err(error("invalid SHM fallback descriptor"));
+                            }
+                            return Ok(None);
+                        }
+                        let Encoding::Bits { width } = signal.encoding() else {
+                            return Err(error("invalid SHM point encoding"));
+                        };
+                        if point.certified != 1
+                            || point.len != width as usize
+                            || point.data.is_null()
+                            || point.len > isize::MAX as usize
+                            || !matches!(point.changed, 0 | 1)
+                            || (point.changed == 1
+                                && (point.changed_at == 0 || point.changed_at > time.ticks()))
+                        {
+                            return Err(error("invalid SHM point value"));
+                        }
+                        // SAFETY: the successful shim result supplies exactly
+                        // len readable bytes; owner is locked through the copy.
+                        let data = unsafe { std::slice::from_raw_parts(point.data, point.len) };
+                        if data
+                            .iter()
+                            .any(|byte| !matches!(byte, b'0' | b'1' | b'x' | b'z'))
+                        {
+                            return Err(error("invalid SHM point logic state"));
+                        }
+                        Ok(Some(crate::Sample::Value {
+                            signal,
+                            value: crate::Value::Bits(
+                                BitsRef::from_validated_ascii(data).to_owned(),
+                            ),
+                            changed_at: (point.changed == 1)
+                                .then_some(Time::from_ticks(point.changed_at)),
+                        }))
                     })
-                })
-                .collect::<Result<Vec<_>>>()?
+                    .collect::<Result<Vec<_>>>()?;
+                let missing = samples.iter().filter(|sample| sample.is_none()).count();
+                if (code == 1 && missing != 0)
+                    || (code == 2 && (missing == 0 || missing == bases.len()))
+                {
+                    return Err(error("invalid SHM partial point result"));
+                }
+                if code == 2 {
+                    self.point_fallback = Some((
+                        ids.into_iter()
+                            .zip(&samples)
+                            .filter_map(|(id, sample)| sample.is_none().then_some(id))
+                            .collect(),
+                        time,
+                    ));
+                    keep_fallback = true;
+                }
+                Some(samples)
+            }
         };
-        Ok(Some(samples))
+        if keep_fallback {
+            // Reader owns these buffers until the immediate matching read.
+            // Other native reads/points and empty reads discard the handoff;
+            // dropping Reader also releases it. No SDK state is retained.
+            std::mem::forget(traversal);
+        }
+        Ok(samples)
     }
     pub(crate) fn read<B>(
         &mut self,
@@ -415,7 +489,10 @@ impl Reader {
         resume: bool,
         mut visitor: impl for<'v> FnMut(usize, Time, Result<ValueRef<'v>>) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>> {
+        self.point_fallback = None;
         if from > end {
+            // No SDK session is needed, but any pending owned rows must end.
+            let _traversal = Traversal(&mut self.handle);
             return Ok(ControlFlow::Continue(()));
         }
         #[cfg(test)]
@@ -566,20 +643,21 @@ mod tests {
     #[ignore = "requires real SHM runtime and installed fixtures"]
     fn shm_point_fallback_preserves_read_boundaries() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/shm");
-        let path = root.join("shm0091-late-history/waveform.shm");
+        let path = root.join("shm0080-history-short/waveform.shm");
         for (names, from, end, resume, prepare, clear) in [
-            (vec!["top.marker", "top.late"], 0, 7, false, true, false),
-            (vec!["top.late", "top.marker"], 0, 7, false, true, false),
-            (vec!["top.marker"], 0, 7, false, true, false),
-            (vec!["top.late"], 0, 4, false, true, false),
-            (vec!["top.marker", "top.late"], 0, 6, false, true, false),
-            (vec!["top.marker", "top.late"], 2, 7, false, true, false),
-            (vec!["top.marker", "top.late"], 6, 7, true, true, false),
-            (vec!["top.marker", "top.late"], 0, 7, false, false, false),
-            (vec!["top.marker", "top.late"], 0, 7, false, true, true),
+            (vec!["top.phase_0", "top.step"], 0, 7, false, true, false),
+            (vec!["top.step", "top.phase_0"], 0, 7, false, true, false),
+            (vec!["top.phase_0"], 0, 7, false, true, false),
+            (vec!["top.step"], 0, 4, false, true, false),
+            (vec!["top.phase_0", "top.step"], 0, 6, false, true, false),
+            (vec!["top.phase_0", "top.step"], 2, 7, false, true, false),
+            (vec!["top.phase_0", "top.step"], 6, 7, true, true, false),
+            (vec!["top.step"], 8, 7, false, true, false),
+            (vec!["top.phase_0", "top.step"], 0, 7, false, false, false),
+            (vec!["top.phase_0", "top.step"], 0, 7, false, true, true),
         ] {
             let (mut reader, hierarchy, _) = Reader::open(&path, "handoff".into()).unwrap();
-            let bases = ["top.marker", "top.late"].map(|name| hierarchy.signal(name).unwrap());
+            let bases = [hierarchy.signal("top.step").unwrap()];
             assert!(
                 reader
                     .sample_bits(&bases, Time::from_ticks(7), prepare)
@@ -605,7 +683,7 @@ mod tests {
                 if prepare {
                     assert_eq!(record.id, reader.ids[bases[0].index()]);
                     assert_eq!(record.tick, 0);
-                    assert_eq!(record.len, 1);
+                    assert_eq!(record.len, 32);
                     assert!(!record.data.is_null());
                     assert!(matches!(unsafe { *record.data }, b'0' | b'1' | b'x' | b'z'));
                 }
@@ -622,6 +700,24 @@ mod tests {
             let (mut reference, _, _) = Reader::open(&path, "handoff".into()).unwrap();
             let expected = records(&mut reference, &signals, from, end, resume);
             assert_eq!(records(&mut reader, &signals, from, end, resume), expected);
+            if from > end {
+                let _lock = lock();
+                let mut record = Record::default();
+                let mut buffer = [0; 512];
+                // SAFETY: exclusive owner and writable outputs. Even an empty
+                // read must release any earlier prepared ordinary rows.
+                assert_eq!(
+                    unsafe {
+                        ondas_shm_next(
+                            reader.handle.0.as_ptr(),
+                            &mut record,
+                            buffer.as_mut_ptr(),
+                            buffer.len(),
+                        )
+                    },
+                    0
+                );
+            }
             // Consuming or rejecting a handoff must leave a fresh read valid.
             assert_eq!(records(&mut reader, &signals, from, end, resume), expected);
         }

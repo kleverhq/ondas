@@ -63,6 +63,11 @@ benchmark consumers against stimulus formulas outside timing. Negative manifest
 tests require no native reader.
 `shm_late_and_empty_histories` checks a missing prefix, a later first value,
 and an event history with no occurrences.
+`shm_cold_points_and_windows_bound_native_collection` checks imported wire/integer
+points, entering change times and bounded native collection before a stop.
+`shm_selected_queries_avoid_unrelated_hierarchy` checks selected route work.
+`shm_mixed_points_collect_only_uncertified_histories` checks per-history fallback,
+duplicate positions, scalar slices and missing states against chronological reads.
 The runner matches listed declarations through public traversal. Focused cases also
 exercise exact lookup and alias iterators. Native kind normalization has regressions
 `real_parameter_kind_is_canonical` and `compound_scope_kinds_are_canonical` in
