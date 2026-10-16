@@ -139,6 +139,13 @@ thread transfer, panic cleanup, recording gaps, and the shared benchmark consume
 Component size, hash, set, and containment checks run before opening.
 Missing inputs fail.
 
+SHM oracle windows also supply cold one-shot point checks at their start,
+midpoint and end. These checks include imported declaration types without listed
+point samples. Focused native-work tests count sessions, hierarchy visits and
+ordinary records collected before callbacks. They check cold wire and integer windows,
+selected routes through a large hierarchy and per-history point fallback.
+These counts do not measure SST2's internal expression work, memory use or time.
+
 SHM build tests check defined exports, initializer linkage, optional alias
 identity, and required quoted-value exports without vendor libraries. The native
 decoder test checks quoted byte escapes and malformed transport without waveform
@@ -159,8 +166,9 @@ library, runtime dependencies and tests. Debug assertions and integer overflow
 checks remain enabled. Self-contained tests use the default test profile.
 
 The fixture-backed gate executes `just bench-smoke` after conformance;
-the vendor gates run `just bench-smoke-fsdb` or `just bench-smoke-wlf` after
-their conformance. Criterion `--test` checks that registered workloads execute. It uses no timing thresholds
+the vendor gates run `just bench-smoke-fsdb`, `just bench-smoke-shm` or
+`just bench-smoke-wlf` after their conformance. Criterion `--test` checks that
+registered workloads execute. It uses no timing thresholds
 and does not prove a speedup. New sparse/dense file/bytes and adapter diagnostic tests
 require the pinned corpus; local submodule edits supply only
 development evidence. The conflict fixture asserts a malformed opening error

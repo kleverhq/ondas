@@ -3,6 +3,8 @@ use std::{collections::HashSet, hint::black_box, ops::ControlFlow};
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use ondas::{Signal, Time, Waveform};
 
+#[path = "shm/cold.rs"]
+mod cold;
 #[path = "../tests/support/fixtures.rs"]
 mod fixtures;
 #[path = "support/matched_active4.rs"]
@@ -438,6 +440,10 @@ fn matched_constant_history(c: &mut Criterion) {
     );
 }
 
+fn cold_queries(c: &mut Criterion) {
+    cold::register(c);
+}
+
 criterion_group!(
     benches,
     reader_identity,
@@ -449,6 +455,7 @@ criterion_group!(
     matched,
     matched_widths,
     matched_active_bases,
-    matched_constant_history
+    matched_constant_history,
+    cold_queries
 );
 criterion_main!(benches);

@@ -40,8 +40,10 @@ SHM input is a complete database directory. Byte input is unsupported. The
 adapter reads the latest matching recording across its TRN components.
 It preserves bits, real values, UTF-8 strings and event occurrences.
 Confirmed aliases share a handle. If the reader does not provide
-alias identity, each declaration has a separate handle. Queries collect the
-selected history prefixes before calling users. Memory grows with those prefixes.
+alias identity, each declaration has a separate handle. Qualified bit-only points
+can seek values after certifying their availability. Other histories collect
+their prefixes before calling users. Memory grows with those prefixes. Validated
+entering states can bound later window collection.
 Recording gaps and invalid strings return
 errors. Keep the directory and its components unchanged and available.
 

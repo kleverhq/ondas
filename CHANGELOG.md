@@ -6,6 +6,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Reduce SHM cold point and bounded-window collection for qualified four-state
+  wire and integer layouts. Keep ordinary fallback local to each unqualified
+  history in a mixed point batch.
+- Resolve selected SHM declarations through owned enumeration routes instead of
+  importing the full hierarchy on each query.
+
 ## [1.1.0] - 2026-10-14
 
 ### Added

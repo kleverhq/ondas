@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace {
@@ -116,9 +117,22 @@ struct Session {
     }
     ~Session() { if (handle) drClose(handle); }
 };
+constexpr size_t root_node = std::numeric_limits<size_t>::max();
+struct SourceNode {
+    size_t parent, ordinal;
+    int property;
+    std::string name;
+};
+size_t source_node(std::vector<SourceNode> &nodes, size_t parent, int property,
+                   size_t ordinal, SstHandle object) {
+    nodes.push_back({parent, ordinal, property, text(0x10a, object)});
+    return nodes.size() - 1;
+}
 struct Declaration {
     ondas_shm_decl descriptor{};
     std::string name, kind, definition;
+    size_t source = root_node;
+    int type_kind = -1;
     SstHandle variable = 0; // only valid within this declaration's Session
 };
 std::int64_t index_left(SstHandle type) {
@@ -134,8 +148,7 @@ std::int64_t index_left(SstHandle type) {
     for (int i = 0; i < width / 8; ++i) value = (value << 8) | static_cast<unsigned char>(bytes[i]);
     return width == 32 ? static_cast<std::int32_t>(value) : static_cast<std::int64_t>(value);
 }
-void import_variable(SstHandle variable, const std::string &prefix, std::vector<Declaration> &out,
-                     std::unordered_map<SstHandle, std::uint64_t> &identities) {
+Declaration describe_variable(SstHandle variable, const std::string &prefix) {
     Declaration declaration;
     auto &d = declaration.descriptor;
     declaration.variable = variable;
@@ -145,6 +158,7 @@ void import_variable(SstHandle variable, const std::string &prefix, std::vector<
     d.is_constant = da_get(0x122, variable) > 0;
     SstHandle type = da_handle(0x1be, variable);
     int kind = da_get(0x173, type);
+    declaration.type_kind = kind;
     int width = 0;
     if ((kind == 2 || kind == 4) && da_get_int(0x3d4, type, &width) >= 0 && width > 0) {
         d.encoding = 1;
@@ -167,6 +181,14 @@ void import_variable(SstHandle variable, const std::string &prefix, std::vector<
     } else if (kind == 5) d.encoding = 2;
     else if (kind == 7) d.encoding = 3;
     else if (kind == 1) d.encoding = 4;
+    return declaration;
+}
+void import_variable(SstHandle variable, const std::string &prefix, std::vector<Declaration> &out,
+                     std::unordered_map<SstHandle, std::uint64_t> &identities,
+                     std::vector<SourceNode> &nodes, size_t source) {
+    Declaration declaration = describe_variable(variable, prefix);
+    declaration.source = source;
+    auto &d = declaration.descriptor;
 #ifdef ONDAS_SHM_USE_ALIAS_IDENTITY
     SstHandle key = da_get_xref(0x13d, variable);
     require(key != 0, "missing SHM history identity");
@@ -182,27 +204,36 @@ void import_variable(SstHandle variable, const std::string &prefix, std::vector<
     (void)identities;
 #endif
     std::string child_prefix = declaration.name;
+    const int kind = declaration.type_kind;
     out.push_back(std::move(declaration));
     if (kind == 8) {
-        Enumeration containers(0x2ae, variable);
-        for (SstHandle child; (child = containers.next());) import_variable(child, child_prefix, out, identities);
-        Enumeration elements(0x2be, variable);
-        for (SstHandle child; (child = elements.next());) import_variable(child, child_prefix, out, identities);
+        for (int property : {0x2ae, 0x2be}) {
+            Enumeration children(property, variable);
+            size_t ordinal = 0;
+            for (SstHandle child; (child = children.next()); ++ordinal) {
+                const auto node = source_node(nodes, source, property, ordinal, child);
+                import_variable(child, child_prefix, out, identities, nodes, node);
+            }
+        }
     }
 
 }
 void hierarchy(SstHandle parent, std::vector<Declaration> &out,
-               std::unordered_map<SstHandle, std::uint64_t> &identities, const std::string &scope_array = "") {
+               std::unordered_map<SstHandle, std::uint64_t> &identities,
+               std::vector<SourceNode> &nodes, size_t parent_node = root_node,
+               const std::string &scope_array = "") {
     Enumeration children(0x2ae, parent);
-    for (SstHandle child; (child = children.next());) {
+    size_t ordinal = 0;
+    for (SstHandle child; (child = children.next()); ++ordinal) {
+        const auto node = source_node(nodes, parent_node, 0x2ae, ordinal, child);
         if (da_get(0x173, da_handle(0x1be, child)) >= 0) {
-            import_variable(child, "", out, identities);
+            import_variable(child, "", out, identities, nodes, node);
             continue;
         }
         Declaration scope;
         scope.name = text(0x10a, child);
         int kind = da_get(0x113, child);
-        if (kind == 10) { hierarchy(child, out, identities, scope.name); continue; }
+        if (kind == 10) { hierarchy(child, out, identities, nodes, node, scope.name); continue; }
         if (!scope_array.empty()) scope.name = scope_array + "[" + scope.name + "]";
         scope.kind = kind == 6 ? "module" : kind == 3 ? "architecture" : "shm:scope:" + std::to_string(kind);
         SstHandle definition = da_handle(0x14e, child);
@@ -216,13 +247,87 @@ void hierarchy(SstHandle parent, std::vector<Declaration> &out,
             scope.name = scope.definition.substr(separator + 1);
         }
         out.push_back(std::move(scope));
-        hierarchy(child, out, identities);
+        hierarchy(child, out, identities, nodes, node);
         Declaration end;
         end.descriptor.entry = 1;
         out.push_back(std::move(end));
     }
     Enumeration variables(0x2be, parent);
-    for (SstHandle variable; (variable = variables.next());) import_variable(variable, "", out, identities);
+    ordinal = 0;
+    for (SstHandle variable; (variable = variables.next()); ++ordinal) {
+        const auto node = source_node(nodes, parent_node, 0x2be, ordinal, variable);
+        import_variable(variable, "", out, identities, nodes, node);
+    }
+}
+
+using SourceChildren = std::unordered_map<size_t, std::vector<size_t>>;
+void resolve_children(SstHandle parent, size_t parent_node, const std::vector<SourceNode> &nodes,
+                      SourceChildren &children, std::unordered_map<size_t, SstHandle> &resolved,
+                      ondas_shm_work &work) {
+    const auto entry = children.find(parent_node);
+    if (entry == children.end()) return;
+    auto &wanted = entry->second;
+    std::sort(wanted.begin(), wanted.end(), [&](size_t a, size_t b) {
+        return nodes[a].property != nodes[b].property ? nodes[a].property < nodes[b].property
+                                                     : nodes[a].ordinal < nodes[b].ordinal;
+    });
+    for (size_t first = 0; first < wanted.size();) {
+        const int property = nodes[wanted[first]].property;
+        Enumeration enumeration(property, parent);
+        size_t ordinal = 0;
+        do {
+            const auto index = wanted[first++];
+            const auto &node = nodes[index];
+            SstHandle object = 0;
+            do {
+                object = enumeration.next();
+                require(object != 0, "SHM hierarchy changed after opening");
+                ++work.hierarchy_nodes;
+            } while (ordinal++ < node.ordinal);
+            require(text(0x10a, object) == node.name, "SHM hierarchy changed after opening");
+            resolved.emplace(index, object);
+            resolve_children(object, index, nodes, children, resolved, work);
+        } while (first < wanted.size() && nodes[wanted[first]].property == property);
+    }
+}
+std::vector<Declaration> selected_declarations(SstHandle file, const uint64_t *ids, size_t count,
+                                               const std::vector<Declaration> &original,
+                                               const std::vector<SourceNode> &nodes,
+                                               ondas_shm_work &work) {
+    // Source files are immutable while open. Keep owned enumeration routes,
+    // resolve only their shared ancestors, and validate the selected shapes.
+    // All resolved handles remain local to this operation's Session.
+    SourceChildren children;
+    std::unordered_set<size_t> wanted{root_node};
+    for (size_t i = 0; i < count; ++i) {
+        require(ids[i] < original.size() && original[ids[i]].descriptor.entry == 2 &&
+                original[ids[i]].descriptor.id == ids[i], "invalid SHM history identity");
+        size_t node = original[ids[i]].source;
+        while (wanted.insert(node).second) {
+            require(node < nodes.size(), "invalid SHM source route");
+            children[nodes[node].parent].push_back(node);
+            node = nodes[node].parent;
+        }
+    }
+    std::unordered_map<size_t, SstHandle> resolved;
+    resolve_children(file, root_node, nodes, children, resolved, work);
+    std::vector<Declaration> declarations;
+    declarations.reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+        const auto &expected = original[ids[i]];
+        auto current = describe_variable(resolved.at(expected.source), "");
+        const auto &a = expected.descriptor;
+        const auto &b = current.descriptor;
+        require(a.encoding == b.encoding && a.width == b.width &&
+                a.is_constant == b.is_constant && a.has_range == b.has_range &&
+                (!a.has_range || (a.msb == b.msb && a.lsb == b.lsb)) &&
+                expected.kind == current.kind && expected.type_kind == current.type_kind,
+                "SHM declaration changed after opening");
+        current.name = expected.name;
+        current.descriptor.id = ids[i];
+        declarations.push_back(std::move(current));
+    }
+    return declarations;
 }
 
 ondas_shm_meta metadata(SstHandle file) {
@@ -257,8 +362,9 @@ struct Cursor {
     }
 };
 bool point_type(const Declaration &d) {
-    // These exact types have fixed-width ordinary 0/1/x/z formatting. Equality
-    // certifies availability, so it must not admit other formatter domains.
+    // These exact four-state logic, wire and integer layouts have fixed-width
+    // 0/1/x/z formatting. Do not admit other domains by masking property bits:
+    // the equality expression also certifies the prefix's availability.
     if (d.descriptor.encoding != 1 || !d.descriptor.width || d.descriptor.width > 4096) return false;
     const auto type = da_handle(0x1be, d.variable);
     check_handle(type, "cannot read SHM point type");
@@ -266,11 +372,13 @@ bool point_type(const Declaration &d) {
     int properties = 0;
     if (da_get_int(0x1c4, type, &properties) < 0) return false;
     if (d.descriptor.width == 1)
-        return da_get(0x173, type) == 2 && da_get(0x1c3, type) == 3 &&
-               properties == 0x4060a && da_get(0x1b3, type) == 1;
+        return da_get(0x173, type) == 2 && da_get(0x1b3, type) == 1 &&
+               ((da_get(0x1c3, type) == 3 && properties == 0x4060a) ||
+                (da_get(0x1c3, type) == 5 && properties == 0x7004060a));
     int raw_bits = 0;
     if (da_get(0x173, type) != 4 || da_get(0x1c3, type) != 12 ||
-        properties != 0x10060c || da_get(0x1b3, type) != 4 ||
+        !((properties == 0x10060c && da_get(0x1b3, type) == 4) ||
+          (properties == 0x10061c && da_get(0x1b3, type) == 3)) ||
         da_get_int(0x164, type, &raw_bits) < 0 || raw_bits != int(d.descriptor.width * 2)) return false;
     const auto element = da_handle(0x1ce, type);
     check_handle(element, "cannot read SHM point element type");
@@ -280,7 +388,7 @@ bool point_type(const Declaration &d) {
            da_get_int(0x3d4, element, &width) >= 0 && width == 1 &&
            da_get_int(0x164, element, &bits) >= 0 && bits == 2;
 }
-bool point_prefix(const Declaration &d, std::uint64_t end) {
+bool point_prefix(const Declaration &d, std::uint64_t end, std::uint64_t &first) {
     // Exact equality propagates negative source states. Comparing a guarded
     // source with itself coalesces only contiguous valid availability. The
     // expression is Session-owned; Cursor balances its Load and Unload.
@@ -293,7 +401,21 @@ bool point_prefix(const Declaration &d, std::uint64_t end) {
     SstTime current{}, next{};
     require(da_get_xvalseq(0x136, cursor.handle, &current) >= 0 &&
             da_get_xvalseq(0x146, cursor.handle, &next) >= 0, "cannot read SHM prefix bounds");
-    return current.tick == 0 && da_get(0x1a3, cursor.handle) == 4 &&
+    if (current.tick != 0) return false;
+    if (da_get(0x1a3, cursor.handle) < 0) {
+        // An absent initial state is legal. Accept only one leading missing
+        // interval followed by continuous availability through the bound.
+        // A later missing interval still rejects the entire certificate.
+        if (next.tick > end) return false;
+        const auto advanced = da_handle(0x17f, cursor.handle);
+        check_handle(advanced, "cannot advance SHM prefix certificate");
+        require(advanced == 0 || advanced == 1, "invalid SHM prefix advance result");
+        if (!advanced) return false;
+        require(da_get_xvalseq(0x136, cursor.handle, &current) >= 0 &&
+                da_get_xvalseq(0x146, cursor.handle, &next) >= 0, "cannot read SHM prefix bounds");
+    }
+    first = current.tick;
+    return first <= end && da_get(0x1a3, cursor.handle) == 4 &&
            text(0x15a, cursor.handle) == "1" && next.tick > end;
 }
 bool final_bits(Cursor &cursor, std::uint64_t end, std::uint32_t width,
@@ -313,11 +435,13 @@ bool final_bits(Cursor &cursor, std::uint64_t end, std::uint32_t width,
 }
 bool certified_point(const Declaration &d, Cursor &cursor, std::uint64_t end,
                      std::uint64_t &changed_at, std::string &value) {
-    if (!point_prefix(d, end)) return false;
+    std::uint64_t first = 0;
+    if (!point_prefix(d, end, first)) return false;
     std::uint64_t at = 0;
     if (!final_bits(cursor, end, d.descriptor.width, at, value)) return false;
     changed_at = 0;
-    while (at) {
+    if (at < first) return false;
+    while (at > first) {
         std::uint64_t previous = 0;
         std::string before;
         if (!final_bits(cursor, at - 1, d.descriptor.width, previous, before)) return false;
@@ -349,7 +473,9 @@ void merge_histories(std::vector<Record> &records, const std::vector<size_t> &bo
     std::inplace_merge(records.begin() + bounds[first], records.begin() + bounds[middle],
                        records.begin() + bounds[last], before);
 }
-void history(const Declaration &declaration, std::uint64_t from, std::uint64_t end, std::vector<Record> &out, bool resume) {
+void history(const Declaration &declaration, std::uint64_t from, std::uint64_t end,
+             std::vector<Record> &out, bool resume, ondas_shm_work &work) {
+    ++work.histories;
     const auto &d = declaration.descriptor;
     Cursor cursor(declaration.variable);
     if (resume) {
@@ -366,6 +492,7 @@ void history(const Declaration &declaration, std::uint64_t from, std::uint64_t e
         require(da_get_xvalseq(0x136, cursor.handle, &current) >= 0 &&
                 da_get_xvalseq(0x146, cursor.handle, &next) >= 0, "cannot read SHM record time");
         if (current.tick > end) break;
+        ++work.history_records;
         int state = da_get(0x1a3, cursor.handle);
         if (!(d.encoding == 4 && state == 1) && !(state < 0 && !available)) {
             available = true;
@@ -415,7 +542,10 @@ struct ondas_shm {
     std::string path;
     ondas_shm_meta meta{};
     std::vector<Declaration> declarations;
+    std::vector<SourceNode> source_nodes;
+    ondas_shm_work work{};
     std::vector<Record> records;
+    std::vector<Record> points;
     size_t position = 0;
     bool point_ready = false;
     std::uint64_t point_end = 0;
@@ -427,10 +557,12 @@ extern "C" int ondas_shm_open(const char *path, int metadata_only, ondas_shm **o
         auto reader = std::make_unique<ondas_shm>();
         reader->path = path;
         Session session(reader->path);
+        ++reader->work.sessions;
         reader->meta = metadata(session.handle);
         if (!metadata_only) {
             std::unordered_map<SstHandle, std::uint64_t> identities;
-            hierarchy(session.handle, reader->declarations, identities);
+            hierarchy(session.handle, reader->declarations, identities, reader->source_nodes);
+            reader->work.hierarchy_nodes += reader->source_nodes.size();
             for (auto &d : reader->declarations) d.variable = 0;
         }
         *out = reader.release();
@@ -441,6 +573,7 @@ extern "C" int ondas_shm_open(const char *path, int metadata_only, ondas_shm **o
 }
 extern "C" void ondas_shm_close(ondas_shm *reader) { delete reader; }
 extern "C" void ondas_shm_metadata(const ondas_shm *reader, ondas_shm_meta *out) { *out = reader->meta; }
+extern "C" void ondas_shm_work_done(const ondas_shm *reader, ondas_shm_work *out) { *out = reader->work; }
 extern "C" size_t ondas_shm_decl_count(const ondas_shm *reader) { return reader->declarations.size(); }
 extern "C" void ondas_shm_declaration(const ondas_shm *reader, size_t index, ondas_shm_decl *out) {
     const auto &d = reader->declarations[index];
@@ -453,24 +586,18 @@ extern "C" int ondas_shm_read(ondas_shm *reader, const uint64_t *ids, size_t cou
                           end == reader->point_end && count == reader->point_ids.size() &&
                           std::equal(reader->point_ids.begin(), reader->point_ids.end(), ids);
     reader->point_ready = false; reader->point_ids.clear();
+    reader->points.clear();
     if (prepared) { reader->position = 0; return 0; }
     reader->records.clear(); reader->position = 0;
     try {
         require(!validated_resume || from > 0, "invalid SHM resume boundary");
         Session session(reader->path);
-        std::unordered_map<SstHandle, std::uint64_t> identities;
-        std::vector<Declaration> declarations;
-        hierarchy(session.handle, declarations, identities);
-        require(declarations.size() == reader->declarations.size(), "SHM hierarchy changed after opening");
+        ++reader->work.sessions;
+        const auto declarations = selected_declarations(session.handle, ids, count,
+            reader->declarations, reader->source_nodes, reader->work);
         std::vector<size_t> bounds{0};
         for (size_t i = 0; i < count; ++i) {
-            require(ids[i] < declarations.size(), "invalid SHM history identity");
-            const auto &d = declarations[ids[i]];
-            const auto &original = reader->declarations[ids[i]];
-            require(d.descriptor.entry == 2 && d.descriptor.id == ids[i] && d.name == original.name &&
-                    d.descriptor.encoding == original.descriptor.encoding && d.descriptor.width == original.descriptor.width,
-                    "SHM declaration changed after opening");
-            history(d, from, end, reader->records, validated_resume != 0);
+            history(declarations[i], from, end, reader->records, validated_resume != 0, reader->work);
             // Native histories normally arrive in source order. Keep a stable
             // fallback for an unordered history, then merge the ordered runs.
             const auto first = reader->records.begin() + bounds.back();
@@ -488,77 +615,55 @@ extern "C" int ondas_shm_read(ondas_shm *reader, const uint64_t *ids, size_t cou
 extern "C" int ondas_shm_sample_bits(ondas_shm *reader, const uint64_t *ids, size_t count,
                                       uint64_t end, int prepare_fallback, ondas_shm_point *out) {
     reader->point_ready = false; reader->point_ids.clear();
-    reader->records.clear(); reader->position = 0;
+    reader->records.clear(); reader->points.clear(); reader->position = 0;
     if (!count || end == UINT64_MAX || end > reader->meta.last) return 0;
     try {
         Session session(reader->path);
-        std::unordered_map<SstHandle, std::uint64_t> identities;
-        std::vector<Declaration> declarations;
-        hierarchy(session.handle, declarations, identities);
-        require(declarations.size() == reader->declarations.size(), "SHM hierarchy changed after opening");
-        const bool certified = [&] {
-            for (size_t i = 0; i < count; ++i) {
-                require(ids[i] < declarations.size(), "invalid SHM point identity");
-                const auto &d = declarations[ids[i]];
-                const auto &original = reader->declarations[ids[i]];
-                require(d.descriptor.entry == 2 && d.descriptor.id == ids[i] && d.name == original.name &&
-                        d.descriptor.encoding == original.descriptor.encoding && d.descriptor.width == original.descriptor.width,
-                        "SHM declaration changed after opening");
-                if (!point_type(d)) return false;
-            }
-            // Reuse the same source cursors for preflight and final values.
-            std::vector<std::unique_ptr<Cursor>> cursors;
-            cursors.reserve(count);
-            for (size_t i = 0; i < count; ++i) {
-                cursors.push_back(std::make_unique<Cursor>(declarations[ids[i]].variable));
-                if (da_get(0x1a3, cursors.back()->handle) < 0) return false;
-            }
-            reader->records.reserve(count);
-            for (size_t i = 0; i < count; ++i) {
-                Record point{ids[i], 0, 0, 1, false, {}};
-                if (!certified_point(declarations[ids[i]], *cursors[i], end, point.tick, point.data)) return false;
-                reader->records.push_back(std::move(point));
-            }
-            return true;
-        }();
-        // The attempted point's source/expression cursors have closed here.
-        if (!certified) {
-            reader->records.clear();
-            if (!prepare_fallback) return 0;
-            // Keep this cold fallback equivalent to ondas_shm_read's collection.
-            // Its ordinary hot loop stays intact; only this one-use handoff
-            // reuses the already-open Session and imported declarations.
-            std::vector<size_t> bounds{0};
-            for (size_t i = 0; i < count; ++i) {
-                require(ids[i] < declarations.size(), "invalid SHM history identity");
-                const auto &d = declarations[ids[i]];
-                const auto &original = reader->declarations[ids[i]];
-                require(d.descriptor.entry == 2 && d.descriptor.id == ids[i] && d.name == original.name &&
-                        d.descriptor.encoding == original.descriptor.encoding && d.descriptor.width == original.descriptor.width,
-                        "SHM declaration changed after opening");
-                history(d, 0, end, reader->records, false);
-                const auto first = reader->records.begin() + bounds.back();
-                if (!std::is_sorted(first, reader->records.end(), before))
-                    std::stable_sort(first, reader->records.end(), before);
-                bounds.push_back(reader->records.size());
-            }
-            merge_histories(reader->records, bounds, 0, count);
-            reader->point_ids.assign(ids, ids + count);
-            reader->point_end = end;
-            reader->point_ready = true;
-            return 0;
-        }
+        ++reader->work.sessions;
+        const auto declarations = selected_declarations(session.handle, ids, count,
+            reader->declarations, reader->source_nodes, reader->work);
+        reader->points.resize(count);
+        std::vector<size_t> fallback;
         for (size_t i = 0; i < count; ++i) {
-            const auto &point = reader->records[i];
-            out[i] = {point.tick, reinterpret_cast<const std::uint8_t *>(point.data.data()),
-                      point.data.size(), point.tick != 0};
+            out[i] = {};
+            auto &point = reader->points[i];
+            const auto &declaration = declarations[i];
+            if (point_type(declaration)) {
+                // Release each cursor before loading another history. These
+                // operations retain only owned point bytes, not SDK histories.
+                Cursor cursor(declaration.variable);
+                if (certified_point(declaration, cursor, end, point.tick, point.data)) {
+                    out[i] = {point.tick, reinterpret_cast<const std::uint8_t *>(point.data.data()),
+                              point.data.size(), point.tick != 0, 1};
+                    continue;
+                }
+            }
+            point.data.clear();
+            fallback.push_back(i);
         }
-        return 1;
+        if (fallback.empty()) return 1;
+        const bool partial = fallback.size() != count;
+        if (!partial && !prepare_fallback) { reader->points.clear(); return 0; }
+        // The common Rust normalizer consumes just the unqualified histories.
+        // Keep certified point bytes separate while collecting their fallback.
+        std::vector<size_t> bounds{0};
+        for (size_t index : fallback) {
+            history(declarations[index], 0, end, reader->records, false, reader->work);
+            const auto first = reader->records.begin() + bounds.back();
+            if (!std::is_sorted(first, reader->records.end(), before))
+                std::stable_sort(first, reader->records.end(), before);
+            bounds.push_back(reader->records.size());
+            reader->point_ids.push_back(ids[index]);
+        }
+        merge_histories(reader->records, bounds, 0, fallback.size());
+        reader->point_end = end;
+        reader->point_ready = true;
+        return partial ? 2 : 0;
     } catch (...) {
         // Structural/SDK exceptions leave no reusable partial batch. Timed
         // payload failures in collected ordinary records remain ordered data.
         reader->point_ready = false; reader->point_ids.clear();
-        reader->records.clear();
+        reader->records.clear(); reader->points.clear();
         return 0;
     }
 }
@@ -573,5 +678,5 @@ extern "C" int ondas_shm_next(ondas_shm *reader, ondas_shm_record *out, char *er
 }
 extern "C" void ondas_shm_end(ondas_shm *reader) {
     reader->point_ready = false; reader->point_ids.clear();
-    reader->records.clear(); reader->position = 0;
+    reader->records.clear(); reader->points.clear(); reader->position = 0;
 }

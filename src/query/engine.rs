@@ -510,6 +510,39 @@ impl<'w> Selection<'w> {
         )
     }
 
+    #[cfg(feature = "shm-lib")]
+    fn shm_point_samples(
+        &mut self,
+        time: Time,
+        prepare_fallback: bool,
+    ) -> Result<Option<Vec<Sample>>> {
+        let crate::backends::Reader::Shm(reader) = &mut self.waveform.reader else {
+            unreachable!("SHM point reader");
+        };
+        let Some(mut samples) = reader.sample_bits(&self.bases, time, prepare_fallback)? else {
+            return Ok(None);
+        };
+        let missing = samples
+            .iter()
+            .enumerate()
+            .filter_map(|(index, sample)| sample.is_none().then_some(index))
+            .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            let signals = missing
+                .iter()
+                .map(|&index| self.bases[index])
+                .collect::<Vec<_>>();
+            // The native call prepared precisely these histories. A temporary
+            // selection reuses that handoff and the common normalizer. No user
+            // callbacks see the certified portion before all reads succeed.
+            let fallback = self.waveform.select(&signals)?.samples(time)?;
+            for (index, sample) in missing.into_iter().zip(fallback) {
+                samples[index] = Some(sample);
+            }
+        }
+        Ok(Some(samples.into_iter().map(Option::unwrap).collect()))
+    }
+
     #[cfg(any(feature = "fsdb-lib", feature = "shm-lib", feature = "wlf-lib"))]
     fn point_states(
         &mut self,
@@ -592,28 +625,24 @@ impl<'w> Selection<'w> {
                 })
                 .collect(),
             #[cfg(feature = "shm-lib")]
-            crate::backends::Reader::Shm(reader) => {
-                let Some(samples) = reader.sample_bits(&self.bases, time, prepare_shm_fallback)?
-                else {
+            crate::backends::Reader::Shm(_) => {
+                let Some(samples) = self.shm_point_samples(time, prepare_shm_fallback)? else {
                     return Ok(None);
                 };
                 let mut slots = vec![Slot::default(); self.retained_signals.len()];
                 for sample in samples {
-                    let Sample::Value {
-                        signal,
-                        value,
-                        changed_at,
-                    } = sample
-                    else {
-                        unreachable!("certified bit point");
+                    let signal = sample.signal();
+                    let state = match sample {
+                        Sample::Value {
+                            value, changed_at, ..
+                        } => Some(State { value, changed_at }),
+                        Sample::Missing { .. } => None,
+                        Sample::Event { .. } => unreachable!("bit-only point"),
                     };
                     // Whole bases and scalar slices share the certified value,
                     // while retained entries keep their separate identities.
                     for &index in &self.groups[&signal.index()] {
-                        slots[index].state = Some(State {
-                            value: value.clone(),
-                            changed_at,
-                        });
+                        slots[index].state = state.clone();
                     }
                 }
                 slots
@@ -2218,6 +2247,196 @@ mod tests {
     #[cfg(feature = "shm-lib")]
     #[test]
     #[ignore = "requires real SHM runtime and installed fixtures"]
+    fn shm_cold_points_and_windows_bound_native_collection() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/shm");
+        fn work(wave: &crate::Waveform) -> crate::backends::shm::Work {
+            let crate::backends::Reader::Shm(reader) = &wave.reader else {
+                unreachable!()
+            };
+            reader.work()
+        }
+        for (fixture, name, tick) in [
+            (
+                "shm0001-cadence-rtl-to-gdsii-flow-gate-level-simulation-waves",
+                "counter_test.scan_out",
+                90_000,
+            ),
+            (
+                "shm0001-cadence-rtl-to-gdsii-flow-gate-level-simulation-waves",
+                "counter_test.counter1.g705.A",
+                90_000,
+            ),
+            (
+                "shm0006-systolic-array-pre-synthesis-simulation-waves",
+                "test_tpu.cycle_cnt",
+                4_600,
+            ),
+        ] {
+            let mut wave =
+                crate::open_with(root.join(fixture).join("waveform.shm"), "shm-lib").unwrap();
+            let signal = wave.hierarchy().signal(name).unwrap();
+            let repeated = if signal.encoding() == (Encoding::Bits { width: 1 }) {
+                signal.slice(0, 0).unwrap()
+            } else {
+                signal
+            };
+            let time = Time::from_ticks(tick);
+            let before = work(&wave);
+            let samples = wave.samples(&[signal, repeated, signal], time).unwrap();
+            let after = work(&wave);
+            assert_eq!(after.sessions - before.sessions, 1);
+            assert_eq!(after.histories - before.histories, 0);
+            assert_eq!(after.history_records - before.history_records, 0);
+
+            // Starting at zero forces independent chronological normalization.
+            let reference = wave
+                .trace(signal, TimeRange::closed(Time::ZERO, time))
+                .unwrap();
+            let last = reference.changes().last().unwrap();
+            let changed = (reference.changes().len() > 1).then_some(last.time());
+            for sample in &samples {
+                let SampleRef::Value {
+                    value, changed_at, ..
+                } = sample.as_ref()
+                else {
+                    panic!("bits must have a recorded state");
+                };
+                assert!(value.same_value(last.value()));
+                assert_eq!(changed_at, changed);
+            }
+
+            let before = work(&wave);
+            let mut selection = wave.select(&[signal]).unwrap();
+            let result = selection
+                .scan(
+                    TimeRange::closed(time, Time::from_ticks(tick + 100)),
+                    |_| ControlFlow::Break(7),
+                )
+                .unwrap();
+            assert_eq!(result, ControlFlow::Break(7));
+            drop(selection);
+            let after = work(&wave);
+            assert_eq!(after.histories - before.histories, 1);
+            assert!(
+                after.history_records - before.history_records <= 3,
+                "late window must not collect the old prefix: {before:?} -> {after:?}"
+            );
+        }
+    }
+
+    #[cfg(feature = "shm-lib")]
+    #[test]
+    #[ignore = "requires real SHM runtime and installed fixtures"]
+    fn shm_selected_queries_avoid_unrelated_hierarchy() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures/shm/shm0083-topology-many-handles/waveform.shm");
+        let mut wave = crate::open_with(&path, "shm-lib").unwrap();
+        let sparse = wave.hierarchy().signal("top.probe_sparse").unwrap();
+        let constant = wave.hierarchy().signal("top.probe_constant").unwrap();
+        let work = |wave: &crate::Waveform| {
+            let crate::backends::Reader::Shm(reader) = &wave.reader else {
+                unreachable!()
+            };
+            reader.work()
+        };
+        let opened = work(&wave);
+        assert!(opened.hierarchy_nodes > 16_384);
+        for signals in [
+            &[sparse][..],
+            &[constant][..],
+            &[sparse, constant, sparse][..],
+        ] {
+            let before = work(&wave);
+            let samples = wave.samples(signals, Time::from_ticks(320)).unwrap();
+            assert_eq!(samples.len(), signals.len());
+            let after = work(&wave);
+            assert_eq!(after.sessions - before.sessions, 1);
+            assert!(
+                after.hierarchy_nodes - before.hierarchy_nodes < 32,
+                "selected access must avoid unrelated declarations: {before:?} -> {after:?}"
+            );
+            assert_eq!(after.histories, before.histories);
+            assert_eq!(after.history_records, before.history_records);
+        }
+    }
+
+    #[cfg(feature = "shm-lib")]
+    #[test]
+    #[ignore = "requires real SHM runtime and installed fixtures"]
+    fn shm_mixed_points_collect_only_uncertified_histories() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/shm");
+        let work = |wave: &crate::Waveform| {
+            let crate::backends::Reader::Shm(reader) = &wave.reader else {
+                unreachable!()
+            };
+            reader.work()
+        };
+        for reverse in [false, true] {
+            let mut wave =
+                crate::open_with(root.join("shm0080-history-short/waveform.shm"), "shm-lib")
+                    .unwrap();
+            let phase = wave.hierarchy().signal("top.phase_0").unwrap();
+            let other = wave.hierarchy().signal("top.phase_1").unwrap();
+            let step = wave.hierarchy().signal("top.step").unwrap();
+            let mut signals = vec![phase, step, other, phase.slice(0, 0).unwrap(), step];
+            if reverse {
+                signals.reverse();
+            }
+            let time = Time::from_ticks(4095);
+            let before = work(&wave);
+            let samples = wave.samples(&signals, time).unwrap();
+            let after = work(&wave);
+            // The two-state integer keeps the ordinary path. Scalar histories
+            // certify independently; the following read reuses one native call.
+            assert_eq!(after.sessions - before.sessions, 1);
+            assert_eq!(after.histories - before.histories, 1);
+            assert_eq!(after.history_records - before.history_records, 4096);
+            let reference = wave
+                .traces(&signals, TimeRange::closed(Time::ZERO, time))
+                .unwrap();
+            for ((sample, trace), signal) in samples.iter().zip(&reference).zip(signals) {
+                let SampleRef::Value {
+                    signal: actual,
+                    value,
+                    changed_at,
+                } = sample.as_ref()
+                else {
+                    panic!("history must have a value");
+                };
+                let last = trace.changes().last().unwrap();
+                assert_eq!(actual, signal);
+                assert!(value.same_value(last.value()));
+                assert_eq!(changed_at, Some(last.time()));
+            }
+        }
+
+        // A fallback can also return Missing, not only a decoded bit value.
+        let mut wave =
+            crate::open_with(root.join("shm0091-late-history/waveform.shm"), "shm-lib").unwrap();
+        let marker = wave.hierarchy().signal("top.marker").unwrap();
+        let late = wave.hierarchy().signal("top.late").unwrap();
+        for tick in [4, 5, 7] {
+            let before = work(&wave);
+            let samples = wave
+                .samples(&[marker, late, marker], Time::from_ticks(tick))
+                .unwrap();
+            let after = work(&wave);
+            assert_eq!(after.sessions - before.sessions, 1);
+            assert_eq!(after.histories - before.histories, u64::from(tick == 4));
+            if tick == 4 {
+                assert!(matches!(samples[1], Sample::Missing { .. }));
+            } else {
+                let Sample::Value { changed_at, .. } = samples[1] else {
+                    panic!("late history must have a value");
+                };
+                assert_eq!(changed_at, (tick > 5).then_some(Time::from_ticks(6)));
+            }
+        }
+    }
+
+    #[cfg(feature = "shm-lib")]
+    #[test]
+    #[ignore = "requires real SHM runtime and installed fixtures"]
     fn shm_certified_points_preserve_completed_state() {
         let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/shm");
         fn reads(selection: &Selection<'_>) -> usize {
@@ -2426,8 +2645,8 @@ mod tests {
             );
         }
 
-        // The first base can certify, but late initialization of the second
-        // must discard the entire native batch and preserve missing/first values.
+        // Late initialization preserves missing/first values. Once available,
+        // both bases certify; earlier or out-of-span points keep fallback.
         let mut wave =
             crate::open_with(root.join("shm0091-late-history/waveform.shm"), "shm-lib").unwrap();
         let marker = wave.hierarchy().signal("top.marker").unwrap();
@@ -2440,9 +2659,15 @@ mod tests {
             for repeat in 0..2 {
                 let before = reads(&selection);
                 let samples = selection.samples(time).unwrap();
-                // One failed point certificate, then ordinary traversal.
                 // Repeated points borrow the completed saved result.
-                assert_eq!(reads(&selection) - before, if repeat == 0 { 2 } else { 0 });
+                let expected_reads = if repeat != 0 {
+                    0
+                } else if (5..=7).contains(&tick) {
+                    1
+                } else {
+                    2
+                };
+                assert_eq!(reads(&selection) - before, expected_reads);
                 assert_eq!(
                     samples
                         .iter()
