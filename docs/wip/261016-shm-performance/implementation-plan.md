@@ -30,9 +30,9 @@ ignored local files. Timing is a manual acceptance measurement, not a new CI gat
 - [x] Prevent one unqualified history from imposing its ordinary-prefix work on qualified histories in the same point request.
 - [x] Add deterministic native-work regressions and focused cold benchmarks over pinned inputs.
 - [x] Update backend, benchmark and public documentation where behavior descriptions change.
-- [ ] Verify raw parity, SDK controls, repeated measurements, public CI, MSRV, vendor checks and doctests.
+- [x] Verify raw parity, SDK controls, repeated measurements, public CI, MSRV, vendor checks and doctests.
 - [x] Run OCR Review and an independent Astra High review of the final diff; resolve substantive findings and rerun affected checks.
-- [ ] Commit the verified result through normal host hooks and report measurements in Russian.
+- [x] Commit the verified implementation through normal host hooks and prepare the Russian report.
 
 ## Surprises & Discoveries
 
@@ -96,13 +96,14 @@ All 78 SHM fixtures, 14 focused integration tests and eight native query tests
 pass on two selected SDKs after the review fixes.
 Fourteen final raw cross-format comparisons pass, including entering change
 times and staged/union traces. Fresh serial point/window medians improve by
-11.8–16.1x in the original dense cases. Staged calls improve by about 2–3x in
-query time. Unchanged-source and FSDB controls remain stable. The early window
+11.8–16.1x in the original dense cases. Staged open + query + drop medians improve
+by 1.9–2.6x. Unchanged-source and FSDB controls remain stable. The early window
 and already-qualified phase controls show no material change. Astra High
 completed both full and affected-fix reviews with no substantive findings. OCR
 findings have failing-before-fix regressions. Completed OCR passes cover all
-eight code files; no substantive findings remain. The clean-tree public release
-dry-run is pending. Full measurements and residual limits are in
+eight code files; no substantive findings remain. Implementation commit
+`60cede0` passes normal hooks and the complete clean-tree public CI, including
+the release dry-run. Full measurements and residual limits are in
 [implementation-results.md](implementation-results.md).
 
 ## Context and Orientation

@@ -7,6 +7,7 @@ The baseline is published Ondas 1.1.0, source commit
 investigation preserved in [investigation.md](investigation.md). The branch is
 `bb/shm-performance-thr_9ubsj62rqv`; the fixture pin remains
 `4ce2f4ea6a034f1db335cc96ba9e67e6dcbb2a38`.
+The performance implementation is commit `60cede0`.
 
 A standalone release consumer uses the common API with `shm-lib,fsdb-lib` and
 the original locked dependencies. It uses no wavepeek engine. Three serial runs
@@ -112,8 +113,10 @@ integration tests and eight native query tests after the review fixes. The
 primary SDK also passes `ci-shm`, including MSRV, benchmark smoke and standalone
 consumers. Public tests, external conformance and benchmark smoke pass. Default
 MSRV, doctests and the SHM/FSDB coexistence test pass.
-The full public release dry-run requires a committed clean tree and will run
-after the normal commit hooks.
+Implementation commit `60cede0` passes the normal host hook and the complete
+clean-tree `./dev just ci`, including external conformance, benchmark smoke,
+package verification and the publication dry-run. No upload occurs. The repeated
+default MSRV and doctests also pass. All validation uses `./dev`.
 
 ## Review
 
