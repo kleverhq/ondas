@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-10-17
+
 ### Changed
 
 - Reduce SHM cold point and bounded-window collection for qualified four-state
@@ -72,7 +74,8 @@ Initial release of Ondas, a read-only Rust library for waveform analysis.
 - Final-tick state normalization and event occurrence counts, with documented reader limits.
 - Fixture-backed conformance tests, performance benchmarks, and automated release checks.
 
-[Unreleased]: https://github.com/kleverhq/ondas/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/kleverhq/ondas/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/kleverhq/ondas/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/kleverhq/ondas/compare/v1.0.2...v1.1.0
 [1.0.2]: https://github.com/kleverhq/ondas/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/kleverhq/ondas/compare/v1.0.0...v1.0.1
