@@ -187,6 +187,26 @@ impl fmt::Display for HierarchyPath {
 /// [`Self::signals`] lists whole histories with distinct handles. A reader can
 /// leave aliases separate when it cannot establish their shared history.
 /// Lookup failures use [`LookupError`], not opening or backend errors.
+///
+/// Scope and variable equality compares object identity, not paths or metadata.
+/// A clone keeps the same objects. An independent open has different objects,
+/// even when it reads the same file. Use equality to match a parent returned by
+/// traversal with a retained scope. Equal paths can refer to distinct objects.
+///
+/// ```
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let source = b"$scope module top $end $var wire 1 ! flag $end \
+///     $upscope $end $enddefinitions $end #0 1!";
+/// let wave = ondas::open_bytes("tree.vcd", source.as_slice().into())?;
+/// let hierarchy = wave.hierarchy();
+/// let retained = hierarchy.clone();
+/// let root = retained.scope("top")?;
+/// let flag = hierarchy.variable("top.flag")?;
+/// assert!(flag.parent().as_ref() == Some(&root));
+/// assert!(flag == retained.variable("top.flag")?);
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Clone)]
 pub struct Hierarchy {
     data: Arc<HierarchyData>,
@@ -243,16 +263,42 @@ pub enum Item<'h> {
 }
 
 /// A borrowed view of a scope in a hierarchy.
+///
+/// Equality identifies one scope in one source hierarchy. Views from a
+/// [`Hierarchy::clone`] compare equal to the original views. Distinct scopes
+/// compare unequal even when their paths and metadata are equal. Views from
+/// independent opens compare unequal.
 pub struct Scope<'h> {
     hierarchy: &'h Hierarchy,
     index: usize,
 }
 
 /// A borrowed view of a variable declaration in a hierarchy.
+///
+/// Equality identifies one declaration in one source hierarchy. Views from a
+/// [`Hierarchy::clone`] compare equal to the original views. Alias declarations
+/// compare unequal even when they share a [`Signal`]. Equal paths or metadata do
+/// not make declarations equal. Views from independent opens compare unequal.
 pub struct Variable<'h> {
     hierarchy: &'h Hierarchy,
     index: usize,
 }
+
+impl PartialEq<Scope<'_>> for Scope<'_> {
+    fn eq(&self, other: &Scope<'_>) -> bool {
+        self.hierarchy.data.source == other.hierarchy.data.source && self.index == other.index
+    }
+}
+
+impl Eq for Scope<'_> {}
+
+impl PartialEq<Variable<'_>> for Variable<'_> {
+    fn eq(&self, other: &Variable<'_>) -> bool {
+        self.hierarchy.data.source == other.hierarchy.data.source && self.index == other.index
+    }
+}
+
+impl Eq for Variable<'_> {}
 
 /// An opaque waveform signal handle with an optional bit projection.
 ///

@@ -39,6 +39,12 @@ model.
 A hierarchy is immutable and can be cloned. Scopes and variables borrow it. A
 variable is a declaration. A signal identifies a history. Confirmed
 aliases share a signal without losing their separate declaration metadata.
+Scope and variable equality identifies an object in one source hierarchy.
+Equal paths or metadata do not make objects equal. Alias declarations remain
+distinct even when they share a signal. A hierarchy clone keeps object identity;
+an independent open creates different objects, including when it reads the same
+file. Parent and child relationships refer to objects, so scopes with the same
+path keep their own children.
 If the reader cannot establish an alias relationship, each declaration has a
 separate signal. Different handles do not prove independent histories. Some
 declarations have no queryable history. Known signedness and logic domain belong

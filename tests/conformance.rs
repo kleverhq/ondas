@@ -459,6 +459,7 @@ fn has_alias_identity(wave: &Waveform) -> bool {
 
 fn hierarchy(wave: &Waveform, oracle: &Json, check_lookups: bool) -> BTreeMap<String, Vec<Signal>> {
     let hierarchy = wave.hierarchy();
+    let cloned = hierarchy.clone();
     // Index only oracle-listed declarations from public traversal. Large FSTs
     // can list thousands of aliases; repeated linear lookups would be quadratic.
     let wanted_scopes: HashSet<_> = list(&oracle["hierarchy"], "scopes")
@@ -508,8 +509,9 @@ fn hierarchy(wave: &Waveform, oracle: &Json, check_lookups: bool) -> BTreeMap<St
             path.parent().filter(|p| !p.is_empty())
         );
         if check_lookups {
-            assert_eq!(hierarchy.scope_path(&path).unwrap().path(), path);
-            assert_eq!(hierarchy.scope(&path.to_string()).unwrap().path(), path);
+            assert!(hierarchy.scope_path(&path).unwrap() == *scope);
+            assert!(hierarchy.scope(&path.to_string()).unwrap() == *scope);
+            assert!(cloned.scope_path(&path).unwrap() == *scope);
         }
         if let Some(kind) = expected.get("kind") {
             assert_eq!(scope.kind(), kind.as_str().unwrap(), "scope {path} kind");
@@ -545,8 +547,9 @@ fn hierarchy(wave: &Waveform, oracle: &Json, check_lookups: bool) -> BTreeMap<St
             path.parent().filter(|p| !p.is_empty())
         );
         if check_lookups {
-            assert_eq!(hierarchy.variable_path(&path).unwrap().path(), path);
-            assert_eq!(hierarchy.variable(&path.to_string()).unwrap().path(), path);
+            assert!(hierarchy.variable_path(&path).unwrap() == *variable);
+            assert!(hierarchy.variable(&path.to_string()).unwrap() == *variable);
+            assert!(cloned.variable_path(&path).unwrap() == *variable);
         }
         if let Some(kind) = expected.get("kind") {
             assert_eq!(variable.kind(), kind.as_str().unwrap(), "{path} kind");
@@ -1796,6 +1799,16 @@ fn fsdb_same_path_module_and_struct_remain_accessible() {
             .iter()
             .find(|scope| scope.kind() == "struct")
             .unwrap();
+        assert!(module != structure);
+        assert!(module.parent().as_ref() == Some(&root));
+        assert!(structure.parent().as_ref() == Some(&root));
+        for item in module.children() {
+            let parent = match item {
+                ondas::Item::Scope(scope) => scope.parent(),
+                ondas::Item::Variable(variable) => variable.parent(),
+            };
+            assert!(parent.as_ref() == Some(module));
+        }
         assert_eq!(module.packing(), None);
         assert_eq!(structure.packing(), Some(ondas::Packing::Unpacked));
         assert_eq!(structure.children().count(), 0);
