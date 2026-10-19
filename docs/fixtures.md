@@ -1,12 +1,12 @@
 # Fixture integration and oracle evidence
 
 The `fixtures/` Git submodule owns the sidecar and sparse-oracle contract in
-[its unified fixture schema](https://github.com/kleverhq/ondas-fixtures/blob/4ce2f4ea6a034f1db335cc96ba9e67e6dcbb2a38/schemas/fixture.schema.json).
+[its unified fixture schema](https://github.com/kleverhq/ondas-fixtures/blob/d48ab29339d80c653d0bf0196e282ee6fb431ffb/schemas/fixture.schema.json).
 The oracle definition is under `$defs.oracle`. Sidecar and nonempty oracle
 `schema: 1` markers remain independent of the selected Git commit. Ondas keeps no
 schema copy. This document owns local integration, runner coverage and the
 interpretation of evidence through the Ondas API. See [testing](testing.md) for
-strategy and [the fixture README](https://github.com/kleverhq/ondas-fixtures/blob/4ce2f4ea6a034f1db335cc96ba9e67e6dcbb2a38/README.md)
+strategy and [the fixture README](https://github.com/kleverhq/ondas-fixtures/blob/d48ab29339d80c653d0bf0196e282ee6fb431ffb/README.md)
 for generation, validation and artifact delivery.
 
 ## Revision and installation
@@ -210,6 +210,14 @@ waveforms, not reader implementations. Automatic reader selection is tested
 separately so priority changes cannot remove an adapter from coverage. Reusable
 checks derive samples, traces, scans, projections and composed queries from
 independent oracle evidence. Concrete coverage belongs in [testing](testing.md).
+
+Some pinned FSDB and WLF oracles contain Verilog SDK identifier spelling in
+component paths. The runner maps only the audited fixture inputs to logical
+components before comparison. The mapping is explicit in `logical_name_oracle`
+in `tests/conformance.rs` and does not call production name adapters. Other
+fixture paths remain exact. Raw sidecars, artifact hashes and observations stay
+unchanged. Directed name tests use literal expected components through the public
+API and check escape flags, diagnostic spelling, lookup and parent/child links.
 
 ## Updating the corpus
 

@@ -39,6 +39,7 @@ struct NativeDeclaration {
     name: *const c_char,
     kind: *const c_char,
     definition: *const c_char,
+    verilog_name: u32,
 }
 #[repr(C)]
 #[derive(Default)]
@@ -115,6 +116,7 @@ pub(super) struct Declaration {
     pub name: String,
     pub kind: String,
     pub definition: Option<String>,
+    pub verilog_name: bool,
 }
 pub(super) struct Opened {
     pub id: u64,
@@ -386,6 +388,7 @@ pub(super) fn open(path: CString, source_name: String) -> Result<Opened> {
                 kind: unsafe { string(d.kind)? }
                     .ok_or_else(|| backend_error("missing WLF kind"))?,
                 definition: unsafe { string(d.definition)? },
+                verilog_name: d.verilog_name != 0,
             });
             encodings.push(encoding);
         }
@@ -767,9 +770,10 @@ mod tests {
     #[test]
     fn wlf_private_abi_layouts() {
         assert_eq!(std::mem::size_of::<Meta>(), 32);
-        assert_eq!(std::mem::size_of::<NativeDeclaration>(), 88);
+        assert_eq!(std::mem::size_of::<NativeDeclaration>(), 96);
         assert_eq!(std::mem::size_of::<NativeRecord>(), 48);
         assert_eq!(std::mem::offset_of!(NativeDeclaration, name), 64);
+        assert_eq!(std::mem::offset_of!(NativeDeclaration, verilog_name), 88);
         assert_eq!(std::mem::offset_of!(NativeRecord, data), 24);
     }
 }

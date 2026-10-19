@@ -347,7 +347,10 @@ fn load_conformance_fixture(root: &Path, name: &str) -> Option<Fixture> {
         "wlf" if cfg!(feature = "wlf-lib") => Format::Wlf,
         other => panic!("{name}: unexpected selected format {other}"),
     };
-    let oracle = sidecar.get("oracle").cloned().unwrap_or_else(|| json!({}));
+    let oracle = logical_name_oracle(
+        name,
+        sidecar.get("oracle").cloned().unwrap_or_else(|| json!({})),
+    );
     eprintln!("validating {name}");
     let path = fixture_support::verify_artifact(&directory, artifact, name);
     if oracle.as_object().unwrap().is_empty() {
@@ -359,6 +362,80 @@ fn load_conformance_fixture(root: &Path, name: &str) -> Option<Fixture> {
         oracle,
         format,
     })
+}
+
+// These pinned producer oracles report SDK identifier spelling. Translate
+// only the audited Verilog inputs, independently of the production adapters.
+// Other fixtures, including VHDL and literal backslashes, remain exact.
+fn logical_name_oracle(name: &str, mut oracle: Json) -> Json {
+    let fsdb_verilog = matches!(
+        name,
+        "fsdb/fsdb0033-sti-dac"
+            | "fsdb/fsdb0037-lbp"
+            | "fsdb/fsdb0039-iotdf-f1"
+            | "fsdb/fsdb0040-iotdf-f2"
+            | "fsdb/fsdb0041-iotdf-f3"
+            | "fsdb/fsdb0042-iotdf-f4"
+            | "fsdb/fsdb0043-iotdf-f5"
+            | "fsdb/fsdb0044-iotdf-f6"
+            | "fsdb/fsdb0045-iotdf-f7"
+            | "fsdb/fsdb0046-ise"
+            | "fsdb/fsdb0055-riscv-soc-debug-netlist"
+    );
+    if fsdb_verilog || name == "wlf/wlf0072-strings-and-names" {
+        for key in ["scopes", "variables"] {
+            if let Some(declarations) = oracle
+                .get_mut("hierarchy")
+                .and_then(|hierarchy| hierarchy.get_mut(key))
+                .and_then(Json::as_array_mut)
+            {
+                let mut logical_paths = HashSet::new();
+                for declaration in declarations {
+                    for component in declaration["path"].as_array_mut().unwrap() {
+                        let raw = component.as_str().unwrap();
+                        if fsdb_verilog && raw.starts_with('\\') {
+                            *component = json!(&raw[1..]);
+                        } else if name == "wlf/wlf0072-strings-and-names"
+                            && raw == "\\name.with.dot "
+                        {
+                            *component = json!("name.with.dot");
+                        }
+                    }
+                    assert!(
+                        logical_paths.insert(path(&declaration["path"])),
+                        "{name}: SDK oracle rewrite collides at {}",
+                        path(&declaration["path"])
+                    );
+                }
+            }
+        }
+    }
+    oracle
+}
+
+#[test]
+fn sdk_oracle_name_mapping_is_scoped_and_rejects_collisions() {
+    for oracle in [json!({}), json!({"open": {"result": "malformed"}})] {
+        assert_eq!(
+            logical_name_oracle("fsdb/fsdb0033-sti-dac", oracle.clone()),
+            oracle
+        );
+    }
+    let raw = json!({"hierarchy": {"scopes": [{"path": ["top", "\\literal[0]"]}]}});
+    let mapped = logical_name_oracle("fsdb/fsdb0033-sti-dac", raw.clone());
+    assert_eq!(
+        mapped["hierarchy"]["scopes"][0]["path"],
+        json!(["top", "literal[0]"])
+    );
+    assert_eq!(logical_name_oracle("unlisted-input", raw.clone()), raw);
+
+    let collision = json!({"hierarchy": {"scopes": [
+        {"path": ["top", "\\same"]}, {"path": ["top", "same"]}
+    ]}});
+    assert!(
+        std::panic::catch_unwind(|| { logical_name_oracle("fsdb/fsdb0033-sti-dac", collision) })
+            .is_err()
+    );
 }
 
 fn fixtures() -> &'static [Fixture] {
@@ -459,6 +536,7 @@ fn has_alias_identity(wave: &Waveform) -> bool {
 
 fn hierarchy(wave: &Waveform, oracle: &Json, check_lookups: bool) -> BTreeMap<String, Vec<Signal>> {
     let hierarchy = wave.hierarchy();
+    let cloned = hierarchy.clone();
     // Index only oracle-listed declarations from public traversal. Large FSTs
     // can list thousands of aliases; repeated linear lookups would be quadratic.
     let wanted_scopes: HashSet<_> = list(&oracle["hierarchy"], "scopes")
@@ -508,8 +586,18 @@ fn hierarchy(wave: &Waveform, oracle: &Json, check_lookups: bool) -> BTreeMap<St
             path.parent().filter(|p| !p.is_empty())
         );
         if check_lookups {
-            assert_eq!(hierarchy.scope_path(&path).unwrap().path(), path);
-            assert_eq!(hierarchy.scope(&path.to_string()).unwrap().path(), path);
+            assert!(
+                hierarchy.scope_path(&path).unwrap() == *scope,
+                "scope lookup {path}"
+            );
+            assert!(
+                hierarchy.scope(&path.to_string()).unwrap() == *scope,
+                "scope text lookup {path}"
+            );
+            assert!(
+                cloned.scope_path(&path).unwrap() == *scope,
+                "cloned scope lookup {path}"
+            );
         }
         if let Some(kind) = expected.get("kind") {
             assert_eq!(scope.kind(), kind.as_str().unwrap(), "scope {path} kind");
@@ -545,8 +633,18 @@ fn hierarchy(wave: &Waveform, oracle: &Json, check_lookups: bool) -> BTreeMap<St
             path.parent().filter(|p| !p.is_empty())
         );
         if check_lookups {
-            assert_eq!(hierarchy.variable_path(&path).unwrap().path(), path);
-            assert_eq!(hierarchy.variable(&path.to_string()).unwrap().path(), path);
+            assert!(
+                hierarchy.variable_path(&path).unwrap() == *variable,
+                "variable lookup {path}"
+            );
+            assert!(
+                hierarchy.variable(&path.to_string()).unwrap() == *variable,
+                "variable text lookup {path}"
+            );
+            assert!(
+                cloned.variable_path(&path).unwrap() == *variable,
+                "cloned variable lookup {path}"
+            );
         }
         if let Some(kind) = expected.get("kind") {
             assert_eq!(variable.kind(), kind.as_str().unwrap(), "{path} kind");
@@ -1796,6 +1894,18 @@ fn fsdb_same_path_module_and_struct_remain_accessible() {
             .iter()
             .find(|scope| scope.kind() == "struct")
             .unwrap();
+        assert!(module != structure);
+        assert!(module.parent().as_ref() == Some(&root));
+        assert!(structure.parent().as_ref() == Some(&root));
+        let children: Vec<_> = module.children().collect();
+        assert!(!children.is_empty(), "{path}: module has no children");
+        for item in children {
+            let parent = match item {
+                ondas::Item::Scope(scope) => scope.parent(),
+                ondas::Item::Variable(variable) => variable.parent(),
+            };
+            assert!(parent.as_ref() == Some(module));
+        }
         assert_eq!(module.packing(), None);
         assert_eq!(structure.packing(), Some(ondas::Packing::Unpacked));
         assert_eq!(structure.children().count(), 0);

@@ -6,6 +6,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Compare `Scope` and `Variable` views by object identity. Hierarchy clones keep
+  identity; independent opens and alias declarations stay distinct.
+- Add cross-format exact-name, same-path alias, and scope-collision regression
+  fixtures and tests.
+
+### Fixed
+
+- Remove recognized Verilog escape syntax from FSDB and WLF logical names.
+  Preserve literal punctuation and backslashes. Keep available reader spelling
+  for diagnostics.
+- Keep distinct VCD, FST, and FSDB declarations with equal logical paths separate.
+  Preserve their parent and child links and report ambiguous lookup.
+
 ## [1.1.1] - 2026-10-17
 
 ### Changed

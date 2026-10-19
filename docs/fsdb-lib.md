@@ -191,12 +191,18 @@ implementation choices alone.
   attributes. Generic SDK failures remain `Error::Backend`.
 - The SDK's hidden-scope flag is retained. Hidden scopes and their descendants
   stay accessible. Consumers choose whether to suppress them during traversal.
+- Verilog declarations use logical component names. The adapter removes one
+  escape marker when the SDK file or declaration type establishes Verilog syntax.
+  Literal backslashes remain. Other language names are not interpreted as
+  Verilog. Original callback spelling remains available for variable diagnostics.
+  Repetition keys retain that spelling, so equal logical paths do not merge
+  distinct source declarations.
 - Explicit vector ranges, including `[0:0]`, become declaration metadata. A
   matching trailing range is removed from unescaped names or after whitespace
   terminating an escaped identifier. An attached suffix on an escaped name stays
   literal even when the SDK supplies matching bounds. `Variable::reader_name`
   retains the pre-extraction SDK spelling, including the escape marker and any
-  printed range, for consumers that distinguish those source forms. Memory indices
+  printed range, for diagnostics. Ordinary lookup uses the logical name. Memory indices
   remain names, not query projections.
 - Known scope and variable kinds map to canonical names. Unknown kinds remain
   namespaced. Direction and constant flags are retained when supplied.

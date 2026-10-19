@@ -187,6 +187,26 @@ impl fmt::Display for HierarchyPath {
 /// [`Self::signals`] lists whole histories with distinct handles. A reader can
 /// leave aliases separate when it cannot establish their shared history.
 /// Lookup failures use [`LookupError`], not opening or backend errors.
+///
+/// Scope and variable equality compares object identity, not paths or metadata.
+/// A clone keeps the same objects. An independent open has different objects,
+/// even when it reads the same file. Use equality to match a parent returned by
+/// traversal with a retained scope. Equal paths can refer to distinct objects.
+///
+/// ```
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let source = b"$scope module top $end $var wire 1 ! flag $end \
+///     $upscope $end $enddefinitions $end #0 1!";
+/// let wave = ondas::open_bytes("tree.vcd", source.as_slice().into())?;
+/// let hierarchy = wave.hierarchy();
+/// let retained = hierarchy.clone();
+/// let root = retained.scope("top")?;
+/// let flag = hierarchy.variable("top.flag")?;
+/// assert!(flag.parent().as_ref() == Some(&root));
+/// assert!(flag == retained.variable("top.flag")?);
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Clone)]
 pub struct Hierarchy {
     data: Arc<HierarchyData>,
@@ -243,16 +263,42 @@ pub enum Item<'h> {
 }
 
 /// A borrowed view of a scope in a hierarchy.
+///
+/// Equality identifies one scope in one source hierarchy. Views from a
+/// [`Hierarchy::clone`] compare equal to the original views. Distinct scopes
+/// compare unequal even when their paths and metadata are equal. Views from
+/// independent opens compare unequal.
 pub struct Scope<'h> {
     hierarchy: &'h Hierarchy,
     index: usize,
 }
 
 /// A borrowed view of a variable declaration in a hierarchy.
+///
+/// Equality identifies one declaration in one source hierarchy. Views from a
+/// [`Hierarchy::clone`] compare equal to the original views. Alias declarations
+/// compare unequal even when they share a [`Signal`]. Equal paths or metadata do
+/// not make declarations equal. Views from independent opens compare unequal.
 pub struct Variable<'h> {
     hierarchy: &'h Hierarchy,
     index: usize,
 }
+
+impl PartialEq<Scope<'_>> for Scope<'_> {
+    fn eq(&self, other: &Scope<'_>) -> bool {
+        self.hierarchy.data.source == other.hierarchy.data.source && self.index == other.index
+    }
+}
+
+impl Eq for Scope<'_> {}
+
+impl PartialEq<Variable<'_>> for Variable<'_> {
+    fn eq(&self, other: &Variable<'_>) -> bool {
+        self.hierarchy.data.source == other.hierarchy.data.source && self.index == other.index
+    }
+}
+
+impl Eq for Variable<'_> {}
 
 /// An opaque waveform signal handle with an optional bit projection.
 ///
@@ -545,14 +591,15 @@ impl<'h> Scope<'h> {
         &self.data().kind
     }
 
-    /// Returns whether the VCD or FST declaration used a leading Verilog escape marker.
+    /// Returns whether the reader supplied a Verilog escape marker for this name.
     ///
     /// The marker is excluded from [`Self::name`] and path identity. Add one
-    /// backslash before the name to recover the reader-provided identifier spelling.
+    /// backslash before the name and terminate it with whitespace to form an
+    /// escaped Verilog identifier.
     /// Terminating whitespace is not retained. Merged scopes retain the first
-    /// declaration's spelling. This records input spelling, not whether the name
-    /// needs escaping when formatted as a path. FSDB retains SDK-provided names
-    /// without interpreting leading backslashes. This flag is `false` for FSDB.
+    /// declaration's spelling. This records available reader syntax, not whether
+    /// the name needs escaping as a path. A reader that supplies logical names
+    /// directly may not retain the source spelling and returns `false`.
     pub fn name_was_escaped(&self) -> bool {
         self.data().name_was_escaped
     }
@@ -591,29 +638,38 @@ impl<'h> Variable<'h> {
         &self.hierarchy.data.variables[self.index]
     }
 
-    /// Returns the declaration's exact local name, without a VCD/FST escape marker.
+    /// Returns the declaration's exact logical local name.
+    ///
+    /// Recognized Verilog escape syntax is excluded. Literal backslashes,
+    /// brackets, dots and whitespace remain component data. Use this name for
+    /// lookup; do not parse [`Self::reader_name`] to construct a path.
     pub fn name(&self) -> &'h str {
         &self.data().name
     }
 
-    /// Returns the reader-provided local declaration name before range extraction, if retained.
+    /// Returns the reader-provided local declaration spelling, if retained.
     ///
-    /// FSDB returns the SDK callback spelling, including any leading backslash or
-    /// printed range suffix. Merged duplicate declarations retain the first
-    /// callback's spelling. Aliases retain their own. This spelling does not define
-    /// path identity. Use [`Self::name`] for lookup. Other backends return `None`.
+    /// This diagnostic spelling can include escape syntax and printed ranges.
+    /// FSDB retains callback spelling. WLF retains recognized escaped spelling.
+    /// WLF spelling includes the terminating whitespace.
+    /// Merged duplicate declarations retain the first spelling; aliases retain
+    /// their own. Availability is optional. This text does not define identity
+    /// or lookup. Use [`Self::name`] and [`Self::path`] for ordinary addressing.
     pub fn reader_name(&self) -> Option<&'h str> {
         self.data().reader_name.as_deref()
     }
 
-    /// Returns whether the VCD or FST declaration used a leading Verilog escape marker.
+    /// Returns whether the reader supplied a Verilog escape marker for this name.
     ///
-    /// Add one backslash before [`Self::name`] to recover the reader-provided
-    /// identifier spelling. This excludes terminating whitespace and declared ranges.
+    /// The recognized marker is excluded from [`Self::name`]. Prefix the name
+    /// with one backslash and terminate it with whitespace to form an escaped
+    /// Verilog identifier. The name omits a separately printed declared range;
+    /// an attached suffix on an escaped identifier remains literal.
     /// This flag does not affect identity or lookup. Merged repeated
     /// declarations retain the first spelling. Aliases retain their own flags.
-    /// FSDB retains SDK-provided names without interpreting leading backslashes.
-    /// This flag is `false` for FSDB.
+    /// A reader that supplies logical names directly may not retain the source
+    /// spelling and returns `false`. The flag does not prove that an unescaped
+    /// identifier appeared in the original HDL.
     pub fn name_was_escaped(&self) -> bool {
         self.data().name_was_escaped
     }

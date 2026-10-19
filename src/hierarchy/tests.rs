@@ -63,6 +63,91 @@ fn fixture() -> Hierarchy {
 }
 
 #[test]
+fn identity_keeps_same_path_objects_and_their_children_separate() {
+    let mut data = Arc::try_unwrap(fixture().data).ok().unwrap();
+    assert_eq!(
+        data.variables.len(),
+        8,
+        "collision fixture declaration count"
+    );
+    data.scopes = [None, None, Some(0), Some(1)]
+        .into_iter()
+        .map(|parent| ScopeData {
+            name: if parent.is_none() { "same" } else { "leaf" }.into(),
+            name_was_escaped: false,
+            parent,
+            kind: "module".into(),
+            definition_name: None,
+            packing: None,
+            is_hidden: false,
+        })
+        .collect();
+    // Identical metadata and a shared history still describe separate objects.
+    for (index, variable) in data.variables.iter_mut().enumerate() {
+        variable.name = "same declaration".into();
+        variable.parent = Some(index / 2);
+        variable.signal = (index < 4).then_some(0);
+    }
+    let hierarchy = Hierarchy::new(data.scopes, data.variables, data.encodings);
+    let clone = hierarchy.clone();
+    let scopes: Vec<_> = hierarchy.scopes().collect();
+    let variables: Vec<_> = hierarchy.variables().collect();
+    assert_eq!(scopes[0].path(), scopes[1].path());
+    assert_eq!(scopes[2].path(), scopes[3].path());
+    assert!(scopes[0] != scopes[1]);
+    assert!(scopes[2] != scopes[3]);
+    assert_eq!(variables[0].signal(), variables[1].signal());
+    assert!(variables[0] != variables[1]);
+    assert_eq!(variables[4].signal(), None);
+    assert!(variables[4] != variables[5]);
+
+    // This small consumer assigns its own tree positions using only public
+    // views and equality. Neither paths nor history handles are object IDs.
+    let tree: Vec<_> = clone
+        .scopes()
+        .map(|scope| {
+            let parent = scope
+                .parent()
+                .map(|parent| scopes.iter().position(|s| *s == parent).unwrap());
+            let mut child_scopes = Vec::new();
+            let mut child_variables = Vec::new();
+            for child in scope.children() {
+                match child {
+                    Item::Scope(child) => {
+                        assert!(child.parent().as_ref() == Some(&scope));
+                        child_scopes.push(scopes.iter().position(|s| *s == child).unwrap());
+                    }
+                    Item::Variable(child) => {
+                        assert!(child.parent().as_ref() == Some(&scope));
+                        child_variables.push(variables.iter().position(|v| *v == child).unwrap());
+                    }
+                }
+            }
+            (parent, child_scopes, child_variables)
+        })
+        .collect();
+    assert_eq!(
+        tree,
+        [
+            (None, vec![2], vec![0, 1]),
+            (None, vec![3], vec![2, 3]),
+            (Some(0), vec![], vec![4, 5]),
+            (Some(1), vec![], vec![6, 7]),
+        ]
+    );
+    for (variable, original) in clone.variables().zip(&variables) {
+        assert!(variable == *original);
+    }
+    let path = HierarchyPath::from_components(["same", "same declaration"]);
+    for _ in 0..2 {
+        assert!(matches!(
+            hierarchy.variable_path(&path),
+            Err(LookupError::Ambiguous { matches: 4, .. })
+        ));
+    }
+}
+
+#[test]
 fn path_index_is_lazy_and_shared_between_hierarchy_clones() {
     let hierarchy = fixture();
     let cloned = hierarchy.clone();

@@ -94,8 +94,9 @@ artifact, workload and explicit reader under the
 
 - Declarations remain separate from decoder history handles. Compatible aliases
   share signal storage. Incompatible encodings fail.
-- Compatible repeated scopes merge. Conflicting kind, definition name or packing
-  metadata fails.
+- Compatible repeated scopes with the same source spelling and parent merge.
+  Equal logical paths alone do not merge scopes. Conflicting kind, definition
+  name or packing metadata fails.
 - A separated bit suffix such as `word [7:0]` becomes declaration range metadata.
   Attached brackets stay in the name. Declaration indices are distinct from the
   normalized positions used for projections.

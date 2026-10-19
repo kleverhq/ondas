@@ -18,7 +18,7 @@ extern WlfFileId wlfFileOpenByMode(char *fname, char *lname, int mode);
 _Static_assert(sizeof(WlfTime64) == 8 && (WlfTime64)-1 < 0, "signed 64-bit SDK time required");
 _Static_assert(sizeof(double) == 8, "binary64 SDK real required");
 _Static_assert(sizeof(size_t) == 8, "64-bit private ABI required");
-_Static_assert(sizeof(ondas_wlf_meta) == 32 && sizeof(ondas_wlf_decl) == 88 && sizeof(ondas_wlf_record) == 48, "private ABI layout mismatch");
+_Static_assert(sizeof(ondas_wlf_meta) == 32 && sizeof(ondas_wlf_decl) == 96 && sizeof(ondas_wlf_record) == 48, "private ABI layout mismatch");
 _Static_assert(offsetof(ondas_wlf_decl, name) == 64 && offsetof(ondas_wlf_record, data) == 24, "private ABI offset mismatch");
 
 typedef struct {
@@ -114,6 +114,7 @@ static int add_decl(ondas_wlf *r, WlfSymbolId symbol, size_t parent, int scope) 
     d->out.id = -1;
     d->out.name = copy(wlfSymPropString(symbol, WLF_PROP_SYMBOL_NAME));
     WlfSymbolSel64 kind = wlfSymPropSymbolSel64(symbol, WLF_PROP_SYMBOL_TYPE);
+    d->out.verilog_name = (kind & wlfSelVlog) != 0;
     const char *canonical = scope ? scope_kind(kind) : variable_kind(kind);
     char fallback[64]; snprintf(fallback, sizeof(fallback), "wlf:%" PRIu64, (uint64_t)kind);
     d->out.kind = copy(canonical ? canonical : fallback);

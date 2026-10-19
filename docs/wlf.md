@@ -33,11 +33,18 @@ backend selection and error categories.
 
 ## Mapping and limits
 
-The reader preserves SDK component names, scope and variable kinds, declared
+The reader preserves logical component names, scope and variable kinds, declared
 ranges, constants, directions and verified alias identities. Unlogged objects
 have no signal. Unsupported or incompatible value classes remain visible and
 fail queries. Type names, enum interpretations and aggregate packing stay absent
 when the SDK does not establish them.
+
+For SDK-identified Verilog declarations, an escaped name with terminating
+whitespace becomes a logical component without that syntax. Literal backslashes
+remain. The variable retains the original spelling in `reader_name`. Names
+without this verified syntax remain exact. VHDL names are not parsed as Verilog.
+The `vcd2wlf` import can truncate escaped names and split a source scope. These
+losses also appear in vendor exports; Ondas cannot reconstruct the source text.
 
 Verified values include logic vectors with all nine represented states, native
 binary64 reals, UTF-8 SystemVerilog strings and named events. Reals preserve signed
