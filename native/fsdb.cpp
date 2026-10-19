@@ -61,6 +61,18 @@ std::string scope_kind(unsigned type) {
     default: return "fsdb:" + std::to_string(type);
     }
 }
+constexpr bool verilog_scope_name(unsigned type) {
+    return type <= FSDB_ST_VCD_GENERATE ||
+        (type >= FSDB_ST_SV_INTERFACE && type <= FSDB_ST_SV_MODPORT_PORT &&
+         type != FSDB_ST_DESIGNWARE) ||
+        (type >= FSDB_ST_SV_COMPUTATION_UNIT && type <= FSDB_ST_SV_VERIFICATION_ROOT);
+}
+static_assert(verilog_scope_name(FSDB_ST_SV_PACKAGE) &&
+              verilog_scope_name(FSDB_ST_SV_PROGRAM) &&
+              verilog_scope_name(FSDB_ST_SV_CLASS), "SV scope names");
+static_assert(!verilog_scope_name(FSDB_ST_VHDL_ARCHITECTURE), "VHDL scope name");
+static_assert(!verilog_scope_name(FSDB_ST_DESIGNWARE), "unknown DesignWare scope language");
+
 constexpr bool verilog_variable_type(unsigned type) {
     return type <= FSDB_VT_VCD_PACKED_ENUM || type == FSDB_VT_SV_VARIABLE ||
         type == FSDB_VT_SV_VARIABLE_THIS || type == FSDB_VT_EVENT_VARIABLE ||
@@ -245,10 +257,8 @@ bool_T tree(fsdbTreeCBType type, void *user, void *raw) noexcept {
             d.data.entry = OFS_SCOPE;
             d.name = text(v.name); d.kind = scope_kind(v.type); d.definition = text(v.module);
             d.data.is_hidden = v.is_hidden_scope;
-            d.data.verilog_name = reader.verilog_names || (reader.mixed_names &&
-                (v.type <= FSDB_ST_VCD_GENERATE ||
-                 (v.type >= FSDB_ST_SV_INTERFACE && v.type <= FSDB_ST_SV_MODPORT_PORT) ||
-                 (v.type >= FSDB_ST_SV_COMPUTATION_UNIT && v.type <= FSDB_ST_SV_VERIFICATION_ROOT)));
+            d.data.verilog_name = reader.verilog_names ||
+                (reader.mixed_names && verilog_scope_name(v.type));
             break;
         }
         case FSDB_TREE_CBT_RECORD_BEGIN: {
