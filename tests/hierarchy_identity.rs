@@ -36,11 +36,24 @@ fn views_keep_identity_across_clones_and_independent_opens() {
     let hierarchy = wave.hierarchy().clone();
     let clone = hierarchy.clone();
     let independent = ondas::open_bytes("identity.vcd", SOURCE.into()).unwrap();
+    assert_eq!(hierarchy.scopes().count(), 2);
+    assert_eq!(hierarchy.variables().count(), 11);
+    assert_eq!(clone.scopes().count(), hierarchy.scopes().count());
+    assert_eq!(clone.variables().count(), hierarchy.variables().count());
+    assert_eq!(
+        independent.hierarchy().scopes().count(),
+        hierarchy.scopes().count()
+    );
+    assert_eq!(
+        independent.hierarchy().variables().count(),
+        hierarchy.variables().count()
+    );
     for ((original, copied), foreign) in hierarchy
         .scopes()
         .zip(clone.scopes())
         .zip(independent.hierarchy().scopes())
     {
+        assert_eq!(original.path(), foreign.path());
         assert!(original == copied);
         assert!(original != foreign);
         assert!(original.parent() == copied.parent());
@@ -50,6 +63,7 @@ fn views_keep_identity_across_clones_and_independent_opens() {
         .zip(clone.variables())
         .zip(independent.hierarchy().variables())
     {
+        assert_eq!(original.path(), foreign.path());
         assert!(original == copied);
         assert!(original != foreign);
         assert!(original.parent() == copied.parent());
@@ -116,7 +130,9 @@ fn exact_names_keep_declarations_and_component_boundaries() {
         ));
     }
     let top = hierarchy.scope("top").unwrap();
-    for item in top.children() {
+    let children: Vec<_> = top.children().collect();
+    assert_eq!(children.len(), 11);
+    for item in children {
         let parent = match item {
             Item::Scope(scope) => scope.parent(),
             Item::Variable(variable) => variable.parent(),

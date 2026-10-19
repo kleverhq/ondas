@@ -509,9 +509,18 @@ fn hierarchy(wave: &Waveform, oracle: &Json, check_lookups: bool) -> BTreeMap<St
             path.parent().filter(|p| !p.is_empty())
         );
         if check_lookups {
-            assert!(hierarchy.scope_path(&path).unwrap() == *scope);
-            assert!(hierarchy.scope(&path.to_string()).unwrap() == *scope);
-            assert!(cloned.scope_path(&path).unwrap() == *scope);
+            assert!(
+                hierarchy.scope_path(&path).unwrap() == *scope,
+                "scope lookup {path}"
+            );
+            assert!(
+                hierarchy.scope(&path.to_string()).unwrap() == *scope,
+                "scope text lookup {path}"
+            );
+            assert!(
+                cloned.scope_path(&path).unwrap() == *scope,
+                "cloned scope lookup {path}"
+            );
         }
         if let Some(kind) = expected.get("kind") {
             assert_eq!(scope.kind(), kind.as_str().unwrap(), "scope {path} kind");
@@ -547,9 +556,18 @@ fn hierarchy(wave: &Waveform, oracle: &Json, check_lookups: bool) -> BTreeMap<St
             path.parent().filter(|p| !p.is_empty())
         );
         if check_lookups {
-            assert!(hierarchy.variable_path(&path).unwrap() == *variable);
-            assert!(hierarchy.variable(&path.to_string()).unwrap() == *variable);
-            assert!(cloned.variable_path(&path).unwrap() == *variable);
+            assert!(
+                hierarchy.variable_path(&path).unwrap() == *variable,
+                "variable lookup {path}"
+            );
+            assert!(
+                hierarchy.variable(&path.to_string()).unwrap() == *variable,
+                "variable text lookup {path}"
+            );
+            assert!(
+                cloned.variable_path(&path).unwrap() == *variable,
+                "cloned variable lookup {path}"
+            );
         }
         if let Some(kind) = expected.get("kind") {
             assert_eq!(variable.kind(), kind.as_str().unwrap(), "{path} kind");
@@ -1802,7 +1820,9 @@ fn fsdb_same_path_module_and_struct_remain_accessible() {
         assert!(module != structure);
         assert!(module.parent().as_ref() == Some(&root));
         assert!(structure.parent().as_ref() == Some(&root));
-        for item in module.children() {
+        let children: Vec<_> = module.children().collect();
+        assert!(!children.is_empty(), "{path}: module has no children");
+        for item in children {
             let parent = match item {
                 ondas::Item::Scope(scope) => scope.parent(),
                 ondas::Item::Variable(variable) => variable.parent(),

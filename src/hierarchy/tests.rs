@@ -65,6 +65,11 @@ fn fixture() -> Hierarchy {
 #[test]
 fn identity_keeps_same_path_objects_and_their_children_separate() {
     let mut data = Arc::try_unwrap(fixture().data).ok().unwrap();
+    assert_eq!(
+        data.variables.len(),
+        8,
+        "collision fixture declaration count"
+    );
     data.scopes = [None, None, Some(0), Some(1)]
         .into_iter()
         .map(|parent| ScopeData {
@@ -130,8 +135,7 @@ fn identity_keeps_same_path_objects_and_their_children_separate() {
             (Some(1), vec![], vec![6, 7]),
         ]
     );
-    for variable in clone.variables() {
-        let original = &variables[variables.iter().position(|v| *v == variable).unwrap()];
+    for (variable, original) in clone.variables().zip(&variables) {
         assert!(variable == *original);
     }
     let path = HierarchyPath::from_components(["same", "same declaration"]);
