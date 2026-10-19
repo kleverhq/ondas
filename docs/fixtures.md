@@ -1,12 +1,12 @@
 # Fixture integration and oracle evidence
 
 The `fixtures/` Git submodule owns the sidecar and sparse-oracle contract in
-[its unified fixture schema](https://github.com/kleverhq/ondas-fixtures/blob/4ce2f4ea6a034f1db335cc96ba9e67e6dcbb2a38/schemas/fixture.schema.json).
+[its unified fixture schema](https://github.com/kleverhq/ondas-fixtures/blob/d48ab29339d80c653d0bf0196e282ee6fb431ffb/schemas/fixture.schema.json).
 The oracle definition is under `$defs.oracle`. Sidecar and nonempty oracle
 `schema: 1` markers remain independent of the selected Git commit. Ondas keeps no
 schema copy. This document owns local integration, runner coverage and the
 interpretation of evidence through the Ondas API. See [testing](testing.md) for
-strategy and [the fixture README](https://github.com/kleverhq/ondas-fixtures/blob/4ce2f4ea6a034f1db335cc96ba9e67e6dcbb2a38/README.md)
+strategy and [the fixture README](https://github.com/kleverhq/ondas-fixtures/blob/d48ab29339d80c653d0bf0196e282ee6fb431ffb/README.md)
 for generation, validation and artifact delivery.
 
 ## Revision and installation
