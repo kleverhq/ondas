@@ -54,6 +54,13 @@ history more than once. It does not infer aliases from equal values. Unknown
 declaration and scope kinds use `shm:decl:` and `shm:scope:` names.
 Unsupported value types retain their declarations with `Encoding::Unsupported`.
 
+Native recordings supply logical component names, including literal leading
+backslashes. The reader preserves these names. Some VCD imports retain the VCD
+escape marker in the stored name. The exposed language metadata does not
+distinguish that marker from a literal backslash in a native name. The reader
+does not guess or remove it. Use a faithful recording when comparing source
+names across formats; conversion can lose source identifier information.
+
 The adapter exposes HDL bit ranges, constants, scope definition names, exact
 integer ticks, timescale, and source span. Direction is unknown. Type names,
 signedness, logic-domain metadata, enumeration labels, writer, date, and comments

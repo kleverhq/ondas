@@ -108,7 +108,9 @@ Sources must remain unchanged while open.
 - Identifier codes are printable, contextual tokens, not numbers or commands.
   Hierarchy components preserve UTF-8 spelling.
 - Compatible aliases share storage. Identical repeated declarations merge.
-  Conflicting names with different identifiers remain ambiguous.
+  Repetition keys use source spelling and parent identity. Equal logical names
+  alone do not merge declarations or scopes. Conflicting names with different
+  identifiers remain ambiguous.
 - Separated bit ranges preserve direction and must agree with width. Attached
   `[msb:lsb]` suffixes are ranges only when their width agrees. Literal array
   indices and escaped brackets stay in names.

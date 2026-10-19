@@ -18,6 +18,7 @@ typedef struct {
     uint32_t signedness, logic_domain;
     int64_t msb, lsb;
     const char *name, *kind, *definition;
+    uint32_t verilog_name; /* Nonzero for SDK-identified Verilog symbols. */
 } ondas_wlf_decl;
 typedef struct {
     size_t selection;

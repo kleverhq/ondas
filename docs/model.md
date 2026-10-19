@@ -64,11 +64,17 @@ Subsequent lookups build a full index shared by hierarchy clones. Opening and
 traversal do not allocate this index. Consumers that use repeated lookups pay this
 cost once.
 
-For VCD and FST, leading Verilog escape markers are separate from logical name
-identity. Scopes and variables record whether the source name was escaped.
-Consumers can preserve identifier spelling without adding the marker to the name. FSDB keeps
-leading SDK backslashes in identity and separately retains the SDK declaration
-spelling before extracting printed ranges.
+Logical names exclude recognized Verilog escape syntax. A literal backslash in
+the identifier remains part of the component. Readers use their declaration
+metadata and verified spelling rules to separate syntax from data. They do not
+remove characters only because the name looks escaped. Scopes and variables
+record an escape marker when the reader retains that syntax. A reader that
+already supplies logical names can lack the original spelling.
+
+`reader_name` is optional diagnostic text before name adaptation. It can contain
+escape syntax or printed ranges. Consumers use `name` and `path` for addressing;
+they do not parse reader spelling. A conversion can lose source names or metadata
+before Ondas opens the result. The reader cannot reconstruct missing information.
 
 ## Time and observations
 

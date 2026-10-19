@@ -1,5 +1,6 @@
 #include "fsdb.h"
 #include "ffrAPI.h"
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <exception>
@@ -10,6 +11,8 @@
 #include <vector>
 
 extern "C" const void *const ondas_fsdb_dependencies[2];
+static_assert(sizeof(ondas_fsdb_decl) == 104 && offsetof(ondas_fsdb_decl, verilog_name) == 96,
+              "private FSDB declaration ABI mismatch");
 
 namespace {
 void require(bool ok, const char *message) {
@@ -58,6 +61,33 @@ std::string scope_kind(unsigned type) {
     default: return "fsdb:" + std::to_string(type);
     }
 }
+constexpr bool verilog_variable_type(unsigned type) {
+    return type <= FSDB_VT_VCD_PACKED_ENUM || type == FSDB_VT_SV_VARIABLE ||
+        type == FSDB_VT_SV_VARIABLE_THIS || type == FSDB_VT_EVENT_VARIABLE ||
+        type == FSDB_VT_STRING;
+}
+constexpr bool verilog_variable_name(unsigned type) {
+    return verilog_variable_type(type & ~FSDB_VT_MC_MASK);
+}
+static_assert(verilog_variable_name(FSDB_VT_VCD_WIRE | FSDB_VT_COMPUTED), "computed Verilog name");
+static_assert(verilog_variable_name(FSDB_VT_VCD_REG | FSDB_VT_MIDDLE), "middle Verilog name");
+static_assert(!verilog_variable_name(FSDB_VT_VHDL_SIGNAL | FSDB_VT_COMPUTED), "computed VHDL name");
+static_assert(!verilog_variable_name(FSDB_VT_VHDL_VARIABLE | FSDB_VT_MIDDLE), "middle VHDL name");
+
+constexpr bool verilog_struct_name(unsigned type) {
+    return type == FSDB_STRUCT_TYPE_PACKED_STRUCT ||
+        type == FSDB_STRUCT_TYPE_UNPACKED_STRUCT ||
+        type == FSDB_STRUCT_TYPE_PACKED_UNION ||
+        type == FSDB_STRUCT_TYPE_UNPACKED_UNION ||
+        type == FSDB_STRUCT_TYPE_TAGGED_PACKED_UNION ||
+        type == FSDB_STRUCT_TYPE_UNPACKED_TAGGED_UNION;
+}
+static_assert(verilog_struct_name(FSDB_STRUCT_TYPE_PACKED_STRUCT), "Verilog struct name");
+static_assert(verilog_struct_name(FSDB_STRUCT_TYPE_UNPACKED_TAGGED_UNION), "Verilog union name");
+static_assert(!verilog_struct_name(FSDB_STRUCT_TYPE_VHDL_RECORD), "VHDL record name");
+static_assert(!verilog_struct_name(FSDB_STRUCT_TYPE_HVL_DL), "HVL composite name");
+static_assert(!verilog_struct_name(0xffffffffu), "unknown composite name");
+
 std::string var_kind(unsigned type) {
     switch (type) {
     case FSDB_VT_VCD_EVENT: return "event";
@@ -187,6 +217,7 @@ struct ondas_fsdb {
     std::unordered_map<unsigned, Datatype> datatypes;
     std::string path, scale, writer, date;
     bool has_writer = false, has_date = false, has_variables = false;
+    bool verilog_names = false, mixed_names = false;
     uint64_t first = 0, last = 0, start_tick = 0, end_tick = 0;
     std::exception_ptr tree_error;
     void end() noexcept {
@@ -214,6 +245,10 @@ bool_T tree(fsdbTreeCBType type, void *user, void *raw) noexcept {
             d.data.entry = OFS_SCOPE;
             d.name = text(v.name); d.kind = scope_kind(v.type); d.definition = text(v.module);
             d.data.is_hidden = v.is_hidden_scope;
+            d.data.verilog_name = reader.verilog_names || (reader.mixed_names &&
+                (v.type <= FSDB_ST_VCD_GENERATE ||
+                 (v.type >= FSDB_ST_SV_INTERFACE && v.type <= FSDB_ST_SV_MODPORT_PORT) ||
+                 (v.type >= FSDB_ST_SV_COMPUTATION_UNIT && v.type <= FSDB_ST_SV_VERIFICATION_ROOT)));
             break;
         }
         case FSDB_TREE_CBT_RECORD_BEGIN: {
@@ -224,6 +259,8 @@ bool_T tree(fsdbTreeCBType type, void *user, void *raw) noexcept {
         case FSDB_TREE_CBT_STRUCT_BEGIN: {
             const auto &v = *static_cast<fsdbTreeCBDataStructBegin *>(raw);
             d.data.entry = OFS_COMPOSITE_SCOPE; d.name = text(v.name);
+            d.data.verilog_name = reader.verilog_names ||
+                (reader.mixed_names && verilog_struct_name(v.type));
             d.kind = v.type == FSDB_STRUCT_TYPE_VHDL_RECORD ? "record" :
                 (v.type >= FSDB_STRUCT_TYPE_UNPACKED_UNION ? "union" : "struct");
             switch (v.type) {
@@ -248,6 +285,8 @@ bool_T tree(fsdbTreeCBType type, void *user, void *raw) noexcept {
             require(v.u.idcode > 0, "invalid FSDB variable identity");
             d.data.entry = OFS_VAR; d.data.id = uint64_t(v.u.idcode);
             d.name = text(v.name); d.kind = var_kind(v.type);
+            d.data.verilog_name = reader.verilog_names ||
+                (reader.mixed_names && verilog_variable_name(v.type));
             d.data.msb = v.lbitnum; d.data.lsb = v.rbitnum;
             d.data.direction = v.direction;
             d.data.is_constant = v.type == FSDB_VT_VCD_PARAMETER || v.type == FSDB_VT_VHDL_CONSTANT;
@@ -347,6 +386,15 @@ extern "C" int ondas_fsdb_open(const char *path, int metadata_only, ondas_fsdb *
         }
         require(reader->file != nullptr, "FSDB Reader could not open the file (check file variant and SDK version)");
         auto *file = reader->file;
+        switch (file->ffrGetFileType()) {
+        case FSDB_FT_VERILOG: case FSDB_FT_EBC_VERILOG:
+        case FSDB_FT_IKOS_VERILOG: case FSDB_FT_FLE_VERILOG:
+            reader->verilog_names = true; break;
+        case FSDB_FT_VERILOG_VHDL: case FSDB_FT_EBC_VERILOG_VHDL:
+        case FSDB_FT_IKOS_VERILOG_VHDL: case FSDB_FT_FLE_VERILOG_VHDL:
+            reader->mixed_names = true; break;
+        default: break;
+        }
         reader->view_window = has_info && info.is_view_window_available;
         require(file->ffrGetXTagType() == FSDB_XTAG_TYPE_L || file->ffrGetXTagType() == FSDB_XTAG_TYPE_HL,
                 "floating FSDB timestamps are unsupported");

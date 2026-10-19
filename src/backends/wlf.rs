@@ -67,6 +67,8 @@ impl Reader {
             }
         }
         for (index, d) in opened.declarations.into_iter().enumerate() {
+            let (name, reader_name) = logical_name(d.name, d.verilog_name);
+            let name_was_escaped = reader_name.is_some();
             let parent = d
                 .parent
                 .map(|parent| {
@@ -79,8 +81,8 @@ impl Reader {
             if d.scope {
                 parents.insert(index, scopes.len());
                 scopes.push(ScopeData {
-                    name: d.name,
-                    name_was_escaped: false,
+                    name,
+                    name_was_escaped,
                     parent,
                     kind: d.kind,
                     definition_name: d.definition,
@@ -100,9 +102,9 @@ impl Reader {
                     }))
                 };
                 variables.push(VariableData {
-                    reader_name: None,
-                    name: d.name,
-                    name_was_escaped: false,
+                    reader_name,
+                    name,
+                    name_was_escaped,
                     parent,
                     kind: d.kind,
                     direction: match d.direction {
@@ -204,9 +206,43 @@ impl Reader {
     }
 }
 
+// Native Verilog identifiers include their terminating whitespace. A name
+// without that terminator is not evidence of Verilog escape syntax (for
+// example, VHDL extended identifiers and VCD-imported WLF names).
+fn logical_name(name: String, verilog: bool) -> (String, Option<String>) {
+    if verilog && name.starts_with('\\') && name.ends_with(|c: char| c.is_ascii_whitespace()) {
+        let logical = name[1..]
+            .trim_end_matches(|c: char| c.is_ascii_whitespace())
+            .to_owned();
+        (logical, Some(name))
+    } else {
+        (name, None)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn wlf_identifier_syntax_is_separate_from_literal_characters() {
+        for (raw, expected) in [
+            ("\\plain ", "plain"),
+            ("\\with.dot ", "with.dot"),
+            ("\\with/slash\t", "with/slash"),
+            ("\\literal[7:0] ", "literal[7:0]"),
+            ("\\\\leading ", r"\leading"),
+            ("\\a\\b ", r"a\b"),
+        ] {
+            assert_eq!(
+                logical_name(raw.into(), true),
+                (expected.into(), Some(raw.into()))
+            );
+            assert_eq!(logical_name(raw.into(), false), (raw.into(), None));
+        }
+        for raw in [r"\with.do\", r"\leading", "space in name", r"\VHDL name\"] {
+            assert_eq!(logical_name(raw.into(), true), (raw.into(), None));
+        }
+    }
     use crate::{Sample, Value};
     #[test]
     #[ignore = "requires Questa and installed fixtures"]

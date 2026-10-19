@@ -211,6 +211,14 @@ separately so priority changes cannot remove an adapter from coverage. Reusable
 checks derive samples, traces, scans, projections and composed queries from
 independent oracle evidence. Concrete coverage belongs in [testing](testing.md).
 
+Some pinned FSDB and WLF oracles contain Verilog SDK identifier spelling in
+component paths. The runner maps only the audited fixture inputs to logical
+components before comparison. The mapping is explicit in `logical_name_oracle`
+in `tests/conformance.rs` and does not call production name adapters. Other
+fixture paths remain exact. Raw sidecars, artifact hashes and observations stay
+unchanged. Directed name tests use literal expected components through the public
+API and check escape flags, diagnostic spelling, lookup and parent/child links.
+
 ## Updating the corpus
 
 Select a new fixture commit deliberately on the host, install its payloads, and

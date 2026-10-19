@@ -41,6 +41,7 @@ test: _inside
 # Check every FST/VCD/GHW in the pinned fixtures plus focused API regressions.
 conformance: _inside
     cargo test --locked --profile conformance --test conformance -- --ignored --nocapture
+    cargo test --locked --profile conformance --test exact_names -- --ignored
 
 # Check every FSDB in the pinned fixtures, plus focused regressions.
 conformance-fsdb: _inside
@@ -49,6 +50,7 @@ conformance-fsdb: _inside
 _conformance-fsdb: _inside
     cargo test --locked --profile conformance --features fsdb-lib --test conformance fsdb_ -- --ignored --nocapture
     cargo test --locked --profile conformance --features fsdb-lib --lib fsdb_ -- --ignored --nocapture
+    cargo test --locked --profile conformance --features fsdb-lib --test exact_names fsdb_ -- --ignored
 
 # Check every SHM directory and focused native-reader regressions.
 conformance-shm: _inside
@@ -57,6 +59,7 @@ conformance-shm: _inside
 _conformance-shm: _inside
     cargo test --locked --profile conformance --features shm-lib --test conformance shm_ -- --ignored --nocapture
     cargo test --locked --profile conformance --features shm-lib --lib shm_ -- --ignored --nocapture
+    cargo test --locked --profile conformance --features shm-lib --test exact_names shm_ -- --ignored
 
 # Launch a SHM application without Cargo's runtime environment.
 shm-consumer: _inside
@@ -71,6 +74,7 @@ _conformance-wlf: _inside
     cargo test --locked --profile conformance --features wlf-lib --test conformance wlf_ -- --ignored --nocapture
     cargo test --locked --profile conformance --features wlf-lib --test wlf_lib -- --ignored
     cargo test --locked --profile conformance --features wlf-lib --lib wlf_ -- --ignored
+    cargo test --locked --profile conformance --features wlf-lib --test exact_names wlf_ -- --ignored
 
 # Execute VCD/FST/GHW Criterion workloads without timing thresholds.
 bench-smoke: _inside

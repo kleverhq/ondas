@@ -42,6 +42,7 @@ struct Declaration {
     definition: *const c_char,
     type_name: *const c_char,
     enum_count: usize,
+    verilog_name: u32,
 }
 #[repr(C)]
 #[derive(Default)]
@@ -285,6 +286,10 @@ impl Reader {
                 match d.entry {
                     0 | 3 => {
                         let parent = stack.last().copied();
+                        // Repeated SDK declarations use their original spelling
+                        // as a merge key. Equal logical paths are not identity.
+                        let key = (parent, name.clone(), d.entry);
+                        let (name, name_was_escaped) = logical_name(name, d.verilog_name != 0);
                         let definition_name = string(d.definition)?;
                         let packing = match d.packing {
                             0 => None,
@@ -296,7 +301,6 @@ impl Reader {
                         // SDK scopes and record/struct containers are separate
                         // objects even when their parent and name coincide.
                         // Repetitions of either still require compatible metadata.
-                        let key = (parent, name.clone(), d.entry);
                         let id = if let Some(&id) = scope_ids.get(&key) {
                             let old = &scopes[id];
                             let differences = [
@@ -344,7 +348,7 @@ impl Reader {
                             let id = scopes.len();
                             scopes.push(ScopeData {
                                 name,
-                                name_was_escaped: false,
+                                name_was_escaped,
                                 parent,
                                 kind,
                                 definition_name,
@@ -385,11 +389,13 @@ impl Reader {
                         let range = (d.has_range != 0).then(|| BitRange::new(d.msb, d.lsb));
                         let reader_name = name.clone();
                         let (name, range) = declared_name(name, range, encoding);
+                        let (name, name_was_escaped) = logical_name(name, d.verilog_name != 0);
                         // A file can append hierarchy trees repeating an identical
                         // declaration. Coalesce repetitions, not distinct aliases.
                         if !seen_variables.insert((
                             stack.last().copied(),
-                            name.clone(),
+                            reader_name.clone(),
+                            name_was_escaped,
                             kind.clone(),
                             d.direction,
                             range.map(|r| (r.msb(), r.lsb())),
@@ -429,7 +435,7 @@ impl Reader {
                         variables.push(VariableData {
                             name,
                             reader_name: Some(reader_name),
-                            name_was_escaped: false,
+                            name_was_escaped,
                             parent: stack.last().copied(),
                             kind,
                             direction: match d.direction {
@@ -692,6 +698,14 @@ fn real(bytes: &[u8]) -> Result<f64> {
     }
 }
 
+fn logical_name(name: String, verilog: bool) -> (String, bool) {
+    if verilog {
+        crate::hierarchy::normalize_name(name)
+    } else {
+        (name, false)
+    }
+}
+
 fn declared_name(
     name: String,
     range: Option<BitRange>,
@@ -736,6 +750,29 @@ mod tests {
     use super::*;
     use crate::TimeUnit;
     use crate::fsdb_compatibility;
+    #[test]
+    fn fsdb_identifier_syntax_requires_verilog_metadata() {
+        for (raw, expected) in [
+            (r"\plain", "plain"),
+            (r"\with.dot", "with.dot"),
+            (r"\with/slash", "with/slash"),
+            (r"\literal[7:0]", "literal[7:0]"),
+            (r"\\leading", r"\leading"),
+            (r"\a\b", r"a\b"),
+        ] {
+            assert_eq!(logical_name(raw.into(), true), (expected.into(), true));
+            assert_eq!(logical_name(raw.into(), false), (raw.into(), false));
+        }
+        for raw in ["plain", "space in name", "literal[7:0]", r"a\b"] {
+            assert_eq!(logical_name(raw.into(), true), (raw.into(), false));
+        }
+    }
+
+    #[test]
+    fn fsdb_private_declaration_layout() {
+        assert_eq!(std::mem::size_of::<Declaration>(), 104);
+        assert_eq!(std::mem::offset_of!(Declaration, verilog_name), 96);
+    }
     #[test]
     fn real_storage_preserves_binary_values() {
         for value in [0.0_f32, -0.0, -3.25, f32::INFINITY, f32::NEG_INFINITY] {
@@ -922,10 +959,11 @@ mod tests {
                     _ => None,
                 };
                 let (name, range) = declared_name(raw.into(), range, encodings[index]);
+                let (name, name_was_escaped) = logical_name(name, true);
                 VariableData {
                     name,
                     reader_name: Some(raw.into()),
-                    name_was_escaped: false,
+                    name_was_escaped,
                     parent: None,
                     kind: "wire".into(),
                     direction: Direction::Implicit,
@@ -940,7 +978,7 @@ mod tests {
             })
             .collect();
         let hierarchy = Hierarchy::new(Vec::new(), variables, encodings);
-        let path = crate::HierarchyPath::from_components([r"\flags[0:0]"]);
+        let path = crate::HierarchyPath::from_components(["flags[0:0]"]);
         assert!(matches!(
             hierarchy.signal(&path.to_string()),
             Err(crate::LookupError::Ambiguous { .. })
@@ -955,7 +993,7 @@ mod tests {
         );
         assert_eq!(
             hierarchy
-                .variable_path(&crate::HierarchyPath::from_components([r"\awaddr[0]"]))
+                .variable_path(&crate::HierarchyPath::from_components(["awaddr[0]"]))
                 .unwrap()
                 .range(),
             Some(BitRange::new(31, 0))

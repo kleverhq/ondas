@@ -382,7 +382,8 @@ impl Reader {
                     let name = name(&spelling)?;
                     tokens.end()?;
                     let parent = stack.last().copied();
-                    let key = (parent, name.clone());
+                    // Coalesce repeated source spellings, not equal logical paths.
+                    let key = (parent, spelling);
                     let index = if let Some(&index) = scope_ids.get(&key) {
                         if scopes[index].kind != kind {
                             return Err(tokens.error("conflicting scope kind"));
@@ -460,11 +461,12 @@ impl Reader {
                         index
                     };
                     let (name, range) = reference_name(&reference, &suffix, encoding)?;
+                    let name_was_escaped = reference.starts_with(b"\\");
                     let parent = stack.last().copied();
                     let kind = kind.replace('_', "-");
                     if declarations.insert((
                         parent,
-                        name.clone(),
+                        reference,
                         kind.clone(),
                         index,
                         range.map(|r| (r.msb(), r.lsb())),
@@ -472,7 +474,7 @@ impl Reader {
                         variables.push(VariableData {
                             name,
                             reader_name: None,
-                            name_was_escaped: reference.starts_with(b"\\"),
+                            name_was_escaped,
                             parent,
                             is_constant: matches!(kind.as_str(), "parameter" | "real-parameter"),
                             kind,

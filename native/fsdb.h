@@ -23,6 +23,7 @@ typedef struct {
     int64_t msb, lsb;
     const char *name, *kind, *definition, *type_name;
     size_t enum_count;
+    uint32_t verilog_name; /* Nonzero when SDK metadata establishes Verilog spelling rules. */
 } ondas_fsdb_decl;
 
 typedef struct {

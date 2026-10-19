@@ -126,12 +126,14 @@ impl Reader {
                         name,
                         component,
                     } => {
-                        let (name, name_was_escaped) = crate::hierarchy::normalize_name(name);
                         let parent = stack.last().copied();
+                        // Repeated source spellings are distinct from equal
+                        // logical paths after identifier syntax is removed.
+                        let key = (parent, name.clone());
+                        let (name, name_was_escaped) = crate::hierarchy::normalize_name(name);
                         let kind = scope_kind(tpe);
                         let definition_name = (!component.is_empty()).then_some(component);
                         let packing = pending_packing.take();
-                        let key = (parent, name.clone());
                         let id = if let Some(&id) = scope_ids.get(&key) {
                             let scope: &mut ScopeData = &mut scopes[id];
                             if scope.kind != kind
