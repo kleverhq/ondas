@@ -384,7 +384,11 @@ fn logical_name_oracle(name: &str, mut oracle: Json) -> Json {
     );
     if fsdb_verilog || name == "wlf/wlf0072-strings-and-names" {
         for key in ["scopes", "variables"] {
-            if let Some(declarations) = oracle["hierarchy"][key].as_array_mut() {
+            if let Some(declarations) = oracle
+                .get_mut("hierarchy")
+                .and_then(|hierarchy| hierarchy.get_mut(key))
+                .and_then(Json::as_array_mut)
+            {
                 let mut logical_paths = HashSet::new();
                 for declaration in declarations {
                     for component in declaration["path"].as_array_mut().unwrap() {
@@ -411,6 +415,12 @@ fn logical_name_oracle(name: &str, mut oracle: Json) -> Json {
 
 #[test]
 fn sdk_oracle_name_mapping_is_scoped_and_rejects_collisions() {
+    for oracle in [json!({}), json!({"open": {"result": "malformed"}})] {
+        assert_eq!(
+            logical_name_oracle("fsdb/fsdb0033-sti-dac", oracle.clone()),
+            oracle
+        );
+    }
     let raw = json!({"hierarchy": {"scopes": [{"path": ["top", "\\literal[0]"]}]}});
     let mapped = logical_name_oracle("fsdb/fsdb0033-sti-dac", raw.clone());
     assert_eq!(

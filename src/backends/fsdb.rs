@@ -998,6 +998,7 @@ mod tests {
                 .range(),
             Some(BitRange::new(31, 0))
         );
+        assert!(hierarchy.variable("awaddr[0]").unwrap().name_was_escaped());
         assert_eq!(
             hierarchy.variable("maprom[0]").unwrap().reader_name(),
             Some("maprom[0][7:0]")
