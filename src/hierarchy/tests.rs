@@ -15,7 +15,7 @@ fn enum_keys_match_whole_bits_without_guessing_or_restricting_labels() {
     let bits = crate::BitsRef::from_ascii(b"01XZHUWL-").unwrap();
     let labels: Vec<_> = table
         .variants()
-        .filter(|v| v.encoded.iter_msb().eq(bits.iter_msb()))
+        .filter(|v| v.encoded == bits)
         .map(|v| v.label)
         .collect();
     assert_eq!(labels, ["état", "other label"]);
@@ -29,6 +29,7 @@ fn enum_keys_match_whole_bits_without_guessing_or_restricting_labels() {
     assert_eq!(key.bit(8), Some(crate::Logic::Zero));
     let owned = key.to_owned();
     drop(data);
+    assert_eq!(owned, bits);
     assert_eq!(owned.as_ref().to_string(), "01xzhuwl-");
     for key in ["1", "001", "0?", "é"] {
         assert!(

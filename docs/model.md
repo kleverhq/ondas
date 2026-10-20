@@ -52,6 +52,11 @@ to each declaration. They do not belong to the shared signal or stored bits.
 Interpretation metadata remains absent when it is unavailable or does not apply.
 Observed values do not establish this metadata.
 
+Bit-vector equality compares width and each logic state. Owned values and
+borrowed views use the same rule, independent of storage. Leading zeros are part
+of the width. Unknown and don't-care states compare as distinct states, not
+wildcards. Numerical interpretation and width extension remain caller policy.
+
 Enum metadata is a mapping from whole stored bits to reader-provided labels.
 Each exposed key is a `BitsRef` with the whole signal width and the same bit
 positions as queried values. Callers can inspect logic states without formatting

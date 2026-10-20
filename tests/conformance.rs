@@ -2296,7 +2296,7 @@ fn fst_enum_keys_match_recorded_values_and_allow_unlabelled_bits() {
                 assert_eq!(bits.as_ref().to_string(), key);
                 let labels = table
                     .variants()
-                    .filter(|v| v.encoded.iter_msb().eq(bits.as_ref().iter_msb()))
+                    .filter(|v| v.encoded == bits)
                     .map(|v| v.label)
                     .collect::<Vec<_>>();
                 assert_eq!(labels, label.into_iter().collect::<Vec<_>>());

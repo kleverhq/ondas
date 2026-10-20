@@ -900,9 +900,9 @@ impl BitRange {
 /// are preserved. A value need not have a label; a key can have multiple labels.
 /// This metadata does not change the signal's encoding.
 ///
-/// Compare keys with queried bits through the public logic-state iterators:
-/// `BitsRef` does not implement `PartialEq`. The iterators compare the complete
-/// width and every logic state without formatting text.
+/// Compare keys with queried [`Bits`](crate::Bits) or [`BitsRef`](crate::BitsRef)
+/// values using `==`. Equality checks the complete width and every logic state
+/// without formatting text or copying the bit payload.
 ///
 /// ```no_run
 /// use ondas::{Sample, Time, Value};
@@ -913,7 +913,7 @@ impl BitRange {
 /// if let (Some(signal), Some(table)) = (variable.signal(), variable.enumeration()) {
 ///     if let Sample::Value { value: Value::Bits(bits), .. } = wave.sample(signal, Time::ZERO)? {
 ///         for variant in table.variants() {
-///             if variant.encoded.iter_msb().eq(bits.as_ref().iter_msb()) {
+///             if variant.encoded == bits {
 ///                 println!("{}", variant.label);
 ///             }
 ///         }
