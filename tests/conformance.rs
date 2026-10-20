@@ -43,6 +43,10 @@ mod query_workloads;
 #[cfg(feature = "shm-lib")]
 #[path = "support/shm_workload_tests.rs"]
 mod shm_workload_tests;
+
+#[cfg(feature = "shm-lib")]
+#[path = "support/shm_enum_tests.rs"]
+mod shm_enum_tests;
 #[path = "support/vcd_workload_checks.rs"]
 mod vcd_workload_checks;
 #[path = "support/vcd_workloads.rs"]

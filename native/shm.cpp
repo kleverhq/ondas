@@ -131,6 +131,8 @@ size_t source_node(std::vector<SourceNode> &nodes, size_t parent, int property,
 struct Declaration {
     ondas_shm_decl descriptor{};
     std::string name, kind, definition;
+    std::string enum_name;
+    std::vector<std::pair<std::string, std::string>> variants;
     size_t source = root_node;
     int type_kind = -1;
     SstHandle variable = 0; // only valid within this declaration's Session
@@ -183,10 +185,45 @@ Declaration describe_variable(SstHandle variable, const std::string &prefix) {
     else if (kind == 1) d.encoding = 4;
     return declaration;
 }
+void import_enumeration(Declaration &declaration) {
+    const auto &d = declaration.descriptor;
+    if (d.encoding != 1) return;
+    const auto type = da_handle(0x1be, declaration.variable);
+    Enumeration elements(0x1fe, type);
+    auto element = elements.next();
+    if (!element) return;
+    int raw_bits = 0;
+    if (da_get_int(0x164, type, &raw_bits) < 0 || raw_bits <= 0) return;
+    const int bytes = raw_bits / 8 + (raw_bits % 8 != 0);
+    std::vector<std::pair<std::string, std::string>> variants;
+    do {
+        const char *label = da_get_sstr(0x10a, element);
+        if (!label) return;
+        std::string owned_label(label);
+        const char *raw = da_get_sstr(0x10b, element);
+        if (!raw) return;
+        // Raw storage can contain NUL and is not an HDL integer. The source
+        // type proves its byte count and formats it like ordinary bit values.
+        const std::string owned_raw(raw, bytes);
+        const char *formatted = da_get_sstr_pl(0x15a, type, 0x10b,
+                                             owned_raw.data(), bytes, 0x1b3, 1, 0x10);
+        if (!formatted) return;
+        std::string key(formatted);
+        if (key.size() != d.width) return;
+        for (char &bit : key) {
+            if (bit >= 'A' && bit <= 'Z') bit += 'a' - 'A';
+            if (!bit || !std::strchr("01xzuwlh-", bit)) return;
+        }
+        variants.emplace_back(std::move(key), std::move(owned_label));
+    } while ((element = elements.next()));
+    declaration.enum_name = text(0x10a, type);
+    declaration.variants = std::move(variants);
+}
 void import_variable(SstHandle variable, const std::string &prefix, std::vector<Declaration> &out,
                      std::unordered_map<SstHandle, std::uint64_t> &identities,
                      std::vector<SourceNode> &nodes, size_t source) {
     Declaration declaration = describe_variable(variable, prefix);
+    import_enumeration(declaration);
     declaration.source = source;
     auto &d = declaration.descriptor;
 #ifdef ONDAS_SHM_USE_ALIAS_IDENTITY
@@ -580,6 +617,13 @@ extern "C" void ondas_shm_declaration(const ondas_shm *reader, size_t index, ond
     *out = d.descriptor;
     out->name = d.name.c_str(); out->kind = d.kind.c_str();
     out->definition = d.definition.empty() ? nullptr : d.definition.c_str();
+    out->variant_count = d.variants.size();
+    out->enum_name = d.enum_name.empty() ? nullptr : d.enum_name.c_str();
+}
+extern "C" void ondas_shm_enum_variant(const ondas_shm *reader, size_t declaration,
+                                       size_t variant, ondas_shm_variant *out) {
+    const auto &v = reader->declarations[declaration].variants[variant];
+    *out = {v.first.c_str(), v.second.c_str()};
 }
 extern "C" int ondas_shm_read(ondas_shm *reader, const uint64_t *ids, size_t count, uint64_t from, uint64_t end, int validated_resume, char *error, size_t cap) {
     const bool prepared = reader->point_ready && from == 0 && !validated_resume &&

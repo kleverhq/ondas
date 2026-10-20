@@ -63,8 +63,17 @@ names across formats; conversion can lose source identifier information.
 
 The adapter exposes HDL bit ranges, constants, scope definition names, exact
 integer ticks, timescale, and source span. Direction is unknown. Type names,
-signedness, logic-domain metadata, enumeration labels, writer, date, and comments
-are unavailable. Metadata-only reads skip hierarchy import.
+signedness, logic-domain metadata, writer, date, and comments are unavailable.
+Metadata-only reads skip hierarchy import.
+
+For bit-valued declarations, enum tables retain the source order and labels,
+including variants that never occur in the history. The adapter copies each
+source code and formats it with the declaration's type. It exposes a table only
+when every key has the whole signal width and contains supported logic states.
+Keys are `BitsRef` values and preserve leading zeros and all nine logic states.
+The adapter does not infer codes from label positions or observed values. A bit
+value can have no label. Enum types without a supported bit encoding have no
+table. Missing type names remain unknown.
 
 ## Observations and ownership
 
@@ -82,7 +91,8 @@ SST2 shares open files and a global time unit. Each native operation opens the
 base TRN and joins the numbered parts. If the base cannot open, it first opens
 the directory and then retries the base. It copies the required data and closes
 the source under a process-wide mutex.
-No vendor handle or borrowed vendor buffer survives that operation. Rust
+No vendor handle or borrowed vendor buffer survives that operation. Enum tables
+are copied during hierarchy import and do not require later SDK calls. Rust
 visitors run after the mutex is released. A visitor can query another waveform,
 including one with a different timescale. `Waveform` remains `Send + Sync`.
 

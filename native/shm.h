@@ -11,7 +11,12 @@ typedef struct {
     uint32_t entry, encoding, width, has_range, is_constant;
     int64_t msb, lsb;
     const char *name, *kind, *definition;
+    size_t variant_count;
+    const char *enum_name;
 } ondas_shm_decl;
+typedef struct {
+    const char *encoded, *label;
+} ondas_shm_variant;
 typedef struct {
     uint64_t first, last;
     int32_t exponent;
@@ -43,6 +48,7 @@ void ondas_shm_metadata(const ondas_shm *, ondas_shm_meta *);
 void ondas_shm_work_done(const ondas_shm *, ondas_shm_work *);
 size_t ondas_shm_decl_count(const ondas_shm *);
 void ondas_shm_declaration(const ondas_shm *, size_t, ondas_shm_decl *);
+void ondas_shm_enum_variant(const ondas_shm *, size_t declaration, size_t variant, ondas_shm_variant *);
 // A validated resume requires known entering values and a successful immutable prefix.
 int ondas_shm_read(ondas_shm *, const uint64_t *, size_t, uint64_t, uint64_t, int validated_resume, char *, size_t);
 // Returns 1 for a complete certified bit batch, 2 for a partial batch, or 0
