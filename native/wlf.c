@@ -275,11 +275,11 @@ static int walk(ondas_wlf *r, WlfSymbolId symbol, size_t parent, unsigned depth,
         if (!scope) {
             if (wlfTypePropDataType(type, WLF_TYPE_TYPE) != wlfTypeArray || r->decls[index].out.encoding)
                 return 0;
-            WlfIterId elements = wlfSymSubelements(symbol);
-            if (!elements) return 0;
             /* A container has several archives, not one scalar history. Keep
              * its declaration, and expose SDK elements as exact components. */
             r->decls[index].out.id = -1;
+            WlfIterId elements = wlfSymSubelements(symbol);
+            if (!elements) return 0;
             const char *prefix = r->decls[index].out.name;
             size_t source_len = base_len ? base_len : strlen(prefix);
             int source_verilog = r->decls[index].out.verilog_name;

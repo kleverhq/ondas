@@ -346,7 +346,7 @@ SV enums expose full-width bit values and complete native tables through
 [`Variable::enumeration`]. Keys preserve leading zeros, signed bit patterns and
 X/Z, including variants never recorded in the history. Qualified scalar VHDL
 logic types keep one bit. Other qualified VHDL enums use their native ordinal
-storage width. SDK array elements are separate declarations; an expanded array
+storage width. SDK array elements are separate declarations; their array
 container has no scalar signal. Type names and aggregate packing remain unknown
 when the SDK does not establish them. An unavailable or incompatible enum table
 stays absent and does not prevent otherwise supported bit queries. The private

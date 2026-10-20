@@ -58,7 +58,7 @@ qualified VHDL enum types use their native ordinal storage width of 8, 16 or 32
 bits. Each ordinal-to-label pair is checked with the native typed formatter.
 Unqualified VHDL types remain unsupported. An array of logic elements has no
 scalar enum table. SDK array elements are separate declarations with exact
-combined components such as `states[0]`. An expanded array container has no
+combined components such as `states[0]`. Such an array container has no
 scalar signal; no aggregate packing is inferred.
 
 For SDK-identified Verilog declarations, an escaped name with terminating

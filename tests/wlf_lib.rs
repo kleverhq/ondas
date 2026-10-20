@@ -189,8 +189,9 @@ fn wlf_enum_same_resolution_owners_survive_other_close() {
         let core_signal = core.hierarchy().signal("top.sparse8").unwrap();
         let mut xz = ondas::open_with(path("wlf0084-enum-xz"), "wlf-lib").unwrap();
         let xz_signal = xz.hierarchy().signal("top.logic2xz").unwrap();
-        // Reopen the first owner while the second remains live. Its close
-        // must not leave lookup pointers used by the surviving owner.
+        assert_eq!(core.metadata().timescale(), xz.metadata().timescale());
+        // Opening xz suspends core's native owner. This sample reopens it
+        // while xz stays live; closing core must leave xz usable.
         assert_eq!(
             bits(core.sample(core_signal, Time::ZERO).unwrap()),
             "00000001"
