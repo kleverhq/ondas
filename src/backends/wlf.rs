@@ -90,10 +90,14 @@ impl Reader {
                     is_hidden: false,
                 });
             } else {
+                let encoding = if d.id < 0 {
+                    d.encoding
+                } else {
+                    archive_encodings[&d.id]
+                };
                 let signal = if d.id < 0 {
                     None
                 } else {
-                    let encoding = archive_encodings[&d.id];
                     Some(*identities.entry(d.id).or_insert_with(|| {
                         let signal = encodings.len();
                         encodings.push(encoding);
@@ -117,7 +121,7 @@ impl Reader {
                     range: d.range,
                     is_constant: d.is_constant,
                     type_name: None,
-                    enumeration: EnumerationData::for_encoding(None, d.variants, d.encoding),
+                    enumeration: EnumerationData::for_encoding(None, d.variants, encoding),
                     signedness: match d.signedness {
                         1 => Some(Signedness::Unsigned),
                         2 => Some(Signedness::Signed),
