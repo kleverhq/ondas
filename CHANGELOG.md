@@ -23,6 +23,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Read WLF enum values and complete native tables with full-width bit keys,
+  including wide and X/Z variants. Expose SDK array elements as declarations.
 - Add exact equality for `BitsRef`, `Bits`, and mixed pairs. Equal values have
   the same width and the same logic state at each bit. Compare queried bits
   with enum keys without formatting text or copying the bit payload.

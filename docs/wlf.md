@@ -20,10 +20,13 @@ application that opens another waveform format. Rebuild after moving the SDK or
 selecting another SDK version. Changing `QUESTA_HOME` after compilation does not
 select another runtime. No separate Ondas shim shared library is needed.
 
-The shim uses the exported `wlfFileOpenByMode` function with lite mode `7`.
-This entry point is absent from the SDK header and documentation. Qualify each
-selected SDK with the vendor gates below. A missing export fails at link time;
-a changed ABI or mode behavior requires a new compatibility check.
+The shim selects the active file with the exported `setCurrentNamespace` function
+and clears the SDK's expression lookup pointers at owner boundaries. These
+interfaces are absent from the SDK header. SV enum tables also require
+a qualified private type-descriptor layout. Qualify each selected SDK with the
+vendor gates below. A missing export fails at link time. A changed descriptor
+layout or mode behavior requires a new compatibility check. The public SDK
+API version alone does not establish compatibility.
 
 Input is file-only. Bytes return `UnsupportedInput` without a temporary file.
 Automatic detection uses the case-insensitive `.wlf` extension as a fallback.
@@ -36,8 +39,23 @@ backend selection and error categories.
 The reader preserves logical component names, scope and variable kinds, declared
 ranges, constants, directions and verified alias identities. Unlogged objects
 have no signal. Unsupported or incompatible value classes remain visible and
-fail queries. Type names, enum interpretations and aggregate packing stay absent
-when the SDK does not establish them.
+fail queries. Type names and aggregate packing stay absent when the SDK does not
+establish them.
+
+SV enum values use their declared bit width. The reader copies the complete
+native table in declaration order, including variants absent from the history.
+Keys preserve leading zeros, signed bit patterns and X/Z. Both table keys and
+samples use the same native value-word conversion. Labels keep their source
+spelling. No table is inferred from observed values or label positions. Ordinary
+Bits reading does not require an enum table. An incompatible table stays absent.
+
+Scalar VHDL logic types keep one bit and their represented logic states. Other
+qualified VHDL enum types use their native ordinal storage width of 8, 16 or 32
+bits. Each ordinal-to-label pair is checked with the native typed formatter.
+Unqualified VHDL types remain unsupported. An array of logic elements has no
+scalar enum table. SDK array elements are separate declarations with exact
+combined components such as `states[0]`. An expanded array container has no
+scalar signal; no aggregate packing is inferred.
 
 For SDK-identified Verilog declarations, an escaped name with terminating
 whitespace becomes a logical component without that syntax. Literal backslashes
@@ -81,10 +99,11 @@ completion, early break, error and caller panic.
 The SDK uses one active time resolution. Before switching resolutions or reading
 a new header, the worker closes every native owner. With no open files, the next
 header selects the resolution. SDK initialization stays active for the process
-lifetime. Normal SDK open installs a process-wide namespace pointer. Close leaves
-that pointer attached to freed storage, so a later hierarchy read can crash.
-The shim uses lite mode, which does not install this pointer. Lite files are absent
-from `wlfFileCount()`; the worker closes its owned handles directly.
+lifetime. Normal SDK open makes native array elements available. The SDK can
+retain expression lookup pointers into a closed file. The shim clears these
+pointers before open and close, and selects the live file before reading or
+releasing query resources. This also covers independent owners with the same
+resolution. The worker closes its owned handles directly.
 Logical sessions keep owned declarations and a small read position. A suspended
 query reopens its file and replays from its query start, discarding already returned
 completed-tick slots. This preserves event counts and pending caller state without

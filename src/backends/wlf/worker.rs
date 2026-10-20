@@ -40,6 +40,7 @@ struct NativeDeclaration {
     kind: *const c_char,
     definition: *const c_char,
     verilog_name: u32,
+    array_base_len: u32,
 }
 #[repr(C)]
 #[derive(Default)]
@@ -64,6 +65,14 @@ unsafe extern "C" {
     fn ondas_wlf_metadata(reader: *mut c_void, out: *mut Meta);
     fn ondas_wlf_decl_count(reader: *mut c_void) -> usize;
     fn ondas_wlf_declaration(reader: *mut c_void, index: usize, out: *mut NativeDeclaration);
+    fn ondas_wlf_enum_count(reader: *mut c_void, index: usize) -> usize;
+    fn ondas_wlf_enum_variant(
+        reader: *mut c_void,
+        index: usize,
+        variant: usize,
+        bits: *mut *const c_char,
+        label: *mut *const c_char,
+    );
     fn ondas_wlf_begin(
         reader: *mut c_void,
         indices: *const usize,
@@ -117,6 +126,8 @@ pub(super) struct Declaration {
     pub kind: String,
     pub definition: Option<String>,
     pub verilog_name: bool,
+    pub variants: Vec<(String, String)>,
+    pub array_base_len: usize,
 }
 pub(super) struct Opened {
     pub id: u64,
@@ -283,6 +294,16 @@ unsafe fn string(ptr: *const c_char) -> Result<Option<String>> {
         .map(|s| Some(s.to_owned()))
         .map_err(|_| backend_error("non-UTF-8 WLF declaration or metadata text"))
 }
+// SAFETY: the pointers obey string's lifetime and terminator requirements.
+// An unusable optional table must not disable the signal's bit encoding.
+unsafe fn enum_strings(bits: *const c_char, label: *const c_char) -> Option<(String, String)> {
+    unsafe {
+        string(bits)
+            .ok()
+            .flatten()
+            .zip(string(label).ok().flatten())
+    }
+}
 fn open_handle(path: &CString, name: &CString, metadata_only: bool) -> Result<Handle> {
     let mut raw = std::ptr::null_mut();
     let mut error = [0; 512];
@@ -372,6 +393,30 @@ pub(super) fn open(path: CString, source_name: String) -> Result<Opened> {
             if d.parent != usize::MAX && d.parent >= index {
                 return Err(backend_error("invalid WLF hierarchy parent"));
             }
+            // SAFETY: immutable worker-owned declaration; copy all borrowed
+            // variant bytes before returning data to the caller thread.
+            let variant_count = unsafe { ondas_wlf_enum_count(handle.raw.as_ptr(), index) };
+            let mut variants = Vec::with_capacity(variant_count);
+            for variant in 0..variant_count {
+                let (mut bits, mut label) = (std::ptr::null(), std::ptr::null());
+                // SAFETY: both indices come from this same live native owner.
+                let pair = unsafe {
+                    ondas_wlf_enum_variant(
+                        handle.raw.as_ptr(),
+                        index,
+                        variant,
+                        &mut bits,
+                        &mut label,
+                    );
+                    enum_strings(bits, label)
+                };
+                if let Some(pair) = pair {
+                    variants.push(pair);
+                } else {
+                    variants.clear();
+                    break;
+                }
+            }
             declarations.push(Declaration {
                 id: d.id,
                 parent: (d.parent != usize::MAX).then_some(d.parent),
@@ -389,6 +434,8 @@ pub(super) fn open(path: CString, source_name: String) -> Result<Opened> {
                     .ok_or_else(|| backend_error("missing WLF kind"))?,
                 definition: unsafe { string(d.definition)? },
                 verilog_name: d.verilog_name != 0,
+                variants,
+                array_base_len: d.array_base_len as usize,
             });
             encodings.push(encoding);
         }
@@ -738,6 +785,21 @@ fn owned_record(out: &NativeRecord, encodings: &[Encoding]) -> Result<Record> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn wlf_optional_enum_text_preserves_unicode_and_rejects_invalid_text() {
+        let bits = c"001x";
+        let label = CString::new("état").unwrap();
+        let invalid = [255u8, 0];
+        // SAFETY: all inputs are live and NUL-terminated, including invalid UTF-8.
+        unsafe {
+            assert_eq!(
+                enum_strings(bits.as_ptr(), label.as_ptr()),
+                Some(("001x".into(), "état".into()))
+            );
+            assert!(enum_strings(bits.as_ptr(), invalid.as_ptr().cast()).is_none());
+            assert!(enum_strings(std::ptr::null(), label.as_ptr()).is_none());
+        }
+    }
     fn failed_batch() -> Batch {
         Batch {
             records: vec![
@@ -778,6 +840,7 @@ mod tests {
         assert_eq!(std::mem::size_of::<NativeRecord>(), 48);
         assert_eq!(std::mem::offset_of!(NativeDeclaration, name), 64);
         assert_eq!(std::mem::offset_of!(NativeDeclaration, verilog_name), 88);
+        assert_eq!(std::mem::offset_of!(NativeDeclaration, array_base_len), 92);
         assert_eq!(std::mem::offset_of!(NativeRecord, data), 24);
     }
 }

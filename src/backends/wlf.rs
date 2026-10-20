@@ -3,7 +3,7 @@ mod worker;
 use crate::{
     Direction, Encoding, Error, Hierarchy, LogicDomain, Metadata, Result, Signal, Signedness, Time,
     ValueRef,
-    hierarchy::{ScopeData, VariableData},
+    hierarchy::{EnumerationData, ScopeData, VariableData},
 };
 use std::{
     collections::HashMap, ffi::CString, ops::ControlFlow, os::unix::ffi::OsStrExt, path::Path,
@@ -67,7 +67,7 @@ impl Reader {
             }
         }
         for (index, d) in opened.declarations.into_iter().enumerate() {
-            let (name, reader_name) = logical_name(d.name, d.verilog_name);
+            let (name, reader_name) = declaration_name(d.name, d.verilog_name, d.array_base_len)?;
             let name_was_escaped = reader_name.is_some();
             let parent = d
                 .parent
@@ -117,7 +117,7 @@ impl Reader {
                     range: d.range,
                     is_constant: d.is_constant,
                     type_name: None,
-                    enumeration: None,
+                    enumeration: EnumerationData::for_encoding(None, d.variants, d.encoding),
                     signedness: match d.signedness {
                         1 => Some(Signedness::Unsigned),
                         2 => Some(Signedness::Signed),
@@ -209,6 +209,24 @@ impl Reader {
 // Native Verilog identifiers include their terminating whitespace. A name
 // without that terminator is not evidence of Verilog escape syntax (for
 // example, VHDL extended identifiers and VCD-imported WLF names).
+fn declaration_name(
+    name: String,
+    verilog: bool,
+    base_len: usize,
+) -> Result<(String, Option<String>)> {
+    if base_len == 0 {
+        return Ok(logical_name(name, verilog));
+    }
+    let (base, suffix) = name
+        .split_at_checked(base_len)
+        .ok_or_else(|| backend_error("invalid WLF array component boundary"))?;
+    let (logical, spelling) = logical_name(base.to_owned(), verilog);
+    if spelling.is_some() {
+        Ok((format!("{logical}{suffix}"), Some(name)))
+    } else {
+        Ok((name, None))
+    }
+}
 fn logical_name(name: String, verilog: bool) -> (String, Option<String>) {
     if verilog && name.starts_with('\\') && name.ends_with(|c: char| c.is_ascii_whitespace()) {
         let logical = name[1..]
@@ -223,6 +241,28 @@ fn logical_name(name: String, verilog: bool) -> (String, Option<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn wlf_array_elements_normalize_only_the_source_component() {
+        for (base, logical) in [
+            ("\\a.b ", "a.b"),
+            ("\\literal[7:0]\t", "literal[7:0]"),
+            ("\\\\leading ", r"\leading"),
+        ] {
+            for suffix in ["[0]", "[1][2]"] {
+                let raw = format!("{base}{suffix}");
+                assert_eq!(
+                    declaration_name(raw.clone(), true, base.len()).unwrap(),
+                    (format!("{logical}{suffix}"), Some(raw.clone()))
+                );
+                assert_eq!(
+                    declaration_name(raw.clone(), false, base.len()).unwrap(),
+                    (raw, None)
+                );
+            }
+        }
+        assert!(declaration_name("é[0]".into(), true, 1).is_err());
+        assert!(declaration_name("a[0]".into(), true, 99).is_err());
+    }
     #[test]
     fn wlf_identifier_syntax_is_separate_from_literal_characters() {
         for (raw, expected) in [

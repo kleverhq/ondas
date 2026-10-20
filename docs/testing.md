@@ -248,6 +248,10 @@ still needs to resolve. Directed WLF tests check SDK thread ownership, caller
 reentrancy, panic recovery, cross-thread use/drop, compiled ABI layouts and bounded
 selected-value storage. Exact NaN payload transitions use native literal evidence
 and directed API assertions because version-1 oracle equality cannot assert them.
+Directed enum checks compare complete native tables and queried Bits with the
+independent core/XZ fixtures. They include unused variants, array elements, signed
+patterns, leading zeros and widths through 129 bits. Existing SV and VHDL cases
+check their separate encodings and metadata ownership across native reopen.
 The WLF recipes run once per SDK selected by `QUESTA_HOMES`, with `QUESTA_HOME`
 as the single-path fallback. See [local SDK selection](automation.md#proprietary-environments).
 WLF opening errors fail unless a negative oracle requires that error. There is
