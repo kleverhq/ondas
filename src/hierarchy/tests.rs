@@ -12,15 +12,24 @@ fn enum_keys_match_whole_bits_without_guessing_or_restricting_labels() {
     )
     .unwrap();
     let table = Enumeration { data: &data };
-    let bits = crate::BitsRef::from_ascii(b"01XZHUWL-")
-        .unwrap()
-        .to_string();
+    let bits = crate::BitsRef::from_ascii(b"01XZHUWL-").unwrap();
     let labels: Vec<_> = table
         .variants()
-        .filter(|v| v.encoded == bits)
+        .filter(|v| v.encoded.iter_msb().eq(bits.iter_msb()))
         .map(|v| v.label)
         .collect();
     assert_eq!(labels, ["état", "other label"]);
+    let key: crate::BitsRef<'_> = Enumeration { data: &data }
+        .variants()
+        .next()
+        .unwrap()
+        .encoded;
+    assert_eq!(key.width(), 9);
+    assert_eq!(key.bit(0), Some(crate::Logic::DontCare));
+    assert_eq!(key.bit(8), Some(crate::Logic::Zero));
+    let owned = key.to_owned();
+    drop(data);
+    assert_eq!(owned.as_ref().to_string(), "01xzhuwl-");
     for key in ["1", "001", "0?", "é"] {
         assert!(
             EnumerationData::for_encoding(
@@ -73,23 +82,32 @@ fn fixture() -> Hierarchy {
         ("with space", Some(0)),
     ]
     .into_iter()
-    .map(|(name, signal)| VariableData {
-        name: name.into(),
-        reader_name: None,
-        name_was_escaped: false,
-        parent: Some(1),
-        kind: "wire".into(),
-        direction: Direction::Input,
-        range: Some(BitRange::new(-16, 15)),
-        is_constant: true,
-        type_name: Some("state_t".into()),
-        signedness: None,
-        logic_domain: None,
-        enumeration: Some(EnumerationData {
-            name: Some("state_t".into()),
-            variants: vec![("00".into(), "IDLE".into()), ("01".into(), "RUN".into())],
-        }),
-        signal,
+    .map(|(name, signal)| {
+        let width = if signal == Some(1) { 8 } else { 32 };
+        VariableData {
+            name: name.into(),
+            reader_name: None,
+            name_was_escaped: false,
+            parent: Some(1),
+            kind: "wire".into(),
+            direction: Direction::Input,
+            range: Some(BitRange::new(-16, 15)),
+            is_constant: true,
+            type_name: Some("state_t".into()),
+            signedness: None,
+            logic_domain: None,
+            enumeration: EnumerationData::for_encoding(
+                Some("state_t".into()),
+                vec![
+                    ("0".repeat(width), "IDLE".into()),
+                    (format!("{:0width$b}", 1), "RUN".into()),
+                ],
+                Encoding::Bits {
+                    width: width as u32,
+                },
+            ),
+            signal,
+        }
     })
     .collect();
     Hierarchy::new(
@@ -349,9 +367,9 @@ fn hierarchy_views_aliases_and_metadata() {
     assert_eq!(
         enumeration
             .variants()
-            .map(|v| (v.encoded, v.label))
+            .map(|v| (v.encoded.to_string(), v.label))
             .collect::<Vec<_>>(),
-        [("00", "IDLE"), ("01", "RUN")]
+        [("0".repeat(32), "IDLE"), (format!("{:032b}", 1), "RUN")]
     );
     let whole = data.signal().unwrap();
     assert_eq!(hierarchy.signal("tb.dut.alias").unwrap(), whole);

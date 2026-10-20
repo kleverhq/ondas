@@ -887,17 +887,38 @@ impl BitRange {
 
 /// Borrowed enumeration metadata for a variable declaration.
 ///
-/// Each key is a lowercase logic string with the whole signal's bit width,
-/// ordered from most to least significant, as in [`BitsRef`](crate::BitsRef)
-/// display. Match the complete bit value directly. Signedness and the HDL
-/// declaration range do not change this comparison. All nine logic states can
-/// occur in keys; their presence does not establish the declaration's domain.
+/// Each key is a [`BitsRef`](crate::BitsRef) with the whole signal's bit width.
+/// Bit zero is the least-significant bit, as in a queried bit value. Match the
+/// complete bit value with the key. Signedness and the HDL declaration range do
+/// not change this comparison. All nine logic states can occur in keys; their
+/// presence does not establish the declaration's domain.
 /// A slice does not carry a projected enumeration.
 ///
 /// Labels retain reader-provided spelling. They are not string sample values
 /// and are not restricted to ASCII. Order, duplicate keys and duplicate labels
 /// are preserved. A value need not have a label; a key can have multiple labels.
 /// This metadata does not change the signal's encoding.
+///
+/// Compare keys with queried bits through the public logic-state iterators:
+///
+/// ```no_run
+/// use ondas::{Sample, Time, Value};
+/// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// let mut wave = ondas::open("dump.fst")?;
+/// let hierarchy = wave.hierarchy().clone();
+/// let variable = hierarchy.variable("top.state")?;
+/// if let (Some(signal), Some(table)) = (variable.signal(), variable.enumeration()) {
+///     if let Sample::Value { value: Value::Bits(bits), .. } = wave.sample(signal, Time::ZERO)? {
+///         for variant in table.variants() {
+///             if variant.encoded.iter_msb().eq(bits.as_ref().iter_msb()) {
+///                 println!("{}", variant.label);
+///             }
+///         }
+///     }
+/// }
+/// # Ok(())
+/// # }
+/// ```
 pub struct Enumeration<'h> {
     data: &'h EnumerationData,
 }
@@ -908,19 +929,26 @@ impl<'h> Enumeration<'h> {
         self.data.name.as_deref()
     }
 
-    /// Iterates over whole-value logic keys and their reader-provided labels.
+    /// Iterates over borrowed whole-value bits and their reader-provided labels.
     pub fn variants(&self) -> impl Iterator<Item = EnumerationVariant<'h>> + '_ {
         self.data
             .variants
             .iter()
-            .map(|(encoded, label)| EnumerationVariant { encoded, label })
+            .map(|(encoded, label)| EnumerationVariant {
+                encoded: crate::BitsRef::from_validated_ascii(encoded.as_bytes()),
+                label,
+            })
     }
 }
 
 /// An encoded enumeration value and its source label.
 pub struct EnumerationVariant<'h> {
-    /// The whole signal's MSB-first, fixed-width, lowercase logic string.
-    pub encoded: &'h str,
+    /// The whole signal's bit value, borrowed from hierarchy storage.
+    ///
+    /// The view remains valid for the hierarchy borrow. Use
+    /// [`BitsRef::to_owned`](crate::BitsRef::to_owned) to retain an independent copy,
+    /// or [`Display`](std::fmt::Display) to format it as an MSB-first logic string.
+    pub encoded: crate::BitsRef<'h>,
     /// The corresponding reader-provided enumeration label spelling.
     pub label: &'h str,
 }

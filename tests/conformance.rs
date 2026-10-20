@@ -746,7 +746,7 @@ fn hierarchy(wave: &Waveform, oracle: &Json, check_lookups: bool) -> BTreeMap<St
                 }
                 let variants = actual
                     .variants()
-                    .map(|v| json!({"encoded":v.encoded,"label":v.label}))
+                    .map(|v| json!({"encoded":v.encoded.to_string(),"label":v.label}))
                     .collect::<Vec<_>>();
                 assert_eq!(
                     json!(variants),
@@ -2283,7 +2283,7 @@ fn fst_enum_keys_match_recorded_values_and_allow_unlabelled_bits() {
             assert_eq!(variable.logic_domain(), Some(domain));
             let table = variable.enumeration().unwrap();
             for variant in table.variants() {
-                assert_eq!(variant.encoded.len(), signal.width().unwrap() as usize);
+                assert_eq!(variant.encoded.width(), signal.width().unwrap());
             }
             for &(tick, key, label) in expected {
                 let ondas::Sample::Value {
@@ -2296,7 +2296,7 @@ fn fst_enum_keys_match_recorded_values_and_allow_unlabelled_bits() {
                 assert_eq!(bits.as_ref().to_string(), key);
                 let labels = table
                     .variants()
-                    .filter(|v| v.encoded == bits.as_ref().to_string())
+                    .filter(|v| v.encoded.iter_msb().eq(bits.as_ref().iter_msb()))
                     .map(|v| v.label)
                     .collect::<Vec<_>>();
                 assert_eq!(labels, label.into_iter().collect::<Vec<_>>());

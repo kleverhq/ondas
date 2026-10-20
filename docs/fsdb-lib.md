@@ -212,8 +212,8 @@ implementation choices alone.
   supported per-bit Verilog/VHDL logic storage are queryable as bits. Other custom
   storage remains unsupported. The adapter does not guess its encoding from labels
   or observed values. Tables are exposed only when every key matches the whole
-  queryable bit width. Keys retain all supported logic states in lowercase
-  MSB-first order. Labels are separate text; they are not ASCII string samples.
+  queryable bit width. Keys are `BitsRef` values and retain all supported logic
+  states. Labels are separate text; they are not ASCII string samples.
 - Unsupported declarations remain visible but fail query validation before
   visiting values. Not every composite or user-defined SDK type has a decoder.
 

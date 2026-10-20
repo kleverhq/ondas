@@ -49,13 +49,12 @@ fn enum_recording() -> Vec<u8> {
 #[test]
 fn a_common_consumer_matches_enum_labels_to_whole_values() {
     fn labels<'h>(variable: &ondas::Variable<'h>, bits: ondas::BitsRef<'_>) -> Vec<&'h str> {
-        let key = bits.to_string();
         variable
             .enumeration()
             .map(|table| {
                 table
                     .variants()
-                    .filter(|v| v.encoded == key)
+                    .filter(|v| v.encoded.iter_msb().eq(bits.iter_msb()))
                     .map(|v| v.label)
                     .collect()
             })

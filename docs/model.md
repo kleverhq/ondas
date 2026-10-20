@@ -53,7 +53,9 @@ Interpretation metadata remains absent when it is unavailable or does not apply.
 Observed values do not establish this metadata.
 
 Enum metadata is a mapping from whole stored bits to reader-provided labels.
-Each exposed key has the whole signal width and MSB-first lowercase logic digits.
+Each exposed key is a `BitsRef` with the whole signal width and the same bit
+positions as queried values. Callers can inspect logic states without formatting
+text. `to_owned()` retains an independent `Bits` value.
 The reader leaves the mapping absent when it cannot establish that relation. It
 does not infer padding, bit reversal or a domain from the keys. Labels remain
 separate from string samples.

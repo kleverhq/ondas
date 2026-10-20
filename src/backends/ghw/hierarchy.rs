@@ -877,7 +877,7 @@ mod tests {
             .enumeration()
             .unwrap()
             .variants()
-            .map(|v| (v.encoded.to_owned(), v.label.to_owned()))
+            .map(|v| (v.encoded.to_string(), v.label.to_owned()))
             .collect::<Vec<_>>();
         assert_eq!(
             variants,

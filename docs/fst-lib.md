@@ -105,7 +105,7 @@ artifact, workload and explicit reader under the
   Explicit declaration type tags can supply interpretation metadata. Ambiguous or
   absent tags remain unknown. The adapter does not infer them from observed values.
 - Enum tables are exposed only when every key matches the whole signal width
-  and uses supported logic digits. Keys use lowercase MSB-first spelling. The
+  and uses supported logic digits. Keys are borrowed `BitsRef` values. The
   adapter does not pad or reverse them. Missing or incompatible mappings remain
   absent. Labels retain the published decoder spelling, including undecoded
   escapes. The adapter does not patch the decoder.

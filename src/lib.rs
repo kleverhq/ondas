@@ -189,7 +189,8 @@ reals, strings and event callbacks, preserving aliases and explicit source range
 - Strings preserve ASCII bytes, including NUL and padding. Non-ASCII bytes return
   [`Error::NonAsciiString`], whether or not they form valid UTF-8.
 - Enum keys are exposed only when they match the whole stored bit width and logic
-  states. Labels retain the published decoder spelling; escaped label text can
+  states. Keys use [`BitsRef`], as queried bit values do. Labels retain the
+  published decoder spelling; escaped label text can
   remain escaped. The adapter does not guess a missing mapping.
 - Explicit FST SystemVerilog types can supply [`Variable::logic_domain`]. Explicit
   VHDL type attributes can also supply [`Variable::signedness`]. Legacy storage

@@ -16,8 +16,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Raw ticks are unchanged. Consumers must not assume the previous conventional
   1 fs scale when converting time.
 - Expose enum tables only when every key matches the whole queryable bit value.
-  Keys use fixed-width MSB-first lowercase logic digits. Incompatible mappings
-  remain absent instead of requiring reader-specific interpretation. Labels
+  Change `EnumerationVariant::encoded` from `&str` to `BitsRef`. Inspect keys
+  with the bit API; use `to_string()` when text is required. Incompatible
+  mappings remain absent instead of requiring reader-specific interpretation. Labels
   retain reader spelling and are not restricted to ASCII.
 
 ### Added

@@ -895,9 +895,13 @@ mod tests {
         assert!(
             variants
                 .iter()
-                .all(|variant| variant.encoded.len() == 2 && !variant.label.is_empty())
+                .all(|variant| variant.encoded.width() == 2 && !variant.label.is_empty())
         );
-        assert!(variants.iter().any(|variant| variant.encoded == "00"));
+        assert!(
+            variants
+                .iter()
+                .any(|variant| variant.encoded.iter_msb().eq([crate::Logic::Zero; 2]))
+        );
         let signal = variable.signal().unwrap();
         assert_eq!(signal.encoding(), Encoding::Bits { width: 2 });
         let sample = wave.sample(signal, Time::ZERO).unwrap();
