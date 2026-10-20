@@ -240,7 +240,8 @@ pub(crate) struct VariableData {
 
 pub(crate) struct EnumerationData {
     pub(crate) name: Option<String>,
-    pub(crate) variants: Vec<(String, String)>,
+    // Whole-width logic keys are validated and canonicalized by for_encoding.
+    variants: Vec<(String, String)>,
 }
 
 impl EnumerationData {
@@ -900,6 +901,8 @@ impl BitRange {
 /// This metadata does not change the signal's encoding.
 ///
 /// Compare keys with queried bits through the public logic-state iterators:
+/// `BitsRef` does not implement `PartialEq`. The iterators compare the complete
+/// width and every logic state without formatting text.
 ///
 /// ```no_run
 /// use ondas::{Sample, Time, Value};
