@@ -116,14 +116,29 @@ fn shm_enum_tables_match_whole_values() {
         assert!(hierarchy.variable(control).unwrap().enumeration().is_none());
         // Closing the native owner must not invalidate borrowed hierarchy keys.
         drop(wave);
-        for variable in hierarchy.variables() {
-            if let Some(table) = variable.enumeration() {
-                assert!(
-                    table
-                        .variants()
-                        .all(|v| v.encoded.width() == variable.signal().unwrap().width().unwrap())
-                );
-            }
+        for declaration in list(&fixture.oracle["hierarchy"], "variables") {
+            let Some(expected) = declaration.get("enumeration").filter(|v| !v.is_null()) else {
+                continue;
+            };
+            let variable = hierarchy
+                .variable_path(&path(&declaration["path"]))
+                .unwrap();
+            let table = variable.enumeration().expect("retained enum table");
+            let retained = table
+                .variants()
+                .map(|v| {
+                    assert_eq!(
+                        v.encoded.width(),
+                        variable.signal().unwrap().width().unwrap()
+                    );
+                    json!({"encoded": v.encoded.to_string(), "label": v.label})
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                json!(retained),
+                expected["variants"],
+                "{name}: retained enum"
+            );
         }
     }
     assert_eq!((tables, variants), (25, 99));
