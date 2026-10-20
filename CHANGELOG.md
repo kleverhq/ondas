@@ -23,6 +23,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Add exact equality for `BitsRef`, `Bits`, and mixed pairs. Equal values have
+  the same width and the same logic state at each bit. Compare queried bits
+  with enum keys without formatting text or copying the bit payload.
 - Compare `Scope` and `Variable` views by object identity. Hierarchy clones keep
   identity; independent opens and alias declarations stay distinct.
 - Add cross-format exact-name, same-path alias, and scope-collision regression

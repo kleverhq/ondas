@@ -105,7 +105,7 @@ pub enum Value {
 impl ValueRef<'_> {
     pub(crate) fn same_value(self, other: ValueRef<'_>) -> bool {
         match (self, other) {
-            (Self::Bits(left), ValueRef::Bits(right)) => left.data.eq_ignore_ascii_case(right.data),
+            (Self::Bits(left), ValueRef::Bits(right)) => left == right,
             (Self::Real(left), ValueRef::Real(right)) => left.to_bits() == right.to_bits(),
             (Self::String(left), ValueRef::String(right)) => left == right,
             (Self::Event { occurrences: left }, ValueRef::Event { occurrences: right }) => {
@@ -193,15 +193,76 @@ impl Logic {
 /// bit, using lowercase letters. Storage is opaque and can borrow native backend
 /// data without an intermediate string. Views can also borrow [`Bits`] storage.
 /// Copy callback views with [`Self::to_owned`] to keep them after the call.
+///
+/// Equality with another `BitsRef` or [`Bits`] requires the same width and the
+/// same [`Logic`] state at each position. Each of the nine states equals only
+/// itself: `X` and `DontCare` are not wildcards, `H` differs from `One`, and `L`
+/// differs from `Zero`. Equality does not format text or copy the bit payload.
+/// It is independent of storage and letter case in the source encoding.
+///
+/// Leading zeros count toward width: `10` differs from `0010`, and `11` differs
+/// from `1111`. Two empty vectors are equal. This compares bit representations,
+/// not numbers or HDL expressions. Signedness and logic domain belong to
+/// [`Variable`](crate::Variable); equality does not infer them or extend widths.
+///
+/// ```
+/// use ondas::{Sample, Time, Value};
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let data = b"$var wire 4 ! bus $end $enddefinitions $end #0 b0010 !";
+/// let mut wave = ondas::open_bytes("bits.vcd", data.as_slice().into())?;
+/// let bus = wave.hierarchy().signal("bus")?;
+/// let Sample::Value { value: Value::Bits(whole), .. } = wave.sample(bus, Time::ZERO)?
+/// else { panic!("expected bits") };
+/// let Sample::Value { value: Value::Bits(low), .. } =
+///     wave.sample(bus.slice(1, 0)?, Time::ZERO)?
+/// else { panic!("expected bits") };
+/// assert_eq!(whole, whole.as_ref()); // Owned and borrowed 0010.
+/// assert_eq!(whole.as_ref(), whole); // Either operand order.
+/// assert_eq!(whole, whole.clone());
+/// assert_ne!(whole.as_ref(), low.as_ref()); // 0010 differs from 10.
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug, Clone, Copy)]
 pub struct BitsRef<'a> {
     data: &'a [u8],
 }
 
 /// An owned, opaque bit-vector value.
+///
+/// Equality with [`Bits`] or [`BitsRef`] uses the exact width and logic-state
+/// rules of [`BitsRef`], without copying the bit payload.
 #[derive(Debug, Clone)]
 pub struct Bits {
     data: Box<[u8]>,
+}
+
+impl PartialEq<BitsRef<'_>> for BitsRef<'_> {
+    fn eq(&self, other: &BitsRef<'_>) -> bool {
+        self.data.eq_ignore_ascii_case(other.data)
+    }
+}
+
+impl Eq for BitsRef<'_> {}
+
+impl PartialEq for Bits {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_ref() == other.as_ref()
+    }
+}
+
+impl Eq for Bits {}
+
+impl PartialEq<BitsRef<'_>> for Bits {
+    fn eq(&self, other: &BitsRef<'_>) -> bool {
+        self.as_ref() == *other
+    }
+}
+
+impl PartialEq<Bits> for BitsRef<'_> {
+    fn eq(&self, other: &Bits) -> bool {
+        *self == other.as_ref()
+    }
 }
 
 impl<'a> BitsRef<'a> {
@@ -476,8 +537,15 @@ mod tests {
             let lower = upper.to_ascii_lowercase();
             let left = BitsRef::from_ascii(&upper).unwrap();
             let right = BitsRef::from_ascii(&lower).unwrap();
+            check_bit_equality(left, right, true);
             assert!(ValueRef::Bits(left).same_value(ValueRef::Bits(right)));
             if width > 1 {
+                check_bit_equality(
+                    left.slice(width as u32 - 2, 0),
+                    right.slice(width as u32 - 2, 0),
+                    true,
+                );
+                check_bit_equality(left, right.slice(width as u32 - 2, 0), false);
                 assert!(
                     ValueRef::Bits(left.slice(width as u32 - 2, 0))
                         .same_value(ValueRef::Bits(right.slice(width as u32 - 2, 0)))
@@ -496,11 +564,56 @@ mod tests {
             for right in b"01xzhuwl-" {
                 let left_value = BitsRef::from_ascii(std::slice::from_ref(left)).unwrap();
                 let right_value = BitsRef::from_ascii(std::slice::from_ref(right)).unwrap();
+                check_bit_equality(left_value, right_value, left == right);
                 assert_eq!(
                     ValueRef::Bits(left_value).same_value(ValueRef::Bits(right_value)),
                     left == right
                 );
             }
         }
+    }
+
+    fn check_bit_equality(left: BitsRef<'_>, right: BitsRef<'_>, expected: bool) {
+        fn requires_eq<T: Eq>(_: &T) {}
+        let left_owned = left.to_owned();
+        let right_owned = right.to_owned();
+        requires_eq(&left);
+        requires_eq(&left_owned);
+        assert_eq!(left == right, expected);
+        assert_eq!(right == left, expected);
+        assert_eq!(left_owned == right_owned, expected);
+        assert_eq!(right_owned == left_owned, expected);
+        assert_eq!(left_owned == right, expected);
+        assert_eq!(right == left_owned, expected);
+        assert_eq!(left == right_owned, expected);
+        assert_eq!(right_owned == left, expected);
+        assert_eq!(PartialEq::eq(&left, &right), expected);
+        assert_eq!(PartialEq::eq(&left_owned, &right_owned), expected);
+    }
+
+    #[test]
+    fn bit_equality_distinguishes_width_and_leading_zeros() {
+        for (left, right, expected) in [
+            ("", "", true),
+            ("", "0", false),
+            ("0", "00", false),
+            ("10", "0010", false),
+            ("11", "1111", false),
+            ("0010", "0010", true),
+            ("0010", "0100", false),
+            ("01XZHUWL-", "01xzhuwl-", true),
+        ] {
+            check_bit_equality(
+                BitsRef::from_ascii(left.as_bytes()).unwrap(),
+                BitsRef::from_ascii(right.as_bytes()).unwrap(),
+                expected,
+            );
+        }
+        let source = BitsRef::from_ascii(b"101XZHUWL-0").unwrap();
+        let slice = source.slice(9, 1);
+        let expected = Bits::from_ascii(b"01xzhuwl-").unwrap();
+        assert_eq!(slice, expected);
+        let retained = slice.to_owned();
+        assert_eq!(retained, expected);
     }
 }

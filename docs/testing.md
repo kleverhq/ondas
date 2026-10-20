@@ -68,7 +68,7 @@ supported prefixes and other signals remain checked. Existing SHM quoted-value
 tests cover byte transport, including embedded zero. FSDB and WLF string
 transports do not support embedded-NUL contents.
 
-Enum checks match full bit values to `BitsRef` keys through logic-state iterators,
+Enum checks match full bit values to `BitsRef` keys with `==`,
 without format-specific consumer logic. Ownership checks retain keys after the
 metadata owner drops. Local GHW bytes cover constrained base ordinals, aliases and
 non-ASCII labels. FST regression checks use independently inspected tables and

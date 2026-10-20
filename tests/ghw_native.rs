@@ -54,7 +54,7 @@ fn a_common_consumer_matches_enum_labels_to_whole_values() {
             .map(|table| {
                 table
                     .variants()
-                    .filter(|v| v.encoded.iter_msb().eq(bits.iter_msb()))
+                    .filter(|v| v.encoded == bits)
                     .map(|v| v.label)
                     .collect()
             })
@@ -80,6 +80,43 @@ fn a_common_consumer_matches_enum_labels_to_whole_values() {
         };
         assert_eq!(bits.as_ref().to_string(), key);
         assert_eq!(labels(&variable, bits.as_ref()), [label]);
+        let variant = variable
+            .enumeration()
+            .unwrap()
+            .variants()
+            .find(|v| v.label == label)
+            .unwrap();
+        assert_eq!(bits, variant.encoded);
+        assert_eq!(variant.encoded, bits);
+        let mut visited = false;
+        let _ = wave
+            .select(&[signal])
+            .unwrap()
+            .visit_samples(Time::from_ticks(tick), |sample| {
+                let SampleRef::Value {
+                    value: ValueRef::Bits(view),
+                    ..
+                } = sample
+                else {
+                    panic!("expected borrowed bits")
+                };
+                assert_eq!(view, variant.encoded);
+                assert_eq!(view, bits);
+                visited = true;
+                ControlFlow::<()>::Continue(())
+            })
+            .unwrap();
+        assert!(visited);
+        let Sample::Value {
+            value: Value::Bits(low),
+            ..
+        } = wave
+            .sample(signal.slice(1, 0).unwrap(), Time::from_ticks(tick))
+            .unwrap()
+        else {
+            panic!("expected sliced bits")
+        };
+        assert_ne!(low, variant.encoded);
     }
 }
 

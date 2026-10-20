@@ -58,6 +58,13 @@ base ordinals, labels, aliases and unknown scale. The FST enum regression checks
 literal tables against recorded values in file/bytes modes, including an
 unlabelled value.
 
+`identity_distinguishes_every_logic_state` checks all nine-state equality pairs
+for `BitsRef`, `Bits`, and mixed operands. `bit_equality_distinguishes_width_and_leading_zeros`
+checks exact widths, leading zeros and slices.
+`bit_identity_handles_case_width_and_non_word_aligned_slices` checks equality
+across storage case, empty and wide values, and slices. The `BitsRef` Rustdoc
+example checks owned/view equality and different widths through public queries.
+
 ## Reader-specific evidence and limits
 
 [`tests/conformance.rs`](../tests/conformance.rs) contains external FST, VCD and GHW
