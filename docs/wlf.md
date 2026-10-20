@@ -21,8 +21,12 @@ selecting another SDK version. Changing `QUESTA_HOME` after compilation does not
 select another runtime. No separate Ondas shim shared library is needed.
 
 The shim selects the active file with the exported `setCurrentNamespace` function
-and clears the SDK's expression lookup pointers at owner boundaries. These
-interfaces are absent from the SDK header. SV enum tables also require
+and clears the SDK's expression lookup pointers at owner boundaries. It keeps
+one lite namespace owner alive between reads. This owner prevents later opens
+from using a namespace left by a closed file. Each open replaces this owner;
+the worker keeps at most one after the call. Lite mode uses the exported
+`wlfFileOpenByMode` function. These interfaces are absent from the SDK header.
+SV enum tables also require
 a qualified private type-descriptor layout. Qualify each selected SDK with the
 vendor gates below. A missing export fails at link time. A changed descriptor
 layout or mode behavior requires a new compatibility check. The public SDK
@@ -93,17 +97,18 @@ reading is not supported. Files are never repaired, rewritten or converted impli
 One private worker thread owns all WLF SDK objects and calls for the process
 lifetime. Requests return owned data. Caller visitors run on the caller thread,
 outside native callbacks, and need not be `Send`. Independent files can be
-interleaved. File, pack, iterator and owned value resources are released on normal
-completion, early break, error and caller panic.
+interleaved. Query, iterator and owned value resources are released on normal
+completion, early break, error and caller panic. The lite namespace owner stays
+active for the process lifetime.
 
 The SDK uses one active time resolution. Before switching resolutions or reading
-a new header, the worker closes every native owner. With no open files, the next
-header selects the resolution. SDK initialization stays active for the process
+a new header, the worker closes every native query owner. With only the lite
+namespace owner left, the next header selects the resolution. SDK initialization stays active for the process
 lifetime. Normal SDK open makes native array elements available. The SDK can
 retain expression lookup pointers into a closed file. The shim clears these
 pointers before open and close, and selects the live file before reading or
 releasing query resources. This also covers independent owners with the same
-resolution. The worker closes its owned handles directly.
+resolution. Before closing a file, the shim selects the live lite namespace.
 Logical sessions keep owned declarations and a small read position. A suspended
 query reopens its file and replays from its query start, discarding already returned
 completed-tick slots. This preserves event counts and pending caller state without

@@ -362,9 +362,10 @@ from the recorded beginning. Records skipped by a seek are not decoded or
 validated. Prepared selections can reuse one bounded normalized state snapshot.
 The adapter keeps selected current values and counts, and transfers bounded
 batches of completed ticks. It does not collect a full history. The SDK keeps its
-own caches. It permits one resolution at a time. The worker releases all native
-owners before a resolution switch or new header read. SDK initialization stays
-active for the process lifetime. A suspended query
+own caches. It permits one resolution at a time. The worker releases native
+query owners before a resolution switch or new header read. One lite namespace
+owner stays alive to protect later opens from stale SDK state. SDK initialization
+stays active for the process lifetime. A suspended query
 reopens its file and replays from its query start, skipping its already returned
 completed-tick slots. Logical sessions retain no SDK pointers.
 The adapter releases file and query resources after errors, breaks and caller

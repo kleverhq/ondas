@@ -12,7 +12,9 @@
  * that optional lookup state at owner boundaries, and select the live owner
  * for reads and cleanup. These exports are absent from the SDK header. */
 extern WlfFileId setCurrentNamespace(WlfFileId file);
+extern WlfFileId wlfFileOpenByMode(char *path, char *name, int mode);
 extern void *current_expr_contxt, *current_expr_objtd;
+#define WLF_LITE_OPEN 7
 
 _Static_assert(sizeof(WlfTime64) == 8 && (WlfTime64)-1 < 0, "signed 64-bit SDK time required");
 _Static_assert(sizeof(double) == 8, "binary64 SDK real required");
@@ -63,6 +65,8 @@ struct ondas_wlf {
     char failure[512];
 };
 static int initialized;
+static WlfFileId namespace_guard;
+static uint64_t next_guard;
 static int fail(char *error, size_t cap, int code, const char *message) {
     if (cap) snprintf(error, cap, "%s", message ? message : "WLF SDK failure");
     return code;
@@ -317,6 +321,8 @@ int ondas_wlf_open(const char *path, const char *name, int metadata_only, ondas_
     }
     ondas_wlf *r = calloc(1, sizeof(*r));
     if (!r) return fail(error, cap, -1, "cannot allocate WLF reader");
+    if (namespace_guard) setCurrentNamespace(namespace_guard);
+    current_expr_contxt = NULL; current_expr_objtd = NULL;
     if (wlfFileHeader((char *)path, &r->info) != WLF_OK) {
         int code = sdk_error(error, cap); free(r); return code;
     }
@@ -325,15 +331,30 @@ int ondas_wlf_open(const char *path, const char *name, int metadata_only, ondas_
     }
     if (!metadata_only) {
         current_expr_contxt = NULL; current_expr_objtd = NULL;
-        r->file = wlfFileOpen((char *)path, (char *)name);
-        if (r->file) setCurrentNamespace(r->file);
-        if (!r->file) {
-            /* Unclosed snapshots can report error 4 with this header marker.
-               Error 4 alone also describes a locked file; retain Backend there. */
+        /* Keep one lite owner alive across closes. Both lite and normal open
+         * consult the process namespace before replacing it. */
+        if (next_guard == UINT64_MAX) { free(r); return fail(error, cap, -1, "WLF namespace identifier overflow"); }
+        char guard_name[64];
+        snprintf(guard_name, sizeof(guard_name), "ondas-guard-%" PRIu64, ++next_guard);
+        WlfFileId guard = wlfFileOpenByMode((char *)path, guard_name, WLF_LITE_OPEN);
+        if (!guard) {
             int malformed = wlfErrorNum() == 4 && r->info.magic == 0x1364;
             int code = fail(error, cap, malformed ? -2 : -1, wlfErrorMsg());
             free(r); return code;
         }
+        setCurrentNamespace(guard);
+        if (namespace_guard) wlfFileClose(namespace_guard);
+        namespace_guard = guard;
+        current_expr_contxt = NULL; current_expr_objtd = NULL;
+        r->file = wlfFileOpen((char *)path, (char *)name);
+        int open_code = 0;
+        if (!r->file) {
+            /* Unclosed snapshots can report error 4 with this header marker.
+               Error 4 alone also describes a locked file; retain Backend there. */
+            int malformed = wlfErrorNum() == 4 && r->info.magic == 0x1364;
+            open_code = fail(error, cap, malformed ? -2 : -1, wlfErrorMsg());
+        } else setCurrentNamespace(r->file);
+        if (!r->file) { free(r); return open_code; }
         WlfSymbolId root = wlfFileGetTopRegion(r->file);
         if (!root || walk(r, root, SIZE_MAX, 0, 1, NULL, 0, 0)) {
             ondas_wlf_close(r); return fail(error, cap, -1, "cannot read WLF declarations");
@@ -368,6 +389,7 @@ void ondas_wlf_close(ondas_wlf *r) {
     ondas_wlf_end(r);
     if (r->file) {
         current_expr_contxt = NULL; current_expr_objtd = NULL;
+        setCurrentNamespace(namespace_guard);
         wlfFileClose(r->file);
     }
     for (size_t i = 0; i < r->count; ++i) {
