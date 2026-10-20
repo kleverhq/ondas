@@ -104,6 +104,11 @@ artifact, workload and explicit reader under the
   VHDL type names, enumeration tables and scope packing are retained when supplied.
   Explicit declaration type tags can supply interpretation metadata. Ambiguous or
   absent tags remain unknown. The adapter does not infer them from observed values.
+- Enum tables are exposed only when every key matches the whole signal width
+  and uses supported logic digits. Keys use lowercase MSB-first spelling. The
+  adapter does not pad or reverse them. Missing or incompatible mappings remain
+  absent. Labels retain the published decoder spelling, including undecoded
+  escapes. The adapter does not patch the decoder.
 - Source-path/stem attributes and standalone SV enum attributes are not exposed.
 
 ### Values
@@ -112,7 +117,7 @@ artifact, workload and explicit reader under the
 |---|---|
 | Bits | Preserve nine logic states. Reject invalid decoded digits or width mismatches. |
 | Reals | Real declarations receive the decoder's floating-point values. Byte lengths do not establish real storage. |
-| Strings | Character bytes map reversibly to U+0000 through U+00FF (Latin-1), including NULs and padding. The adapter does not infer UTF-8. |
+| Strings | Preserve ASCII bytes, including NUL and padding. Other bytes return `Error::NonAsciiString`; UTF-8 validity does not change this rule. |
 | Events | Preserve decoder callbacks as occurrences, subject to the first-tick limitation below. |
 | Other zero-width declarations | Remain non-queryable rather than becoming real or string signals. |
 

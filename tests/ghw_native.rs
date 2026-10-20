@@ -17,6 +17,73 @@ fn sample_bits(sample: Sample) -> String {
 mod ghw_bytes;
 use ghw_bytes::{padded_recording, recording};
 
+fn enum_recording() -> Vec<u8> {
+    let strings = [
+        "state", "red", "grün", "blue", "white", "black", "subset", "top", "mode", "alias",
+    ];
+    let mut bytes = b"GHDLwave\n\x10\0\x01\x01\x04\x01\0STR\0\0\0\0\0".to_vec();
+    bytes.extend((strings.len() as u32).to_le_bytes());
+    bytes.extend((strings.iter().map(|s| s.chars().count()).sum::<usize>() as u32).to_le_bytes());
+    for string in strings {
+        bytes.extend(string.chars().map(|c| c as u8));
+        bytes.push(0);
+    }
+    bytes.extend(b"EOS\0TYP\0\0\0\0\0\x02\0\0\0");
+    // Five base ordinals; subtype retains ordinals 1 through 3.
+    bytes.extend([23, 1, 5, 2, 3, 4, 5, 6, 34, 7, 1, 23, 1, 3, 0]);
+    bytes.extend(b"HIE\0\0\0\0\0");
+    bytes.extend(1u32.to_le_bytes());
+    bytes.extend(2u32.to_le_bytes());
+    bytes.extend(1u32.to_le_bytes());
+    bytes.extend([3, 8, 16, 9, 2, 1, 16, 10, 2, 1, 15, 0]);
+    bytes.extend(b"EOH\0SNP\0\0\0\0\0");
+    bytes.extend(0i64.to_le_bytes());
+    bytes.push(1); // grün.
+    bytes.extend(b"ESN\0CYC\0");
+    bytes.extend(2i64.to_le_bytes());
+    bytes.extend([1, 2, 0, 3, 1, 3, 0, 127]); // blue at 2, white at 5.
+    bytes.extend(b"ECY\0");
+    bytes
+}
+
+#[test]
+fn a_common_consumer_matches_enum_labels_to_whole_values() {
+    fn labels<'h>(variable: &ondas::Variable<'h>, bits: ondas::BitsRef<'_>) -> Vec<&'h str> {
+        let key = bits.to_string();
+        variable
+            .enumeration()
+            .map(|table| {
+                table
+                    .variants()
+                    .filter(|v| v.encoded == key)
+                    .map(|v| v.label)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+    let mut wave = ondas::open_bytes("enum.ghw", enum_recording().into()).unwrap();
+    let hierarchy = wave.hierarchy().clone();
+    let variable = hierarchy.variable("top.mode").unwrap();
+    let signal = variable.signal().unwrap();
+    assert_eq!(signal.width(), Some(3));
+    assert_eq!(variable.range(), None);
+    assert_eq!(variable.signedness(), None);
+    assert_eq!(variable.logic_domain(), None);
+    assert_eq!(signal, hierarchy.signal("top.alias").unwrap());
+    assert_eq!(wave.metadata().timescale(), None);
+    for (tick, key, label) in [(0, "001", "grün"), (2, "010", "blue"), (5, "011", "white")] {
+        let Sample::Value {
+            value: Value::Bits(bits),
+            ..
+        } = wave.sample(signal, Time::from_ticks(tick)).unwrap()
+        else {
+            panic!("expected enum bits")
+        };
+        assert_eq!(bits.as_ref().to_string(), key);
+        assert_eq!(labels(&variable, bits.as_ref()), [label]);
+    }
+}
+
 #[test]
 fn public_opening_aliases_slices_batches_and_replay() {
     for explicit in [false, true] {
@@ -29,11 +96,7 @@ fn public_opening_aliases_slices_batches_and_replay() {
         .unwrap();
         assert_eq!(wave.format(), Format::Ghw);
         assert_eq!(wave.backend(), "ghw-native");
-        let scale = wave.metadata().timescale().unwrap();
-        assert_eq!(
-            (scale.factor(), scale.unit()),
-            (1, ondas::TimeUnit::Femtosecond)
-        );
+        assert_eq!(wave.metadata().timescale(), None);
         assert_eq!(wave.metadata().time_span().unwrap().last().ticks(), 4);
         let wide = wave.hierarchy().signal("top.wide").unwrap();
         assert_eq!(wide, wave.hierarchy().signal("top.alias").unwrap());

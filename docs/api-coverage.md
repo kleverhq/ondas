@@ -47,6 +47,17 @@ The following tests in [`src/query/tests.rs`](../src/query/tests.rs) use
 | Owned persistence across callbacks, queries, and waveform destruction | `borrowed_mixed_values_remain_owned_after_queries_and_source_drop`; retained sample/scan copies and owned traces/samples preserve real, Unicode/NUL string, and nine-state values against explicit expectations. |
 | `ControlFlow` completion/break and query errors | `breaks_stop_the_reader_and_late_errors_preserve_prior_callbacks`, `incomplete_first_tick_is_not_published_on_error`, `invalid_and_unsupported_signals_fail_before_queries`; scan/candidate early stop, late scan observations, failed owned queries, no sample callbacks on read failure, and foreign/unsupported handles. |
 
+String support is checked by `sample_strings_preserve_all_ascii_and_reject_other_octets`,
+`ascii_controls_escapes_and_padding_are_exact` and
+`non_ascii_strings_are_typed_errors_during_validation`. Legacy non-ASCII observations
+supply typed reader-pool rejections through the independent `ascii_prefixes`
+derivation; its tests retain supported prefixes without changing sidecars.
+`enum_keys_match_whole_bits_without_guessing_or_restricting_labels` covers key
+invariants. `a_common_consumer_matches_enum_labels_to_whole_values` checks GHW
+base ordinals, labels, aliases and unknown scale. The FST enum regression checks
+literal tables against recorded values in file/bytes modes, including an
+unlabelled value.
+
 ## Reader-specific evidence and limits
 
 [`tests/conformance.rs`](../tests/conformance.rs) contains external FST, VCD and GHW
@@ -94,7 +105,7 @@ checks: `ranges_require_an_explicit_separated_bit_suffix` and
 [`tests/vcd_native.rs`](../tests/vcd_native.rs) runs without external inputs and
 checks successful opening, full-body rejection, exact large ticks/decimal scales,
 metadata extraction, contextual codes, literal array names, duplicate declarations,
-zero-width signals, real/string classification, Latin-1 escapes/literal bytes,
+zero-width signals, real/string classification, ASCII escapes and non-ASCII rejection,
 dumpall-only state, strict blackout-boundary entering states, event checkpoints,
 alias projections, same-tick ordering, Break/replay and output ownership. Run it
 with `./dev cargo test --locked --test vcd_native`.

@@ -60,6 +60,21 @@ rejected prefixes must not change output policy. Staged payload is committed onl
 after all fallible reads succeed. This is a local composition regression, not an application
 integration or expression evaluator.
 
+String tests distinguish ASCII boundaries from UTF-8 validity. Local VCD tests
+check escaped and literal non-ASCII rejection during full opening validation.
+The shared byte check covers all ASCII octets, NUL and invalid UTF-8. Native
+recordings with non-ASCII evidence check typed failures in the reader pools;
+supported prefixes and other signals remain checked. Existing SHM quoted-value
+tests cover byte transport, including embedded zero. FSDB and WLF string
+transports do not support embedded-NUL contents.
+
+Enum checks match full bit values to fixed-width keys without format-specific
+consumer logic. Local GHW bytes cover constrained base ordinals, aliases and
+non-ASCII labels. FST regression checks use independently inspected tables and
+histories, including values with no label. Private metadata tests cover all nine
+key states, duplicates and unavailable mappings. These checks do not establish
+support for every producer's enum representation.
+
 ## Reader conformance
 
 The common runner applies a backend-neutral oracle through the public API:

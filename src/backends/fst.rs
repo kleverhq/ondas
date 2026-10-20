@@ -228,9 +228,9 @@ impl Reader {
                         } else {
                             var_kind(tpe)
                         };
-                        let enumeration = pending_enum
-                            .take()
-                            .map(|(name, variants)| EnumerationData { name, variants });
+                        let enumeration = pending_enum.take().and_then(|(name, variants)| {
+                            EnumerationData::for_encoding(name, variants, encoding)
+                        });
                         variables.push(VariableData {
                             name,
                             reader_name: None,
@@ -378,7 +378,6 @@ impl Reader {
                 .indices
                 .get(&handle.get_index())
                 .ok_or_else(|| Stop::Error(malformed("unknown value handle")))?;
-            let string;
             let value = match (self.encodings[index], raw) {
                 (Encoding::Event, _) => ValueRef::Event { occurrences: 1 },
                 (Encoding::Real, FstSignalValue::Real(value)) => ValueRef::Real(value),
@@ -388,14 +387,15 @@ impl Reader {
                         .ok_or_else(|| Stop::Error(malformed("invalid bit-vector value")))?;
                     ValueRef::Bits(bits)
                 }
-                (Encoding::String, FstSignalValue::String(bytes)) => {
-                    // FST character bytes map reversibly to Unicode U+0000..U+00FF.
-                    string = bytes
-                        .iter()
-                        .map(|&byte| char::from(byte))
-                        .collect::<String>();
-                    ValueRef::String(&string)
-                }
+                (Encoding::String, FstSignalValue::String(bytes)) => ValueRef::String(
+                    crate::value::ascii_string(
+                        bytes,
+                        Format::Fst,
+                        "fst-lib",
+                        Time::from_ticks(time),
+                    )
+                    .map_err(Stop::Error)?,
+                ),
                 _ => {
                     return Err(Stop::Error(malformed(
                         "value encoding disagrees with hierarchy",

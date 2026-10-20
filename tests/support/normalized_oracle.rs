@@ -1,6 +1,69 @@
 // Independent derivation from version-1 evidence. No ondas code is used here.
 use serde_json::{Value as Json, json};
 
+/// Derive supported ASCII prefixes and bounds that prove a string read must fail.
+/// Raw version-1 observations stay unchanged in the fixture repository.
+pub fn ascii_prefixes(mut oracle: Json) -> (Json, std::collections::BTreeMap<String, u64>) {
+    let mut rejected = std::collections::BTreeMap::new();
+    let Some(signals) = oracle.get_mut("signals").and_then(Json::as_object_mut) else {
+        return (oracle, rejected);
+    };
+    let non_ascii = |value: &Json| {
+        value
+            .get("string")
+            .and_then(Json::as_str)
+            .is_some_and(|text| !text.is_ascii())
+    };
+    for (id, signal) in signals {
+        let mut bounds = Vec::new();
+        for sample in signal["samples"].as_array().into_iter().flatten() {
+            if non_ascii(&sample["value"]) {
+                bounds.push(tick(&sample["time"]));
+            }
+        }
+        for window in signal["windows"].as_array().into_iter().flatten() {
+            if non_ascii(&window["initial"]["value"]) {
+                bounds.push(
+                    tick(&window["start"])
+                        .checked_sub(1)
+                        .expect("initial state is before the window"),
+                );
+            }
+            for change in window["changes"].as_array().into_iter().flatten() {
+                if non_ascii(&change["value"]) {
+                    bounds.push(tick(&change["time"]));
+                }
+            }
+        }
+        let Some(bound) = bounds.into_iter().min() else {
+            continue;
+        };
+        rejected.insert(id.clone(), bound);
+        if let Some(samples) = signal.get_mut("samples").and_then(Json::as_array_mut) {
+            samples.retain(|sample| tick(&sample["time"]) < bound);
+        }
+        if let Some(windows) = signal.get_mut("windows").and_then(Json::as_array_mut) {
+            windows.retain_mut(|window| {
+                let (start, end) = (tick(&window["start"]), tick(&window["end"]));
+                if start > end {
+                    return true;
+                }
+                if start >= bound {
+                    return false;
+                }
+                let end = end.min(bound - 1);
+                window["end"] = json!(end.to_string());
+                window["changes"]
+                    .as_array_mut()
+                    .unwrap()
+                    .retain(|change| tick(&change["time"]) <= end);
+                true
+            });
+        }
+    }
+    (oracle, rejected)
+}
+
 fn tick(value: &Json) -> u64 {
     value.as_str().unwrap().parse().unwrap()
 }
@@ -303,6 +366,42 @@ pub fn validate_overlaps(signal: &Json) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ascii_policy_retains_proven_prefixes_and_rejection_bounds() {
+        let raw = json!({"signals": {
+            "text": {"samples": [{"time":"1", "value":{"string":"a\u{0}"}}, {"time":"5", "value":{"string":"é"}}],
+                "windows": [{"start":"0","end":"9","initial":null,"changes":[
+                    {"time":"1","value":{"string":"a\u{0}"}}, {"time":"5","value":{"string":"é"}}, {"time":"7","value":{"string":"z"}}]},
+                    {"start":"6","end":"9","initial":{"value":{"string":"é"}},"changes":[]},
+                    {"start":"9","end":"2","initial":null,"changes":[]}]},
+            "bits": {"samples":[{"time":"8","value":{"bits":"01xz"}}]}
+        }});
+        let original = raw.clone();
+        let (supported, rejected) = ascii_prefixes(raw.clone());
+        assert_eq!(raw, original);
+        assert_eq!(
+            rejected,
+            std::collections::BTreeMap::from([("text".into(), 5)])
+        );
+        assert_eq!(supported["signals"]["bits"], original["signals"]["bits"]);
+        assert_eq!(
+            supported["signals"]["text"]["samples"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        let windows = supported["signals"]["text"]["windows"].as_array().unwrap();
+        assert_eq!(windows.len(), 2);
+        assert_eq!(windows[0]["end"], "4");
+        assert_eq!(windows[0]["changes"].as_array().unwrap().len(), 1);
+        assert_eq!(windows[1]["start"], "9");
+        let (_, zero) = ascii_prefixes(
+            json!({"signals":{"t":{"windows":[{"start":"0","end":"2","initial":null,"changes":[{"time":"0","value":{"string":"ÿ"}}]}]}}}),
+        );
+        assert_eq!(zero["t"], 0);
+    }
 
     #[test]
     fn preparing_an_empty_window_does_not_assert_its_null_initial_is_missing() {

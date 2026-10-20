@@ -71,8 +71,9 @@ are unavailable. Metadata-only reads skip hierarchy import.
 Bits preserve all nine source logic states. Real values preserve binary64 bits,
 including negative zero. Strings use a quoted representation with byte escapes.
 The adapter decodes those escapes and preserves embedded zero bytes. It copies
-packed indices with their type-proven width. Strings must contain valid UTF-8.
-Invalid text or malformed quoted transport returns an error. Native empty-string
+packed indices with their type-proven width. Decoded strings must contain only
+ASCII bytes. Other bytes return `Error::NonAsciiString`, including valid non-ASCII
+UTF-8 and invalid UTF-8. Malformed quoted transport returns a reader error. Native empty-string
 values map to the empty string. Event records are occurrences. The reader omits
 the native untriggered initial event state. It preserves same-tick record order
 per history.

@@ -63,6 +63,7 @@ struct Fixture {
     path: PathBuf,
     oracle: Json,
     format: Format,
+    non_ascii: BTreeMap<String, u64>,
 }
 
 impl Fixture {
@@ -357,10 +358,12 @@ fn load_conformance_fixture(root: &Path, name: &str) -> Option<Fixture> {
         eprintln!("SKIP {name}: no oracle observations");
         return None;
     }
+    let (oracle, non_ascii) = normalized_oracle::ascii_prefixes(oracle);
     Some(Fixture {
         path,
         oracle,
         format,
+        non_ascii,
     })
 }
 
@@ -458,11 +461,66 @@ fn open(fixture: &Fixture, bytes: bool) -> ondas::Result<Waveform> {
     }
 }
 
+fn assert_non_ascii(fixture: &Fixture, error: Error, bound: u64) {
+    assert!(
+        matches!(error,
+            Error::NonAsciiString { format, ref backend, time }
+            if format == fixture.format && backend == fixture.backend() && time.ticks() <= bound
+        ),
+        "expected a typed non-ASCII value failure by tick {bound}, got {error}"
+    );
+}
+
+fn string_rejections(
+    wave: &mut Waveform,
+    fixture: &Fixture,
+    signals: &BTreeMap<String, Vec<Signal>>,
+) {
+    for (id, &bound) in &fixture.non_ascii {
+        for &signal in &signals[id] {
+            assert_eq!(signal.encoding(), Encoding::String);
+            assert_non_ascii(
+                fixture,
+                wave.sample(signal, Time::from_ticks(bound)).unwrap_err(),
+                bound,
+            );
+            let range = TimeRange::closed(Time::ZERO, Time::from_ticks(bound));
+            assert_non_ascii(
+                fixture,
+                wave.trace(signal, range)
+                    .err()
+                    .expect("owned history must reject non-ASCII"),
+                bound,
+            );
+            let error = wave
+                .select(&[signal])
+                .unwrap()
+                .query(range, &[0], |_| {
+                    // Decoding selected data can fail even without a user match.
+                    Ok(ControlFlow::<()>::Continue(()))
+                })
+                .unwrap_err();
+            assert_non_ascii(fixture, error, bound);
+        }
+    }
+}
+
 fn checked_open(
     fixture: &Fixture,
     result: ondas::Result<Waveform>,
     context: &str,
 ) -> Option<Waveform> {
+    if fixture.format == Format::Vcd && !fixture.non_ascii.is_empty() {
+        let bound = *fixture.non_ascii.values().min().unwrap();
+        assert_non_ascii(
+            fixture,
+            result
+                .err()
+                .expect("VCD validates all string records at open"),
+            bound,
+        );
+        return None;
+    }
     if fixture.oracle["open"]["result"] == "error" {
         assert!(
             matches!(result, Err(Error::Malformed { format, ref backend, .. }) if format == fixture.format && backend == fixture.backend()),
@@ -491,21 +549,27 @@ fn metadata(wave: &Waveform, expected: &Json, bytes: bool, fixture: &Fixture) {
         }
     );
     if let Some(scale) = expected.get("timescale") {
-        let actual = actual.timescale().map(|scale| {
-            let unit = match scale.unit() {
-                TimeUnit::Second => "s",
-                TimeUnit::Millisecond => "ms",
-                TimeUnit::Microsecond => "us",
-                TimeUnit::Nanosecond => "ns",
-                TimeUnit::Picosecond => "ps",
-                TimeUnit::Femtosecond => "fs",
-                TimeUnit::Attosecond => "as",
-                TimeUnit::Zeptosecond => "zs",
-                _ => panic!("unknown time unit"),
-            };
-            json!({"factor": scale.factor(), "unit": unit})
-        });
-        assert_eq!(actual.unwrap_or(Json::Null), *scale, "timescale");
+        if fixture.format == Format::Ghw {
+            // The native GHDL oracle's 1 fs is a convention, not wire evidence.
+            assert!(*scale == Json::Null || *scale == json!({"factor": 1, "unit": "fs"}));
+            assert_eq!(actual.timescale(), None, "GHW resolution is absent");
+        } else {
+            let actual = actual.timescale().map(|scale| {
+                let unit = match scale.unit() {
+                    TimeUnit::Second => "s",
+                    TimeUnit::Millisecond => "ms",
+                    TimeUnit::Microsecond => "us",
+                    TimeUnit::Nanosecond => "ns",
+                    TimeUnit::Picosecond => "ps",
+                    TimeUnit::Femtosecond => "fs",
+                    TimeUnit::Attosecond => "as",
+                    TimeUnit::Zeptosecond => "zs",
+                    _ => panic!("unknown time unit"),
+                };
+                json!({"factor": scale.factor(), "unit": unit})
+            });
+            assert_eq!(actual.unwrap_or(Json::Null), *scale, "timescale");
+        }
     }
     if let Some(span) = expected.get("time_span") {
         assert_eq!(actual.time_span().map(|s| json!({"first": s.first().ticks().to_string(), "last": s.last().ticks().to_string()})).unwrap_or(Json::Null), *span, "time span");
@@ -946,6 +1010,25 @@ fn scan_queries(wave: &mut Waveform, handles: &[Signal], range: TimeRange, conte
         .iter()
         .map(|&s| wave.trace(s, range).unwrap())
         .collect();
+    if range.is_empty() {
+        for trace in single_traces
+            .iter()
+            .chain(wave.traces(handles, range).unwrap().iter())
+        {
+            assert!(trace.initial().is_none() && trace.changes().is_empty());
+        }
+        let _: ControlFlow<()> = wave
+            .scan(handles, range, |_| panic!("empty scan delivered a record"))
+            .unwrap();
+        let _: ControlFlow<()> = wave
+            .select(handles)
+            .unwrap()
+            .scan_each(range, |_, _| {
+                panic!("empty indexed scan delivered a record")
+            })
+            .unwrap();
+        return;
+    }
     let single_samples: Vec<_> = handles
         .iter()
         .map(|&s| match wave.sample(s, range.start()).unwrap().as_ref() {
@@ -1335,6 +1418,7 @@ fn run_case(index: usize, bytes: bool) {
     };
     metadata(&wave, &fixture.oracle["metadata"], bytes, fixture);
     let signals = hierarchy(&wave, &fixture.oracle, true);
+    string_rejections(&mut wave, fixture, &signals);
     let mut windows = 0;
     let mut samples = 0;
     let mut change_count = 0;
@@ -1466,6 +1550,7 @@ fn pool_queries(fixture: &Fixture, bytes: bool, context: &str) -> bool {
     };
     metadata(&wave, &fixture.oracle["metadata"], bytes, fixture);
     let signals = hierarchy(&wave, &fixture.oracle, false);
+    string_rejections(&mut wave, fixture, &signals);
     let mut samples = BTreeMap::<_, Vec<_>>::new();
     let mut windows = BTreeMap::<_, Vec<_>>::new();
     for (id, expected) in fixture.oracle["signals"].as_object().unwrap() {
@@ -2159,6 +2244,75 @@ fn run_pool(root: &Path, extension: &str) {
         );
     }
     assert!(passed > 0, "no {extension} conformance cases executed");
+}
+
+#[test]
+#[ignore = "requires installed fixtures; run just conformance"]
+fn fst_enum_keys_match_recorded_values_and_allow_unlabelled_bits() {
+    fn check(
+        name: &str,
+        variable_name: &str,
+        domain: ondas::LogicDomain,
+        expected: &[(u64, &str, Option<&str>)],
+    ) {
+        let (path, _) = fixture_support::load_artifact(&root(), name);
+        for bytes in [false, true] {
+            let mut wave = if bytes {
+                ondas::open_bytes_with("enum.fst", fs::read(&path).unwrap().into(), "fst-lib")
+            } else {
+                ondas::open_with(&path, "fst-lib")
+            }
+            .unwrap();
+            let hierarchy = wave.hierarchy().clone();
+            let variable = hierarchy
+                .variables()
+                .find(|v| v.name() == variable_name)
+                .unwrap();
+            let signal = variable.signal().unwrap();
+            assert_eq!(variable.signedness(), None);
+            assert_eq!(variable.logic_domain(), Some(domain));
+            let table = variable.enumeration().unwrap();
+            for variant in table.variants() {
+                assert_eq!(variant.encoded.len(), signal.width().unwrap() as usize);
+            }
+            for &(tick, key, label) in expected {
+                let ondas::Sample::Value {
+                    value: ondas::Value::Bits(bits),
+                    ..
+                } = wave.sample(signal, Time::from_ticks(tick)).unwrap()
+                else {
+                    panic!("expected enum bits")
+                };
+                assert_eq!(bits.as_ref().to_string(), key);
+                let labels = table
+                    .variants()
+                    .filter(|v| v.encoded == bits.as_ref().to_string())
+                    .map(|v| v.label)
+                    .collect::<Vec<_>>();
+                assert_eq!(labels, label.into_iter().collect::<Vec<_>>());
+            }
+        }
+    }
+    // Literal tables and raw histories were checked outside the Ondas adapter.
+    check(
+        "fst/fst0078-many-sv-datatypes",
+        "abc_r",
+        ondas::LogicDomain::FourState,
+        &[
+            (1, "01", Some("B")),
+            (3, "10", Some("C")),
+            (5, "11", Some("D")),
+        ],
+    );
+    check(
+        "fst/fst0079-verilator-pull-7255-t-trace-complex-structs-cc",
+        "v_enumed2",
+        ondas::LogicDomain::TwoState,
+        &[
+            (10, "00000000000000000000000000000010", Some("TWO")),
+            (20, "00000000000000000000000000000100", None),
+        ],
+    );
 }
 
 macro_rules! cases {

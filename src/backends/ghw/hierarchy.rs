@@ -179,10 +179,11 @@ impl Mapper<'_> {
                     )
                 })
                 .collect();
-            enumeration = Some(EnumerationData {
-                name: self.types.name(scalar_type).map(str::to_owned),
+            enumeration = EnumerationData::for_encoding(
+                self.types.name(scalar_type).map(str::to_owned),
                 variants,
-            });
+                encoding,
+            );
         }
         self.variables.push(VariableData {
             name,

@@ -211,7 +211,9 @@ implementation choices alone.
   Typed enum and packed-variable callbacks remain visible. Enum histories with
   supported per-bit Verilog/VHDL logic storage are queryable as bits. Other custom
   storage remains unsupported. The adapter does not guess its encoding from labels
-  or observed values.
+  or observed values. Tables are exposed only when every key matches the whole
+  queryable bit width. Keys retain all supported logic states in lowercase
+  MSB-first order. Labels are separate text; they are not ASCII string samples.
 - Unsupported declarations remain visible but fail query validation before
   visiting values. Not every composite or user-defined SDK type has a decoder.
 
@@ -221,7 +223,7 @@ implementation choices alone.
 |---|---|
 | Bits | Validate width and preserve every decoded bit. Ordinary digital storage preserves `0/1/x/z`; recognized VHDL logic storage preserves all nine states. Unknown logic codes fail. |
 | Reals | Decode copied host-order binary32/binary64 bytes without alignment assumptions. Promote binary32 to `f64`. Storage, not the source type name, determines precision. |
-| Strings | Read NUL-terminated bytes, not the SDK's fixed-size string index. Map bytes reversibly to U+0000 through U+00FF (Latin-1), without UTF-8 inference. Embedded NUL is not supported. |
+| Strings | Read NUL-terminated bytes, not the SDK's fixed-size string index. Preserve ASCII; other bytes return `Error::NonAsciiString`. Embedded NUL is not supported. |
 | Events | Normal HDL trigger records become occurrences. No-change initialization records are ignored. Unknown event records fail. Transaction event variables are unsupported. |
 
 ### Time and metadata

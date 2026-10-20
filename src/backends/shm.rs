@@ -579,10 +579,12 @@ impl Reader {
                         (Encoding::Real, 2) if data.len() == 8 => {
                             ValueRef::Real(f64::from_ne_bytes(data.as_slice().try_into().unwrap()))
                         }
-                        (Encoding::String, 3) => ValueRef::String(
-                            std::str::from_utf8(&data)
-                                .map_err(|_| error("non-UTF-8 SHM string value"))?,
-                        ),
+                        (Encoding::String, 3) => ValueRef::String(crate::value::ascii_string(
+                            &data,
+                            crate::Format::Shm,
+                            "shm-lib",
+                            Time::from_ticks(record.tick),
+                        )?),
                         (Encoding::Event, 4) => ValueRef::Event { occurrences: 1 },
                         _ => return Err(error("SHM value disagrees with declaration")),
                     })

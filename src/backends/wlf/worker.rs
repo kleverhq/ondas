@@ -714,9 +714,13 @@ fn owned_record(out: &NativeRecord, encodings: &[Encoding]) -> Result<Record> {
                 unsafe { std::slice::from_raw_parts(out.data, out.len) }
             };
             Value::String(
-                std::str::from_utf8(bytes)
-                    .map_err(|_| backend_error("non-UTF-8 WLF string value"))?
-                    .into(),
+                crate::value::ascii_string(
+                    bytes,
+                    Format::Wlf,
+                    "wlf-lib",
+                    Time::from_ticks(out.tick),
+                )?
+                .into(),
             )
         }
         Encoding::Event if out.occurrences > 0 => Value::Event {

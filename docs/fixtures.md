@@ -113,7 +113,7 @@ not complete schema coverage.
 ### Values, samples and windows
 
 Bit values retain all nine logic states and compare exactly at the declared width.
-Strings compare exactly. Non-NaN reals compare their binary64 representations,
+Supported ASCII strings compare exactly. Non-NaN reals compare their binary64 representations,
 including signed zeros and infinities. Version-1 evidence treats any NaN as equal
 to any NaN, so it cannot assert payload, sign or signaling-bit identity. This
 evidence limit does not redefine the library's representation identity.
@@ -132,6 +132,23 @@ retain their order, and event occurrences retain multiplicity. Redundant persist
 writes may be absent, but distinct intermediate values must remain. An empty
 reversed window supplies no initial state or changes. Overlapping windows and
 samples must agree. Evidence is not a set of alternative accepted answers.
+
+### Supported-value limits
+
+The runner retains the installed version-1 sidecars unchanged. Some older string
+observations contain non-ASCII text. Those observations now prove a typed
+`Error::NonAsciiString` rejection. The test-side derivation retains explicit
+samples and complete window prefixes before the first proven rejection bound.
+Point, owned history and no-match query checks assert the typed failure by that
+bound. Other signals keep their observations. VCD validates all values at open,
+so a proven non-ASCII record makes opening fail with that typed error. These are
+executed rejection checks, not skips or successful string comparisons. Sparse
+evidence can bound a failure without proving the exact first offending tick.
+
+The native GHDL reader uses conventional 1 fs in its version-1 observations. GHW
+stores no resolution. The runner checks that known convention separately and
+expects absent Ondas timescale while comparing raw ticks unchanged. It does not
+treat the conventional number as evidence of a physical duration.
 
 ### Normalized expectations
 

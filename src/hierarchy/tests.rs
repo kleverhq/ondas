@@ -1,5 +1,46 @@
 use super::*;
 
+#[test]
+fn enum_keys_match_whole_bits_without_guessing_or_restricting_labels() {
+    let data = EnumerationData::for_encoding(
+        Some("state".into()),
+        vec![
+            ("01XZHUWL-".into(), "état".into()),
+            ("01xzhuwl-".into(), "other label".into()),
+        ],
+        Encoding::Bits { width: 9 },
+    )
+    .unwrap();
+    let table = Enumeration { data: &data };
+    let bits = crate::BitsRef::from_ascii(b"01XZHUWL-")
+        .unwrap()
+        .to_string();
+    let labels: Vec<_> = table
+        .variants()
+        .filter(|v| v.encoded == bits)
+        .map(|v| v.label)
+        .collect();
+    assert_eq!(labels, ["état", "other label"]);
+    for key in ["1", "001", "0?", "é"] {
+        assert!(
+            EnumerationData::for_encoding(
+                None,
+                vec![(key.into(), "label".into())],
+                Encoding::Bits { width: 2 }
+            )
+            .is_none()
+        );
+    }
+    assert!(
+        EnumerationData::for_encoding(
+            None,
+            vec![("01".into(), "label".into())],
+            Encoding::Unsupported
+        )
+        .is_none()
+    );
+}
+
 fn fixture() -> Hierarchy {
     let scopes = vec![
         ScopeData {

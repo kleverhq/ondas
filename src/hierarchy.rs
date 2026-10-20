@@ -243,6 +243,30 @@ pub(crate) struct EnumerationData {
     pub(crate) variants: Vec<(String, String)>,
 }
 
+impl EnumerationData {
+    /// Expose only keys that can be matched to the whole stored bit value.
+    pub(crate) fn for_encoding(
+        name: Option<String>,
+        mut variants: Vec<(String, String)>,
+        encoding: Encoding,
+    ) -> Option<Self> {
+        let Encoding::Bits { width } = encoding else {
+            return None;
+        };
+        if variants.is_empty()
+            || !variants.iter().all(|(key, _)| {
+                crate::BitsRef::from_ascii(key.as_bytes()).is_some_and(|bits| bits.width() == width)
+            })
+        {
+            return None;
+        }
+        for (key, _) in &mut variants {
+            key.make_ascii_lowercase();
+        }
+        Some(Self { name, variants })
+    }
+}
+
 struct HierarchyData {
     source: u64,
     scopes: Vec<ScopeData>,
@@ -751,7 +775,12 @@ impl<'h> Variable<'h> {
         self.data().logic_domain
     }
 
-    /// Returns enumeration metadata for the declaration when available.
+    /// Returns enumeration metadata whose keys match the whole signal's bits.
+    ///
+    /// `None` means the reader cannot supply this mapping. It does not prove
+    /// that the source declaration is not an enum. Keys describe the whole
+    /// signal, not a slice. The reader does not pad, reverse or reinterpret keys
+    /// to fit a declaration.
     pub fn enumeration(&self) -> Option<Enumeration<'h>> {
         self.data()
             .enumeration
@@ -858,8 +887,17 @@ impl BitRange {
 
 /// Borrowed enumeration metadata for a variable declaration.
 ///
-/// Encoded keys are text metadata. They do not change the signal's value encoding
-/// or the representation used by value queries.
+/// Each key is a lowercase logic string with the whole signal's bit width,
+/// ordered from most to least significant, as in [`BitsRef`](crate::BitsRef)
+/// display. Match the complete bit value directly. Signedness and the HDL
+/// declaration range do not change this comparison. All nine logic states can
+/// occur in keys; their presence does not establish the declaration's domain.
+/// A slice does not carry a projected enumeration.
+///
+/// Labels retain reader-provided spelling. They are not string sample values
+/// and are not restricted to ASCII. Order, duplicate keys and duplicate labels
+/// are preserved. A value need not have a label; a key can have multiple labels.
+/// This metadata does not change the signal's encoding.
 pub struct Enumeration<'h> {
     data: &'h EnumerationData,
 }
@@ -870,7 +908,7 @@ impl<'h> Enumeration<'h> {
         self.data.name.as_deref()
     }
 
-    /// Iterates over encoded values and their source labels.
+    /// Iterates over whole-value logic keys and their reader-provided labels.
     pub fn variants(&self) -> impl Iterator<Item = EnumerationVariant<'h>> + '_ {
         self.data
             .variants
@@ -881,9 +919,9 @@ impl<'h> Enumeration<'h> {
 
 /// An encoded enumeration value and its source label.
 pub struct EnumerationVariant<'h> {
-    /// The encoded value represented as text.
+    /// The whole signal's MSB-first, fixed-width, lowercase logic string.
     pub encoded: &'h str,
-    /// The corresponding source-level enumeration label.
+    /// The corresponding reader-provided enumeration label spelling.
     pub label: &'h str,
 }
 

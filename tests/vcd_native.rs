@@ -355,19 +355,38 @@ fn dumpall_only_state_and_strict_blackout_boundaries() {
 }
 
 #[test]
-fn latin1_octets_escapes_padding_and_literal_bytes() {
+fn ascii_controls_escapes_and_padding_are_exact() {
     let mut wave = open(
         "$var string 0 ! text $end",
-        b"#0 s\\303\\251\\000\\377\\040\\040 ! #1 sA\\tB\\nC\\\\\\\"\\000\\040 ! #2 s\xc3\xa9 !",
+        b"#0 s\\000\\177\\040\\040 ! #1 sA\\tB\\nC\\\\\\\"\\000\\040 !",
     );
     let signal = wave.hierarchy().signal("top.text").unwrap();
-    for (tick, expected) in [
-        (0, "\u{c3}\u{a9}\0\u{ff}  "),
-        (1, "A\tB\nC\\\"\0 "),
-        (2, "\u{c3}\u{a9}"),
-    ] {
+    for (tick, expected) in [(0, "\0\u{7f}  "), (1, "A\tB\nC\\\"\0 ")] {
         assert!(
             matches!(value(wave.sample(signal, Time::from_ticks(tick)).unwrap()), Value::String(v) if v.as_ref() == expected)
+        );
+    }
+}
+
+#[test]
+fn non_ascii_strings_are_typed_errors_during_validation() {
+    for payload in [
+        b"s\\200".as_slice(),
+        b"s\\377",
+        b"s\\x80",
+        b"s\xc3\xa9",
+        b"s\xff",
+    ] {
+        let mut body = b"#7 ".to_vec();
+        body.extend_from_slice(payload);
+        body.extend_from_slice(b" !");
+        let result = ondas::open_bytes(
+            "text.vcd",
+            source("$var string 0 ! text $end", &body).into(),
+        );
+        assert!(
+            matches!(result, Err(Error::NonAsciiString { format: Format::Vcd, ref backend, time })
+            if backend == "vcd-native" && time == Time::from_ticks(7))
         );
     }
 }

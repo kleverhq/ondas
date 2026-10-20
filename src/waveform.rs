@@ -595,6 +595,10 @@ impl Metadata {
     }
 
     /// Returns the exact tick duration when reliably available.
+    ///
+    /// `None` means the source does not establish a supported physical scale.
+    /// Keep raw [`Time`] ticks in that case; do not assume a unit for physical
+    /// conversion. In particular, GHW does not store its time resolution.
     pub fn timescale(&self) -> Option<Timescale> {
         self.timescale
     }
