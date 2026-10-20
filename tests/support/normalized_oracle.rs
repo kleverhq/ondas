@@ -3,7 +3,10 @@ use serde_json::{Value as Json, json};
 
 /// Derive supported ASCII prefixes and bounds that prove a string read must fail.
 /// Raw version-1 observations stay unchanged in the fixture repository.
-pub fn ascii_prefixes(mut oracle: Json) -> (Json, std::collections::BTreeMap<String, u64>) {
+pub fn ascii_prefixes(
+    mut oracle: Json,
+    completed_ticks_only: bool,
+) -> (Json, std::collections::BTreeMap<String, u64>) {
     let mut rejected = std::collections::BTreeMap::new();
     let Some(signals) = oracle.get_mut("signals").and_then(Json::as_object_mut) else {
         return (oracle, rejected);
@@ -29,9 +32,21 @@ pub fn ascii_prefixes(mut oracle: Json) -> (Json, std::collections::BTreeMap<Str
                         .expect("initial state is before the window"),
                 );
             }
-            for change in window["changes"].as_array().into_iter().flatten() {
-                if non_ascii(&change["value"]) {
-                    bounds.push(tick(&change["time"]));
+            // Some reader transports coalesce a tick before value decoding.
+            // Other adapters can reject an intermediate decoded write (D4).
+            let changes = if completed_ticks_only {
+                final_ticks(window)
+            } else {
+                window["changes"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|change| (tick(&change["time"]), change["value"].clone()))
+                    .collect()
+            };
+            for (time, value) in changes {
+                if non_ascii(&value) {
+                    bounds.push(time);
                 }
             }
         }
@@ -377,14 +392,12 @@ mod tests {
                     {"start":"9","end":"2","initial":null,"changes":[]}]},
             "bits": {"samples":[{"time":"8","value":{"bits":"01xz"}}]}
         }});
-        let original = raw.clone();
-        let (supported, rejected) = ascii_prefixes(raw.clone());
-        assert_eq!(raw, original);
+        let (supported, rejected) = ascii_prefixes(raw.clone(), false);
         assert_eq!(
             rejected,
             std::collections::BTreeMap::from([("text".into(), 5)])
         );
-        assert_eq!(supported["signals"]["bits"], original["signals"]["bits"]);
+        assert_eq!(supported["signals"]["bits"], raw["signals"]["bits"]);
         assert_eq!(
             supported["signals"]["text"]["samples"]
                 .as_array()
@@ -399,8 +412,25 @@ mod tests {
         assert_eq!(windows[1]["start"], "9");
         let (_, zero) = ascii_prefixes(
             json!({"signals":{"t":{"windows":[{"start":"0","end":"2","initial":null,"changes":[{"time":"0","value":{"string":"ÿ"}}]}]}}}),
+            false,
         );
         assert_eq!(zero["t"], 0);
+    }
+
+    #[test]
+    fn ascii_policy_respects_the_reader_decoding_boundary() {
+        let raw = json!({"signals":{"t":{
+            "samples":[{"time":"1","value":{"string":"ok"}}],
+            "windows":[{"start":"0","end":"2","initial":null,"changes":[
+                {"time":"1","value":{"string":"é"}},
+                {"time":"1","value":{"string":"ok"}}]}]
+        }}});
+        let (supported, rejected) = ascii_prefixes(raw.clone(), false);
+        assert_eq!(rejected["t"], 1);
+        assert_eq!(supported["signals"]["t"]["windows"][0]["end"], "0");
+        let (supported, rejected) = ascii_prefixes(raw.clone(), true);
+        assert!(rejected.is_empty());
+        assert_eq!(supported, raw);
     }
 
     #[test]

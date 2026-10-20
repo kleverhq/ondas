@@ -377,17 +377,19 @@ fn non_ascii_strings_are_typed_errors_during_validation() {
         b"s\xc3\xa9",
         b"s\xff",
     ] {
-        let mut body = b"#7 ".to_vec();
-        body.extend_from_slice(payload);
-        body.extend_from_slice(b" !");
-        let result = ondas::open_bytes(
-            "text.vcd",
-            source("$var string 0 ! text $end", &body).into(),
-        );
-        assert!(
-            matches!(result, Err(Error::NonAsciiString { format: Format::Vcd, ref backend, time })
-            if backend == "vcd-native" && time == Time::from_ticks(7))
-        );
+        for tail in [b" !".as_slice(), b" ! sASCII !"] {
+            let mut body = b"#7 ".to_vec();
+            body.extend_from_slice(payload);
+            body.extend_from_slice(tail);
+            let result = ondas::open_bytes(
+                "text.vcd",
+                source("$var string 0 ! text $end", &body).into(),
+            );
+            assert!(
+                matches!(result, Err(Error::NonAsciiString { format: Format::Vcd, ref backend, time })
+                if backend == "vcd-native" && time == Time::from_ticks(7))
+            );
+        }
     }
 }
 

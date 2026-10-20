@@ -358,7 +358,8 @@ fn load_conformance_fixture(root: &Path, name: &str) -> Option<Fixture> {
         eprintln!("SKIP {name}: no oracle observations");
         return None;
     }
-    let (oracle, non_ascii) = normalized_oracle::ascii_prefixes(oracle);
+    // The WLF native shim emits only completed ticks before Rust decoding.
+    let (oracle, non_ascii) = normalized_oracle::ascii_prefixes(oracle, format == Format::Wlf);
     Some(Fixture {
         path,
         oracle,
@@ -1027,6 +1028,18 @@ fn scan_queries(wave: &mut Waveform, handles: &[Signal], range: TimeRange, conte
                 panic!("empty indexed scan delivered a record")
             })
             .unwrap();
+        let _: ControlFlow<()> = wave
+            .scan_candidate_times(handles, range, |_| {
+                panic!("empty candidate scan delivered a tick")
+            })
+            .unwrap();
+        let _: ControlFlow<()> = wave
+            .select(handles)
+            .unwrap()
+            .scan_candidate_times(range, |_| {
+                panic!("empty selected candidate scan delivered a tick")
+            })
+            .unwrap();
         return;
     }
     let single_samples: Vec<_> = handles
@@ -1277,9 +1290,6 @@ fn scan_queries(wave: &mut Waveform, handles: &[Signal], range: TimeRange, conte
             required.is_subset(&candidates.iter().copied().collect()),
             "{context}: missing required candidate ticks"
         );
-        if range.is_empty() {
-            assert!(rows.is_empty() && candidates.is_empty());
-        }
     }
     let mut calls = 0;
     let result = selected
