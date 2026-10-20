@@ -226,20 +226,13 @@ pub(super) fn typed(c: &mut Criterion) {
     else {
         return;
     };
-    let signals = [
-        "top.trigger",
-        "top.logic4",
-        "top.real64",
-        "top.real32",
-        "top.text_short",
-        "top.text_long",
-    ]
-    .map(|name| wave.hierarchy().signal(name).unwrap());
+    let signals = ["top.trigger", "top.logic4", "top.real64", "top.real32"]
+        .map(|name| wave.hierarchy().signal(name).unwrap());
     let mut selection = wave.select(&signals).unwrap();
     let mut group = c.benchmark_group(format!("{fixture}/W1/prepared"));
     group.sample_size(10);
     group.bench_function(
-        BenchmarkId::new("adjacent/event+logic+reals+strings/2048..=2080", BACKEND),
+        BenchmarkId::new("adjacent/event+logic+reals/2048..=2080", BACKEND),
         |b| {
             b.iter(|| {
                 black_box(
@@ -247,7 +240,7 @@ pub(super) fn typed(c: &mut Criterion) {
                         &mut selection,
                         range(2048, 2080),
                         &[0],
-                        &[0, 1, 2, 3, 4, 5],
+                        &[0, 1, 2, 3],
                         |time, index, sample| {
                             black_box((time, index, sample));
                         },

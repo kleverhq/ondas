@@ -125,7 +125,7 @@ Sources must remain unchanged while open.
 | Bits | Preserve all nine states. Short vectors extend with zero or their leading nonbinary state. Over-width vectors keep the least-significant digits after validation of the entire payload. |
 | Zero-width bits | Remain non-queryable, including known empty binary records. They do not become real signals. |
 | Reals | Checked parsing preserves signed zero and named NaN/Inf. |
-| Strings | Decode common C, octal and two-digit hex escapes into Latin-1, preserving literal high-bit bytes, NULs and padding. |
+| Strings | Decode common C, octal and two-digit hex escapes. Preserve ASCII, NUL and padding. Reject decoded bytes above 127 with `Error::NonAsciiString`, including during opening validation. |
 | Real-declared strings | A declaration carrying only strings gets string storage, including numeric-looking text. Mixed real/string histories fail. |
 
 ### Time, metadata and text

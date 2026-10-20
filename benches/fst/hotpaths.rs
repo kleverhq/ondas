@@ -17,11 +17,7 @@ fn candidates(selection: &mut Selection<'_>, range: TimeRange) -> u64 {
 }
 
 pub(super) fn strings(c: &mut Criterion) {
-    for fixture in [
-        "fst/fst0044-overlay-tb-issue-21",
-        "fst/fst0060-manytypes2",
-        "fst/fst0061-shortstring",
-    ] {
+    for fixture in ["fst/fst0044-overlay-tb-issue-21", "fst/fst0060-manytypes2"] {
         let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
         let mut wave = ondas::open_with(&path, BACKEND).unwrap();
         let signals = wave

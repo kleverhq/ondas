@@ -47,8 +47,10 @@ The `vcd2wlf` import can truncate escaped names and split a source scope. These
 losses also appear in vendor exports; Ondas cannot reconstruct the source text.
 
 Verified values include logic vectors with all nine represented states, native
-binary64 reals, UTF-8 SystemVerilog strings and named events. Reals preserve signed
-zero and NaN payloads. Non-UTF-8 string contents return a reader error. The SDK's
+binary64 reals, ASCII SystemVerilog strings and named events. Reals preserve
+signed zero and NaN payloads. Non-ASCII bytes return `Error::NonAsciiString`,
+regardless of UTF-8 validity. The current formatter transport does not support
+embedded-NUL contents. The SDK's
 string formatter supplies literal contents for the native string type; arbitrary
 object display text is not treated as a string.
 

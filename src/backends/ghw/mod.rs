@@ -8,9 +8,7 @@ mod types;
 mod wire;
 
 use super::Input;
-use crate::{
-    BitsRef, Encoding, Hierarchy, Metadata, Result, Signal, Time, TimeUnit, Timescale, ValueRef,
-};
+use crate::{BitsRef, Encoding, Hierarchy, Metadata, Result, Signal, Time, ValueRef};
 use hierarchy::Recipe;
 use std::ops::{ControlFlow, Range};
 use types::Types;
@@ -145,7 +143,7 @@ impl Reader {
         )?;
         let metadata = Metadata {
             source_name,
-            timescale: Some(Timescale::new(1, TimeUnit::Femtosecond)),
+            timescale: None,
             time_span,
             writer: None,
             date: None,

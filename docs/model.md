@@ -52,6 +52,19 @@ to each declaration. They do not belong to the shared signal or stored bits.
 Interpretation metadata remains absent when it is unavailable or does not apply.
 Observed values do not establish this metadata.
 
+Enum metadata is a mapping from whole stored bits to reader-provided labels.
+Each exposed key is a `BitsRef` with the whole signal width and the same bit
+positions as queried values. Callers can inspect logic states without formatting
+text. `to_owned()` retains an independent `Bits` value.
+The reader leaves the mapping absent when it cannot establish that relation. It
+does not infer padding, bit reversal or a domain from the keys. Labels remain
+separate from string samples.
+
+String samples preserve ASCII bytes exactly where the source transport supports
+them. Non-ASCII values return a typed error. Decoding transport escapes does not
+choose a text encoding. This restriction does not apply to names, enum labels or
+diagnostics.
+
 A signal handle identifies a whole history or a static bit projection, not a
 path or raw reader index. Validation includes waveform identity so a foreign
 handle cannot accidentally select a local signal.
@@ -79,7 +92,9 @@ before Ondas opens the result. The reader cannot reconstruct missing information
 ## Time and observations
 
 Time uses absolute source ticks. A timescale has an exact integer factor and unit.
-Reader-local time indices and timestamp tables stay private. The model has no
+An unknown duration remains absent. A convention does not establish a physical
+scale. Keep raw ticks when the duration is unknown; physical conversion needs a
+known scale. Reader-local time indices and timestamp tables stay private. The model has no
 separate delta-cycle coordinate.
 
 Persistent values establish state. Events have occurrence counts but no persistent

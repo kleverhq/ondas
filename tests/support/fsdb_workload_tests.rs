@@ -222,29 +222,22 @@ fn fsdb_typed_temporal_workload() {
     ) else {
         return;
     };
-    let signals = [
-        "top.trigger",
-        "top.logic4",
-        "top.real64",
-        "top.real32",
-        "top.text_short",
-        "top.text_long",
-    ]
-    .map(|name| wave.hierarchy().signal(name).unwrap());
+    let signals = ["top.trigger", "top.logic4", "top.real64", "top.real32"]
+        .map(|name| wave.hierarchy().signal(name).unwrap());
     let mut selection = wave.select(&signals).unwrap();
     let mut observations = Vec::new();
     let candidates = workloads::adjacent(
         &mut selection,
         range(2048, 2080),
         &[0],
-        &[0, 1, 2, 3, 4, 5],
+        &[0, 1, 2, 3],
         |time, index, sample| {
             observations.push((time, index, format!("{sample:?}")));
         },
     )
     .unwrap();
     assert_eq!(candidates, 33);
-    assert_eq!(observations.len(), 33 * 3 * 6);
+    assert_eq!(observations.len(), 33 * 3 * 4);
     // Point reads are the independently invoked normalized reference; the public
     // fixture typed/event oracle is also checked by full_fsdb_pool.
     let expected: Vec<_> = (2047..=2080)

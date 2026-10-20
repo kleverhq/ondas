@@ -179,7 +179,7 @@ fn workloads(c: &mut Criterion) {
     for (fixture, name, tick, end) in [
         ("wlf/wlf0070-typed-deltas-aliases", "top.real_value", 14, 14),
         ("wlf/wlf0071-event-occurrences", "top.pulse", 3, 6),
-        ("wlf/wlf0072-strings-and-names", "top.message", 5, 7),
+        ("wlf/wlf0072-strings-and-names", "top.message", 3, 3),
     ] {
         let (path, _) = fixtures::load_artifact(&root, fixture);
         typed(c, fixture, &path, name, tick, end);

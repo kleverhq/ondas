@@ -26,9 +26,9 @@ Directory and tail sections are validated when present. Recorded footer offsets
 do not drive query seeking. Clean EOF after a complete section is accepted;
 partial fields, value lists and section terminators fail.
 
-GHW does not encode time resolution. Ondas preserves integer ticks and reports
-the conventional unit of one femtosecond. It cannot repair scaling from a
-producer that used another simulation resolution. Missing writer, date and
+GHW does not encode time resolution. Ondas preserves integer ticks and returns
+`None` for timescale. A conventional unit does not establish a physical duration.
+The consumer needs a known scale before it can convert ticks to physical time. Missing writer, date and
 definition-name information remains absent.
 
 ## Declaration and value mapping

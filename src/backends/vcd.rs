@@ -1256,7 +1256,7 @@ impl Reader {
             let value = match (self.encodings[index], prefix) {
                 (Encoding::Real, b'r') => ValueRef::Real(real(payload)?),
                 (Encoding::String, b's') => {
-                    decode_string(payload, &mut string, selected)?;
+                    decode_string(payload, &mut string, selected, Time::from_ticks(time))?;
                     ValueRef::String(&string)
                 }
                 (
@@ -1428,7 +1428,7 @@ fn real(bytes: &[u8]) -> Result<f64> {
     Ok(value)
 }
 
-fn decode_string(bytes: &[u8], output: &mut String, materialize: bool) -> Result<()> {
+fn decode_string(bytes: &[u8], output: &mut String, materialize: bool, time: Time) -> Result<()> {
     output.clear();
     let mut index = 0;
     while index < bytes.len() {
@@ -1475,6 +1475,13 @@ fn decode_string(bytes: &[u8], output: &mut String, materialize: bool) -> Result
                 }
                 _ => return Err(malformed("unknown string escape")),
             };
+        }
+        if !byte.is_ascii() {
+            return Err(Error::NonAsciiString {
+                format: Format::Vcd,
+                backend: "vcd-native".into(),
+                time,
+            });
         }
         if materialize {
             output.push(char::from(byte));

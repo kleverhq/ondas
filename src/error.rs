@@ -191,6 +191,21 @@ pub enum Error {
         message: String,
     },
 
+    /// A decoded string sample contains a byte outside ASCII (0 through 127).
+    ///
+    /// This is a value-support limit, not evidence of a malformed source.
+    /// The failure can occur during opening or a query. Earlier callback
+    /// observations remain valid; owned queries return no partial result.
+    #[error("non-ASCII string at {time:?} in {format:?} waveform read by {backend}")]
+    NonAsciiString {
+        /// The source format.
+        format: Format,
+        /// The reader that decoded the value.
+        backend: String,
+        /// The source tick of the rejected value.
+        time: Time,
+    },
+
     /// A driver or readable subset index is outside its selection.
     #[error("selection index {index} is outside 0..{len}")]
     InvalidSelectionIndex {

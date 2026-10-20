@@ -353,20 +353,16 @@ fn controlled_corpus(c: &mut Criterion) {
     typed::records(
         c,
         "fsdb/fsdb0017-typed-records",
-        &[
-            "top.logic4",
-            "top.trigger",
-            "top.real64",
-            "top.real32",
-            "top.text_short",
-            "top.text_long",
-        ],
+        &["top.logic4", "top.trigger", "top.real64", "top.real32"],
+        2049,
     );
     typed::records(
         c,
         "fsdb/fsdb0018-native-real32",
         &["top.real32", "top.control"],
+        2049,
     );
+    typed::records(c, "fsdb/fsdb0019-typed-values", &["values.text"], 11);
 }
 
 fn matched(c: &mut Criterion) {

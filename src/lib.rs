@@ -38,7 +38,7 @@ through `LD_LIBRARY_PATH`. Use a directory with a symlink to the selected
 
 SHM input is a complete database directory. Byte input is unsupported. The
 adapter reads the latest matching recording across its TRN components.
-It preserves bits, real values, UTF-8 strings and event occurrences.
+It preserves bits, real values, ASCII strings and event observations.
 Confirmed aliases share a handle. If the reader does not provide
 alias identity, each declaration has a separate handle. Qualified bit-only points
 can seek values after certifying their availability. Other histories collect
@@ -165,8 +165,9 @@ replays selected signals for queries. It does not store full value histories.
 Source files must remain unchanged while open.
 
 - The reader preserves aliases, exact ranges, nine-state bits, real signed zero,
-  strings and ordinary repeated events. Strings use reversible Latin-1 decoding,
-  including escapes, NUL and padding. A real declaration with string records is
+  strings and ordinary repeated events. Strings decode escapes and retain ASCII,
+  including NUL and padding. Non-ASCII values return [`Error::NonAsciiString`].
+  A real declaration with string records is
   classified as string storage before signal handles are returned.
 - Persistent dump-block records apply at their recorded tick. Event records in
   `$dumpvars`, `$dumpall`, `$dumpoff` and `$dumpon` are snapshots, not occurrences.
@@ -185,8 +186,12 @@ Source files must remain unchanged while open.
 `fst-lib` is a direct, unmodified adapter to `fst-reader` 0.17.0. It reads bits,
 reals, strings and event callbacks, preserving aliases and explicit source ranges.
 
-- String bytes map reversibly to Unicode U+0000 to U+00FF (Latin-1), including NULs
-  and padding. The adapter does not guess whether a byte sequence is UTF-8.
+- Strings preserve ASCII bytes, including NUL and padding. Non-ASCII bytes return
+  [`Error::NonAsciiString`], whether or not they form valid UTF-8.
+- Enum keys are exposed only when they match the whole stored bit width and logic
+  states. Keys use [`BitsRef`], as queried bit values do. Labels retain the
+  published decoder spelling; escaped label text can
+  remain escaped. The adapter does not guess a missing mapping.
 - Explicit FST SystemVerilog types can supply [`Variable::logic_domain`]. Explicit
   VHDL type attributes can also supply [`Variable::signedness`]. Legacy storage
   kinds and type-name text do not establish either field. The current VCD and
@@ -231,8 +236,8 @@ Source files must remain unchanged while open.
   A narrow slice still needs its whole vector. Values stay in the source; there is
   no retained value history or query checkpoint. Callback termination stops before
   the next tick's values.
-- The wire does not encode time resolution. Ticks remain unchanged; the reported
-  unit of one femtosecond is conventional. Compression containers and unknown
+- The wire does not encode time resolution. Ticks remain unchanged and
+  [`Metadata::timescale`] returns `None`. Compression containers and unknown
   layouts are unsupported. Missing required nested array bounds are malformed.
   Empty derived layouts have a checked limit of 1,000,000 scopes.
 
@@ -268,8 +273,9 @@ prevent the entire executable from starting, even for VCD/FST operations.
 The executable cannot handle a missing runtime SDK gracefully.
 
 - Known digital storage preserves bits and source logic states. Real storage maps
-  to `f64`. NUL-terminated strings use reversible Latin-1. Embedded-NUL string
-  data and transaction events are unsupported.
+  to `f64`. NUL-terminated strings preserve ASCII; other bytes return
+  [`Error::NonAsciiString`]. Embedded-NUL string data and transaction events
+  are unsupported.
 - Normal HDL event records remain occurrences. No-change event initialization
   markers are not triggers. Unknown event records and event queries on
   SDK-reported dump-off files return errors. Callbacks describe recorded activity,
@@ -327,8 +333,9 @@ recognized FST/VCD contents. Without the feature, the `wlf-lib` name returns
 [`Error::UnknownBackend`] and automatic WLF opening returns [`Error::NoBackend`].
 
 Logic vectors preserve the represented nine-state domain. Native binary64 reals
-preserve signed zeros and NaN payloads. Native SystemVerilog strings require valid
-UTF-8. Named events count recorded EVENT callbacks; logging notifications add no
+preserve signed zeros and NaN payloads. Native SystemVerilog strings preserve
+ASCII; other bytes return [`Error::NonAsciiString`]. Embedded-NUL contents are
+not supported by the current formatter transport. Named events count recorded EVENT callbacks; logging notifications add no
 occurrences. Writer collapse settings can remove activity before reading. Unsupported
 value classes remain visible and return [`Error::UnsupportedSignal`]. Delayed
 logging leaves state missing until its first record. Persistent values hold the

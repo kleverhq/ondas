@@ -6,6 +6,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Restrict reader string samples to exact ASCII (0 through 127). Non-ASCII
+  values now return `Error::NonAsciiString`, including valid non-ASCII UTF-8.
+  Names, enum labels and diagnostics keep their separate text rules. This
+  narrows the string support in 1.1.1 and requires a major release.
+- Return no GHW timescale because the file does not store time resolution.
+  Raw ticks are unchanged. Consumers must not assume the previous conventional
+  1 fs scale when converting time.
+- Expose enum tables only when every key matches the whole queryable bit value.
+  Change `EnumerationVariant::encoded` from `&str` to `BitsRef`. Inspect keys
+  with the bit API; use `to_string()` when text is required. Incompatible
+  mappings remain absent instead of requiring reader-specific interpretation. Labels
+  retain reader spelling and are not restricted to ASCII.
+
 ### Added
 
 - Compare `Scope` and `Variable` views by object identity. Hierarchy clones keep

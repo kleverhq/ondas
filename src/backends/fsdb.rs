@@ -427,10 +427,7 @@ impl Reader {
                                         .ok_or_else(|| backend_error("missing enum label"))?,
                                 ));
                             }
-                            Some(EnumerationData {
-                                name: type_name.clone(),
-                                variants,
-                            })
+                            EnumerationData::for_encoding(type_name.clone(), variants, encoding)
                         };
                         variables.push(VariableData {
                             name,
@@ -604,7 +601,6 @@ impl Reader {
             .unwrap_or(0);
         let mut bits = vec![0; width];
         let mut data = Vec::new();
-        let mut text = String::new();
         let mut previous = 0;
         loop {
             let mut record = Record::default();
@@ -673,11 +669,12 @@ impl Reader {
                     ValueRef::Bits(BitsRef::from_validated_ascii(bytes))
                 }
                 (Encoding::Real, 2) => ValueRef::Real(real(bytes)?),
-                (Encoding::String, 3) => {
-                    text.clear();
-                    text.extend(bytes.iter().copied().map(char::from));
-                    ValueRef::String(&text)
-                }
+                (Encoding::String, 3) => ValueRef::String(crate::value::ascii_string(
+                    bytes,
+                    Format::Fsdb,
+                    "fsdb-lib",
+                    Time::from_ticks(record.tick),
+                )?),
                 (Encoding::Event, 4) => ValueRef::Event { occurrences: 1 },
                 _ => return Err(backend_error("FSDB value disagrees with declaration")),
             };
@@ -898,9 +895,13 @@ mod tests {
         assert!(
             variants
                 .iter()
-                .all(|variant| variant.encoded.len() == 2 && !variant.label.is_empty())
+                .all(|variant| variant.encoded.width() == 2 && !variant.label.is_empty())
         );
-        assert!(variants.iter().any(|variant| variant.encoded == "00"));
+        assert!(
+            variants
+                .iter()
+                .any(|variant| variant.encoded.iter_msb().eq([crate::Logic::Zero; 2]))
+        );
         let signal = variable.signal().unwrap();
         assert_eq!(signal.encoding(), Encoding::Bits { width: 2 });
         let sample = wave.sample(signal, Time::ZERO).unwrap();

@@ -1,5 +1,22 @@
 use std::fmt;
 
+/// Checks decoded sample bytes, independently of their transport encoding.
+pub(crate) fn ascii_string<'a>(
+    bytes: &'a [u8],
+    format: crate::Format,
+    backend: &str,
+    time: crate::Time,
+) -> crate::Result<&'a str> {
+    if !bytes.is_ascii() {
+        return Err(crate::Error::NonAsciiString {
+            format,
+            backend: backend.into(),
+            time,
+        });
+    }
+    Ok(std::str::from_utf8(bytes).expect("ASCII is valid UTF-8"))
+}
+
 /// A borrowed view of a waveform value.
 ///
 /// Views supplied to query callbacks can reference backend buffers and are valid
@@ -34,6 +51,12 @@ pub enum ValueRef<'a> {
         f64,
     ),
     /// A borrowed string value.
+    ///
+    /// Readers return exact ASCII (0 through 127), including NUL when the
+    /// source transport supports it. Other bytes return
+    /// [`Error::NonAsciiString`](crate::Error::NonAsciiString). This rule does
+    /// not apply to hierarchy names, enum labels or diagnostics. Caller-created
+    /// variants do not validate their contents.
     String(
         /// The string payload.
         &'a str,
@@ -67,7 +90,7 @@ pub enum Value {
         /// The floating-point payload.
         f64,
     ),
-    /// An owned string value.
+    /// An owned string value. See [`ValueRef::String`] for reader limits.
     String(
         /// The string payload.
         Box<str>,
@@ -285,6 +308,29 @@ impl Bits {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sample_strings_preserve_all_ascii_and_reject_other_octets() {
+        let bytes: Vec<_> = (0..=127).collect();
+        assert_eq!(
+            ascii_string(&bytes, crate::Format::Shm, "shm-lib", crate::Time::ZERO)
+                .unwrap()
+                .as_bytes(),
+            bytes
+        );
+        for bytes in [
+            vec![128],
+            vec![255],
+            "é".as_bytes().to_vec(),
+            vec![b'a', 0, 128],
+        ] {
+            assert!(
+                matches!(ascii_string(&bytes, crate::Format::Shm, "shm-lib", crate::Time::from_ticks(9)),
+                Err(crate::Error::NonAsciiString { format: crate::Format::Shm, backend, time })
+                if backend == "shm-lib" && time.ticks() == 9)
+            );
+        }
+    }
 
     #[test]
     fn ascii_states_and_iteration() {

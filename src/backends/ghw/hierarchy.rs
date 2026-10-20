@@ -179,10 +179,11 @@ impl Mapper<'_> {
                     )
                 })
                 .collect();
-            enumeration = Some(EnumerationData {
-                name: self.types.name(scalar_type).map(str::to_owned),
+            enumeration = EnumerationData::for_encoding(
+                self.types.name(scalar_type).map(str::to_owned),
                 variants,
-            });
+                encoding,
+            );
         }
         self.variables.push(VariableData {
             name,
@@ -876,7 +877,7 @@ mod tests {
             .enumeration()
             .unwrap()
             .variants()
-            .map(|v| (v.encoded.to_owned(), v.label.to_owned()))
+            .map(|v| (v.encoded.to_string(), v.label.to_owned()))
             .collect::<Vec<_>>();
         assert_eq!(
             variants,

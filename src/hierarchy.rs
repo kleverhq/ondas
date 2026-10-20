@@ -240,7 +240,32 @@ pub(crate) struct VariableData {
 
 pub(crate) struct EnumerationData {
     pub(crate) name: Option<String>,
-    pub(crate) variants: Vec<(String, String)>,
+    // Whole-width logic keys are validated and canonicalized by for_encoding.
+    variants: Vec<(String, String)>,
+}
+
+impl EnumerationData {
+    /// Expose only keys that can be matched to the whole stored bit value.
+    pub(crate) fn for_encoding(
+        name: Option<String>,
+        mut variants: Vec<(String, String)>,
+        encoding: Encoding,
+    ) -> Option<Self> {
+        let Encoding::Bits { width } = encoding else {
+            return None;
+        };
+        if variants.is_empty()
+            || !variants.iter().all(|(key, _)| {
+                crate::BitsRef::from_ascii(key.as_bytes()).is_some_and(|bits| bits.width() == width)
+            })
+        {
+            return None;
+        }
+        for (key, _) in &mut variants {
+            key.make_ascii_lowercase();
+        }
+        Some(Self { name, variants })
+    }
 }
 
 struct HierarchyData {
@@ -751,7 +776,12 @@ impl<'h> Variable<'h> {
         self.data().logic_domain
     }
 
-    /// Returns enumeration metadata for the declaration when available.
+    /// Returns enumeration metadata whose keys match the whole signal's bits.
+    ///
+    /// `None` means the reader cannot supply this mapping. It does not prove
+    /// that the source declaration is not an enum. Keys describe the whole
+    /// signal, not a slice. The reader does not pad, reverse or reinterpret keys
+    /// to fit a declaration.
     pub fn enumeration(&self) -> Option<Enumeration<'h>> {
         self.data()
             .enumeration
@@ -858,8 +888,40 @@ impl BitRange {
 
 /// Borrowed enumeration metadata for a variable declaration.
 ///
-/// Encoded keys are text metadata. They do not change the signal's value encoding
-/// or the representation used by value queries.
+/// Each key is a [`BitsRef`](crate::BitsRef) with the whole signal's bit width.
+/// Bit zero is the least-significant bit, as in a queried bit value. Match the
+/// complete bit value with the key. Signedness and the HDL declaration range do
+/// not change this comparison. All nine logic states can occur in keys; their
+/// presence does not establish the declaration's domain.
+/// A slice does not carry a projected enumeration.
+///
+/// Labels retain reader-provided spelling. They are not string sample values
+/// and are not restricted to ASCII. Order, duplicate keys and duplicate labels
+/// are preserved. A value need not have a label; a key can have multiple labels.
+/// This metadata does not change the signal's encoding.
+///
+/// Compare keys with queried bits through the public logic-state iterators:
+/// `BitsRef` does not implement `PartialEq`. The iterators compare the complete
+/// width and every logic state without formatting text.
+///
+/// ```no_run
+/// use ondas::{Sample, Time, Value};
+/// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// let mut wave = ondas::open("dump.fst")?;
+/// let hierarchy = wave.hierarchy().clone();
+/// let variable = hierarchy.variable("top.state")?;
+/// if let (Some(signal), Some(table)) = (variable.signal(), variable.enumeration()) {
+///     if let Sample::Value { value: Value::Bits(bits), .. } = wave.sample(signal, Time::ZERO)? {
+///         for variant in table.variants() {
+///             if variant.encoded.iter_msb().eq(bits.as_ref().iter_msb()) {
+///                 println!("{}", variant.label);
+///             }
+///         }
+///     }
+/// }
+/// # Ok(())
+/// # }
+/// ```
 pub struct Enumeration<'h> {
     data: &'h EnumerationData,
 }
@@ -870,20 +932,27 @@ impl<'h> Enumeration<'h> {
         self.data.name.as_deref()
     }
 
-    /// Iterates over encoded values and their source labels.
+    /// Iterates over borrowed whole-value bits and their reader-provided labels.
     pub fn variants(&self) -> impl Iterator<Item = EnumerationVariant<'h>> + '_ {
         self.data
             .variants
             .iter()
-            .map(|(encoded, label)| EnumerationVariant { encoded, label })
+            .map(|(encoded, label)| EnumerationVariant {
+                encoded: crate::BitsRef::from_validated_ascii(encoded.as_bytes()),
+                label,
+            })
     }
 }
 
 /// An encoded enumeration value and its source label.
 pub struct EnumerationVariant<'h> {
-    /// The encoded value represented as text.
-    pub encoded: &'h str,
-    /// The corresponding source-level enumeration label.
+    /// The whole signal's bit value, borrowed from hierarchy storage.
+    ///
+    /// The view remains valid for the hierarchy borrow. Use
+    /// [`BitsRef::to_owned`](crate::BitsRef::to_owned) to retain an independent copy,
+    /// or [`Display`](std::fmt::Display) to format it as an MSB-first logic string.
+    pub encoded: crate::BitsRef<'h>,
+    /// The corresponding reader-provided enumeration label spelling.
     pub label: &'h str,
 }
 

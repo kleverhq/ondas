@@ -301,6 +301,29 @@ fn fst_string_candidates_preserve_values_and_reuse_after_stop() {
             assert!(!signals.is_empty());
             signals.push(signals[0]);
             let mut selection = wave.select(&signals).unwrap();
+            if fixture == "fst/fst0061-shortstring" {
+                let mut delivered = 0;
+                let error = selection
+                    .scan_each(TimeRange::all(), |_, _| {
+                        delivered += 1;
+                        ControlFlow::<()>::Continue(())
+                    })
+                    .unwrap_err();
+                assert!(matches!(
+                    error,
+                    ondas::Error::NonAsciiString {
+                        format: ondas::Format::Fst,
+                        time: Time::ZERO,
+                        ..
+                    }
+                ));
+                assert_eq!(delivered, 0, "the first tick contains non-ASCII");
+                assert!(matches!(
+                    selection.samples(Time::ZERO),
+                    Err(ondas::Error::NonAsciiString { .. })
+                ));
+                continue;
+            }
             let read_values = |selection: &mut ondas::Selection<'_>| {
                 let mut values = Vec::new();
                 let _ = selection
@@ -318,13 +341,6 @@ fn fst_string_candidates_preserve_values_and_reuse_after_stop() {
             };
             let before = read_values(&mut selection);
             assert!(!before.is_empty());
-            if fixture == "fst/fst0061-shortstring" {
-                assert!(
-                    before
-                        .iter()
-                        .any(|(_, _, text)| text == &format!("{:<50}", "En lång röd räv"))
-                );
-            }
             let first = before.iter().map(|(_, time, _)| *time).min().unwrap();
             let last = before.iter().map(|(_, time, _)| *time).max().unwrap();
             for window in [
