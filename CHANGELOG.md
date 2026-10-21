@@ -23,6 +23,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Sample several explicit times with `Selection::samples_at` and
+  `Waveform::samples_at`. Results retain both time and signal order, including
+  repetitions and quiet ticks, and return a complete owned batch or an error.
+- Read saved histories with borrowed `Trace::sample` and `Trace::samples_at`.
+  Outside coverage returns `Error::TraceCoverage`; `SampleRef::to_owned` creates
+  an independent observation.
+
 - Compose bit signals and slices with `Waveform::concat`, including static
   nesting and repeated parts. Read computed Signals through the existing
   sample, scan, query and Trace operations. Partial observations fill Missing
@@ -43,6 +50,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   fixtures and tests.
 
 ### Fixed
+
+- Retain entering state for unbounded traces and scans starting after EOF.
+  Such traces support ordinary post-EOF sampling without synthetic changes.
 
 - Remove recognized Verilog escape syntax from FSDB and WLF logical names.
   Preserve literal punctuation and backslashes. Keep available reader spelling

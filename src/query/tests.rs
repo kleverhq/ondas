@@ -489,6 +489,17 @@ fn empty_histories_and_eof_bounds_are_successful_observations() {
                 assert_eq!(trace.range(), range);
                 assert!(trace.initial().is_none());
                 assert!(trace.changes().is_empty());
+                if trace.signal().encoding() == Encoding::Event {
+                    assert!(matches!(
+                        trace.sample(tick).unwrap(),
+                        SampleRef::Event { occurrences: 0, .. }
+                    ));
+                } else {
+                    assert!(matches!(
+                        trace.sample(tick).unwrap(),
+                        SampleRef::Missing { .. }
+                    ));
+                }
             }
             let result = empty
                 .scan_candidate_times(&signals, range, |_| panic!("empty history candidate"))
@@ -519,8 +530,8 @@ fn empty_histories_and_eof_bounds_are_successful_observations() {
         .unwrap()
     {
         assert!(
-            trace.initial().is_none(),
-            "unbounded range starts after EOF"
+            trace.initial().is_some() || trace.signal().encoding() == Encoding::Event,
+            "unbounded range retains post-EOF entering state"
         );
         assert!(trace.changes().is_empty());
     }

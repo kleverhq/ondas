@@ -52,6 +52,9 @@ impl TimeSpan {
 ///
 /// Both bounds are included. An absent end means EOF. It does not create a
 /// timestamp. A bounded range with `start > end` is empty and returns no error.
+/// An unbounded range starting after EOF can still retain entering state.
+/// A saved [`Trace`](crate::Trace) with an unbounded range supports ordinary
+/// post-EOF sampling at every tick at or after its start.
 /// Its scan makes no visitor calls. Its trace has no initial state or changes.
 /// [`TimeRange::point`] covers all changes at one tick. Any state strictly before
 /// that tick is a separate initial state.

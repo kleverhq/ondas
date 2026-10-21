@@ -174,6 +174,23 @@ and do not represent a decoded history.
 Public query contracts define their ordering and allowances, along with event
 multiplicity, range bounds and callback termination.
 
+Explicit-time batches use the same completed states as point reads, including
+quiet ticks. The library schedules the requested times together. Output retains
+both time order and selection positions, including duplicates. The owned batch
+is complete or an error; decoding selected data may fail at intermediate ticks.
+Its schedule grows with the time list, while retained working values depend on
+the selection and composition dependencies. Returned values and reader/SDK
+storage are separate costs.
+
+A saved trace owns entering state and normalized changes. A lookup borrows that
+storage without reading the source. Finite coverage includes both requested
+bounds; a reversed range covers nothing. An unbounded trace supports ordinary
+EOF sampling from its start, including when the start is after recorded EOF.
+A known entering state remains available even without in-window changes. Outside
+coverage is a typed error, distinct from an in-coverage Missing value. Events
+remain exact-tick counts. The first persistent observation does not establish a
+known transition time; its record time and the sample's change time are separate.
+
 ## Compatibility boundary
 
 Reader optimizations may change traversal, indexing or internal storage. They must

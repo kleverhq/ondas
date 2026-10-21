@@ -18,6 +18,37 @@ pub(super) struct Slot {
     events: u64,
 }
 
+impl Slot {
+    // Some(time) reads the completed pending tick; None reads committed state
+    // at a quiet tick. Exact-tick events never carry into committed state.
+    fn sample(&self, signal: Signal, time: Option<Time>) -> SampleRef<'_> {
+        if signal.encoding() == Encoding::Event {
+            return SampleRef::Event {
+                signal,
+                occurrences: if time.is_some() { self.events } else { 0 },
+            };
+        }
+        let state = self.state.as_ref();
+        let value = time
+            .and(self.pending.as_ref())
+            .or(state.map(|state| &state.value));
+        match value {
+            Some(value) => SampleRef::Value {
+                signal,
+                value: value.as_ref(),
+                changed_at: state.and_then(|state| {
+                    if self.changed {
+                        time.or(state.changed_at)
+                    } else {
+                        state.changed_at
+                    }
+                }),
+            },
+            None => SampleRef::Missing { signal },
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 enum Position {
     Vcd(crate::backends::vcd::Position),
@@ -132,42 +163,14 @@ impl QueryContext<'_> {
             let signal = self.signals[index];
             let slot_index = self.slot_indices[index];
             let slot = &self.slots[slot_index];
-            let sample = if signal.encoding() == Encoding::Event {
-                let occurrences = if current {
-                    slot.events
-                } else if self.previous_tick == Some(time) {
+            let mut sample = slot.sample(signal, current.then_some(self.time));
+            if !current && let SampleRef::Event { occurrences, .. } = &mut sample {
+                *occurrences = if self.previous_tick == Some(time) {
                     self.previous_events[slot_index]
                 } else {
                     0
                 };
-                SampleRef::Event {
-                    signal,
-                    occurrences,
-                }
-            } else {
-                let state = slot.state.as_ref();
-                let value = if current {
-                    slot.pending.as_ref().or(state.map(|state| &state.value))
-                } else {
-                    state.map(|state| &state.value)
-                };
-                if let Some(value) = value {
-                    let changed_at = state.and_then(|state| {
-                        if current && slot.changed {
-                            Some(self.time)
-                        } else {
-                            state.changed_at
-                        }
-                    });
-                    SampleRef::Value {
-                        signal,
-                        value: value.as_ref(),
-                        changed_at,
-                    }
-                } else {
-                    SampleRef::Missing { signal }
-                }
-            };
+            }
             if let ControlFlow::Break(value) = visitor(index, sample)? {
                 return Ok(ControlFlow::Break(value));
             }
@@ -319,6 +322,82 @@ impl<'w> Selection<'w> {
         })
     }
 
+    /// Returns owned observations at several explicitly requested ticks.
+    ///
+    /// Rows retain time order and duplicates. Each row's samples retain selection
+    /// order and duplicates. Quiet ticks are included. Values and change times
+    /// follow [`Sample`], including Missing before the first observation and
+    /// held persistent state with zero events after EOF.
+    ///
+    /// An empty time list returns an empty vector. An empty selection returns
+    /// one empty row per time. Neither case reads the source. The result owns
+    /// its times and values and can outlive this selection and waveform.
+    ///
+    /// One chronological traversal serves the sorted schedule; no full history
+    /// or candidate list is collected. Additional scheduling state grows with
+    /// the number of requested times. Working values grow with the selection
+    /// and its composition dependencies. Returned values, input storage and
+    /// reader/index/SDK memory are separate costs.
+    ///
+    /// Selected payload may fail decoding while advancing, including at ticks
+    /// not requested in `times`. On any error, returns no partial batch. Successful
+    /// observations follow point sampling; validation and decode timing may differ.
+    ///
+    /// ```
+    /// use ondas::{Sample, Time, Value};
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let input = b"$var wire 1 a a $end $enddefinitions $end #2 0a #6 1a #16";
+    /// let mut wave = ondas::open_bytes("times.vcd", input.as_slice().into())?;
+    /// let a = wave.hierarchy().signal("a")?;
+    /// let times = [12, 3, 12, 8].map(Time::from_ticks);
+    /// let rows = wave.select(&[a, a])?.samples_at(&times)?;
+    /// drop(wave);
+    /// assert_eq!(rows.iter().map(|row| row.0).collect::<Vec<_>>(), times);
+    /// for ((_, samples), expected) in rows.iter().zip(["1", "0", "1", "1"]) {
+    ///     assert_eq!(samples.len(), 2);
+    ///     for sample in samples {
+    ///         let Sample::Value { value: Value::Bits(bits), .. } = sample else { panic!() };
+    ///         assert_eq!(bits.as_ref().to_string(), expected);
+    ///     }
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn samples_at(&mut self, times: &[Time]) -> Result<Vec<(Time, Vec<Sample>)>> {
+        let mut rows = times
+            .iter()
+            .map(|&time| (time, Vec::new()))
+            .collect::<Vec<_>>();
+        if times.is_empty() || self.signals.is_empty() {
+            return Ok(rows);
+        }
+        let mut order = (0..times.len()).collect::<Vec<_>>();
+        order.sort_unstable_by_key(|&index| times[index]);
+        let end = times[*order.last().expect("nonempty schedule")];
+        let indices = self.slot_indices.clone();
+        let mut slots = vec![Slot::default(); self.retained_signals.len()];
+        let mut next = 0;
+        let observe = |signals: &[Signal], slots: &[Slot], tick| {
+            signals
+                .iter()
+                .zip(&indices)
+                .map(|(&signal, &index)| slots[index].sample(signal, tick).to_owned())
+                .collect()
+        };
+        let _ = self.read_ticks_from(None, end, &mut slots, true, |time, signals, slots| {
+            while next < order.len() && times[order[next]] <= time {
+                let index = order[next];
+                rows[index].1 = observe(signals, slots, (times[index] == time).then_some(time));
+                next += 1;
+            }
+            Ok(ControlFlow::<()>::Continue(()))
+        })?;
+        for &index in &order[next..] {
+            rows[index].1 = observe(&self.signals, &slots, None);
+        }
+        Ok(rows)
+    }
+
     /// Visits candidate times and lets each callback read selected samples.
     ///
     /// `drivers` lists positions in this selection that determine candidate
@@ -356,6 +435,10 @@ impl<'w> Selection<'w> {
     /// # Stopping and errors
     ///
     /// Callback `Break` stops delivery immediately and is returned unchanged.
+    /// Selected payload may fail validation or decoding before a condition
+    /// matches, including a query with no matches. A subset read does not
+    /// promise deferred decoding of other selected data. A stop does not undo preparation
+    /// already performed by the reader or SDK.
     /// Callback/read errors propagate without rolling back earlier observations.
     /// The reader may decode one next-tick record to complete a tick before
     /// calling the callback. Fresh queries are valid after completion, stop or
@@ -935,7 +1018,12 @@ impl<'w> Selection<'w> {
     ) -> Result<ControlFlow<B>> {
         let end = range
             .end()
-            .or_else(|| self.waveform.metadata().time_span().map(|span| span.last()))
+            .or_else(|| {
+                self.waveform
+                    .metadata()
+                    .time_span()
+                    .map(|span| span.last().max(range.start()))
+            })
             .unwrap_or(Time::from_ticks(u64::MAX));
         if range.is_empty() || range.start() > end || self.signals.is_empty() {
             return Ok(ControlFlow::Continue(()));

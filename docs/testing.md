@@ -276,3 +276,21 @@ With both SDKs installed, run
 The combined test reads FSDB from a WLF visitor and WLF from an FSDB visitor.
 This checks both readers in one process. The SDK-specific pools still need their
 separate conformance runs.
+
+## Explicit times and saved-history lookup
+
+`tests/sampling.rs` checks literal values for unordered, repeated and quiet ticks,
+duplicate slots, aliases, projections and nested compositions. It compares point,
+batch, query and Trace observations where coverage overlaps. Directed cases
+include Missing versus X, exact-tick events, entering state, unknown first change
+time, finite and reversed coverage, zero and maximum ticks, and wholly post-EOF
+windows. Owned copies survive the source and saved trace; Rustdoc checks that a
+borrowed trace sample cannot escape its owner.
+
+The generated-reader tests check one read start for a batch and observe actual
+pending values across increasing source lengths. Output is allowed to grow with
+the requested schedule. Failure cases select a payload that fails before a late
+match or during a no-match query, and reject an owned batch after earlier rows
+could have been built. Existing stop and unfinished-tick tests remain applicable.
+The conformance runner derives repeated multi-time and retained Trace samples
+only inside independently observed complete oracle windows.

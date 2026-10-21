@@ -108,25 +108,7 @@ impl Selection<'_> {
     pub fn samples(&mut self, time: Time) -> Result<Vec<Sample>> {
         let mut samples = Vec::with_capacity(self.signals.len());
         let _ = self.visit_samples(time, |sample| {
-            samples.push(match sample {
-                SampleRef::Missing { signal } => Sample::Missing { signal },
-                SampleRef::Value {
-                    signal,
-                    value,
-                    changed_at,
-                } => Sample::Value {
-                    signal,
-                    value: value.to_owned(),
-                    changed_at,
-                },
-                SampleRef::Event {
-                    signal,
-                    occurrences,
-                } => Sample::Event {
-                    signal,
-                    occurrences,
-                },
-            });
+            samples.push(sample.to_owned());
             ControlFlow::<()>::Continue(())
         })?;
         Ok(samples)
@@ -331,6 +313,7 @@ pub enum Sample {
 ///
 /// A view from [`Selection::visit_samples`] is valid only during its callback.
 /// A view from [`Sample::as_ref`] instead borrows that owned sample.
+/// A view from [`Trace::sample`] or [`Trace::samples_at`] borrows the saved trace.
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub enum SampleRef<'a> {
@@ -388,6 +371,32 @@ impl Sample {
 }
 
 impl SampleRef<'_> {
+    /// Copies this observation into an independent owned sample.
+    ///
+    /// The copy retains the signal, change time or occurrence count. Its value
+    /// no longer borrows the callback, sample or trace that supplied this view.
+    pub fn to_owned(self) -> Sample {
+        match self {
+            Self::Missing { signal } => Sample::Missing { signal },
+            Self::Value {
+                signal,
+                value,
+                changed_at,
+            } => Sample::Value {
+                signal,
+                value: value.to_owned(),
+                changed_at,
+            },
+            Self::Event {
+                signal,
+                occurrences,
+            } => Sample::Event {
+                signal,
+                occurrences,
+            },
+        }
+    }
+
     /// Returns the sampled signal.
     pub fn signal(self) -> Signal {
         match self {
@@ -453,6 +462,9 @@ pub struct Change {
 /// stored separately from changes inside the inclusive bounds. An empty range has
 /// no initial state or changes. No changes in a nonempty range is a successful
 /// empty change list. An entering state may still be present.
+/// An unbounded range starting after EOF retains any known entering state.
+/// [`Self::sample`] and [`Self::samples_at`] read this owned history without
+/// source access, including ordinary EOF sampling for an unbounded range.
 ///
 /// Owned trace queries return an error without a partial trace on read failure.
 /// Views obtained from this trace's [`Initial`] and [`Change`] objects borrow
@@ -492,6 +504,112 @@ impl Change {
 }
 
 impl Trace {
+    /// Samples this saved history without reading its source or copying values.
+    ///
+    /// Both finite bounds are included. An unbounded trace covers all ticks at
+    /// or after its start, including after EOF. Those ticks follow [`Sample`]'s
+    /// held-state and zero-event rules. A reversed range covers no ticks.
+    /// Outside this coverage, returns [`Error::TraceCoverage`](crate::Error::TraceCoverage),
+    /// not [`SampleRef::Missing`]. An entering state does not extend coverage
+    /// before the start.
+    ///
+    /// Inside coverage, applies completed changes through `time` to the entering
+    /// state. Events count only occurrences at exactly `time`. The first
+    /// persistent change without an entering state has no known `changed_at`;
+    /// its record time alone does not establish a preceding value.
+    ///
+    /// The view borrows this trace and can outlive this call. Use
+    /// [`SampleRef::to_owned`] for an independent copy. Lookup takes logarithmic
+    /// time in the number of saved changes and constant additional state.
+    ///
+    /// ```
+    /// use ondas::{Error, Time, TimeRange, SampleRef, ValueRef};
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let t = Time::from_ticks;
+    /// let input = b"$var wire 1 a a $end $enddefinitions $end #2 0a #6 1a #16";
+    /// let mut wave = ondas::open_bytes("saved.vcd", input.as_slice().into())?;
+    /// let a = wave.hierarchy().signal("a")?;
+    /// let saved = wave.trace(a, TimeRange::closed(t(4), t(12)))?;
+    /// let tail = wave.trace(a, TimeRange::from(t(17)))?;
+    /// drop(wave);
+    /// let rows = saved.samples_at(&[t(12), t(4), t(12), t(8)])?;
+    /// assert_eq!(rows.len(), 4);
+    /// assert!(matches!(saved.sample(t(13)), Err(Error::TraceCoverage { .. })));
+    /// let SampleRef::Value { value: ValueRef::Bits(bits), changed_at, .. } =
+    ///     tail.sample(t(u64::MAX))? else { panic!() };
+    /// assert_eq!(bits.to_string(), "1");
+    /// assert_eq!(changed_at, Some(t(6)));
+    /// let retained = tail.sample(t(20))?.to_owned();
+    /// drop(tail);
+    /// assert_eq!(retained.signal(), a);
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// A borrowed result cannot outlive its trace:
+    ///
+    /// ```compile_fail,E0515
+    /// use ondas::{SampleRef, Time, Trace};
+    /// fn escape(trace: Trace, time: Time) -> SampleRef<'static> {
+    ///     trace.sample(time).unwrap()
+    /// }
+    /// ```
+    pub fn sample(&self, time: Time) -> Result<SampleRef<'_>> {
+        if self.range.is_empty()
+            || time < self.range.start()
+            || self.range.end().is_some_and(|end| time > end)
+        {
+            return Err(crate::Error::TraceCoverage {
+                requested: time,
+                range: self.range,
+            });
+        }
+        let index = self.changes.partition_point(|change| change.time <= time);
+        let change = index.checked_sub(1).map(|index| &self.changes[index]);
+        if self.signal.encoding() == crate::Encoding::Event {
+            let occurrences = match change
+                .filter(|change| change.time == time)
+                .map(Change::value)
+            {
+                Some(ValueRef::Event { occurrences }) => occurrences,
+                _ => 0,
+            };
+            return Ok(SampleRef::Event {
+                signal: self.signal,
+                occurrences,
+            });
+        }
+        if let Some(change) = change {
+            return Ok(SampleRef::Value {
+                signal: self.signal,
+                value: change.value(),
+                changed_at: (index > 1 || self.initial.is_some()).then_some(change.time),
+            });
+        }
+        Ok(match &self.initial {
+            Some(initial) => SampleRef::Value {
+                signal: self.signal,
+                value: initial.value(),
+                changed_at: initial.changed_at,
+            },
+            None => SampleRef::Missing {
+                signal: self.signal,
+            },
+        })
+    }
+
+    /// Samples several saved ticks in input order, including duplicates.
+    ///
+    /// Each row retains its requested time and follows [`Self::sample`]. Values
+    /// borrow only this trace, not `times`. An empty list returns an empty vector.
+    /// If any time is outside coverage, returns an error without a partial vector.
+    pub fn samples_at(&self, times: &[Time]) -> Result<Vec<(Time, SampleRef<'_>)>> {
+        times
+            .iter()
+            .map(|&time| self.sample(time).map(|sample| (time, sample)))
+            .collect()
+    }
+
     /// Returns the traced signal.
     pub fn signal(&self) -> Signal {
         self.signal

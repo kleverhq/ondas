@@ -138,3 +138,14 @@ candidate times may include extras. FST's first-tick event limitation in
 [crate rustdoc](../src/lib.rs) does not apply to genuine memory-reader events.
 Constructing reserved error variants does not exercise a reader path. Tests do
 not count this as coverage.
+
+`tests/sampling.rs` covers `Selection::samples_at`, `Waveform::samples_at`,
+`Trace::sample`, `Trace::samples_at`, `SampleRef::to_owned`, and typed
+`Error::TraceCoverage`. It checks both ordering dimensions, quiet and EOF ticks,
+entering state, Missing, events and composition. The generated-reader tests
+`explicit_times_use_one_read_with_bounded_working_values` and
+`selected_payload_failure_precedes_late_or_absent_matches_and_aborts_batch`
+check traversal, working state and failure boundaries. Complete fixture windows
+supply independent expected multi-time and saved-history observations in
+`pool_queries`. Rustdoc checks owned results after source destruction and
+rejects a view that outlives its Trace.
