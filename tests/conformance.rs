@@ -1583,21 +1583,21 @@ fn static_composition_queries(
         if av.is_none() && bv.is_none() {
             return vec![json!({"missing":true}); 4];
         }
-        let a = av
+        let a_bits = av
             .map(str::to_owned)
             .unwrap_or_else(|| "x".repeat(a.width().unwrap() as usize));
-        let b = bv
+        let b_bits = bv
             .map(str::to_owned)
             .unwrap_or_else(|| "x".repeat(b.width().unwrap() as usize));
-        let full = format!("{a}{b}{a}");
+        let full = format!("{a_bits}{b_bits}{a_bits}");
         vec![
             json!({"value":{"bits":full}}),
-            json!({"value":{"bits":a}}),
-            json!({"value":{"bits":format!("{a}{a}")}}),
+            json!({"value":{"bits":a_bits}}),
+            json!({"value":{"bits":format!("{a_bits}{a_bits}")}}),
             json!({"value":{"bits":full}}),
         ]
     };
-    let expected = |time| {
+    let assembled_at = |time| {
         let x = evidence[left].sample(time);
         let y = evidence[right].sample(time);
         assemble(x["value"]["bits"].as_str(), y["value"]["bits"].as_str())
@@ -1607,20 +1607,10 @@ fn static_composition_queries(
         entries[right].2["initial"]["value"]["bits"].as_str(),
     );
     let start = range.start().ticks();
-    let end = range.end().unwrap().ticks();
-    for time in BTreeSet::from([start, start + (end - start) / 2, end]) {
-        let values = wave.samples(&selected, Time::from_ticks(time)).unwrap();
-        let wanted = expected(time);
-        for (index, actual) in values.iter().enumerate() {
-            sample(
-                actual.as_ref(),
-                selected[index],
-                &wanted[index],
-                time,
-                context,
-            );
-        }
-    }
+    let end = range
+        .end()
+        .expect("independent oracle window must be bounded")
+        .ticks();
     let times: BTreeSet<_> = std::iter::once(start)
         .chain(
             changes(entries[left].2)
@@ -1631,14 +1621,36 @@ fn static_composition_queries(
         .collect();
     let mut previous = entering.clone();
     let mut histories = vec![Vec::new(); selected.len()];
+    // The initial value does not prove its computed change time before this
+    // window. None means unproven; Some(None) proves first observation.
+    let mut stamps = vec![None; selected.len()];
+    let mut snapshots = Vec::new();
     for time in times {
-        let now = expected(time);
+        let now = assembled_at(time);
         for index in 0..selected.len() {
             if now[index] != previous[index] && now[index].get("value").is_some() {
                 histories[index].push((time, now[index]["value"].clone()));
+                stamps[index] = Some(previous[index].get("value").map(|_| Time::from_ticks(time)));
             }
         }
-        previous = now;
+        previous = now.clone();
+        snapshots.push((time, now, stamps.clone()));
+    }
+    let check_sample = |actual: SampleRef<'_>, index: usize, time: u64| {
+        let (_, values, stamps) = snapshots.iter().rev().find(|(t, _, _)| *t <= time).unwrap();
+        sample(actual, selected[index], &values[index], time, context);
+        if let Some(expected) = stamps[index] {
+            assert!(
+                matches!(actual, SampleRef::Value { changed_at, .. } if changed_at == expected),
+                "{context}: concat changed_at at {time}, slot {index}: expected {expected:?}, got {actual:?}"
+            );
+        }
+    };
+    for time in BTreeSet::from([start, start + (end - start) / 2, end]) {
+        let values = wave.samples(&selected, Time::from_ticks(time)).unwrap();
+        for (index, actual) in values.iter().enumerate() {
+            check_sample(actual.as_ref(), index, time);
+        }
     }
     let traces = wave.traces(&selected, range).unwrap();
     for (index, trace) in traces.iter().enumerate() {
@@ -1669,15 +1681,8 @@ fn static_composition_queries(
                     .filter(|t| *t >= start)
                     .map(Time::from_ticks),
             ) {
-                let wanted = expected(time.ticks());
                 let _ = query.visit_samples(time, &[3, 1, 2, 0, 3], |index, actual| {
-                    sample(
-                        actual,
-                        selected[index],
-                        &wanted[index],
-                        time.ticks(),
-                        context,
-                    );
+                    check_sample(actual, index, time.ticks());
                     Ok(ControlFlow::<()>::Continue(()))
                 })?;
             }

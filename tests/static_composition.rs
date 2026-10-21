@@ -96,6 +96,11 @@ fn handles(wave: &mut Waveform) -> (Signal, Signal, [Signal; 6]) {
 fn common_operations_preserve_nested_d3_and_completed_ticks() {
     for reverse in [false, true] {
         let mut wave = source(reverse);
+        const LAST_TICK: u64 = 8;
+        assert_eq!(
+            wave.metadata().time_span().unwrap().last().ticks(),
+            LAST_TICK
+        );
         let (hi, lo, selected) = handles(&mut wave);
         for tick in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, u64::MAX] {
             let time = Time::from_ticks(tick);
@@ -147,9 +152,11 @@ fn common_operations_preserve_nested_d3_and_completed_ticks() {
             TimeRange::from(Time::from_ticks(20)),
         ] {
             let traces = wave.traces(&selected, range).unwrap();
+            let empty = range.is_empty()
+                || range.start().ticks() > range.end().map_or(LAST_TICK, Time::ticks);
+            let mut expected_rows = Vec::new();
+            let mut expected_initials = Vec::new();
             for (slot, trace) in traces.iter().enumerate() {
-                let empty =
-                    range.is_empty() || range.start().ticks() > range.end().map_or(8, Time::ticks);
                 let initial = if empty {
                     None
                 } else {
@@ -163,9 +170,19 @@ fn common_operations_preserve_nested_d3_and_completed_ticks() {
                         let ValueRef::Bits(b) = v.value() else {
                             panic!()
                         };
-                        b.to_string()
+                        (v.changed_at(), b.to_string())
                     }),
-                    initial.map(|(_, v)| v.to_string())
+                    initial.map(|(t, v)| {
+                        // Tick 2 establishes the first observation; later net
+                        // changes have known timestamps in this authored history.
+                        ((*t != 2).then_some(Time::from_ticks(*t)), v.to_string())
+                    })
+                );
+                expected_initials.push(
+                    initial
+                        .map(|(t, v)| ((*t != 2).then_some(Time::from_ticks(*t)), v.to_string()))
+                        .into_iter()
+                        .collect::<Vec<_>>(),
                 );
                 let actual: Vec<_> = trace
                     .changes()
@@ -187,25 +204,41 @@ fn common_operations_preserve_nested_d3_and_completed_ticks() {
                     .map(|(t, v)| (*t, v.to_string()))
                     .collect();
                 assert_eq!(actual, expected, "slot {slot} range {range:?}");
+                expected_rows.push(expected);
             }
             let mut selection = wave.select(&selected).unwrap();
             let mut rows = vec![Vec::new(); selected.len()];
+            let mut initials = vec![Vec::new(); selected.len()];
             let _ = selection
                 .scan_each(range, |slot, record| {
-                    if let ondas::ScanRef::Change {
-                        time,
-                        value: ValueRef::Bits(bits),
-                        ..
-                    } = record
-                    {
-                        rows[slot].push((time.ticks(), bits.to_string()));
+                    match record {
+                        ondas::ScanRef::Change {
+                            signal,
+                            time,
+                            value: ValueRef::Bits(bits),
+                            ..
+                        } => {
+                            assert_eq!(signal, selected[slot]);
+                            rows[slot].push((time.ticks(), bits.to_string()));
+                        }
+                        ondas::ScanRef::Initial {
+                            signal,
+                            changed_at,
+                            value: ValueRef::Bits(bits),
+                            ..
+                        } => {
+                            assert_eq!(signal, selected[slot]);
+                            initials[slot].push((changed_at, bits.to_string()));
+                        }
+                        _ => panic!("unexpected non-bit scan record"),
                     }
                     ControlFlow::<()>::Continue(())
                 })
                 .unwrap();
-            for (slot, trace) in traces.iter().enumerate() {
-                assert_eq!(rows[slot].len(), trace.changes().len());
-            }
+            assert_eq!(rows, expected_rows, "scan changes in {range:?}");
+            assert_eq!(initials, expected_initials, "scan initials in {range:?}");
+            assert_eq!(rows[0], rows[5]);
+            assert_eq!(initials[0], initials[5]);
         }
         let mut query = wave.select(&selected).unwrap();
         let mut times = Vec::new();
@@ -234,7 +267,8 @@ fn common_operations_preserve_nested_d3_and_completed_ticks() {
             })
             .unwrap();
         assert!(times.contains(&5) && times.contains(&7));
-        for (slot, tick) in [(0, 8), (1, 7), (2, 8), (3, 8), (4, 7)] {
+        assert!(times.windows(2).all(|pair| pair[0] < pair[1]));
+        for (slot, tick) in [(0, 8), (1, 7), (2, 8), (3, 8), (4, 7), (5, 8)] {
             let sample = query.samples(Time::from_ticks(9)).unwrap().remove(slot);
             assert!(
                 matches!(sample.as_ref(),SampleRef::Value{changed_at:Some(t),..} if t.ticks()==tick)
