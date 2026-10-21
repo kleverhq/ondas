@@ -1637,7 +1637,7 @@ fn static_composition_queries(
         snapshots.push((time, now, stamps.clone()));
     }
     let check_sample = |actual: SampleRef<'_>, index: usize, time: u64| {
-        let (_, values, stamps) = snapshots.iter().rev().find(|(t, _, _)| *t <= time).unwrap();
+        let (_, values, stamps) = &snapshots[snapshots.partition_point(|(t, _, _)| *t <= time) - 1];
         sample(actual, selected[index], &values[index], time, context);
         if let Some(expected) = stamps[index] {
             assert!(
