@@ -6,6 +6,8 @@ use std::{
     sync::Arc,
 };
 
+mod composition;
+
 use crate::{
     Error, Hierarchy, Result, Sample, ScanRef, Selection, Signal, Time, TimeRange, TimeSpan,
     Timescale, Trace,
@@ -145,6 +147,7 @@ fn open_file(path: &Path, backend: Option<&str>) -> Result<Waveform> {
             let (reader, hierarchy, metadata) =
                 crate::backends::shm::Reader::open(path, path.to_string_lossy().into_owned())?;
             return Ok(Waveform {
+                compositions: composition::Compositions::default(),
                 reader: Reader::Shm(Box::new(reader)),
                 hierarchy,
                 metadata,
@@ -244,6 +247,7 @@ fn open_input(
         (_, None) => return Err(Error::NoBackend { format }),
     };
     Ok(Waveform {
+        compositions: composition::Compositions::default(),
         reader,
         hierarchy,
         metadata,
@@ -419,6 +423,7 @@ pub struct Waveform {
     pub(crate) reader: Reader,
     hierarchy: Hierarchy,
     metadata: Metadata,
+    compositions: composition::Compositions,
 }
 
 impl Waveform {
@@ -558,6 +563,7 @@ impl Waveform {
             TimeSpan::new(Time::from_ticks(first.1), Time::from_ticks(last.1))
         });
         Self {
+            compositions: composition::Compositions::default(),
             hierarchy: Hierarchy::new(vec![], vec![], encodings),
             metadata: Metadata {
                 source_name: "memory".into(),

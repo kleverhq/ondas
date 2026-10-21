@@ -9,7 +9,8 @@ shows the public entities and private read/query path.
 ## Scope
 
 The model covers metadata, hierarchy, value histories, static bit projections,
-point and range observations, and repeated queries over selected signals.
+point and range observations, static bit compositions, and repeated queries over
+selected signals.
 Writing, conversion, live ingestion, transactions, assertions, coverage, design
 connectivity and asynchronous queries are outside its scope. A waveform is not a
 complete HDL design database.
@@ -70,8 +71,8 @@ them. Non-ASCII values return a typed error. Decoding transport escapes does not
 choose a text encoding. This restriction does not apply to names, enum labels or
 diagnostics.
 
-A signal handle identifies a whole history or a static bit projection, not a
-path or raw reader index. Validation includes waveform identity so a foreign
+A signal handle identifies a source history, a computed bit composition or a
+static bit projection, not a path or raw reader index. Validation includes waveform identity so a foreign
 handle cannot accidentally select a local signal.
 
 Hierarchy paths contain exact components. Escaping affects display, not identity.
@@ -114,6 +115,44 @@ A bit projection reports changes to its observed value, not activity in discarde
 bits. Declaration ranges retain HDL indices and direction; projections use
 normalized value positions. Sharing base-signal reads must not change projection
 identity or semantics.
+
+## Static bit compositions
+
+A composition joins ordered bit signals from one waveform. Its parts occupy
+contiguous positions, from most significant to least significant, and retain
+their internal bit order. Parts can be slices or earlier compositions. Repeated
+parts retain each placement. The waveform owns immutable definitions and reuses
+a handle for an identical ordered definition. Different definitions do not become
+equal because their observed values match. A one-part request keeps its handle.
+
+A computed signal creates no declaration, path or alias. Source hierarchy and
+interpretation metadata stay unchanged. Automatic reconstruction requires proof
+of both source membership and bit mapping. Similar names, adjacent ranges and
+equal values do not provide that proof.
+
+If any part has an observation, the composition retains its bits and fills
+Missing parts with X. An observed all-X part counts as observed. If all parts are
+Missing, the result is Missing. Slices select from the assembled value. Thus a
+part outside a result slice can establish that slice's observation. Preserve
+these dependencies through nested compositions; replacing a result slice with
+source slices can change availability. Direct source reads still distinguish
+Missing and recorded X. Errors do not become X.
+
+The common engine evaluates selected definitions in dependency order after each
+source tick is complete. It compares computed values and projections with their
+own entering state. Part timestamps alone do not establish a computed change
+time. State depends on all reachable source and computed operands, their
+definitions and value widths, not history length. A narrow selected result can
+retain wide or deeply nested dependencies.
+Definition storage lasts until waveform drop. Reader and SDK memory remain
+separate. Computed selections use chronological state establishment; source-only
+point and prefix shortcuts do not establish their change times.
+
+Declaration ranges preserve original signed indices. The checked range helper
+maps the right endpoint to normalized position zero and validates width, bounds
+and direction. It accepts an explicitly chosen coordinate range; it does not
+prove that the range belongs to a declaration. Use the selected declaration's
+metadata for source HDL indices. Missing range metadata stays absent.
 
 ## Queries and storage
 

@@ -26,6 +26,7 @@ pub struct Selection<'w> {
     groups: HashMap<usize, Vec<usize>>,
     slot_indices: Vec<usize>,
     retained_signals: Vec<Signal>,
+    computations: Vec<engine::Computation>,
     replay: Option<engine::Replay>,
     checkpoint: Option<engine::Replay>,
 }

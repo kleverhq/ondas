@@ -398,7 +398,9 @@ mod waveform;
 mod fsdb_compatibility;
 
 /// Errors and input kinds used by path, hierarchy, slicing, and waveform operations.
-pub use error::{Error, InputKind, LookupError, PathError, PathFormatError, SliceError};
+pub use error::{
+    CompositionError, Error, InputKind, LookupError, PathError, PathFormatError, SliceError,
+};
 /// Types describing waveform hierarchy and queryable signals.
 pub use hierarchy::{
     BitRange, Direction, Encoding, Enumeration, EnumerationVariant, Hierarchy, HierarchyPath, Item,

@@ -23,6 +23,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Compose bit signals and slices with `Waveform::concat`, including static
+  nesting and repeated parts. Read computed Signals through the existing
+  sample, scan, query and Trace operations. Partial observations fill Missing
+  parts with X; all-Missing results remain Missing, including their slices.
+- Select signed HDL indices with checked `BitRange::slice` translation to
+  normalized Signal positions.
+
 - Read WLF enum values and complete native tables with full-width bit keys,
   including wide and X/Z variants. Expose SDK array elements as declarations.
 - Add exact equality for `BitsRef`, `Bits`, and mixed pairs. Equal values have

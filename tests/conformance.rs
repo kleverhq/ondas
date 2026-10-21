@@ -1551,6 +1551,149 @@ fn discover(root: &Path, extension: &str) -> Vec<String> {
     names
 }
 
+// Compose only independently covered bit windows. Expected values use oracle
+// strings, not production handles or computed query output.
+fn static_composition_queries(
+    wave: &mut Waveform,
+    entries: &[(&String, Signal, &Json)],
+    evidence: &[normalized_oracle::WindowEvidence],
+    range: TimeRange,
+    context: &str,
+) {
+    if range.is_empty() {
+        return;
+    }
+    let Some(left) = entries
+        .iter()
+        .position(|(_, s, _)| s.width().is_some_and(|w| w > 0))
+    else {
+        return;
+    };
+    let right = entries
+        .iter()
+        .position(|(_, s, _)| s.width().is_some_and(|w| w > 0) && *s != entries[left].1)
+        .unwrap_or(left);
+    let a = entries[left].1;
+    let b = entries[right].1;
+    let bus = wave.concat(&[a, b, a]).unwrap();
+    let cut = bus.slice(a.width().unwrap() - 1, 0).unwrap();
+    let nested = wave.concat(&[cut, a]).unwrap();
+    let selected = [bus, cut, nested, bus];
+    let assemble = |av: Option<&str>, bv: Option<&str>| {
+        if av.is_none() && bv.is_none() {
+            return vec![json!({"missing":true}); 4];
+        }
+        let a = av
+            .map(str::to_owned)
+            .unwrap_or_else(|| "x".repeat(a.width().unwrap() as usize));
+        let b = bv
+            .map(str::to_owned)
+            .unwrap_or_else(|| "x".repeat(b.width().unwrap() as usize));
+        let full = format!("{a}{b}{a}");
+        vec![
+            json!({"value":{"bits":full}}),
+            json!({"value":{"bits":a}}),
+            json!({"value":{"bits":format!("{a}{a}")}}),
+            json!({"value":{"bits":full}}),
+        ]
+    };
+    let expected = |time| {
+        let x = evidence[left].sample(time);
+        let y = evidence[right].sample(time);
+        assemble(x["value"]["bits"].as_str(), y["value"]["bits"].as_str())
+    };
+    let entering = assemble(
+        entries[left].2["initial"]["value"]["bits"].as_str(),
+        entries[right].2["initial"]["value"]["bits"].as_str(),
+    );
+    let start = range.start().ticks();
+    let end = range.end().unwrap().ticks();
+    for time in BTreeSet::from([start, start + (end - start) / 2, end]) {
+        let values = wave.samples(&selected, Time::from_ticks(time)).unwrap();
+        let wanted = expected(time);
+        for (index, actual) in values.iter().enumerate() {
+            sample(
+                actual.as_ref(),
+                selected[index],
+                &wanted[index],
+                time,
+                context,
+            );
+        }
+    }
+    let times: BTreeSet<_> = std::iter::once(start)
+        .chain(
+            changes(entries[left].2)
+                .into_iter()
+                .chain(changes(entries[right].2))
+                .map(|(time, _)| time),
+        )
+        .collect();
+    let mut previous = entering.clone();
+    let mut histories = vec![Vec::new(); selected.len()];
+    for time in times {
+        let now = expected(time);
+        for index in 0..selected.len() {
+            if now[index] != previous[index] && now[index].get("value").is_some() {
+                histories[index].push((time, now[index]["value"].clone()));
+            }
+        }
+        previous = now;
+    }
+    let traces = wave.traces(&selected, range).unwrap();
+    for (index, trace) in traces.iter().enumerate() {
+        assert_eq!(
+            trace.initial().map(|v| value_json(v.value())),
+            entering[index].get("value").cloned(),
+            "{context}: concat entering slot {index}"
+        );
+        let actual: Vec<_> = trace
+            .changes()
+            .iter()
+            .map(|c| (c.time().ticks(), value_json(c.value())))
+            .collect();
+        assert_eq!(
+            actual, histories[index],
+            "{context}: complete concat history slot {index}"
+        );
+    }
+    let mut selection = wave.select(&selected).unwrap();
+    let mut seen = BTreeSet::new();
+    let _ = selection
+        .query(range, &[0], |query| {
+            let time = query.time();
+            seen.insert(time);
+            for time in std::iter::once(time).chain(
+                time.ticks()
+                    .checked_sub(1)
+                    .filter(|t| *t >= start)
+                    .map(Time::from_ticks),
+            ) {
+                let wanted = expected(time.ticks());
+                let _ = query.visit_samples(time, &[3, 1, 2, 0, 3], |index, actual| {
+                    sample(
+                        actual,
+                        selected[index],
+                        &wanted[index],
+                        time.ticks(),
+                        context,
+                    );
+                    Ok(ControlFlow::<()>::Continue(()))
+                })?;
+            }
+            Ok(ControlFlow::<()>::Continue(()))
+        })
+        .unwrap();
+    for history in &histories {
+        for (time, _) in history {
+            assert!(
+                seen.contains(&Time::from_ticks(*time)),
+                "{context}: missing independent concat candidate"
+            );
+        }
+    }
+}
+
 fn pool_queries(fixture: &Fixture, bytes: bool, context: &str) -> bool {
     let result = open(fixture, bytes);
     if let Err(error) = &result
@@ -1664,6 +1807,7 @@ fn pool_queries(fixture: &Fixture, bytes: bool, context: &str) -> bool {
                 )
             })
             .collect::<Vec<_>>();
+        static_composition_queries(&mut wave, &entries, &evidence, range, context);
         if fixture.format == Format::Shm && start <= end {
             // Imported SHM oracles often contain complete windows but no point
             // assertions. Derive fresh one-shot points from that independent

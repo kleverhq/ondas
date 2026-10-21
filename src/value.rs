@@ -285,7 +285,6 @@ impl<'a> BitsRef<'a> {
         Self { data: bytes }
     }
 
-    #[cfg(unix)]
     pub(crate) fn ascii(self) -> &'a [u8] {
         self.data
     }

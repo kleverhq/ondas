@@ -1,6 +1,9 @@
 use super::*;
 use crate::{Encoding, Error};
 
+mod composition;
+pub(super) use composition::Computation;
+
 #[derive(Clone)]
 struct State {
     value: Value,
@@ -255,6 +258,7 @@ fn scan_tick<B>(
 // Visit a finished tick before committing it, so both entering and final states
 // remain available to the same owner. Only slots touched at this tick need work.
 fn complete_tick<B>(
+    computations: &[Computation],
     signals: &[Signal],
     slots: &mut [Slot],
     active_slots: &mut Vec<usize>,
@@ -262,6 +266,9 @@ fn complete_tick<B>(
     visit_from: Option<Time>,
     visitor: &mut impl FnMut(Time, &[Signal], &[Slot]) -> Result<ControlFlow<B>>,
 ) -> Result<ControlFlow<B>> {
+    for computation in computations {
+        computation.complete(slots, active_slots);
+    }
     for &index in active_slots.iter() {
         #[cfg(test)]
         streaming_tests::comparison_visit();
@@ -298,36 +305,15 @@ fn complete_tick<B>(
 
 impl<'w> Selection<'w> {
     pub(crate) fn new(waveform: &'w mut Waveform, signals: &[Signal]) -> Result<Self> {
-        let mut groups = HashMap::<usize, Vec<usize>>::new();
-        let mut bases = Vec::new();
-        let mut first_slots = HashMap::new();
-        let mut slot_indices = Vec::with_capacity(signals.len());
-        let mut retained_signals = Vec::new();
-        for &signal in signals {
-            let index = waveform.hierarchy().validate(signal)?;
-            if signal.encoding() == Encoding::Unsupported {
-                return Err(Error::UnsupportedSignal { signal });
-            }
-            let position = retained_signals.len();
-            let first = *first_slots.entry(signal).or_insert(position);
-            slot_indices.push(first);
-            if first != position {
-                continue;
-            }
-            retained_signals.push(signal);
-            let entries = groups.entry(index).or_default();
-            if entries.is_empty() {
-                bases.push(signal.base());
-            }
-            entries.push(position);
-        }
+        let plan = composition::Plan::new(waveform, signals)?;
         Ok(Self {
             waveform,
             signals: signals.to_vec(),
-            bases,
-            groups,
-            slot_indices,
-            retained_signals,
+            bases: plan.bases,
+            groups: plan.groups,
+            slot_indices: plan.indices,
+            retained_signals: plan.retained,
+            computations: plan.computations,
             replay: None,
             checkpoint: None,
         })
@@ -361,9 +347,11 @@ impl<'w> Selection<'w> {
     /// lies before the range start. No unfinished tick is published. Read visitors
     /// receive only requested samples. A sequential fallback may decode records for
     /// all selected histories and traverse the prefix once to establish entering
-    /// state. It never replays per operand or collects all candidates. Additional query state is bounded
-    /// by selection and value sizes. This bound excludes memory used by the input,
-    /// reader, index and SDK.
+    /// state. It never replays per operand or collects all candidates. Additional
+    /// query state depends on selected entries, all reachable source and computed
+    /// operands, their definition sizes and value widths. A narrow result slice
+    /// can retain wide or deeply nested dependencies. This bound excludes memory
+    /// used by the input, reader, index and SDK.
     ///
     /// # Stopping and errors
     ///
@@ -551,7 +539,8 @@ impl<'w> Selection<'w> {
     ) -> Result<Option<Vec<Option<State>>>> {
         #[cfg(not(feature = "shm-lib"))]
         let _ = prepare_shm_fallback;
-        if self.signals.is_empty()
+        if !self.computations.is_empty()
+            || self.signals.is_empty()
             || !self
                 .bases
                 .iter()
@@ -682,7 +671,8 @@ impl<'w> Selection<'w> {
         time: Time,
         visitor: &mut impl for<'v> FnMut(SampleRef<'v>) -> ControlFlow<B>,
     ) -> Option<ControlFlow<B>> {
-        if !matches!(self.waveform.reader, crate::backends::Reader::Shm(_))
+        if !self.computations.is_empty()
+            || !matches!(self.waveform.reader, crate::backends::Reader::Shm(_))
             || !self
                 .replay
                 .as_ref()
@@ -1022,7 +1012,8 @@ impl<'w> Selection<'w> {
             self.point_states(Time::from_ticks(start.ticks() - 1), false)?;
         }
         #[cfg(unix)]
-        if self.replay.is_none()
+        if self.computations.is_empty()
+            && self.replay.is_none()
             && self.checkpoint.is_none()
             && let Some(start) = start.filter(|start| *start > Time::ZERO)
             && !self.retained_signals.iter().any(|signal| signal.is_slice())
@@ -1101,6 +1092,7 @@ impl<'w> Selection<'w> {
                 if let Some(previous) = pending_time {
                     debug_assert_eq!(previous, time);
                     match complete_tick(
+                        &self.computations,
                         &self.signals,
                         slots,
                         &mut active_slots,
@@ -1118,6 +1110,7 @@ impl<'w> Selection<'w> {
                 && previous != time
             {
                 match complete_tick(
+                    &self.computations,
                     &self.signals,
                     slots,
                     &mut active_slots,
@@ -1322,6 +1315,7 @@ impl<'w> Selection<'w> {
         // Only successful EOF completes the final pending tick.
         let result = if let Some(time) = pending_time {
             complete_tick(
+                &self.computations,
                 &self.signals,
                 slots,
                 &mut active_slots,
@@ -3123,6 +3117,7 @@ mod tests {
             ..Slot::default()
         }];
         let _ = complete_tick(
+            &[],
             &[],
             &mut slots,
             &mut vec![0],
