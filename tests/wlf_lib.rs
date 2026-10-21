@@ -21,6 +21,185 @@ fn bits(sample: Sample) -> String {
     };
     bits.as_ref().to_string()
 }
+
+#[test]
+#[ignore = "requires Questa and installed enum fixtures; run just conformance-wlf"]
+fn wlf_enum_tables_and_samples() {
+    for fixture in ["wlf0083-enum-core", "wlf0084-enum-xz"] {
+        let oracle: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(path(fixture).with_file_name("fixture.json")).unwrap(),
+        )
+        .unwrap();
+        let oracle = &oracle["oracle"];
+        let mut wave = ondas::open_with(path(fixture), "wlf-lib").unwrap();
+        let hierarchy = wave.hierarchy().clone();
+        let mut tables = 0;
+        for variable in oracle["hierarchy"]["variables"].as_array().unwrap() {
+            let expected = &variable["enumeration"];
+            if expected.is_null() {
+                continue;
+            }
+            tables += 1;
+            let path = ondas::HierarchyPath::from_components(
+                variable["path"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|p| p.as_str().unwrap()),
+            );
+            let declaration = hierarchy.variable_path(&path).unwrap();
+            let signal = declaration.signal().unwrap();
+            let table = declaration.enumeration().unwrap();
+            let actual = table
+                .variants()
+                .map(|v| {
+                    assert_eq!(v.encoded.width(), signal.width().unwrap());
+                    serde_json::json!({"encoded":v.encoded.to_string(),"label":v.label})
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(serde_json::json!(actual), expected["variants"], "{path}");
+            let evidence = &oracle["signals"][variable["signal"].as_str().unwrap()];
+            for sample in evidence["samples"].as_array().unwrap() {
+                let tick = sample["time"].as_str().unwrap().parse().unwrap();
+                let Sample::Value {
+                    value: Value::Bits(value),
+                    ..
+                } = wave.sample(signal, Time::from_ticks(tick)).unwrap()
+                else {
+                    panic!("expected enum Bits at {path}:{tick}")
+                };
+                assert_eq!(
+                    value.as_ref().to_string(),
+                    sample["value"]["bits"].as_str().unwrap(),
+                    "{path}:{tick}"
+                );
+                let expected_labels = expected["variants"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|v| v["encoded"] == sample["value"]["bits"])
+                    .map(|v| v["label"].as_str().unwrap())
+                    .collect::<Vec<_>>();
+                let labels = table
+                    .variants()
+                    .filter(|v| v.encoded.iter_msb().eq(value.as_ref().iter_msb()))
+                    .map(|v| v.label)
+                    .collect::<Vec<_>>();
+                assert_eq!(labels, expected_labels, "{path}:{tick}");
+            }
+        }
+        assert_eq!(tables, if fixture.ends_with("core") { 22 } else { 3 });
+    }
+}
+
+#[test]
+#[ignore = "requires Questa and installed enum fixtures; run just conformance-wlf"]
+fn wlf_enum_existing_types_and_owned_metadata() {
+    let mut wave = ondas::open_with(path("wlf0057-vsim"), "wlf-lib").unwrap();
+    let hierarchy = wave.hierarchy().clone();
+    let variable = hierarchy.variable("tb.u1.state").unwrap();
+    let signal = variable.signal().unwrap();
+    let table = variable.enumeration().unwrap();
+    let pairs = table
+        .variants()
+        .map(|v| (v.encoded.to_string(), v.label))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        pairs,
+        [
+            ("00".into(), "IDLE"),
+            ("01".into(), "S5"),
+            ("10".into(), "S10")
+        ]
+    );
+    for (tick, expected) in [(0, "xx"), (10, "00"), (30, "01"), (70, "10")] {
+        assert_eq!(
+            bits(wave.sample(signal, Time::from_ticks(tick)).unwrap()),
+            expected
+        );
+    }
+    drop(wave);
+    // A different native owner and resolution must not invalidate the table.
+    let mut other = ondas::open_with(path("wlf0070-typed-deltas-aliases"), "wlf-lib").unwrap();
+    let h = other.hierarchy().clone();
+    let variable = h.variable("top.logic_value").unwrap();
+    let logic = variable.signal().unwrap();
+    let variants = variable
+        .enumeration()
+        .unwrap()
+        .variants()
+        .map(|v| (v.encoded.to_owned(), v.label))
+        .collect::<Vec<_>>();
+    assert_eq!(variants.len(), 9);
+    for (tick, (key, _)) in variants.iter().enumerate() {
+        assert_eq!(key.width(), 1);
+        assert_eq!(
+            bits(other.sample(logic, Time::from_ticks(tick as u64)).unwrap()),
+            key.as_ref().to_string()
+        );
+    }
+    assert_eq!(table.variants().nth(1).unwrap().encoded.to_string(), "01");
+    assert!(h.variable("top.bus").unwrap().enumeration().is_none());
+
+    let mut ordinal = ondas::open_with(path("wlf0066-wlftb6kaiv"), "wlf-lib").unwrap();
+    let h = ordinal.hierarchy().clone();
+    let variable = h
+        .variable("tb_rgb_system.uut.control_R.current_state")
+        .unwrap();
+    let signal = variable.signal().unwrap();
+    assert_eq!(signal.width(), Some(8));
+    let table = variable.enumeration().unwrap();
+    let labels = table.variants().map(|v| v.label).collect::<Vec<_>>();
+    assert_eq!(
+        labels,
+        [
+            "IDLE",
+            "first_row0",
+            "run",
+            "last_row0",
+            "last_row1",
+            "bef_last",
+            "close",
+            "finish"
+        ]
+    );
+    for (tick, position) in [
+        (0, 0),
+        (45000, 1),
+        (55000, 2),
+        (2625000, 3),
+        (2635000, 4),
+        (2645000, 5),
+        (2655000, 6),
+        (2665000, 7),
+    ] {
+        let key = table.variants().nth(position).unwrap().encoded;
+        assert_eq!(
+            bits(ordinal.sample(signal, Time::from_ticks(tick)).unwrap()),
+            key.to_string()
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires Questa and installed enum fixtures; run just conformance-wlf"]
+fn wlf_enum_same_resolution_owners_survive_other_close() {
+    for _ in 0..8 {
+        let mut core = ondas::open_with(path("wlf0083-enum-core"), "wlf-lib").unwrap();
+        let core_signal = core.hierarchy().signal("top.sparse8").unwrap();
+        let mut xz = ondas::open_with(path("wlf0084-enum-xz"), "wlf-lib").unwrap();
+        let xz_signal = xz.hierarchy().signal("top.logic2xz").unwrap();
+        assert_eq!(core.metadata().timescale(), xz.metadata().timescale());
+        // Opening xz suspends core's native owner. This sample reopens it
+        // while xz stays live; closing core must leave xz usable.
+        assert_eq!(
+            bits(core.sample(core_signal, Time::ZERO).unwrap()),
+            "00000001"
+        );
+        drop(core);
+        assert_eq!(bits(xz.sample(xz_signal, Time::ZERO).unwrap()), "00");
+    }
+}
 fn borrowed_bits(sample: ondas::SampleRef<'_>) -> String {
     let ondas::SampleRef::Value {
         value: ondas::ValueRef::Bits(bits),

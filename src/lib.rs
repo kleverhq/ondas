@@ -342,6 +342,16 @@ logging leaves state missing until its first record. Persistent values hold the
 last recorded state over logging gaps and after EOF. This does not describe
 unrecorded activity. Event counts do not persist.
 
+SV enums expose full-width bit values and complete native tables through
+[`Variable::enumeration`]. Keys preserve leading zeros, signed bit patterns and
+X/Z, including variants never recorded in the history. Qualified scalar VHDL
+logic types keep one bit. Other qualified VHDL enums use their native ordinal
+storage width. SDK array elements are separate declarations; their array
+container has no scalar signal. Type names and aggregate packing remain unknown
+when the SDK does not establish them. An unavailable or incompatible enum table
+stays absent and does not prevent otherwise supported bit queries. The private
+SV descriptor layout needs qualification with each selected SDK.
+
 One private worker owns SDK objects and calls on one thread. Rust visitors run
 on the caller thread outside native callbacks. Independent waveforms can be
 interleaved, moved between threads and queried from callbacks. Cold bit-only
@@ -352,9 +362,10 @@ from the recorded beginning. Records skipped by a seek are not decoded or
 validated. Prepared selections can reuse one bounded normalized state snapshot.
 The adapter keeps selected current values and counts, and transfers bounded
 batches of completed ticks. It does not collect a full history. The SDK keeps its
-own caches. It permits one resolution at a time. The worker releases all native
-owners before a resolution switch or new header read. SDK initialization stays
-active for the process lifetime. A suspended query
+own caches. It permits one resolution at a time. The worker releases native
+query owners before a resolution switch or new header read. One lite namespace
+owner stays alive to protect later opens from stale SDK state. SDK initialization
+stays active for the process lifetime. A suspended query
 reopens its file and replays from its query start, skipping its already returned
 completed-tick slots. Logical sessions retain no SDK pointers.
 The adapter releases file and query resources after errors, breaks and caller

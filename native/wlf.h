@@ -19,6 +19,7 @@ typedef struct {
     int64_t msb, lsb;
     const char *name, *kind, *definition;
     uint32_t verilog_name; /* Nonzero for SDK-identified Verilog symbols. */
+    uint32_t array_base_len; /* Source array component, before native suffixes. */
 } ondas_wlf_decl;
 typedef struct {
     size_t selection;
@@ -33,6 +34,8 @@ void ondas_wlf_close(ondas_wlf *);
 void ondas_wlf_metadata(ondas_wlf *, ondas_wlf_meta *);
 size_t ondas_wlf_decl_count(ondas_wlf *);
 void ondas_wlf_declaration(ondas_wlf *, size_t, ondas_wlf_decl *);
+size_t ondas_wlf_enum_count(ondas_wlf *, size_t);
+void ondas_wlf_enum_variant(ondas_wlf *, size_t, size_t, const char **, const char **);
 int ondas_wlf_begin(ondas_wlf *, const size_t *, size_t, uint64_t, uint64_t, char *, size_t);
 int ondas_wlf_next(ondas_wlf *, ondas_wlf_record *, char *, size_t);
 /* Owned completed-tick batch: 0 has records or an error, 1 is drained,

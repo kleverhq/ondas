@@ -6,13 +6,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include "wlf_api.h"
+#include "wlf_enum.h"
 
-/* wlfFileOpen installs the file as the process-wide current namespace, and
- * wlfFileClose does not clear it. A later open then resolves hierarchy against
- * a closed file and can fault in wlfLdSymsCtx. The exported lite mode loads the
- * same symbols and supports the same reads, but stays out of wlfFileCount(), so
- * the SDK never installs the process-wide namespace. */
-extern WlfFileId wlfFileOpenByMode(char *fname, char *lname, int mode);
+/* The SDK retains expression lookup pointers after their owner closes. Clear
+ * that optional lookup state at owner boundaries, and select the live owner
+ * for reads and cleanup. These exports are absent from the SDK header. */
+extern WlfFileId setCurrentNamespace(WlfFileId file);
+extern WlfFileId wlfFileOpenByMode(char *path, char *name, int mode);
+extern void *current_expr_contxt, *current_expr_objtd;
 #define WLF_LITE_OPEN 7
 
 _Static_assert(sizeof(WlfTime64) == 8 && (WlfTime64)-1 < 0, "signed 64-bit SDK time required");
@@ -22,10 +23,15 @@ _Static_assert(sizeof(ondas_wlf_meta) == 32 && sizeof(ondas_wlf_decl) == 96 && s
 _Static_assert(offsetof(ondas_wlf_decl, name) == 64 && offsetof(ondas_wlf_record, data) == 24, "private ABI offset mismatch");
 
 typedef struct {
+    char *bits, *label;
+} enum_variant;
+typedef struct {
     ondas_wlf_decl out;
     WlfSymbolId symbol;
     unsigned datatype;
     int size;
+    size_t enum_count;
+    enum_variant *variants;
 } declaration;
 typedef struct {
     struct ondas_wlf *owner;
@@ -59,6 +65,8 @@ struct ondas_wlf {
     char failure[512];
 };
 static int initialized;
+static WlfFileId namespace_guard;
+static uint64_t next_guard;
 static int fail(char *error, size_t cap, int code, const char *message) {
     if (cap) snprintf(error, cap, "%s", message ? message : "WLF SDK failure");
     return code;
@@ -100,7 +108,58 @@ static const char *variable_kind(WlfSymbolSel64 k) {
     if (k & wlfSelAlias) return "alias";
     return NULL;
 }
-static int add_decl(ondas_wlf *r, WlfSymbolId symbol, size_t parent, int scope) {
+static void clear_enum(declaration *d) {
+    for (size_t i = 0; i < d->enum_count; ++i) {
+        free(d->variants[i].bits); free(d->variants[i].label);
+    }
+    free(d->variants); d->variants = NULL; d->enum_count = 0;
+}
+static int add_variant(declaration *d, size_t index, const uint8_t *bits, const char *label) {
+    enum_variant *v = &d->variants[index];
+    v->bits = malloc((size_t)d->out.width + 1); v->label = copy(label);
+    if (!v->bits || !v->label) return -1;
+    memcpy(v->bits, bits, d->out.width); v->bits[d->out.width] = 0;
+    return 0;
+}
+static int read_sv_enum(declaration *d, WlfTypeId type) {
+    ondas_wlf_sv_enum table;
+    if (!sv_table(type, (int)d->out.width, d->size, &table)) return 0;
+    d->variants = calloc(table.count, sizeof(*d->variants));
+    uint8_t *bits = malloc(d->out.width);
+    if (!d->variants || !bits) { free(bits); return -1; }
+    d->enum_count = table.count;
+    for (size_t i = 0; i < d->enum_count; ++i) {
+        ondas_wlf_enum_entry v;
+        memcpy(&v, (const uint8_t *)table.entries + i * sizeof(v), sizeof(v));
+        if (!v.label || !v.value) { free(bits); clear_enum(d); return 0; }
+        sv_bits(v.value, (int)d->out.width, sv_storage((int)d->out.width, d->size), bits);
+        if (add_variant(d, i, bits, v.label)) { free(bits); return -1; }
+    }
+    free(bits); return 0;
+}
+static int read_ordinal_enum(declaration *d, char **labels, int count) {
+    d->variants = calloc((size_t)count, sizeof(*d->variants));
+    if (!d->variants) return -1;
+    d->enum_count = (size_t)count;
+    WlfValueId display = wlfValueCreate(d->symbol);
+    if (!display) { clear_enum(d); return 0; }
+    int result = 0;
+    for (uint32_t i = 0; i < (uint32_t)count; ++i) {
+        /* VHDL stores enumeration positions, not SV assigned integers.
+         * Verify each literal against the native typed value before export. */
+        void *raw = wlfValueGetValue(display);
+        if (!raw || !labels[i]) { clear_enum(d); break; }
+        memcpy(raw, &i, (size_t)d->size);
+        const char *label = wlfValueToString(display, WLF_RADIX_SYMBOLIC, INT_MAX);
+        if (!label || strcmp(label, labels[i])) { clear_enum(d); break; }
+        uint8_t bits[32];
+        for (uint32_t bit = 0; bit < d->out.width; ++bit)
+            bits[bit] = (uint8_t)('0' + ((i >> (d->out.width - 1 - bit)) & 1));
+        if (add_variant(d, i, bits, labels[i])) { result = -1; break; }
+    }
+    wlfValueDestroy(display); return result;
+}
+static int add_decl(ondas_wlf *r, WlfSymbolId symbol, size_t parent, int scope, const char *name, size_t base_len, int array_verilog) {
     if (r->count == r->capacity) {
         size_t capacity = r->capacity ? r->capacity * 2 : 64;
         if (capacity < r->capacity || capacity > SIZE_MAX / sizeof(declaration)) return -1;
@@ -112,9 +171,11 @@ static int add_decl(ondas_wlf *r, WlfSymbolId symbol, size_t parent, int scope) 
     memset(d, 0, sizeof(*d));
     d->symbol = symbol; d->out.parent = parent; d->out.entry = scope ? 0 : 1;
     d->out.id = -1;
-    d->out.name = copy(wlfSymPropString(symbol, WLF_PROP_SYMBOL_NAME));
+    d->out.name = copy(name ? name : wlfSymPropString(symbol, WLF_PROP_SYMBOL_NAME));
     WlfSymbolSel64 kind = wlfSymPropSymbolSel64(symbol, WLF_PROP_SYMBOL_TYPE);
-    d->out.verilog_name = (kind & wlfSelVlog) != 0;
+    d->out.verilog_name = (kind & wlfSelVlog) != 0 || array_verilog;
+    if (base_len > UINT32_MAX) return -1;
+    d->out.array_base_len = (uint32_t)base_len;
     const char *canonical = scope ? scope_kind(kind) : variable_kind(kind);
     char fallback[64]; snprintf(fallback, sizeof(fallback), "wlf:%" PRIu64, (uint64_t)kind);
     d->out.kind = copy(canonical ? canonical : fallback);
@@ -149,6 +210,10 @@ static int add_decl(ondas_wlf *r, WlfSymbolId symbol, size_t parent, int scope) 
         d->out.encoding = 4;
     } else if (d->datatype == wlfTypeString && d->size == 8) {
         d->out.encoding = 3;
+    } else if (d->datatype == wlfTypeVlogEnum && sv_storage(width, d->size)) {
+        d->out.encoding = 1;
+        d->out.signedness = wlfTypePropInt(type, WLF_TYPE_VLOG_SIGNED) ? 2 : 1;
+        d->out.logic_domain = (size_t)d->size == (((size_t)width + 31) / 32) * 4 ? 1 : 2;
     } else if (element_type == wlfTypeEnum) {
         char **literals = NULL; int count = 0;
         if (wlfEnumLiterals(element, &literals, &count) != WLF_OK) return -1;
@@ -159,14 +224,30 @@ static int add_decl(ondas_wlf *r, WlfSymbolId symbol, size_t parent, int scope) 
         if (match) {
             d->out.encoding = 1; d->out.logic_domain = count == 9 ? 3 : 1;
             if (d->datatype == wlfTypeEnum) width = 1;
+            if (d->datatype == wlfTypeEnum) {
+                d->out.width = 1;
+                d->variants = calloc((size_t)count, sizeof(*d->variants));
+                if (!d->variants) return -1;
+                d->enum_count = (size_t)count;
+                const uint8_t *keys = (const uint8_t *)(count == 9 ? "ux01zwlh-" : "01");
+                for (int i = 0; i < count; ++i)
+                    if (add_variant(d, (size_t)i, &keys[i], literals[i])) return -1;
+            }
+        } else if (d->datatype == wlfTypeEnum && count > 0 && left == 0 && right == count - 1 &&
+                   (d->size == 1 || d->size == 2 || d->size == 4) &&
+                   (uint64_t)(unsigned)count <= ((uint64_t)1 << (d->size * 8))) {
+            d->out.encoding = 1; width = d->size * 8;
+            d->out.width = (uint32_t)width;
+            if (read_ordinal_enum(d, literals, count)) return -1;
         }
     }
     if (d->out.encoding == 1 && width > 0) {
         d->out.width = (uint32_t)width;
-        if ((width > 1 || left != 0 || right != 0) && llabs((long long)left - right) + 1 == width) {
+        if (d->datatype != wlfTypeEnum && (width > 1 || left != 0 || right != 0) && llabs((long long)left - right) + 1 == width) {
             d->out.has_range = 1; d->out.msb = left; d->out.lsb = right;
         }
     } else if (d->out.encoding == 1) d->out.encoding = 0;
+    if (d->datatype == wlfTypeVlogEnum && d->out.encoding == 1 && read_sv_enum(d, type)) return -1;
     d->out.is_constant = !!(kind & (wlfSelParameter | wlfSelConstant | wlfSelGeneric | wlfSelSpecparam));
     if (wlfSymIsModeSelect(symbol, wlfModeSelInputs)) d->out.direction = 1;
     else if (wlfSymIsModeSelect(symbol, wlfModeSelOutputs)) d->out.direction = 2;
@@ -184,14 +265,41 @@ static int add_decl(ondas_wlf *r, WlfSymbolId symbol, size_t parent, int scope) 
     d->out.id = archive;
     return 0;
 }
-static int walk(ondas_wlf *r, WlfSymbolId symbol, size_t parent, unsigned depth, int root) {
+static int walk(ondas_wlf *r, WlfSymbolId symbol, size_t parent, unsigned depth, int root, const char *name, size_t base_len, int array_verilog) {
     if (depth > 1024) return -1;
     WlfTypeId type = wlfSymPropTypeId(symbol, WLF_PROP_TYPE_ID);
     int scope = root || wlfSymIsSymbolSelect64(symbol, wlfSelAllScopes) || !type;
     if (!root) {
         size_t index = r->count;
-        if (add_decl(r, symbol, parent, scope)) return -1;
-        if (!scope) return 0;
+        if (add_decl(r, symbol, parent, scope, name, base_len, array_verilog)) return -1;
+        if (!scope) {
+            if (wlfTypePropDataType(type, WLF_TYPE_TYPE) != wlfTypeArray || r->decls[index].out.encoding)
+                return 0;
+            /* A container has several archives, not one scalar history. Keep
+             * its declaration, and expose SDK elements as exact components. */
+            r->decls[index].out.id = -1;
+            WlfIterId elements = wlfSymSubelements(symbol);
+            if (!elements) return 0;
+            const char *prefix = r->decls[index].out.name;
+            size_t source_len = base_len ? base_len : strlen(prefix);
+            int source_verilog = r->decls[index].out.verilog_name;
+            WlfSymbolId child; int result = 0;
+            /* IteratorCount covers child-scope iterators, not subelements. */
+            int expected = wlfSymCountSubelements(symbol), observed = 0;
+            while ((child = wlfIterate(elements))) {
+                ++observed;
+                const char *suffix = wlfSymPropString(child, WLF_PROP_SYMBOL_NAME);
+                if (!suffix || strlen(prefix) > SIZE_MAX - strlen(suffix) - 1) { result = -1; break; }
+                char *component = malloc(strlen(prefix) + strlen(suffix) + 1);
+                if (!component) { result = -1; break; }
+                strcpy(component, prefix); strcat(component, suffix);
+                result = walk(r, child, parent, depth + 1, 0, component, source_len, source_verilog);
+                free(component);
+                if (result) break;
+            }
+            if (wlfIteratorDestroy(elements) != WLF_OK || expected != observed) result = -1;
+            return result;
+        }
         parent = index;
     }
     WlfIterId iterator = wlfSymChildren64(symbol, ~(WlfSymbolSel64)0);
@@ -200,7 +308,7 @@ static int walk(ondas_wlf *r, WlfSymbolId symbol, size_t parent, unsigned depth,
     WlfSymbolId child;
     while ((child = wlfIterate(iterator))) {
         ++observed;
-        if (walk(r, child, parent, depth+1, 0)) { result = -1; break; }
+        if (walk(r, child, parent, depth+1, 0, NULL, 0, 0)) { result = -1; break; }
     }
     if (wlfIteratorDestroy(iterator) != WLF_OK || expected != observed) result = -1;
     return result;
@@ -213,6 +321,8 @@ int ondas_wlf_open(const char *path, const char *name, int metadata_only, ondas_
     }
     ondas_wlf *r = calloc(1, sizeof(*r));
     if (!r) return fail(error, cap, -1, "cannot allocate WLF reader");
+    if (namespace_guard) setCurrentNamespace(namespace_guard);
+    current_expr_contxt = NULL; current_expr_objtd = NULL;
     if (wlfFileHeader((char *)path, &r->info) != WLF_OK) {
         int code = sdk_error(error, cap); free(r); return code;
     }
@@ -220,16 +330,33 @@ int ondas_wlf_open(const char *path, const char *name, int metadata_only, ondas_
         free(r); return fail(error, cap, -2, "invalid WLF time bounds or resolution");
     }
     if (!metadata_only) {
-        r->file = wlfFileOpenByMode((char *)path, (char *)name, WLF_LITE_OPEN);
-        if (!r->file) {
-            /* Unclosed snapshots can report error 4 with this header marker.
-               Error 4 alone also describes a locked file; retain Backend there. */
+        current_expr_contxt = NULL; current_expr_objtd = NULL;
+        /* Keep one lite owner alive across closes. Both lite and normal open
+         * consult the process namespace before replacing it. */
+        if (next_guard == UINT64_MAX) { free(r); return fail(error, cap, -1, "WLF namespace identifier overflow"); }
+        char guard_name[64];
+        snprintf(guard_name, sizeof(guard_name), "ondas-guard-%" PRIu64, ++next_guard);
+        WlfFileId guard = wlfFileOpenByMode((char *)path, guard_name, WLF_LITE_OPEN);
+        if (!guard) {
             int malformed = wlfErrorNum() == 4 && r->info.magic == 0x1364;
             int code = fail(error, cap, malformed ? -2 : -1, wlfErrorMsg());
             free(r); return code;
         }
+        setCurrentNamespace(guard);
+        if (namespace_guard) wlfFileClose(namespace_guard);
+        namespace_guard = guard;
+        current_expr_contxt = NULL; current_expr_objtd = NULL;
+        r->file = wlfFileOpen((char *)path, (char *)name);
+        int open_code = 0;
+        if (!r->file) {
+            /* Unclosed snapshots can report error 4 with this header marker.
+               Error 4 alone also describes a locked file; retain Backend there. */
+            int malformed = wlfErrorNum() == 4 && r->info.magic == 0x1364;
+            open_code = fail(error, cap, malformed ? -2 : -1, wlfErrorMsg());
+        } else setCurrentNamespace(r->file);
+        if (!r->file) { free(r); return open_code; }
         WlfSymbolId root = wlfFileGetTopRegion(r->file);
-        if (!root || walk(r, root, SIZE_MAX, 0, 1)) {
+        if (!root || walk(r, root, SIZE_MAX, 0, 1, NULL, 0, 0)) {
             ondas_wlf_close(r); return fail(error, cap, -1, "cannot read WLF declarations");
         }
     }
@@ -240,7 +367,13 @@ void ondas_wlf_metadata(ondas_wlf *r, ondas_wlf_meta *out) {
 }
 size_t ondas_wlf_decl_count(ondas_wlf *r) { return r->count; }
 void ondas_wlf_declaration(ondas_wlf *r, size_t index, ondas_wlf_decl *out) { *out = r->decls[index].out; }
+size_t ondas_wlf_enum_count(ondas_wlf *r, size_t index) { return r->decls[index].enum_count; }
+void ondas_wlf_enum_variant(ondas_wlf *r, size_t index, size_t variant, const char **bits, const char **label) {
+    *bits = r->decls[index].variants[variant].bits;
+    *label = r->decls[index].variants[variant].label;
+}
 void ondas_wlf_end(ondas_wlf *r) {
+    if (r->file) setCurrentNamespace(r->file);
     if (r->pack) { wlfPackDestroy(r->pack); r->pack = NULL; }
     for (size_t i = 0; i < r->selected_count; ++i) {
         if (r->selected[i].value) wlfValueDestroy(r->selected[i].value);
@@ -254,9 +387,14 @@ void ondas_wlf_end(ondas_wlf *r) {
 void ondas_wlf_close(ondas_wlf *r) {
     if (!r) return;
     ondas_wlf_end(r);
-    if (r->file) wlfFileClose(r->file);
+    if (r->file) {
+        current_expr_contxt = NULL; current_expr_objtd = NULL;
+        setCurrentNamespace(namespace_guard);
+        wlfFileClose(r->file);
+    }
     for (size_t i = 0; i < r->count; ++i) {
         free((void *)r->decls[i].out.name); free((void *)r->decls[i].out.kind); free((void *)r->decls[i].out.definition);
+        clear_enum(&r->decls[i]);
     }
     free(r->decls); free(r);
 }
@@ -293,6 +431,13 @@ static WlfCallbackResponse store_value(selected *s) {
         }
         if (len) memcpy(s->data, text, len);
     } else if (s->decl->out.encoding == 2) memcpy(&s->real_bits, value, 8);
+    else if (s->decl->datatype == wlfTypeVlogEnum)
+        sv_bits(value, (int)s->len, sv_storage((int)s->len, s->decl->size), s->data);
+    else if (s->decl->datatype == wlfTypeEnum && !s->decl->out.logic_domain) {
+        uint32_t ordinal = 0; memcpy(&ordinal, value, (size_t)s->decl->size);
+        for (size_t i = 0; i < s->len; ++i)
+            s->data[i] = (uint8_t)('0' + ((ordinal >> (s->len - 1 - i)) & 1));
+    }
     else if (s->decl->datatype == wlfTypeInteger) {
         uint32_t bits; memcpy(&bits, value, 4);
         for (unsigned i = 0; i < 32; ++i) s->data[i] = (uint8_t)('0' + ((bits >> (31-i)) & 1));
@@ -411,6 +556,7 @@ int ondas_wlf_begin(ondas_wlf *r, const size_t *indices, size_t count, uint64_t 
     return 0;
 }
 int ondas_wlf_next(ondas_wlf *r, ondas_wlf_record *out, char *error, size_t cap) {
+    setCurrentNamespace(r->file);
     for (;;) {
         if (r->cursor < r->record_count) {
             buffered_record *record = &r->records[r->cursor++];

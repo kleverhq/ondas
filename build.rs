@@ -98,6 +98,7 @@ fn wlf() {
     println!("cargo:rerun-if-env-changed=QUESTA_HOME");
     println!("cargo:rerun-if-changed=native/wlf.c");
     println!("cargo:rerun-if-changed=native/wlf.h");
+    println!("cargo:rerun-if-changed=native/wlf_enum.h");
     assert_eq!(
         env::var("TARGET").unwrap(),
         "x86_64-unknown-linux-gnu",

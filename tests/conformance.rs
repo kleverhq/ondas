@@ -3214,3 +3214,13 @@ fn wlf_authored_integration_windows() {
         pool_queries(&fixture, false, &name);
     }
 }
+
+#[cfg(feature = "wlf-lib")]
+#[test]
+#[ignore = "requires Questa and installed enum fixtures; run just conformance-wlf"]
+fn wlf_enum_integration_windows() {
+    for name in ["wlf/wlf0083-enum-core", "wlf/wlf0084-enum-xz"] {
+        let fixture = load_fixture(&root(), name);
+        pool_queries(&fixture, false, name);
+    }
+}
