@@ -349,6 +349,15 @@ impl fmt::Display for BitsRef<'_> {
 }
 
 impl Bits {
+    /// Takes ownership of digits constructed from validated logic bytes.
+    pub(crate) fn from_validated_ascii(mut bytes: Vec<u8>) -> Self {
+        debug_assert!(BitsRef::from_ascii(&bytes).is_some());
+        bytes.make_ascii_lowercase();
+        Self {
+            data: bytes.into_boxed_slice(),
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn from_ascii(bytes: &[u8]) -> Option<Self> {
         BitsRef::from_ascii(bytes).map(BitsRef::to_owned)
@@ -465,6 +474,28 @@ mod tests {
             Bits::from_ascii(b"XzU").unwrap().as_ref().to_string(),
             "xzu"
         );
+    }
+
+    #[test]
+    fn owned_validated_bits_keep_all_nine_states() {
+        let bits = Bits::from_validated_ascii(b"01XZHUWL-".to_vec());
+        assert_eq!(bits.width(), 9);
+        assert_eq!(bits.as_ref().to_string(), "01xzhuwl-");
+        assert_eq!(
+            bits.as_ref().iter_msb().collect::<Vec<_>>(),
+            [
+                Logic::Zero,
+                Logic::One,
+                Logic::X,
+                Logic::Z,
+                Logic::H,
+                Logic::U,
+                Logic::W,
+                Logic::L,
+                Logic::DontCare
+            ]
+        );
+        assert_eq!(bits, BitsRef::from_ascii(b"01xzhuwl-").unwrap());
     }
 
     #[test]

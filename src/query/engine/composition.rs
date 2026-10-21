@@ -38,9 +38,11 @@ impl Plan {
                 if indices.contains_key(&signal) {
                     continue;
                 }
-                waveform.validate(signal)?;
-                if signal.encoding() == Encoding::Unsupported {
-                    return Err(Error::UnsupportedSignal { signal });
+                if !expanded {
+                    waveform.validate(signal)?;
+                    if signal.encoding() == Encoding::Unsupported {
+                        return Err(Error::UnsupportedSignal { signal });
+                    }
                 }
                 if signal.is_computed() && !expanded {
                     pending.push((signal, true));
@@ -127,14 +129,8 @@ impl Computation {
                 if !observed {
                     return;
                 }
-                (
-                    *slot,
-                    Value::Bits(
-                        crate::BitsRef::from_ascii(&bytes)
-                            .expect("validated part bits")
-                            .to_owned(),
-                    ),
-                )
+                debug_assert_eq!(bytes.len(), *width as usize);
+                (*slot, Value::Bits(crate::Bits::from_validated_ascii(bytes)))
             }
             Self::Slice {
                 slot,
