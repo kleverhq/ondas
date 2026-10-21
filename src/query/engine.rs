@@ -333,8 +333,10 @@ impl<'w> Selection<'w> {
     /// one empty row per time. Neither case reads the source. The result owns
     /// its times and values and can outlive this selection and waveform.
     ///
-    /// One chronological traversal serves the sorted schedule; no full history
-    /// or candidate list is collected. Additional scheduling state grows with
+    /// The current implementation reads from the beginning through the latest
+    /// requested tick in one chronological traversal. It does not use point-read
+    /// seek shortcuts or cached replay. No full history or candidate list is
+    /// collected. Additional scheduling state grows with
     /// the number of requested times. Working values grow with the selection
     /// and its composition dependencies. Returned values, input storage and
     /// reader/index/SDK memory are separate costs.

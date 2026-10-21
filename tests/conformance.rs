@@ -1816,9 +1816,10 @@ fn pool_queries(fixture: &Fixture, bytes: bool, context: &str) -> bool {
         if start <= end {
             let times = [end, start, end, start + (end - start) / 2].map(Time::from_ticks);
             let rows = wave.samples_at(&handles, &times).unwrap();
+            assert_eq!(rows.len(), times.len(), "{context}: batch row count");
             for ((time, values), requested) in rows.iter().zip(times) {
-                assert_eq!(*time, requested);
-                assert_eq!(values.len(), handles.len());
+                assert_eq!(*time, requested, "{context}: batch row time");
+                assert_eq!(values.len(), handles.len(), "{context}: batch row width");
                 for (index, value) in values.iter().enumerate() {
                     let expected = evidence[index].sample(time.ticks());
                     sample(
@@ -1832,8 +1833,9 @@ fn pool_queries(fixture: &Fixture, bytes: bool, context: &str) -> bool {
             }
             for (index, saved) in actual.iter().enumerate() {
                 let rows = saved.samples_at(&times).unwrap();
+                assert_eq!(rows.len(), times.len(), "{context}: saved batch row count");
                 for ((time, value), requested) in rows.into_iter().zip(times) {
-                    assert_eq!(time, requested);
+                    assert_eq!(time, requested, "{context}: saved batch row time");
                     sample(
                         value,
                         handles[index],

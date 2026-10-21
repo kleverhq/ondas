@@ -176,6 +176,8 @@ impl Selection<'_> {
     /// first in selection order, including duplicate entries. A known
     /// `changed_at` is strictly less than the start. Events have no initial state.
     /// No synthetic change at `start - 1` is created, including at tick zero.
+    /// A nonempty range that starts after EOF emits known entering states and
+    /// no changes. This includes unbounded ranges.
     ///
     /// # Changes and ordering
     ///

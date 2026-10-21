@@ -137,6 +137,7 @@ fn eof_zero_max_and_empty_dimensions_share_point_semantics() {
     let (mut wave, selected) = source();
     let times = [u64::MAX, 0, 6, 9, 10, 17, u64::MAX].map(t);
     let rows = wave.samples_at(&selected, &times).unwrap();
+    assert_eq!(rows.iter().map(|row| row.0).collect::<Vec<_>>(), times);
     for (time, row) in &rows {
         let points = wave.samples(&selected, *time).unwrap();
         assert_eq!(

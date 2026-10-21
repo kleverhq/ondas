@@ -178,6 +178,8 @@ Explicit-time batches use the same completed states as point reads, including
 quiet ticks. The library schedules the requested times together. Output retains
 both time order and selection positions, including duplicates. The owned batch
 is complete or an error; decoding selected data may fail at intermediate ticks.
+The current batch path reads the source prefix through the latest requested
+tick. It does not use point-read seek shortcuts or cached replay.
 Its schedule grows with the time list, while retained working values depend on
 the selection and composition dependencies. Returned values and reader/SDK
 storage are separate costs.
