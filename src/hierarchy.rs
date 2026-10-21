@@ -325,7 +325,7 @@ impl PartialEq<Variable<'_>> for Variable<'_> {
 
 impl Eq for Variable<'_> {}
 
-/// An opaque waveform signal handle with an optional bit projection.
+/// An opaque source or computed waveform signal with an optional bit projection.
 ///
 /// A handle can have [`Encoding::Unsupported`]. Value queries then return
 /// [`Error::UnsupportedSignal`](crate::Error::UnsupportedSignal).
@@ -337,6 +337,11 @@ impl Eq for Variable<'_> {}
 /// Using one with another source returns [`Error::InvalidSignal`](crate::Error::InvalidSignal).
 /// Backend-local identifiers and projection representation are not public contracts.
 ///
+/// [`Waveform::concat`](crate::Waveform::concat) creates computed bit signals.
+/// Identical ordered definitions in one waveform share a handle. A computed
+/// signal has no source declaration. Its definition belongs to the waveform;
+/// copying a handle does not keep that waveform alive.
+///
 /// A projection has its own observed history. Only changes to the selected bits
 /// appear in traces and scans. For projected samples, `changed_at` identifies the
 /// last change of the projected value, not unrelated activity in its base signal.
@@ -345,6 +350,7 @@ impl Eq for Variable<'_> {}
 pub struct Signal {
     source: u64,
     index: usize,
+    computed: bool,
     base_encoding: Encoding,
     encoding: Encoding,
     lsb: u32,
@@ -377,6 +383,7 @@ impl Hierarchy {
         Signal {
             source: self.data.source,
             index,
+            computed: false,
             base_encoding: encoding,
             encoding,
             lsb: 0,
@@ -384,8 +391,31 @@ impl Hierarchy {
     }
 
     pub(crate) fn validate(&self, signal: Signal) -> Result<usize> {
+        let encoding = (!signal.computed)
+            .then(|| self.data.encodings.get(signal.index).copied())
+            .flatten();
+        self.validate_encoding(signal, encoding)
+    }
+
+    pub(crate) fn computed_signal(&self, index: usize, width: u32) -> Signal {
+        let encoding = Encoding::Bits { width };
+        Signal {
+            source: self.data.source,
+            index,
+            computed: true,
+            base_encoding: encoding,
+            encoding,
+            lsb: 0,
+        }
+    }
+
+    pub(crate) fn validate_encoding(
+        &self,
+        signal: Signal,
+        encoding: Option<Encoding>,
+    ) -> Result<usize> {
         let valid = signal.source == self.data.source
-            && self.data.encodings.get(signal.index) == Some(&signal.base_encoding)
+            && encoding == Some(signal.base_encoding)
             && match (signal.base_encoding, signal.encoding) {
                 (Encoding::Bits { width: base }, Encoding::Bits { width }) => {
                     (width > 0 || signal == signal.base())
@@ -570,13 +600,23 @@ impl Hierarchy {
     /// sliced, and repeatedly sliced handles with the same base return the same
     /// declarations. They retain their original metadata and declaration ranges.
     ///
+    /// Computed signals and their slices have no source declarations, so their
+    /// iterator is empty. They do not inherit aliases from their operands.
+    ///
     /// A handle from another hierarchy or waveform produces
     /// [`Error::InvalidSignal`](crate::Error::InvalidSignal).
     pub fn aliases(&self, signal: Signal) -> Result<impl Iterator<Item = Variable<'_>> + '_> {
-        let index = self.validate(signal)?;
+        if signal.computed {
+            self.validate_encoding(signal, Some(signal.base_encoding))?;
+        }
+        let index = if signal.computed {
+            None
+        } else {
+            Some(self.validate(signal)?)
+        };
         Ok(self
             .variables()
-            .filter(move |variable| variable.data().signal == Some(index)))
+            .filter(move |variable| index.is_some() && variable.data().signal == index))
     }
 }
 
@@ -884,6 +924,60 @@ impl BitRange {
             None => panic!("range width exceeds u64"),
         }
     }
+
+    /// Selects an inclusive HDL index range from a bit-vector signal.
+    ///
+    /// This range must have the signal's current width. Its right endpoint maps
+    /// to normalized position zero. Requested indices must lie inside the range
+    /// and follow its direction. This also accepts a caller-defined range for a
+    /// computed value; it does not verify the range's declaration provenance.
+    /// Use [`Variable::range`] for source declaration indices. Absent metadata
+    /// does not imply a range. [`Signal::slice`] always uses normalized positions.
+    ///
+    /// Width, bounds and direction failures return distinct [`SliceError`]
+    /// variants. Extreme endpoints return an error without arithmetic overflow.
+    /// Handle ownership is checked when the result is used with a waveform.
+    ///
+    /// ```
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let input = b"$var wire 8 ! data [0:7] $end $enddefinitions $end #0 b10110010 !";
+    /// let wave = ondas::open_bytes("range.vcd", input.as_slice().into())?;
+    /// let variable = wave.hierarchy().variable("data")?;
+    /// let signal = variable.signal().unwrap();
+    /// assert_eq!(variable.range().unwrap().slice(signal, 2, 5)?, signal.slice(5, 2)?);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn slice(
+        self,
+        signal: Signal,
+        msb: i64,
+        lsb: i64,
+    ) -> std::result::Result<Signal, SliceError> {
+        let width = signal.width().ok_or(SliceError::NotBits)?;
+        if i128::from(self.msb).abs_diff(i128::from(self.lsb)) + 1 != u128::from(width) {
+            return Err(SliceError::HdlRangeWidthMismatch { range: self, width });
+        }
+        let low = self.msb.min(self.lsb);
+        let high = self.msb.max(self.lsb);
+        if !(low..=high).contains(&msb) || !(low..=high).contains(&lsb) {
+            return Err(SliceError::HdlOutOfBounds {
+                range: self,
+                msb,
+                lsb,
+            });
+        }
+        let position = |index: i64| index.abs_diff(self.lsb) as u32;
+        let (left, right) = (position(msb), position(lsb));
+        if left < right {
+            return Err(SliceError::HdlDirectionMismatch {
+                range: self,
+                msb,
+                lsb,
+            });
+        }
+        signal.slice(left, right)
+    }
 }
 
 /// Borrowed enumeration metadata for a variable declaration.
@@ -976,6 +1070,9 @@ pub enum Encoding {
 }
 
 impl Signal {
+    pub(crate) fn is_computed(self) -> bool {
+        self.computed
+    }
     pub(crate) fn index(self) -> usize {
         self.index
     }

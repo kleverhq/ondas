@@ -79,6 +79,15 @@ cover signed and unsigned codes, widths through 129 bits, leading zeros, X/Z
 keys, array elements, reused types and variants that never occur in the history.
 These checks do not establish support for every producer's enum representation.
 
+Static composition tests in `tests/static_composition.rs` use explicit expected
+histories. They check nested Missing/X dependencies, same-tick orders and
+excursions, part and selection repeats, relative result slices, identities,
+foreign handles, entering states, query t/t-1, stopping and retained ownership.
+Private composition tests cover construction overflow without large payloads,
+all nine states, incomplete-tick failures, bounded computed slots and iterative
+planning of deep nesting. Range checks include ascending, descending, negative,
+scalar and extreme indices. These tests do not measure SDK residency.
+
 ## Reader conformance
 
 The common runner applies a backend-neutral oracle through the public API:
@@ -103,6 +112,9 @@ code while preserving [version-1 evidence limits](fixtures.md#normalized-expecta
 Do not assert raw change times as normalized times, infer NaN payload identity,
 or overwrite installed sidecars to make a comparison pass. Indexed scan checks
 retain input-slot identity even when aliases or projections share histories.
+Static concat checks derive values for repeated parts, result slices and nested
+compositions from jointly covered bit windows. They compare points, trace values
+and current/preceding query reads without changing fixture sidecars.
 Composed-query checks use a driver subset and compare all readable entries at
 current/preceding ticks covered by the oracle, in each advertised input mode.
 

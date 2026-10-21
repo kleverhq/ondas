@@ -1,4 +1,4 @@
-use crate::{Format, HierarchyPath, Signal, Time};
+use crate::{BitRange, Format, HierarchyPath, Signal, Time};
 
 /// An error that occurs while parsing a hierarchy path.
 ///
@@ -29,6 +29,34 @@ pub enum PathFormatError {
 #[derive(Debug, Clone, thiserror::Error)]
 #[non_exhaustive]
 pub enum SliceError {
+    /// The HDL range width differs from the current signal width.
+    #[error("HDL range {range:?} does not match signal width {width}")]
+    HdlRangeWidthMismatch {
+        /// The supplied HDL range.
+        range: BitRange,
+        /// The current signal width.
+        width: u32,
+    },
+    /// The requested HDL indices extend beyond the supplied range.
+    #[error("HDL slice [{msb}:{lsb}] is outside {range:?}")]
+    HdlOutOfBounds {
+        /// The supplied HDL range.
+        range: BitRange,
+        /// The requested left index.
+        msb: i64,
+        /// The requested right index.
+        lsb: i64,
+    },
+    /// The requested HDL indices have the opposite direction.
+    #[error("HDL slice [{msb}:{lsb}] has the opposite direction to {range:?}")]
+    HdlDirectionMismatch {
+        /// The supplied HDL range.
+        range: BitRange,
+        /// The requested left index.
+        msb: i64,
+        /// The requested right index.
+        lsb: i64,
+    },
     /// The signal is not a bit vector.
     #[error("only bit-vector signals can be sliced")]
     NotBits,
@@ -52,6 +80,34 @@ pub enum SliceError {
         /// The requested least-significant bit.
         lsb: u32,
     },
+}
+
+/// An invalid request to construct a static bit composition.
+#[derive(Debug, Clone, thiserror::Error)]
+#[non_exhaustive]
+pub enum CompositionError {
+    /// No operands were supplied.
+    #[error("a composition needs at least one part")]
+    Empty,
+    /// A part has zero width.
+    #[error("composition part {part} has zero width")]
+    EmptyPart {
+        /// The zero-based operand position.
+        part: usize,
+        /// The rejected signal.
+        signal: Signal,
+    },
+    /// A part is not a bit-vector signal.
+    #[error("composition part {part} is not a bit vector")]
+    NotBits {
+        /// The zero-based operand position.
+        part: usize,
+        /// The rejected signal.
+        signal: Signal,
+    },
+    /// The total width cannot fit in u32.
+    #[error("composition width exceeds u32::MAX")]
+    WidthOverflow,
 }
 
 /// An error that occurs while resolving hierarchy metadata.
@@ -125,6 +181,9 @@ pub enum LookupError {
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
+    /// The static bit composition request is invalid.
+    #[error(transparent)]
+    InvalidComposition(#[from] CompositionError),
     /// An input/output operation failed.
     #[error("I/O error: {0}")]
     Io(
