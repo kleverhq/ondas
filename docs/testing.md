@@ -73,8 +73,11 @@ without format-specific consumer logic. Ownership checks retain keys after the
 metadata owner drops. Local GHW bytes cover constrained base ordinals, aliases and
 non-ASCII labels. FST regression checks use independently inspected tables and
 histories, including values with no label. Private metadata tests cover all nine
-key states, duplicates and unavailable mappings. These checks do not establish
-support for every producer's enum representation.
+key states, duplicates and unavailable mappings. SHM recorded-fixture checks
+compare complete enum tables and bit histories with independent oracles. They
+cover signed and unsigned codes, widths through 129 bits, leading zeros, X/Z
+keys, array elements, reused types and variants that never occur in the history.
+These checks do not establish support for every producer's enum representation.
 
 ## Reader conformance
 

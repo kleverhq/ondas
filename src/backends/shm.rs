@@ -2,7 +2,7 @@
 use crate::{
     BitRange, BitsRef, Direction, Encoding, Error, Hierarchy, Metadata, Result, Signal, Time,
     TimeSpan, TimeUnit, Timescale, ValueRef,
-    hierarchy::{ScopeData, VariableData},
+    hierarchy::{EnumerationData, ScopeData, VariableData},
 };
 use std::{
     ffi::{CStr, CString, c_char, c_int, c_void},
@@ -33,6 +33,14 @@ struct Declaration {
     name: *const c_char,
     kind: *const c_char,
     definition: *const c_char,
+    variant_count: usize,
+    enum_name: *const c_char,
+}
+#[repr(C)]
+#[derive(Default)]
+struct EnumVariant {
+    encoded: *const c_char,
+    label: *const c_char,
 }
 #[repr(C)]
 #[derive(Default)]
@@ -82,6 +90,12 @@ unsafe extern "C" {
     fn ondas_shm_work_done(reader: *const c_void, out: *mut Work);
     fn ondas_shm_decl_count(reader: *const c_void) -> usize;
     fn ondas_shm_declaration(reader: *const c_void, index: usize, out: *mut Declaration);
+    fn ondas_shm_enum_variant(
+        reader: *const c_void,
+        declaration: usize,
+        variant: usize,
+        out: *mut EnumVariant,
+    );
     fn ondas_shm_read(
         reader: *mut c_void,
         ids: *const u64,
@@ -298,6 +312,17 @@ impl Reader {
                         if encodings[signal] != encoding {
                             return Err(error("incompatible SHM alias"));
                         }
+                        let mut variants = Vec::with_capacity(d.variant_count);
+                        for variant in 0..d.variant_count {
+                            let mut v = EnumVariant::default();
+                            ondas_shm_enum_variant(handle.0.as_ptr(), index, variant, &mut v);
+                            variants.push((
+                                string(v.encoded)?.ok_or_else(|| error("missing SHM enum key"))?,
+                                string(v.label)?.ok_or_else(|| error("missing SHM enum label"))?,
+                            ));
+                        }
+                        let enumeration =
+                            EnumerationData::for_encoding(string(d.enum_name)?, variants, encoding);
                         variables.push(VariableData {
                             name,
                             reader_name: None,
@@ -310,7 +335,7 @@ impl Reader {
                             type_name: None,
                             signedness: None,
                             logic_domain: None,
-                            enumeration: None,
+                            enumeration,
                             signal: Some(signal),
                         });
                     }

@@ -26,6 +26,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Add exact equality for `BitsRef`, `Bits`, and mixed pairs. Equal values have
   the same width and the same logic state at each bit. Compare queried bits
   with enum keys without formatting text or copying the bit payload.
+- Expose recorded SHM enum tables as whole-value `BitsRef` keys, including wide
+  and signed codes, X/Z states, array elements and variants absent from history.
 - Compare `Scope` and `Variable` views by object identity. Hierarchy clones keep
   identity; independent opens and alias declarations stay distinct.
 - Add cross-format exact-name, same-path alias, and scope-collision regression
