@@ -2,14 +2,16 @@
 
 Ondas is a read-only Rust library for backend-independent waveform analysis.
 
+Before any work, run `tree docs`. Use the filenames and tree structure to identify and read the documents relevant to the task. Apply `how-to-document.md` when working on `docs/` or comments.
+
 ## Sources of truth
 
 - Public API contracts and usage examples: rustdoc in `src/`, published on docs.rs.
-- Library concepts and implementation boundaries: `docs/model.md`.
-- Test strategy: `docs/testing.md`; fixture integration and oracle interpretation: `docs/fixtures.md`; sidecar and oracle schema: `fixtures/schemas/fixture.schema.json` in the pinned Git submodule.
-- Performance methodology: `docs/benchmarking.md`.
-- Development environment, CI, tools, and release policy: `docs/automation.md`.
-- Backend architecture and limits: `docs/vcd-native.md`, `docs/fst-lib.md`, `docs/fsdb-lib.md`, and `docs/shm-lib.md`. Other format integration docs: `docs/ghw.md` and `docs/wlf.md`.
+- Library concepts and implementation boundaries: `waveform-model.md`.
+- Conformance strategy and oracle interpretation: `fixture-conformance.md`; sidecar and oracle schema: `fixtures/schemas/fixture.schema.json` in the pinned Git submodule.
+- Performance methodology: `benchmark-methodology.md`.
+- Development environment, CI, tools, and release policy: `development-workflow.md`.
+- Reader architecture and non-obvious limits: `vcd-reader.md`, `fst-reader.md`, `ghw-reader.md`, `fsdb-reader.md`, `shm-reader.md`, and `wlf-reader.md`.
 - Executable commands and configuration: `justfile`, `dev`, `Cargo.toml`, `rust-toolchain.toml`, `.devcontainer/`, and `.github/workflows/`.
 - Host pre-commit dispatch and check selection: `tools/repo/git-hook` and `.pre-commit-config.yaml`.
 
