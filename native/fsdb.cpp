@@ -15,11 +15,13 @@ static_assert(sizeof(ondas_fsdb_decl) == 104 && offsetof(ondas_fsdb_decl, verilo
               "private FSDB declaration ABI mismatch");
 
 namespace {
+struct Unsupported : std::runtime_error { using std::runtime_error::runtime_error; };
 void require(bool ok, const char *message) {
     if (!ok) throw std::runtime_error(message);
 }
 void success(fsdbRC rc, const char *operation) {
-    require(rc == FSDB_RC_SUCCESS, operation);
+    if (rc != FSDB_RC_SUCCESS)
+        throw std::runtime_error(std::string(operation) + " (SDK status " + std::to_string(rc) + ")");
 }
 void report(char *error, size_t capacity, const char *message) noexcept {
     if (capacity) std::snprintf(error, capacity, "%s", message);
@@ -158,7 +160,7 @@ Datatype enumeration(const char *name, unsigned value_type, unsigned width,
         } else {
             // Integral enum tables use native-endian scalar storage on this
             // Linux x86_64 SDK target, not one byte per logic bit.
-            require(width <= 64, "unsupported FSDB integral enum width");
+            if (width > 64) throw Unsupported("unsupported FSDB integral enum width");
             uint64_t value = 0;
             std::memcpy(&value, values[i], (width + 7) / 8);
             for (unsigned bit = 0; bit < width; ++bit)
@@ -366,6 +368,7 @@ bool_T tree(fsdbTreeCBType type, void *user, void *raw) noexcept {
 // The catch sites only normalize exceptions; status failures are checked at each
 // SDK call. A generic backend failure must not be labelled file corruption.
 #define OFS_CATCH(error, cap) \
+    catch (const Unsupported &e) { report(error, cap, e.what()); return -4; } \
     catch (const std::exception &e) { report(error, cap, e.what()); return -1; } \
     catch (...) { report(error, cap, "unknown C++ exception in FSDB Reader"); return -1; }
 
@@ -392,7 +395,7 @@ extern "C" int ondas_fsdb_open(const char *path, int metadata_only, ondas_fsdb *
             const std::string version(info.version, strnlen(info.version, sizeof(info.version)));
             const char *api_version = ffrObject::ffrGetAPIVersion();
             if (newer_file_version(version, api_version))
-                throw std::runtime_error("FSDB file version " + version + " is newer than Reader API " + api_version);
+                throw Unsupported("FSDB file version " + version + " is newer than Reader API " + api_version);
         }
         require(reader->file != nullptr, "FSDB Reader could not open the file (check file variant and SDK version)");
         auto *file = reader->file;
@@ -406,8 +409,8 @@ extern "C" int ondas_fsdb_open(const char *path, int metadata_only, ondas_fsdb *
         default: break;
         }
         reader->view_window = has_info && info.is_view_window_available;
-        require(file->ffrGetXTagType() == FSDB_XTAG_TYPE_L || file->ffrGetXTagType() == FSDB_XTAG_TYPE_HL,
-                "floating FSDB timestamps are unsupported");
+        if (file->ffrGetXTagType() != FSDB_XTAG_TYPE_L && file->ffrGetXTagType() != FSDB_XTAG_TYPE_HL)
+            throw Unsupported("floating FSDB timestamps are unsupported");
         if (!metadata_only) {
             file->ffrSetTreeCBFunc(tree, reader.get());
             if (file->ffrHasDataTypeDef()) {
@@ -471,8 +474,8 @@ extern "C" int ondas_fsdb_begin(ondas_fsdb *reader, const uint64_t *ids, size_t 
         std::vector<fsdbVarIdcode> selected(ids, ids + count);
         for (auto id : selected) {
             const auto &d = reader->declarations.at(reader->variables.at(id));
-            require(d.data.encoding != OFS_EVENT || !reader->file->ffrHasDumpOffRange(),
-                    "FSDB event queries with dump-off ranges are unsupported");
+            if (d.data.encoding == OFS_EVENT && reader->file->ffrHasDumpOffRange())
+                throw Unsupported("FSDB event queries with dump-off ranges are unsupported (signal " + std::to_string(id) + ")");
             success(reader->file->ffrAddToSignalList(id), "select FSDB signal");
         }
         // A nonzero start requires the engine's exact normalized entering state.
@@ -570,10 +573,12 @@ extern "C" int ondas_fsdb_sample_bits(ondas_fsdb *reader, uint64_t id, uint64_t 
     } OFS_CATCH(error, cap)
 }
 extern "C" int ondas_fsdb_next(ondas_fsdb *reader, ondas_fsdb_value *out, uint8_t *bits, size_t bits_cap, char *error, size_t cap) {
+    *out = {};
     try {
         auto *cursor = reader->cursor;
         require(cursor != nullptr, "no active FSDB traversal");
         while (true) {
+            *out = {};
             if (reader->advance && cursor->ffrGotoNextVC() != FSDB_RC_SUCCESS) return 0;
             fsdbTag64 time{};
             // A newly created chronological cursor may be empty.
@@ -584,10 +589,12 @@ extern "C" int ondas_fsdb_next(ondas_fsdb *reader, ondas_fsdb_value *out, uint8_
             // The SDK may include an entering value before the view window.
             // The engine already owns that state; do not replay it as a change.
             if (tick < reader->start_tick) continue;
+            out->tick = tick;
             fsdbVarIdcode id = 0;
             success(cursor->ffrGetVarIdcode(&id), "read FSDB value identity");
+            out->id = id;
             const auto &d = reader->declarations.at(reader->variables.at(id));
-            *out = {}; out->tick = tick; out->id = id; out->encoding = d.data.encoding;
+            out->encoding = d.data.encoding;
             const auto size = cursor->ffrGetByteCount();
             byte_T *raw = nullptr;
             success(cursor->ffrGetVC(&raw), "read FSDB value");
@@ -614,5 +621,12 @@ extern "C" int ondas_fsdb_next(ondas_fsdb *reader, ondas_fsdb_value *out, uint8_
             } else throw std::runtime_error("unsupported FSDB value class");
             return 1;
         }
-    } OFS_CATCH(error, cap)
+    } catch (const std::exception &e) {
+        if (out->id && cap)
+            std::snprintf(error, cap, "signal %llu at tick %llu: %s",
+                          static_cast<unsigned long long>(out->id),
+                          static_cast<unsigned long long>(out->tick), e.what());
+        else report(error, cap, e.what());
+        return -1;
+    } catch (...) { report(error, cap, "unknown C++ exception in FSDB Reader"); return -1; }
 }

@@ -592,6 +592,7 @@ impl Waveform {
                     .map(|(id, t, v)| (id, Time::from_ticks(t), v))
                     .collect(),
                 fail_after,
+                failure: None,
             },
         }
     }

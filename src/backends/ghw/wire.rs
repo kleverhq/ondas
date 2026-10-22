@@ -40,9 +40,10 @@ impl Wire {
     }
 
     pub(super) fn unsupported(&self, message: impl std::fmt::Display) -> Error {
-        Error::Backend {
+        Error::UnsupportedFeature {
+            format: Format::Ghw,
             backend: "ghw-native".into(),
-            operation: "open",
+            operation: "decode",
             message: format!("byte {}: unsupported GHW {message}", self.offset),
         }
     }
@@ -433,8 +434,8 @@ mod tests {
         future[11] = 2;
         assert!(matches!(
             wire(&future, 1).header(),
-            Err(Error::Backend {
-                operation: "open",
+            Err(Error::UnsupportedFeature {
+                operation: "decode",
                 ..
             })
         ));
@@ -442,7 +443,7 @@ mod tests {
         future[13] = 8;
         assert!(matches!(
             wire(&future, 1).header(),
-            Err(Error::Backend { .. })
+            Err(Error::UnsupportedFeature { .. })
         ));
         let bad = b"STR\0\0\0\0\0\x02\0\0\0\x09\0\0\0a\x02b\0EOS\0";
         assert!(matches!(

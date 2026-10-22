@@ -116,7 +116,7 @@ Benchmark warm cases distinguish a reused waveform from retained full values.
 Detected invalid fields, ordinals, IDs, time order and incomplete sections return
 `Error::Malformed` with a byte offset. I/O failures return `Error::Io`.
 Unsupported versions, descriptors, type tags, hierarchy tags and layouts return
-`Error::Backend` with an explicit unsupported-GHW message. Gzip and bzip2 outer
+`Error::UnsupportedFeature` with a byte offset. This does not establish malformed data. Gzip and bzip2 outer
 containers are unsupported. The reader does not decompress through a subprocess.
 
 `ghw0002-ghdl-issue-538` omits required bounds for its unbounded inner vector.

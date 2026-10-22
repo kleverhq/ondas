@@ -40,9 +40,11 @@ typedef struct {
 } ondas_shm_work;
 // No SDK handle survives a call. Native sessions are serialized by Rust.
 // Output is Ondas-owned and valid until the next operation on this owner.
-// Errors are NUL terminated. Open/read return 0/-1; next returns 1/0/-1.
+// Errors are NUL terminated. Open/read return 0 on success, -1 for a reader
+// failure, -2 for a POSIX error (os_error), -3 for unavailable initialization.
+// Open/read always initialize os_error. Next returns 1/0/-1.
 // On a next error, the output identifies the failed history and source tick.
-int ondas_shm_open(const char *, int metadata_only, ondas_shm **, char *, size_t);
+int ondas_shm_open(const char *, int metadata_only, ondas_shm **, char *, size_t, int *os_error);
 void ondas_shm_close(ondas_shm *);
 void ondas_shm_metadata(const ondas_shm *, ondas_shm_meta *);
 void ondas_shm_work_done(const ondas_shm *, ondas_shm_work *);
@@ -50,7 +52,7 @@ size_t ondas_shm_decl_count(const ondas_shm *);
 void ondas_shm_declaration(const ondas_shm *, size_t, ondas_shm_decl *);
 void ondas_shm_enum_variant(const ondas_shm *, size_t declaration, size_t variant, ondas_shm_variant *);
 // A validated resume requires known entering values and a successful immutable prefix.
-int ondas_shm_read(ondas_shm *, const uint64_t *, size_t, uint64_t, uint64_t, int validated_resume, char *, size_t);
+int ondas_shm_read(ondas_shm *, const uint64_t *, size_t, uint64_t, uint64_t, int validated_resume, char *, size_t, int *os_error);
 // Returns 1 for a complete certified bit batch, 2 for a partial batch, or 0
 // for ordinary-read fallback. Certified descriptors have certified == 1 and bytes.
 // Unqualified descriptors are zero-filled (certified, data, len, changed and

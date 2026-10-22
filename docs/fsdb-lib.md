@@ -267,9 +267,13 @@ become backend errors, not invented corruption diagnoses. Value failures can
 occur after opening succeeds and scans may already have delivered observations.
 
 After a failed open, the shim checks the SDK's file-header information and Reader
-API version. A confirmed newer file version produces a specific backend error.
+API version. A confirmed newer file version returns `Error::UnsupportedFeature`.
 If either version is unavailable or cannot be compared, the generic opening
-error remains. Development suites use this diagnostic to report compatibility
+error remains. Unsupported timestamp storage, integral enum widths above 64 bits,
+and event queries with dump-off ranges also return `Error::UnsupportedFeature`.
+Other SDK failures retain their operation and available status in diagnostics.
+Traversal exhaustion keeps its ordinary EOF meaning. Development suites use the
+confirmed newer-version diagnostic to report compatibility
 skips. Applications still receive an error.
 
 SDK banners and warnings remain visible. Ondas does not suppress process-wide

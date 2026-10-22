@@ -944,8 +944,8 @@ mod tests {
             } else {
                 assert!(matches!(
                     result,
-                    Err(crate::Error::Backend {
-                        operation: "open",
+                    Err(crate::Error::UnsupportedFeature {
+                        operation: "decode",
                         ..
                     })
                 ));

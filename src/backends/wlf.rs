@@ -11,7 +11,7 @@ use std::{
 fn backend_error(message: impl Into<String>) -> Error {
     Error::Backend {
         backend: "wlf-lib".into(),
-        operation: "read WLF",
+        operation: "access",
         message: message.into(),
     }
 }

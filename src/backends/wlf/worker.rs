@@ -262,7 +262,7 @@ fn call<T: Send + 'static>(
         .recv()
         .map_err(|_| backend_error("WLF worker stopped"))?
 }
-fn status(code: c_int, error: &[c_char; 512]) -> Result<()> {
+fn status(code: c_int, error: &[c_char; 512], operation: &'static str) -> Result<()> {
     if code >= 0 {
         return Ok(());
     }
@@ -280,7 +280,11 @@ fn status(code: c_int, error: &[c_char; 512]) -> Result<()> {
             backend: "wlf-lib".into(),
             message,
         },
-        _ => backend_error(message),
+        _ => Error::Backend {
+            backend: "wlf-lib".into(),
+            operation,
+            message,
+        },
     })
 }
 // SAFETY: called only for live shim-owned NUL-terminated text on the SDK thread;
@@ -318,7 +322,15 @@ fn open_handle(path: &CString, name: &CString, metadata_only: bool) -> Result<Ha
             error.len(),
         )
     };
-    status(code, &error)?;
+    status(
+        code,
+        &error,
+        if metadata_only {
+            "read metadata"
+        } else {
+            "open"
+        },
+    )?;
     Ok(Handle {
         raw: NonNull::new(raw).ok_or_else(|| backend_error("null WLF reader"))?,
     })
@@ -490,7 +502,7 @@ fn begin_native(handle: &Handle, indices: &[usize], start: Time, end: Time) -> R
             error.len(),
         )
     };
-    status(code, &error)
+    status(code, &error, "begin read")
 }
 pub(super) fn begin(id: u64, indices: Vec<usize>, start: Time, end: Time) -> Result<()> {
     call(move |state| {
@@ -547,7 +559,7 @@ fn point_states(
                 error.len(),
             )
         };
-        status(code, &error)?;
+        status(code, &error, "sample")?;
         if code == 0 {
             break;
         }
@@ -696,7 +708,7 @@ pub(super) fn next(id: u64) -> Result<Batch> {
                     error.len(),
                 )
             };
-            if let Err(error) = status(code, &error) {
+            if let Err(error) = status(code, &error, "read") {
                 batch.error = Some(error);
                 return Ok(batch);
             }
@@ -785,6 +797,27 @@ fn owned_record(out: &NativeRecord, encodings: &[Encoding]) -> Result<Record> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wlf_status_preserves_known_categories_and_unknown_diagnostics() {
+        let mut buffer = [0; 512];
+        for (out, byte) in buffer.iter_mut().zip(b"SDK status 4: sentinel") {
+            *out = *byte as c_char;
+        }
+        assert!(matches!(status(-2, &buffer, "open"), Err(Error::Malformed {
+            format: Format::Wlf, backend, message
+        }) if backend == "wlf-lib" && message == "SDK status 4: sentinel"));
+        assert!(
+            matches!(status(-3, &buffer, "open"), Err(Error::BackendUnavailable { backend, .. })
+            if backend == "wlf-lib")
+        );
+        for code in [-1, -71] {
+            assert!(matches!(status(code, &buffer, "read"), Err(Error::Backend {
+                backend, operation: "read", message
+            }) if backend == "wlf-lib" && message == "SDK status 4: sentinel"));
+        }
+    }
+
     #[test]
     fn wlf_optional_enum_text_preserves_unicode_and_rejects_invalid_text() {
         let bits = c"001x";
