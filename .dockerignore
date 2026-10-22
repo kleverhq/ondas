@@ -1,4 +1,6 @@
 .git
+.bb
+.worktreeinclude
 .env
 .devcontainer.local
 target

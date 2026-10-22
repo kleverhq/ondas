@@ -183,5 +183,3 @@ See [fixture execution rules](fixtures.md#validation-and-execution).
 
 Keep Criterion's runner and comparisons. Custom history stores, dashboards,
 timing gates and mandatory cross-format datasets are outside this policy.
-Keep investigation notes in ignored `tmp/`; use tracked WIP only when notes
-must travel with a branch.

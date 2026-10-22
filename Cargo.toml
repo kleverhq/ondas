@@ -12,7 +12,7 @@ readme = "README.md"
 documentation = "https://docs.rs/ondas"
 keywords = ["waveform", "vcd", "fst", "rtl", "eda"]
 categories = ["development-tools"]
-exclude = ["fixtures/**", "docs/wip/**"]
+exclude = ["fixtures/**"]
 
 [features]
 fsdb-lib = ["dep:cc"]
