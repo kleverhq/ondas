@@ -83,6 +83,7 @@ unsafe extern "C" {
         out: *mut *mut c_void,
         error: *mut c_char,
         cap: usize,
+        os_error: *mut c_int,
     ) -> c_int;
     fn ondas_shm_close(reader: *mut c_void);
     fn ondas_shm_metadata(reader: *const c_void, out: *mut Meta);
@@ -105,6 +106,7 @@ unsafe extern "C" {
         validated_resume: c_int,
         error: *mut c_char,
         cap: usize,
+        os_error: *mut c_int,
     ) -> c_int;
     fn ondas_shm_next(
         reader: *mut c_void,
@@ -125,19 +127,38 @@ unsafe extern "C" {
 fn error(message: impl Into<String>) -> Error {
     Error::Backend {
         backend: BACKEND.into(),
-        operation: "read SHM",
+        operation: "decode",
         message: message.into(),
     }
 }
-fn status(code: c_int, buffer: &[c_char; 512]) -> Result<()> {
-    if code < 0 {
-        // SAFETY: the shim terminates every caller-owned error buffer.
-        Err(error(
-            unsafe { CStr::from_ptr(buffer.as_ptr()) }.to_string_lossy(),
-        ))
-    } else {
-        Ok(())
+fn status(
+    code: c_int,
+    os_error: c_int,
+    buffer: &[c_char; 512],
+    operation: &'static str,
+) -> Result<()> {
+    if code >= 0 {
+        return Ok(());
     }
+    if code == -2 && os_error != 0 {
+        return Err(std::io::Error::from_raw_os_error(os_error).into());
+    }
+    // SAFETY: the shim terminates every caller-owned error buffer.
+    let message = unsafe { CStr::from_ptr(buffer.as_ptr()) }
+        .to_string_lossy()
+        .into_owned();
+    Err(if code == -3 {
+        Error::BackendUnavailable {
+            backend: BACKEND.into(),
+            message,
+        }
+    } else {
+        Error::Backend {
+            backend: BACKEND.into(),
+            operation,
+            message,
+        }
+    })
 }
 // SAFETY: the shim's owned hierarchy strings are NUL terminated and remain
 // alive on the owner. Every caller copies them under the adapter lock.
@@ -177,6 +198,7 @@ fn open_handle(path: &Path, metadata_only: bool) -> Result<Handle> {
     })?;
     let mut raw = std::ptr::null_mut();
     let mut buffer = [0; 512];
+    let mut os_error = 0;
     let _lock = lock();
     // SAFETY: valid caller-owned buffers. No pointers into Rust are retained.
     let code = unsafe {
@@ -186,9 +208,19 @@ fn open_handle(path: &Path, metadata_only: bool) -> Result<Handle> {
             &mut raw,
             buffer.as_mut_ptr(),
             buffer.len(),
+            &mut os_error,
         )
     };
-    status(code, &buffer)?;
+    status(
+        code,
+        os_error,
+        &buffer,
+        if metadata_only {
+            "read metadata"
+        } else {
+            "open"
+        },
+    )?;
     Ok(Handle(
         NonNull::new(raw).ok_or_else(|| error("null SHM owner"))?,
     ))
@@ -527,6 +559,7 @@ impl Reader {
         let ids: Vec<_> = signals.iter().map(|s| self.ids[s.index()]).collect();
         let traversal = Traversal(&mut self.handle);
         let mut buffer = [0; 512];
+        let mut os_error = 0;
         {
             let _lock = lock();
             // SAFETY: live exclusive owner, validated identities and output buffers.
@@ -542,9 +575,10 @@ impl Reader {
                     c_int::from(resume),
                     buffer.as_mut_ptr(),
                     buffer.len(),
+                    &mut os_error,
                 )
             };
-            status(code, &buffer)?;
+            status(code, os_error, &buffer, "begin read")?;
         }
         let mut data = Vec::new();
         let mut previous = 0;
@@ -563,7 +597,7 @@ impl Reader {
                         buffer.len(),
                     )
                 };
-                failure = status(code, &buffer).err();
+                failure = status(code, 0, &buffer, "read").err();
                 if code == 0 {
                     break;
                 }
@@ -639,6 +673,64 @@ impl Drop for Traversal<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shm_status_distinguishes_initialization_io_and_unknown_failures() {
+        let mut buffer = [0; 512];
+        for (out, byte) in buffer.iter_mut().zip(b"sentinel") {
+            *out = *byte as c_char;
+        }
+        assert!(
+            matches!(status(-3, 0, &buffer, "open"), Err(Error::BackendUnavailable { backend, message })
+            if backend == BACKEND && message == "sentinel")
+        );
+        assert!(
+            matches!(status(-2, 13, &buffer, "open"), Err(Error::Io(cause))
+            if cause.raw_os_error() == Some(13))
+        );
+        for code in [-1, -2, -71] {
+            assert!(
+                matches!(status(code, 0, &buffer, "begin read"), Err(Error::Backend {
+                backend, operation: "begin read", message
+            }) if backend == BACKEND && message == "sentinel")
+            );
+        }
+    }
+
+    #[test]
+    fn shm_native_filesystem_failure_preserves_errno() {
+        let path = std::env::temp_dir().join(format!(
+            "ondas-missing-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        assert!(!path.exists());
+        let path = CString::new(path.as_os_str().as_bytes()).unwrap();
+        let mut raw = std::ptr::null_mut();
+        let mut buffer = [0; 512];
+        let mut os_error = 0;
+        let _lock = lock();
+        // SAFETY: task-owned path and initialized writable outputs; no owner on failure.
+        let code = unsafe {
+            ondas_shm_open(
+                path.as_ptr(),
+                0,
+                &mut raw,
+                buffer.as_mut_ptr(),
+                buffer.len(),
+                &mut os_error,
+            )
+        };
+        assert!(raw.is_null());
+        assert_eq!(code, -2);
+        assert!(
+            matches!(status(code, os_error, &buffer, "open"), Err(Error::Io(cause))
+            if cause.kind() == std::io::ErrorKind::NotFound && cause.raw_os_error().is_some())
+        );
+    }
 
     fn records(
         reader: &mut Reader,

@@ -6,7 +6,10 @@ use std::{fmt::Display, path::Path};
 
 pub fn is_version_error(error: &impl Display) -> bool {
     let error = error.to_string();
-    error.starts_with("backend fsdb-lib failed during read FSDB: FSDB file version ")
+    (error.starts_with("unsupported Fsdb feature in fsdb-lib during open: FSDB file version ")
+        || error.starts_with(
+            "unsupported Fsdb feature in fsdb-lib during read metadata: FSDB file version ",
+        ))
         && error.contains(" is newer than Reader API ")
 }
 
@@ -26,9 +29,13 @@ mod tests {
     #[test]
     fn confirmed_newer_file_is_skipped() {
         use super::*;
-        const NEWER: &str = "backend fsdb-lib failed during read FSDB: FSDB file version 2.1 is newer than Reader API 2.0";
-        assert!(is_version_error(&NEWER));
-        assert!(open::<(), _>(Err(NEWER), Path::new("waveform.fsdb")).is_none());
+        for operation in ["open", "read metadata"] {
+            let newer = format!(
+                "unsupported Fsdb feature in fsdb-lib during {operation}: FSDB file version 2.1 is newer than Reader API 2.0"
+            );
+            assert!(is_version_error(&newer));
+            assert!(open::<(), _>(Err(newer), Path::new("waveform.fsdb")).is_none());
+        }
         assert_eq!(open::<_, &str>(Ok(7), Path::new("waveform.fsdb")), Some(7));
     }
 
@@ -37,8 +44,8 @@ mod tests {
         use super::*;
         for error in [
             "backend fsdb-lib failed during read FSDB: FSDB Reader could not open the file (check file variant and SDK version)",
-            "backend fsdb-lib failed during query: FSDB file version 2.1 is newer than Reader API 2.0",
-            "backend another-reader failed during read FSDB: FSDB file version 2.1 is newer than Reader API 2.0",
+            "unsupported Fsdb feature in fsdb-lib during query: FSDB file version 2.1 is newer than Reader API 2.0",
+            "unsupported Fsdb feature in another-reader during open: FSDB file version 2.1 is newer than Reader API 2.0",
             "I/O error: file not found",
             "malformed FSDB waveform: invalid version",
         ] {

@@ -40,8 +40,9 @@ typedef struct {
 } ondas_fsdb_value;
 
 /* Errors are copied into the caller's NUL-terminated error buffer. Open/probe/
- * begin return 0 on success, -1 on error. Next returns 1 for a record, 0 for EOF,
- * -1 on error. Closing also releases an active traversal. */
+ * begin return 0 on success. Errors: -1 reader, -4 unsupported feature.
+ * Next returns 1 for a record, 0 for EOF, or a negative error status.
+ * Closing also releases an active traversal. */
 int ondas_fsdb_probe(const char *, int *, char *, size_t);
 int ondas_fsdb_open(const char *, int metadata_only, ondas_fsdb **, char *, size_t);
 void ondas_fsdb_close(ondas_fsdb *);

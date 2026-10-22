@@ -678,7 +678,7 @@ mod tests {
         let mut wire = Wire::new(Box::new(Cursor::new(vec![63]))).unwrap();
         assert!(matches!(
             Range::read(&mut wire),
-            Err(crate::Error::Backend { .. })
+            Err(crate::Error::UnsupportedFeature { .. })
         ));
     }
 

@@ -122,18 +122,32 @@ unsafe extern "C" {
 fn backend_error(message: impl Into<String>) -> Error {
     Error::Backend {
         backend: BACKEND.into(),
-        operation: "read FSDB",
+        operation: "decode",
         message: message.into(),
     }
 }
-fn status(code: c_int, error: &[c_char; 512]) -> Result<()> {
-    if code < 0 {
-        // SAFETY: all shim errors terminate the caller-owned buffer with NUL.
-        return Err(backend_error(
-            unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy(),
-        ));
+fn status(code: c_int, error: &[c_char; 512], operation: &'static str) -> Result<()> {
+    if code >= 0 {
+        return Ok(());
     }
-    Ok(())
+    // SAFETY: all shim errors terminate the caller-owned buffer with NUL.
+    let message = unsafe { CStr::from_ptr(error.as_ptr()) }
+        .to_string_lossy()
+        .into_owned();
+    Err(if code == -4 {
+        Error::UnsupportedFeature {
+            format: Format::Fsdb,
+            backend: BACKEND.into(),
+            operation,
+            message,
+        }
+    } else {
+        Error::Backend {
+            backend: BACKEND.into(),
+            operation,
+            message,
+        }
+    })
 }
 fn filename(path: &Path) -> Result<CString> {
     CString::new(path.as_os_str().as_bytes()).map_err(|_| {
@@ -163,7 +177,7 @@ pub(crate) fn probe(path: &Path) -> Result<bool> {
     // SAFETY: valid caller-owned pointers; calls are serialized.
     let code =
         unsafe { ondas_fsdb_probe(path.as_ptr(), &mut yes, error.as_mut_ptr(), error.len()) };
-    status(code, &error)?;
+    status(code, &error, "probe")?;
     Ok(yes != 0)
 }
 
@@ -199,7 +213,15 @@ fn open_handle(path: &Path, metadata_only: bool) -> Result<Handle> {
                 error.len(),
             )
         };
-        status(code, &error)?;
+        status(
+            code,
+            &error,
+            if metadata_only {
+                "read metadata"
+            } else {
+                "open"
+            },
+        )?;
     }
     Ok(Handle(
         NonNull::new(raw).ok_or_else(|| backend_error("null FSDB reader"))?,
@@ -505,7 +527,7 @@ impl Reader {
                 error.len(),
             )
         };
-        status(code, &error)?;
+        status(code, &error, "begin read")?;
         let mut samples = Vec::with_capacity(signals.len());
         for &signal in signals {
             let mut record = Record::default();
@@ -528,7 +550,7 @@ impl Reader {
                     error.len(),
                 )
             };
-            status(code, &error)?;
+            status(code, &error, "sample")?;
             #[cfg(test)]
             {
                 self.point_queries += 1;
@@ -589,7 +611,7 @@ impl Reader {
                     error.len(),
                 )
             };
-            status(code, &error)?;
+            status(code, &error, "begin read")?;
         }
         let width = signals
             .iter()
@@ -619,7 +641,7 @@ impl Reader {
                         error.len(),
                     )
                 };
-                status(code, &error)?;
+                status(code, &error, "read")?;
                 if code == 0 {
                     break;
                 }
@@ -745,6 +767,28 @@ fn timescale(text: &str) -> Option<Timescale> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fsdb_status_keeps_support_limits_and_unknown_failures_distinct() {
+        let mut buffer = [0; 512];
+        for (out, byte) in buffer.iter_mut().zip(b"SDK status 71: sentinel") {
+            *out = *byte as c_char;
+        }
+        assert!(
+            matches!(status(-4, &buffer, "open"), Err(Error::UnsupportedFeature {
+            format: Format::Fsdb, backend, operation: "open", message
+        }) if backend == BACKEND && message == "SDK status 71: sentinel")
+        );
+        for code in [-1, -71] {
+            assert!(
+                matches!(status(code, &buffer, "sample"), Err(Error::Backend {
+                backend, operation: "sample", message
+            }) if backend == BACKEND && message == "SDK status 71: sentinel")
+            );
+        }
+        assert!(status(0, &buffer, "read").is_ok());
+    }
+
     use crate::TimeUnit;
     use crate::fsdb_compatibility;
     #[test]
@@ -820,7 +864,7 @@ mod tests {
                     error.len(),
                 )
             };
-            status(code, &error).unwrap();
+            status(code, &error, "begin read").unwrap();
             loop {
                 let mut record = Record::default();
                 // SAFETY: the destination length is passed exactly, including
@@ -836,10 +880,10 @@ mod tests {
                     )
                 };
                 if capacity == 0 {
-                    assert!(status(code, &error).is_err());
+                    assert!(status(code, &error, "read").is_err());
                     break;
                 }
-                status(code, &error).unwrap();
+                status(code, &error, "begin read").unwrap();
                 if code == 0 {
                     break;
                 }

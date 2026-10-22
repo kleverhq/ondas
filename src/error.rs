@@ -164,6 +164,9 @@ pub enum LookupError {
 /// Error categories help you choose a recovery action. For I/O errors, check the
 /// path, permissions, or filesystem. An unavailable backend may need a runtime
 /// library or license. Unsupported formats and input kinds need a different reader.
+/// [`Error::UnsupportedFeature`] identifies a source or query support limit.
+/// Unknown SDK failures remain [`Error::Backend`]; diagnostic text is not a
+/// stable recovery code.
 /// [`LookupError`] and [`SliceError`] separately describe metadata resolution and
 /// projection errors.
 ///
@@ -237,6 +240,22 @@ pub enum Error {
         backend: String,
         /// The unsupported input kind.
         input: InputKind,
+    },
+
+    /// The reader does not support a feature of the recognized source or query.
+    ///
+    /// This does not establish that the source is malformed. Unsupported input
+    /// kinds and signal encodings use their separate error categories.
+    #[error("unsupported {format:?} feature in {backend} during {operation}: {message}")]
+    UnsupportedFeature {
+        /// The recognized source format.
+        format: Format,
+        /// The reader that rejected the feature.
+        backend: String,
+        /// The operation that requires the feature.
+        operation: &'static str,
+        /// Diagnostic details about the support limit.
+        message: String,
     },
 
     /// The recognized waveform data is malformed.

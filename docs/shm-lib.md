@@ -134,6 +134,11 @@ path. Event selections do not retain these snapshots. Errors and early
 termination discard them. This is selected state, not a native history or
 vendor-handle cache.
 
+SDK initialization failures return `Error::BackendUnavailable`. Native filesystem
+failures with a known OS code return `Error::Io` and preserve that code. Other SDK
+failures remain `Error::Backend`; available operation, history and tick details
+remain diagnostic text.
+
 An absent initial state remains missing. A later unavailable recording interval
 returns an error. Timed decode errors let the common engine complete earlier
 ticks before reporting the failure. Owned results return no partial success.

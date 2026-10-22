@@ -73,6 +73,11 @@ fn malformed(message: impl Into<String>) -> Error {
 
 fn reader_error(error: ReaderError) -> Error {
     match error {
+        error @ ReaderError::NotFinishedCompressing() => Error::Backend {
+            backend: "fst-lib".into(),
+            operation: "open",
+            message: error.to_string(),
+        },
         ReaderError::Io(error) if error.kind() != std::io::ErrorKind::UnexpectedEof => {
             Error::Io(error)
         }
@@ -485,6 +490,26 @@ fn timescale(exponent: i8) -> Option<Timescale> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unfinished_wrapper_is_not_malformed_and_io_keeps_its_cause() {
+        let mut input = vec![0; 17];
+        input[0] = 254; // GZipWrapper with an unfinished, zero section length.
+        assert!(matches!(
+            crate::open_bytes("unfinished.fst", input.into()),
+            Err(Error::Backend { backend, operation: "open", message })
+                if backend == "fst-lib" && message == ReaderError::NotFinishedCompressing().to_string()
+        ));
+        let error = reader_error(ReaderError::Io(std::io::Error::from_raw_os_error(13)));
+        assert!(matches!(error, Error::Io(cause) if cause.raw_os_error() == Some(13)));
+        assert!(matches!(
+            reader_error(ReaderError::Io(std::io::ErrorKind::UnexpectedEof.into())),
+            Error::Malformed {
+                format: Format::Fst,
+                ..
+            }
+        ));
+    }
 
     #[test]
     fn interpretation_requires_explicit_type_evidence() {

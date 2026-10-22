@@ -446,6 +446,37 @@ impl<'w> Selection<'w> {
     /// calling the callback. Fresh queries are valid after completion, stop or
     /// error, under the reader's documented malformed-input limitations.
     ///
+    /// # Application failures
+    ///
+    /// A callback can return an [`Error`], which propagates unchanged. Thus an
+    /// outer `Err` does not identify where the error originated. To keep an
+    /// application error separate, return it in a `Break` payload. Pass a subset
+    /// visit's `Break` to the outer callback to stop the query as well.
+    ///
+    /// ```
+    /// use ondas::TimeRange;
+    /// use std::{io::Write, ops::ControlFlow};
+    /// # fn main() -> ondas::Result<()> {
+    /// #[derive(Debug)]
+    /// enum AppError { Output(std::io::Error) }
+    /// let input = b"$var wire 1 a data $end $enddefinitions $end #0 0a #1 1a";
+    /// let mut wave = ondas::open_bytes("output.vcd", input.as_slice().into())?;
+    /// let signal = wave.hierarchy().signals().next().unwrap();
+    /// let mut sink = &mut [0_u8; 0][..]; // This sink cannot accept a row.
+    /// let outcome = wave.select(&[signal])?.query(TimeRange::all(), &[0], |ctx| {
+    ///     ctx.visit_samples(ctx.time(), &[0], |_, _| {
+    ///         match sink.write_all(b"row\n") {
+    ///             Ok(()) => Ok(ControlFlow::Continue(())),
+    ///             Err(error) => Ok(ControlFlow::Break(AppError::Output(error))),
+    ///         }
+    ///     })
+    /// })?; // An ondas::Error uses the outer Result.
+    /// let ControlFlow::Break(AppError::Output(error)) = outcome else { panic!() };
+    /// assert_eq!(error.kind(), std::io::ErrorKind::WriteZero);
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
     /// # Basic use
     ///
     /// ```no_run

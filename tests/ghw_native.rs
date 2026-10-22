@@ -268,16 +268,16 @@ fn malformed_unselected_values_and_unsupported_layouts_fail_opening() {
     bytes[VERSION_BYTE] = 2;
     assert!(matches!(
         ondas::open_bytes("future.ghw", bytes.into()),
-        Err(Error::Backend {
-            operation: "open",
+        Err(Error::UnsupportedFeature {
+            operation: "decode",
             ..
         })
     ));
     let compressed = vec![0x1f, 0x8b, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     assert!(matches!(
         ondas::open_bytes_with("compressed.ghw", compressed.into(), "ghw-native"),
-        Err(Error::Backend {
-            operation: "open",
+        Err(Error::UnsupportedFeature {
+            operation: "decode",
             ..
         })
     ));

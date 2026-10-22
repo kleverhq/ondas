@@ -88,7 +88,9 @@ hold persistent state and return zero event occurrences.
 Header metadata preserves the recorded interval, including zero-signal files.
 A metadata-only read does not validate later hierarchy or value reads. Qualified
 unclosed snapshots return `Malformed`. Other SDK read failures remain `Backend`;
-SDK initialization failures return `BackendUnavailable`. A native SDK fault can
+SDK initialization failures return `BackendUnavailable`. Reported failures retain
+the operation and available SDK error number in diagnostics. The number does not
+define a stable recovery category. A native SDK fault can
 terminate the process; Ondas cannot convert it into a Rust error. Active simulation
 reading is not supported. Files are never repaired, rewritten or converted implicitly.
 

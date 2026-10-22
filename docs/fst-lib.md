@@ -151,7 +151,12 @@ release builds. Some decoder paths also contain unsupported-case assertions.
 Ondas does not intercept decoder panics. This is not a
 hardened parser for untrusted files.
 
-Reported decoder failures become Ondas errors. The adapter rejects scope-stack
+A decoder report that the gzip wrapper is still being written returns
+`Error::Backend` during opening, not `Error::Malformed`. This does not provide
+live-file reading or guarantee a successful retry. Ordinary I/O errors retain
+their cause; reported truncation remains `Error::Malformed`.
+
+Other reported decoder failures become Ondas errors. The adapter rejects scope-stack
 underflow, unclosed scopes, conflicting repeated scope metadata, incompatible
 alias encodings and invalid decoded values. Value failures can occur during a
 query after opening succeeds. Scans may already have delivered observations.

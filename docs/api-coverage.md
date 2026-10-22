@@ -12,7 +12,7 @@ public query results without format decoding.
 
 | API or contract | Tests and observations |
 | --- | --- |
-| Opening functions, `read_metadata`, `Format`, opening `Error` categories | [`src/waveform.rs`](../src/waveform.rs): `opening_errors_distinguish_detection_selection_and_io`; `detection_prefers_content_and_falls_back_to_case_insensitive_extensions` checks recognition priority, extension hints, explicit selection, and I/O rejection. `read_metadata_preserves_vcd_detection_and_values` checks content selection and matching metadata. Fixture-gated `fst_metadata_matches_open` checks matching FST metadata. SDK-gated `fsdb_metadata_without_hierarchy` checks matching FSDB metadata. `fsdb_conflicting_scope_diagnostic_and_metadata_bypass` independently checks header metadata despite full-open rejection. |
+| Opening functions, `read_metadata`, `Format`, opening `Error` categories | [`src/waveform.rs`](../src/waveform.rs): `opening_errors_distinguish_detection_selection_and_io`; `detection_prefers_content_and_falls_back_to_case_insensitive_extensions` checks recognition priority, extension hints, explicit selection, and I/O rejection. GHW `malformed_unselected_values_and_unsupported_layouts_fail_opening` distinguishes malformed data from unsupported features. FST `unfinished_wrapper_is_not_malformed_and_io_keeps_its_cause` checks the unfinished wrapper and I/O categories. `read_metadata_preserves_vcd_detection_and_values` checks content selection and matching metadata. Fixture-gated `fst_metadata_matches_open` checks matching FST metadata. SDK-gated `fsdb_metadata_without_hierarchy` checks matching FSDB metadata. `fsdb_conflicting_scope_diagnostic_and_metadata_bypass` independently checks header metadata despite full-open rejection. |
 | `Waveform::metadata`, `Metadata` optional fields and comments | `metadata_preserves_optional_fields_and_comment_order` in `src/waveform.rs` checks normalized metadata access, absent fields, ordered duplicate/empty comments, and iterator length. It does not test reader extraction. |
 | `Hierarchy` traversal/lookups/aliases; `Scope`, `Variable`, enumeration and declaration metadata | [`src/hierarchy/tests.rs`](../src/hierarchy/tests.rs): `hierarchy_views_aliases_and_metadata`, `root_declarations_duplicate_scopes_and_extreme_ranges`; includes cloned hierarchy lifetime, root declarations, duplicate scopes, original range endpoints, and enumeration labels. |
 | `Scope` and `Variable` identity equality | `identity_keeps_same_path_objects_and_their_children_separate` builds a tree from public views without path IDs, including aliases and declarations without histories. [`tests/hierarchy_identity.rs`](../tests/hierarchy_identity.rs) checks equality across hierarchy clones and inequality across independent opens. Fixture conformance compares lookup views with traversal views and hierarchy clones; the FSDB same-path module/struct regression checks distinct objects and their parents. |
@@ -66,6 +66,15 @@ checks exact widths, leading zeros and slices.
 `bit_identity_handles_case_width_and_non_word_aligned_slices` checks equality
 across storage case, empty and wide values, and slices. The `BitsRef` Rustdoc
 example checks owned/view equality and different widths through public queries.
+
+`a_sliced_composition_preserves_its_required_operand_failure` in
+`src/query/engine/composition.rs` checks the original I/O code through nested
+composition slices, repeated scan slots, owned batches and traces. A fresh query
+works after the injected failure is removed. The query application-failure
+Rustdoc example passes a sink error through nested `Break` payloads. Native
+status tests cover confirmed support and initialization categories, unknown
+statuses, and OS codes. The SHM native filesystem test exercises the private
+C++ to Rust error path with a missing directory.
 
 ## Reader-specific evidence and limits
 

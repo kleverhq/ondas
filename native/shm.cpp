@@ -14,9 +14,20 @@
 #include <vector>
 
 namespace {
+struct Unavailable : std::runtime_error { using std::runtime_error::runtime_error; };
 void require(bool ok, const char *message) { if (!ok) throw std::runtime_error(message); }
 void report(char *out, size_t cap, const char *message) noexcept {
     if (cap) std::snprintf(out, cap, "%s", message);
+}
+int filesystem_failure(const std::filesystem::filesystem_error &failure, int *os_error,
+                       char *out, size_t cap) noexcept {
+    report(out, cap, failure.what());
+    const auto &code = failure.code();
+    if (code.value() && (code.category() == std::system_category() || code.category() == std::generic_category())) {
+        *os_error = code.value();
+        return -2;
+    }
+    return -1;
 }
 std::string text(int property, SstHandle handle) {
     if (!handle) return {};
@@ -27,7 +38,7 @@ void check_handle(SstHandle handle, const char *operation) {
     if (handle && da_get(0x12, handle) > 0) {
         std::string error = text(0x1a, handle);
         da_delete(handle);
-        throw std::runtime_error(error.empty() ? operation : error);
+        throw std::runtime_error(error.empty() ? operation : std::string(operation) + ": " + error);
     }
 }
 struct Enumeration {
@@ -51,7 +62,7 @@ struct Session {
     SstHandle handle = 0;
     explicit Session(const std::string &path) {
         static const bool initialized = sst2Init() == 1;
-        require(initialized, "sst2Init failed");
+        if (!initialized) throw Unavailable("sst2Init failed");
         try {
             std::string stem;
             for (const auto &entry : std::filesystem::directory_iterator(path)) {
@@ -93,8 +104,9 @@ struct Session {
                         // Anchor the directory's DSN through the original path.
                         if (component) drClose(component);
                         component = 0;
-                        require(drOpenFile(path.c_str(), &handle, nullptr, nullptr) == 0 && handle,
-                                "cannot open SHM database directory");
+                        const int directory_status = drOpenFile(path.c_str(), &handle, nullptr, nullptr);
+                        if (directory_status != 0 || !handle)
+                            throw std::runtime_error("cannot open SHM database directory (SDK status " + std::to_string(directory_status) + ")");
                         status = drOpenFile(components[i].second.c_str(), &component, nullptr, nullptr);
                     }
                 }
@@ -103,8 +115,8 @@ struct Session {
                 // SST2 reports -140 (No matching design), as its own directory
                 // reader does. These files are not part of the current DSN.
                 if (status == -140 && !component) continue;
-                require(status == 0 && component == handle,
-                        "cannot join SHM TRN component to the database");
+                if (status != 0 || component != handle)
+                    throw std::runtime_error("cannot join SHM TRN component to the database (SDK status " + std::to_string(status) + ")");
             }
             // Ordinary SST2 opens share one file handle. Opening the base and
             // then every numeric component selects the latest recording and
@@ -588,8 +600,9 @@ struct ondas_shm {
     std::uint64_t point_end = 0;
     std::vector<std::uint64_t> point_ids;
 };
-extern "C" int ondas_shm_open(const char *path, int metadata_only, ondas_shm **out, char *error, size_t cap) {
+extern "C" int ondas_shm_open(const char *path, int metadata_only, ondas_shm **out, char *error, size_t cap, int *os_error) {
     *out = nullptr;
+    *os_error = 0;
     try {
         auto reader = std::make_unique<ondas_shm>();
         reader->path = path;
@@ -604,7 +617,9 @@ extern "C" int ondas_shm_open(const char *path, int metadata_only, ondas_shm **o
         }
         *out = reader.release();
         return 0;
-    } catch (const std::exception &failure) { report(error, cap, failure.what()); }
+    } catch (const Unavailable &failure) { report(error, cap, failure.what()); return -3; }
+    catch (const std::filesystem::filesystem_error &failure) { return filesystem_failure(failure, os_error, error, cap); }
+    catch (const std::exception &failure) { report(error, cap, failure.what()); }
     catch (...) { report(error, cap, "unexpected SHM native exception"); }
     return -1;
 }
@@ -625,7 +640,8 @@ extern "C" void ondas_shm_enum_variant(const ondas_shm *reader, size_t declarati
     const auto &v = reader->declarations[declaration].variants[variant];
     *out = {v.first.c_str(), v.second.c_str()};
 }
-extern "C" int ondas_shm_read(ondas_shm *reader, const uint64_t *ids, size_t count, uint64_t from, uint64_t end, int validated_resume, char *error, size_t cap) {
+extern "C" int ondas_shm_read(ondas_shm *reader, const uint64_t *ids, size_t count, uint64_t from, uint64_t end, int validated_resume, char *error, size_t cap, int *os_error) {
+    *os_error = 0;
     const bool prepared = reader->point_ready && from == 0 && !validated_resume &&
                           end == reader->point_end && count == reader->point_ids.size() &&
                           std::equal(reader->point_ids.begin(), reader->point_ids.end(), ids);
@@ -651,6 +667,10 @@ extern "C" int ondas_shm_read(ondas_shm *reader, const uint64_t *ids, size_t cou
         }
         merge_histories(reader->records, bounds, 0, count);
         return 0;
+    } catch (const Unavailable &failure) {
+        reader->records.clear(); report(error, cap, failure.what()); return -3;
+    } catch (const std::filesystem::filesystem_error &failure) {
+        reader->records.clear(); return filesystem_failure(failure, os_error, error, cap);
     } catch (const std::exception &failure) { report(error, cap, failure.what()); }
     catch (...) { report(error, cap, "unexpected SHM native exception"); }
     reader->records.clear();
@@ -715,7 +735,12 @@ extern "C" int ondas_shm_next(ondas_shm *reader, ondas_shm_record *out, char *er
     if (reader->position == reader->records.size()) return 0;
     const auto &record = reader->records[reader->position++];
     *out = {record.id, record.tick, record.encoding, nullptr, 0};
-    if (record.failed) { report(error, cap, record.data.c_str()); return -1; }
+    if (record.failed) {
+        if (cap) std::snprintf(error, cap, "history %llu at tick %llu: %s",
+                              static_cast<unsigned long long>(record.id),
+                              static_cast<unsigned long long>(record.tick), record.data.c_str());
+        return -1;
+    }
     out->data = reinterpret_cast<const std::uint8_t *>(record.data.data());
     out->len = record.data.size();
     return 1;

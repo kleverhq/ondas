@@ -238,10 +238,77 @@ mod tests {
             }
             ControlFlow::<()>::Continue(())
         });
-        assert!(result.is_err());
+        assert!(
+            matches!(result, Err(Error::Backend { backend, operation: "read", .. }) if backend == "memory")
+        );
         assert_eq!(times, vec![0]);
-        assert!(failed.trace(computed, TimeRange::all()).is_err());
+        assert!(
+            matches!(failed.trace(computed, TimeRange::all()), Err(Error::Backend { backend, operation: "read", .. }) if backend == "memory")
+        );
         assert!(failed.sample(computed, Time::ZERO).is_ok());
+    }
+
+    #[test]
+    fn a_sliced_composition_preserves_its_required_operand_failure() {
+        let mut wave = Waveform::memory(
+            vec![Encoding::Bits { width: 1 }; 2],
+            vec![
+                (0, 0, bit_value("0")),
+                (1, 0, bit_value("1")),
+                (0, 1, bit_value("1")),
+                (1, 1, bit_value("0")),
+                (0, 2, bit_value("0")),
+                (1, 2, bit_value("1")),
+            ],
+            Some(5),
+        );
+        let parts: Vec<_> = wave.hierarchy().signals().collect();
+        let pair = wave.concat(&parts).unwrap();
+        let nested = wave.concat(&[pair, parts[1]]).unwrap();
+        let selected = nested.slice(2, 2).unwrap(); // Only A's bits; B remains required.
+        let crate::backends::Reader::Memory { failure, .. } = &mut wave.reader else {
+            unreachable!()
+        };
+        *failure = Some(|| std::io::Error::from_raw_os_error(13).into());
+        let assert_cause =
+            |error| assert!(matches!(error, Error::Io(cause) if cause.raw_os_error() == Some(13)));
+        let mut seen = Vec::new();
+        let mut selection = wave.select(&[selected, selected]).unwrap();
+        // Memory can report unselected failures too. Verify that this read
+        // actually requests both operands, including the sliced-away part.
+        assert!(parts.iter().all(|part| selection.bases.contains(part)));
+        let error = selection
+            .scan_each(TimeRange::all(), |index, record| {
+                if let ScanRef::Change { time, .. } = record {
+                    seen.push((index, time.ticks()));
+                }
+                ControlFlow::<()>::Continue(())
+            })
+            .unwrap_err();
+        assert_cause(error);
+        drop(selection);
+        assert_eq!(seen, [(0, 0), (1, 0), (0, 1), (1, 1)]);
+        assert_cause(
+            wave.samples_at(&[selected], &[Time::ZERO, Time::from_ticks(2)])
+                .unwrap_err(),
+        );
+        assert_cause(
+            wave.traces(&[selected], TimeRange::all())
+                .err()
+                .expect("failed trace batch"),
+        );
+        let crate::backends::Reader::Memory { fail_after, .. } = &mut wave.reader else {
+            unreachable!()
+        };
+        *fail_after = None;
+        let Sample::Value {
+            value: Value::Bits(bits),
+            ..
+        } = wave.sample(selected, Time::from_ticks(2)).unwrap()
+        else {
+            panic!("fresh sample")
+        };
+        assert_eq!(bits.as_ref().to_string(), "0");
     }
 
     #[test]

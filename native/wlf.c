@@ -71,8 +71,15 @@ static int fail(char *error, size_t cap, int code, const char *message) {
     if (cap) snprintf(error, cap, "%s", message ? message : "WLF SDK failure");
     return code;
 }
+static int sdk_failure(char *error, size_t cap, int code) {
+    const int status = wlfErrorNum();
+    const char *message = wlfErrorMsg();
+    if (cap) snprintf(error, cap, "SDK status %d: %s", status,
+                      message && *message ? message : "WLF SDK failure");
+    return code;
+}
 static int sdk_error(char *error, size_t cap) {
-    return fail(error, cap, -1, wlfErrorMsg());
+    return sdk_failure(error, cap, -1);
 }
 static char *copy(const char *text) {
     if (!text) return NULL;
@@ -316,7 +323,7 @@ static int walk(ondas_wlf *r, WlfSymbolId symbol, size_t parent, unsigned depth,
 int ondas_wlf_open(const char *path, const char *name, int metadata_only, ondas_wlf **out, char *error, size_t cap) {
     *out = NULL;
     if (!initialized) {
-        if (wlfInit() != WLF_OK) return fail(error, cap, -3, wlfErrorMsg());
+        if (wlfInit() != WLF_OK) return sdk_failure(error, cap, -3);
         initialized = 1;
     }
     ondas_wlf *r = calloc(1, sizeof(*r));
@@ -339,7 +346,7 @@ int ondas_wlf_open(const char *path, const char *name, int metadata_only, ondas_
         WlfFileId guard = wlfFileOpenByMode((char *)path, guard_name, WLF_LITE_OPEN);
         if (!guard) {
             int malformed = wlfErrorNum() == 4 && r->info.magic == 0x1364;
-            int code = fail(error, cap, malformed ? -2 : -1, wlfErrorMsg());
+            int code = sdk_failure(error, cap, malformed ? -2 : -1);
             free(r); return code;
         }
         setCurrentNamespace(guard);
@@ -352,7 +359,7 @@ int ondas_wlf_open(const char *path, const char *name, int metadata_only, ondas_
             /* Unclosed snapshots can report error 4 with this header marker.
                Error 4 alone also describes a locked file; retain Backend there. */
             int malformed = wlfErrorNum() == 4 && r->info.magic == 0x1364;
-            open_code = fail(error, cap, malformed ? -2 : -1, wlfErrorMsg());
+            open_code = sdk_failure(error, cap, malformed ? -2 : -1);
         } else setCurrentNamespace(r->file);
         if (!r->file) { free(r); return open_code; }
         WlfSymbolId root = wlfFileGetTopRegion(r->file);
@@ -460,7 +467,11 @@ static WlfCallbackResponse change(void *data, WlfCallbackReason reason) {
     if (reason == WLF_ENDLOG) return WLF_CONTINUE_SCAN;
     if (reason != WLF_STARTLOG && reason != WLF_EVENT) return callback_failure(r, "unsupported WLF callback reason");
     WlfTime64 tick;
-    if (wlfPackTime(r->pack, &tick) != WLF_OK || tick < r->start || tick > r->end) return callback_failure(r, "invalid WLF callback time");
+    if (wlfPackTime(r->pack, &tick) != WLF_OK) {
+        sdk_error(r->failure, sizeof(r->failure));
+        return WLF_ABORT_SCAN;
+    }
+    if (tick < r->start || tick > r->end) return callback_failure(r, "invalid WLF callback time");
     if (r->have_tick && tick != r->tick) return callback_failure(r, "incomplete WLF tick boundary");
     r->tick = tick; r->have_tick = 1;
     if (s->decl->out.encoding == 4) {
@@ -570,8 +581,7 @@ int ondas_wlf_next(ondas_wlf *r, ondas_wlf_record *out, char *error, size_t cap)
         r->have_tick = 0; r->stopped = 0;
         int code = wlfReadDataOverRange(r->pack, r->start, r->start == r->info.startTime ? r->info.startDelta : 0, r->end, WLF_LAST_DELTA, NULL, NULL, NULL);
         if (code != WLF_OK && !*r->failure) {
-            const char *message = wlfErrorMsg();
-            fail(r->failure, sizeof(r->failure), -1, message && *message ? message : "WLF SDK read failed");
+            sdk_error(r->failure, sizeof(r->failure));
         }
         if (!*r->failure && !complete_tick(r)) snprintf(r->failure, sizeof(r->failure), "cannot buffer completed WLF tick");
         if (r->stopped) {

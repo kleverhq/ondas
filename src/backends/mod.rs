@@ -39,6 +39,7 @@ pub(crate) enum Reader {
     Memory {
         records: Vec<(usize, Time, crate::Value)>,
         fail_after: Option<usize>,
+        failure: Option<fn() -> crate::Error>,
     },
 }
 
@@ -83,17 +84,20 @@ impl Reader {
             Self::Memory {
                 records,
                 fail_after,
+                failure,
             } => {
                 for (position, (index, time, value)) in records.iter().enumerate() {
                     if *time > end {
                         break;
                     }
                     if *fail_after == Some(position) {
-                        return Err(crate::Error::Backend {
-                            backend: "memory".into(),
-                            operation: "read",
-                            message: "injected read failure".into(),
-                        });
+                        return Err(failure.map(|make| make()).unwrap_or_else(|| {
+                            crate::Error::Backend {
+                                backend: "memory".into(),
+                                operation: "read",
+                                message: "injected read failure".into(),
+                            }
+                        }));
                     }
                     if signals.iter().any(|signal| signal.index() == *index)
                         && let ControlFlow::Break(value) =
