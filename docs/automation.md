@@ -167,10 +167,8 @@ waveforms, and is excluded in full from Docker contexts and the crate package.
 Git ignore rules alone do not exclude Docker inputs.
 Default checks need neither credentials nor a license network.
 
-Use ignored `tmp/` for scratch and logs without deleting others' work. Tracked
-temporary work belongs in `docs/wip/yymmdd-slug/`. Move durable conclusions into
-their owning docs and remove task directories before merging into `main`. Retain
-`docs/wip/AGENTS.md`. Do not automate this cleanup rule in hooks or CI.
+Tools use ignored `tmp/` for temporary build outputs and runtime files.
+Do not delete files that belong to others.
 
 Keep public recipes stable and reproducible, and request private suites separately.
 Do not add empty recipes that imply coverage. Benchmark compilation and smoke runs
@@ -261,8 +259,8 @@ Install the pinned fixtures explicitly before running the gate.
 `just bench-smoke-wlf` executes workloads with `--test`; it does not measure
 performance. Use `just bench-wlf` for measurements on an idle machine.
 The vendor features are additive; combined builds need each selected SDK. See
-[WLF](wlf.md) for deployment and ownership limits. Fixture payloads and temporary
-`docs/wip/` work are excluded from the crate package.
+[WLF](wlf.md) for deployment and ownership limits. Fixture payloads are excluded
+from the crate package.
 
 Compatibility covers released public signatures and documented observations,
 including value identity and query semantics. Successful consumer compilation

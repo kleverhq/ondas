@@ -3,6 +3,8 @@
 /worktrees/
 __pycache__/
 
+/.bb/
+/.worktreeinclude
 /.env
 /.devcontainer.local/
 /.devcontainer/ci/
