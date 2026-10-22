@@ -290,7 +290,9 @@ query another waveform. Queries load selected histories. Cold bit-only bounded
 queries can seek their entering state and traverse only the requested window. Other cold
 queries traverse from the beginning. Records skipped by a seek are not decoded
 or validated by the sequential adapter. Vendor loading has its own memory cost.
-SDK diagnostics may appear on stdout/stderr.
+SDK messages to stdout are disabled for the process. Ondas does not suppress
+stderr. To suppress SDK diagnostics, run reads in a separate process and redirect
+its stderr.
 C++ exceptions become backend errors. The adapter does not contain native
 crashes or aborts. SDK permissions and runtime dependencies remain the caller's
 responsibility. Ondas distributes no vendor files.

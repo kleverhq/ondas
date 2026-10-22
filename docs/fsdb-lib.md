@@ -276,8 +276,9 @@ Traversal exhaustion keeps its ordinary EOF meaning. Development suites use the
 confirmed newer-version diagnostic to report compatibility
 skips. Applications still receive an error.
 
-SDK banners and warnings remain visible. Ondas does not suppress process-wide
-stdout/stderr. Native crashes, aborts and malformed-input robustness are not
+SDK messages to stdout are disabled for the process. Ondas does not suppress
+stderr. To suppress SDK diagnostics, run reads in a separate process and redirect
+its stderr. Native crashes, aborts and malformed-input robustness are not
 contained by exception handling. This is not a sandbox for untrusted files.
 
 ## Verification

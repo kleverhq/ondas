@@ -11,10 +11,17 @@
 #include <vector>
 
 extern "C" const void *const ondas_fsdb_dependencies[2];
+// The SDK exports this byte flag without a public header declaration.
+extern "C" unsigned char sysvQuietMode;
 static_assert(sizeof(ondas_fsdb_decl) == 104 && offsetof(ondas_fsdb_decl, verilog_name) == 96,
               "private FSDB declaration ABI mismatch");
 
 namespace {
+void initialize_sdk() {
+    // Called under the Rust SDK lock. Leave stderr and process descriptors alone.
+    static const bool quiet = [] { sysvQuietMode = 1; return true; }();
+    (void)quiet;
+}
 struct Unsupported : std::runtime_error { using std::runtime_error::runtime_error; };
 void require(bool ok, const char *message) {
     if (!ok) throw std::runtime_error(message);
@@ -374,6 +381,7 @@ bool_T tree(fsdbTreeCBType type, void *user, void *raw) noexcept {
 
 extern "C" int ondas_fsdb_probe(const char *path, int *is_fsdb, char *error, size_t cap) {
     try {
+        initialize_sdk();
         std::string filename(path);
         require(!filename.empty(), "empty FSDB path");
         *is_fsdb = ffrObject::ffrIsFSDB(&filename[0]);
@@ -385,6 +393,7 @@ extern "C" int ondas_fsdb_open(const char *path, int metadata_only, ondas_fsdb *
     *out = nullptr;
     try {
         require(ondas_fsdb_dependencies[0] && ondas_fsdb_dependencies[1], "missing SDK dependencies");
+        initialize_sdk();
         std::unique_ptr<ondas_fsdb> reader(new ondas_fsdb);
         reader->path = path;
         require(!reader->path.empty(), "empty FSDB path");

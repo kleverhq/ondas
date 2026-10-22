@@ -8,6 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Disable FSDB SDK messages to stdout. SDK diagnostics can still appear on stderr.
 - Restrict reader string samples to exact ASCII (0 through 127). Non-ASCII
   values now return `Error::NonAsciiString`, including valid non-ASCII UTF-8.
   Names, enum labels and diagnostics keep their separate text rules. This
