@@ -23,6 +23,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Add `Error::UnsupportedFeature` for confirmed GHW and FSDB source or query
+  support limits. These cases previously returned `Error::Backend`.
 - Sample several explicit times with `Selection::samples_at` and
   `Waveform::samples_at`. Results retain both time and signal order, including
   repetitions and quiet ticks, and return a complete owned batch or an error.
@@ -51,6 +53,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Classify unfinished FST gzip wrappers as `Error::Backend` instead of
+  `Error::Malformed`.
+- Preserve confirmed SHM initialization failures as `Error::BackendUnavailable`
+  and native filesystem failures with known OS codes as `Error::Io`. Retain
+  operation, SDK status, history and tick details in native reader diagnostics
+  when available. Unknown SDK failures remain `Error::Backend`.
 - Retain entering state for unbounded traces and scans starting after EOF.
   Such traces support ordinary post-EOF sampling without synthetic changes.
 
