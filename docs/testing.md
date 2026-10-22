@@ -118,6 +118,12 @@ and current/preceding query reads without changing fixture sidecars.
 Composed-query checks use a driver subset and compare all readable entries at
 current/preceding ticks covered by the oracle, in each advertised input mode.
 
+Complete oracle windows supply one-shot point, explicit-time batch and saved
+Trace checks at their start, midpoint and end for every reader. Repeated slots
+and times retain their order. Scan visitors and traces must agree with the same
+independent window observations. This includes imported declaration types without
+listed point samples.
+
 Ordinary tests cover selection order, duplicate inputs, early termination, invalid
 handles/slices, path errors and late callback failures. Sidecars are observations,
 not a test-command language. Reserve reader-specific cases for behavior the common
@@ -170,9 +176,7 @@ thread transfer, panic cleanup, recording gaps, and the shared benchmark consume
 Component size, hash, set, and containment checks run before opening.
 Missing inputs fail.
 
-SHM oracle windows also supply cold one-shot point checks at their start,
-midpoint and end. These checks include imported declaration types without listed
-point samples. Focused native-work tests count sessions, hierarchy visits and
+Focused SHM tests count sessions, hierarchy visits and
 ordinary records collected before callbacks. They check cold wire and integer windows,
 selected routes through a large hierarchy and per-history point fallback.
 These counts do not measure SST2's internal expression work, memory use or time.
@@ -294,3 +298,17 @@ match or during a no-match query, and reject an owned batch after earlier rows
 could have been built. Existing stop and unfinished-tick tests remain applicable.
 The conformance runner derives repeated multi-time and retained Trace samples
 only inside independently observed complete oracle windows.
+
+The shared constant-signal consumer checks a quiet window through batch, scan,
+Trace and query operations. It checks entering state and repeated quiet ticks
+against a literal constant, including both adjacent query reads when candidates
+are present. Extra candidates do not imply changes. The public query contract
+consumer also returns a typed caller failure through a nested `Break` and then
+reuses its selection.
+
+When changing query or reader costs, use [the API test map](api-coverage.md) to
+select contract checks. Preserve signatures, borrowing, final states, event
+counts, errors and stop propagation. Compare observations with independent
+expected values. Equality between two library operations alone cannot prove the
+common result is correct. Keep reader limitations and untested cases separate
+from established guarantees.

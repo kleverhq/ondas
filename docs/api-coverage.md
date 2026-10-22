@@ -48,6 +48,7 @@ The following tests in [`src/query/tests.rs`](../src/query/tests.rs) use
 | Exact real identity in retained histories | `real_histories_retain_exact_representations`; Distinct NaN payloads and signed zeros remain observable in samples, traces and entering state. Identical writes do not advance known change times. |
 | Owned persistence across callbacks, queries, and waveform destruction | `borrowed_mixed_values_remain_owned_after_queries_and_source_drop`; retained sample/scan copies and owned traces/samples preserve real, Unicode/NUL string, and nine-state values against explicit expectations. |
 | `ControlFlow` completion/break and query errors | `breaks_stop_the_reader_and_late_errors_preserve_prior_callbacks`, `incomplete_first_tick_is_not_published_on_error`, `invalid_and_unsupported_signals_fail_before_queries`; scan/candidate early stop, late scan observations, failed owned queries, no sample callbacks on read failure, and foreign/unsupported handles. |
+| Nested stop and caller failures | `nested_break_returns_the_callers_typed_failure_and_allows_reuse` in `tests/query_contract.rs` returns a typed consumer failure through nested callbacks and reuses the selection. The same file checks typed I/O causes from both callback levels. |
 
 String support is checked by `sample_strings_preserve_all_ascii_and_reject_other_octets`,
 `ascii_controls_escapes_and_padding_are_exact` and

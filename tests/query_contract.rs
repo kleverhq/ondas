@@ -130,7 +130,8 @@ fn empty_invalid_break_and_error_boundaries_are_explicit() {
             Err(std::io::Error::other("query consumer").into())
         })
         .unwrap_err();
-    assert!(error.to_string().contains("query consumer"));
+    assert!(matches!(error, Error::Io(source)
+        if source.kind() == std::io::ErrorKind::Other && source.to_string() == "query consumer"));
     let error = selection
         .query(TimeRange::all(), &[0], |ctx| {
             ctx.visit_samples(ctx.time(), &[1], |_, _| -> Result<ControlFlow<()>> {
@@ -138,7 +139,8 @@ fn empty_invalid_break_and_error_boundaries_are_explicit() {
             })
         })
         .unwrap_err();
-    assert!(error.to_string().contains("sample consumer"));
+    assert!(matches!(error, Error::Io(source)
+        if source.kind() == std::io::ErrorKind::Other && source.to_string() == "sample consumer"));
     let mut candidates = Vec::new();
     let _ = selection
         .query(TimeRange::all(), &[0, 0], |ctx| {
@@ -155,4 +157,58 @@ fn empty_invalid_break_and_error_boundaries_are_explicit() {
         })
         .unwrap();
     assert_eq!(payload_candidates, [0]);
+}
+
+#[test]
+fn nested_break_returns_the_callers_typed_failure_and_allows_reuse() {
+    #[derive(Debug, PartialEq)]
+    struct ConsumerFailure {
+        time: Time,
+        payload: f64,
+    }
+
+    let mut wave = fixture();
+    let mut selected = selection(&mut wave);
+    let mut candidates = Vec::new();
+    let mut payload_slots = Vec::new();
+    let outcome = selected
+        .query(TimeRange::from(Time::from_ticks(1)), &[0], |ctx| {
+            candidates.push(ctx.time().ticks());
+            if ctx.time() != Time::from_ticks(2) {
+                return Ok(ControlFlow::Continue(()));
+            }
+            // Return the nested break to stop the outer query as well. The
+            // caller's failure stays typed instead of becoming a reader error.
+            ctx.visit_samples(ctx.time(), &[1, 0, 1], |slot, sample| {
+                payload_slots.push(slot);
+                let SampleRef::Value {
+                    value: ValueRef::Real(payload),
+                    ..
+                } = sample
+                else {
+                    panic!("expected payload")
+                };
+                Ok(ControlFlow::Break(Box::new(ConsumerFailure {
+                    time: ctx.time(),
+                    payload,
+                })))
+            })
+        })
+        .unwrap();
+    assert_eq!(candidates, [1, 2]);
+    assert_eq!(payload_slots, [1]);
+    assert_eq!(
+        outcome,
+        ControlFlow::Break(Box::new(ConsumerFailure {
+            time: Time::from_ticks(2),
+            payload: 9.0,
+        }))
+    );
+    assert!(matches!(
+        selected.samples(Time::from_ticks(3)).unwrap()[0].as_ref(),
+        SampleRef::Value {
+            value: ValueRef::Real(3.0),
+            ..
+        }
+    ));
 }

@@ -46,12 +46,72 @@ fn check(mut wave: Waveform, fixture: &str) {
     assert_eq!(bits.width(), 1);
     assert_eq!(bits.bit(0), Some(Logic::Zero));
     assert_eq!(changed_at, None);
+
+    // Quiet ticks and a quiet window still have state. Read all operations
+    // through the same selection, without choosing a strategy by format.
+    let range = TimeRange::closed(Time::from_ticks(1), end);
+    let mut selected = wave.select(&[signal, signal]).unwrap();
+    let saved = selected.traces(range).unwrap();
+    assert_eq!(saved.len(), 2);
+    for trace in &saved {
+        assert!(trace.initial().is_some());
+        assert!(trace.changes().is_empty());
+    }
+    let times = [end, Time::from_ticks(1), end, Time::from_ticks(17)];
+    let rows = selected.samples_at(&times).unwrap();
+    assert_eq!(rows.len(), times.len());
+    for ((time, samples), expected_time) in rows.iter().zip(times) {
+        assert_eq!(*time, expected_time);
+        assert_eq!(samples.len(), 2);
+        for (sample, trace) in samples.iter().zip(&saved) {
+            for sample in [sample.as_ref(), trace.sample(*time).unwrap()] {
+                assert_constant(sample, signal);
+            }
+        }
+    }
+    let mut records = 0;
+    let outcome = selected
+        .scan_each(range, |slot, record| {
+            assert_eq!(slot, records);
+            assert!(matches!(record, ScanRef::Initial { .. }));
+            records += 1;
+            ControlFlow::<()>::Continue(())
+        })
+        .unwrap();
+    assert_eq!(outcome, ControlFlow::Continue(()));
+    assert_eq!(records, 2);
+    let _ = selected
+        .query(range, &[0], |ctx| {
+            for time in [ctx.time(), Time::from_ticks(ctx.time().ticks() - 1)] {
+                let _ = ctx.visit_samples(time, &[1, 0, 1], |_, sample| {
+                    assert_constant(sample, signal);
+                    Ok(ControlFlow::<()>::Continue(()))
+                })?;
+            }
+            Ok(ControlFlow::<()>::Continue(()))
+        })
+        .unwrap();
     println!(
         "{fixture}: scopes={} variables={} signals={}",
         wave.hierarchy().scopes().count(),
         wave.hierarchy().variables().count(),
         wave.hierarchy().signals().count(),
     );
+}
+
+fn assert_constant(sample: SampleRef<'_>, signal: ondas::Signal) {
+    let SampleRef::Value {
+        signal: actual,
+        value: ValueRef::Bits(bits),
+        changed_at,
+    } = sample
+    else {
+        panic!("constant observation must have bits");
+    };
+    assert_eq!(actual, signal);
+    assert_eq!(bits.width(), 1);
+    assert_eq!(bits.bit(0), Some(Logic::Zero));
+    assert_eq!(changed_at, None);
 }
 
 #[test]

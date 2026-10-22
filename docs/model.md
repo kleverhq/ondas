@@ -203,6 +203,12 @@ contract. Consumers must still confirm their conditions. Optional metadata and
 change-time precision may improve only when evidence supports the change. Additional query
 state remains distinct from input, decoder/index, SDK and caller-output residency.
 
+These rules are part of the contract even when Rust signatures do not change.
+Selected data may fail validation or decoding before a caller condition matches.
+The contract does not require equal physical decode timing across readers.
+A `Break` stops further callback delivery. It does not undo reader work or retract
+completed callbacks. Owned results are complete or errors.
+
 Conditions, numerical interpretation and output policy remain caller code. There
 is no public backend plugin interface, raw/final mode, expression runtime or
 implicit promise of arbitrary-time sampling inside a callback context.
