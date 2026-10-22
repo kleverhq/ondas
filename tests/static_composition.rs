@@ -152,8 +152,7 @@ fn common_operations_preserve_nested_d3_and_completed_ticks() {
             TimeRange::from(Time::from_ticks(20)),
         ] {
             let traces = wave.traces(&selected, range).unwrap();
-            let empty = range.is_empty()
-                || range.start().ticks() > range.end().map_or(LAST_TICK, Time::ticks);
+            let empty = range.is_empty();
             let mut expected_rows = Vec::new();
             let mut expected_initials = Vec::new();
             for (slot, trace) in traces.iter().enumerate() {

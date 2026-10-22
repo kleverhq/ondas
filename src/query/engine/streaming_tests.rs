@@ -430,3 +430,98 @@ fn selective_consumer_errors_preserve_prior_delivery_and_unused_channels_stay_un
     drop(wave);
     assert_eq!(counts(&probe).reader_drops, 1);
 }
+
+#[test]
+fn explicit_times_use_one_read_with_bounded_working_values() {
+    let mut footprints = Vec::new();
+    for ticks in [4, 64, 4096] {
+        let (mut wave, signals, probe) = fixture(ticks, None);
+        let selected = [signals[0], signals[1], signals[2], signals[2]];
+        let times = [ticks - 1, 0, ticks - 1, ticks / 2].map(Time::from_ticks);
+        let rows = wave.samples_at(&selected, &times).unwrap();
+        assert_eq!(rows.len(), times.len());
+        for ((time, row), expected_time) in rows.iter().zip(times) {
+            assert_eq!(*time, expected_time);
+            assert!(
+                matches!(row[0], Sample::Value { value: Value::Real(value), .. } if value == time.ticks() as f64)
+            );
+            assert!(matches!(row[1], Sample::Event { occurrences: 2, .. }));
+            for sample in &row[2..] {
+                assert!(
+                    matches!(sample, Sample::Value { value: Value::String(value), .. } if value.as_ref() == PAYLOAD)
+                );
+            }
+        }
+        let observed = counts(&probe);
+        assert_eq!(
+            (observed.starts, observed.releases, observed.active),
+            (1, 1, 0)
+        );
+        assert_eq!(observed.advances, 4 * ticks);
+        assert_eq!(observed.max_slots, 3);
+        assert_eq!(observed.max_pending_records, 5);
+        assert_eq!(observed.max_pending_bytes, 2 * (8 + PAYLOAD.len()));
+        footprints.push((observed.max_pending_records, observed.max_pending_bytes));
+        // Empty dimensions do not start another reader session.
+        assert!(wave.samples_at(&selected, &[]).unwrap().is_empty());
+        assert!(
+            wave.samples_at(&[], &times)
+                .unwrap()
+                .iter()
+                .all(|r| r.1.is_empty())
+        );
+        assert_eq!(counts(&probe).starts, 1);
+    }
+    assert!(footprints.windows(2).all(|pair| pair[0] == pair[1]));
+}
+
+#[test]
+fn selected_payload_failure_precedes_late_or_absent_matches_and_aborts_batch() {
+    for accept_at in [Some(8), None] {
+        // Position 3 is the selected string payload, after the tick's driver.
+        let (mut wave, signals, probe) = fixture(10, Some((3, 3)));
+        let selected = [signals[0], signals[2]];
+        let mut candidates = Vec::new();
+        let mut matches = 0;
+        let error = wave
+            .select(&selected)
+            .unwrap()
+            .query(TimeRange::all(), &[0], |ctx| {
+                candidates.push(ctx.time().ticks());
+                if accept_at == Some(ctx.time().ticks()) {
+                    matches += 1;
+                    return ctx.visit_samples(ctx.time(), &[1], |_, _| {
+                        Ok(ControlFlow::<()>::Continue(()))
+                    });
+                }
+                Ok(ControlFlow::Continue(()))
+            })
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::Backend { ref backend, operation: "read", .. } if backend == "generated")
+        );
+        assert_eq!(candidates, [0, 1, 2]);
+        assert_eq!(matches, 0);
+        // Earlier batch rows can be built, but none are returned on failure.
+        let batch = wave.samples_at(&selected, &[Time::ZERO, Time::from_ticks(8)]);
+        assert!(matches!(
+            batch,
+            Err(Error::Backend {
+                operation: "read",
+                ..
+            })
+        ));
+        assert_eq!(counts(&probe).active, 0);
+        let Reader::Generated(reader) = &mut wave.reader else {
+            unreachable!()
+        };
+        reader.fail_at = None;
+        assert_eq!(
+            wave.samples_at(&selected, &[Time::from_ticks(8)])
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(counts(&probe).starts, 3);
+    }
+}

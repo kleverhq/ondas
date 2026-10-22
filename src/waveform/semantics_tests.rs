@@ -193,9 +193,9 @@ fn assert_sample(actual: SampleRef<'_>, signal: Signal, history: &History, event
     }
 }
 
-// This fixture ends at 14. An absent end means EOF, not positive infinity.
+// An absent end traverses to EOF and retains state even when start is later.
 fn empty_trace_range(range: TimeRange) -> bool {
-    range.start().ticks() > range.end().map_or(14, Time::ticks)
+    range.is_empty()
 }
 
 fn expected_rows(histories: &[History], range: TimeRange) -> Vec<Row> {

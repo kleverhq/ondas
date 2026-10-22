@@ -285,6 +285,17 @@ pub enum Error {
         current: Time,
     },
 
+    /// A saved trace does not cover the requested tick.
+    ///
+    /// This is distinct from a covered tick with no known persistent value.
+    #[error("trace range {range:?} does not cover {requested:?}")]
+    TraceCoverage {
+        /// The requested sample time.
+        requested: Time,
+        /// The trace's inclusive range, possibly empty or unbounded.
+        range: crate::TimeRange,
+    },
+
     /// The signal belongs to a different hierarchy or waveform.
     #[error("signal does not belong to this waveform")]
     InvalidSignal {

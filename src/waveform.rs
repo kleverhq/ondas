@@ -507,6 +507,19 @@ impl Waveform {
         self.select(signals)?.samples(time)
     }
 
+    /// Samples selected signals at several explicitly requested ticks.
+    ///
+    /// Equivalent to [`Selection::samples_at`] on a temporary selection. Both
+    /// time and signal order retain duplicates. Handles and encodings are
+    /// validated even when `times` is empty. Returns no partial batch on error.
+    pub fn samples_at(
+        &mut self,
+        signals: &[Signal],
+        times: &[Time],
+    ) -> Result<Vec<(Time, Vec<Sample>)>> {
+        self.select(signals)?.samples_at(times)
+    }
+
     /// Traces one signal over inclusive bounds.
     ///
     /// See [`Selection::scan`] for entering states, projections, same-tick order,
