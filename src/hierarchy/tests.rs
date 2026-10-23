@@ -40,6 +40,8 @@ fn child_links_preserve_identity_order_and_share_lazy_storage() {
         cloned.roots().map(identify).collect::<Vec<_>>(),
         [("scope", 1), ("scope", 2), ("variable", 0), ("variable", 4)]
     );
+    assert!(hierarchy.data.children.get().is_none());
+    assert_eq!(cloned.scopes().next().unwrap().children().count(), 1);
     assert!(std::ptr::eq(
         hierarchy.data.children.get().unwrap(),
         cloned.data.children.get().unwrap()
@@ -59,6 +61,7 @@ fn child_links_preserve_identity_order_and_share_lazy_storage() {
     assert_eq!(cloned.roots().count(), 4);
     let empty = Hierarchy::new(vec![], vec![], vec![]);
     assert_eq!(empty.roots().count(), 0);
+    assert!(empty.data.children.get().is_none());
 }
 
 #[test]

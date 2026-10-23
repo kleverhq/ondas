@@ -285,19 +285,21 @@ struct ChildLinks {
 
 impl ChildLinks {
     fn new(scopes: &[ScopeData], variables: &[VariableData]) -> Self {
-        let mut first = vec![usize::MAX; scopes.len() + 1];
+        let mut first = vec![usize::MAX; scopes.len()];
         let mut next = vec![usize::MAX; scopes.len() + variables.len()];
-        // The last parent slot is the root. Scope IDs precede variable IDs.
+        // Scope IDs precede variable IDs.
         // Prepending in reverse order keeps scopes before variables and retains
         // declaration order within each kind, without per-parent allocations.
         for (index, variable) in variables.iter().enumerate().rev() {
-            let child = scopes.len() + index;
-            next[child] =
-                std::mem::replace(&mut first[variable.parent.unwrap_or(scopes.len())], child);
+            if let Some(parent) = variable.parent {
+                let child = scopes.len() + index;
+                next[child] = std::mem::replace(&mut first[parent], child);
+            }
         }
         for (index, scope) in scopes.iter().enumerate().rev() {
-            next[index] =
-                std::mem::replace(&mut first[scope.parent.unwrap_or(scopes.len())], index);
+            if let Some(parent) = scope.parent {
+                next[index] = std::mem::replace(&mut first[parent], index);
+            }
         }
         Self { first, next }
     }
@@ -457,13 +459,13 @@ impl Hierarchy {
         }
     }
 
-    fn children_of(&self, parent: Option<usize>) -> impl Iterator<Item = Item<'_>> + '_ {
+    fn children_of(&self, parent: usize) -> impl Iterator<Item = Item<'_>> + '_ {
         let links = self
             .data
             .children
             .get_or_init(|| ChildLinks::new(&self.data.scopes, &self.data.variables));
         let scopes = self.data.scopes.len();
-        let mut next = links.first[parent.unwrap_or(scopes)];
+        let mut next = links.first[parent];
         std::iter::from_fn(move || {
             let index = next;
             if index == usize::MAX {
@@ -497,7 +499,14 @@ impl Hierarchy {
 
     /// Iterates over root scopes and variables.
     pub fn roots(&self) -> impl Iterator<Item = Item<'_>> + '_ {
-        self.children_of(None)
+        self.scopes()
+            .filter(|scope| scope.data().parent.is_none())
+            .map(Item::Scope)
+            .chain(
+                self.variables()
+                    .filter(|variable| variable.data().parent.is_none())
+                    .map(Item::Variable),
+            )
     }
 
     /// Iterates over all scopes in the hierarchy.
@@ -688,7 +697,7 @@ impl<'h> Scope<'h> {
 
     /// Iterates over the scope's direct child scopes and variables.
     pub fn children(&self) -> impl Iterator<Item = Item<'h>> + '_ {
-        self.hierarchy.children_of(Some(self.index))
+        self.hierarchy.children_of(self.index)
     }
 
     /// Returns the canonical lower-case scope kind.
