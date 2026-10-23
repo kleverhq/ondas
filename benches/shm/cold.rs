@@ -46,8 +46,7 @@ fn window(
     group.finish();
 }
 
-fn histories(c: &mut Criterion) {
-    let (fixture, end) = workloads::HISTORY[1];
+fn history(c: &mut Criterion, fixture: &str, end: u64) {
     let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
     let mut wave = ondas::open_with(path, BACKEND).unwrap();
     let signals = [
@@ -91,6 +90,12 @@ fn histories(c: &mut Criterion) {
         for start in [1, end - 63] {
             window(c, fixture, &mut wave, selected, label, start, start + 63);
         }
+    }
+}
+
+fn histories(c: &mut Criterion) {
+    for (fixture, end) in workloads::HISTORY {
+        history(c, fixture, end);
     }
 }
 

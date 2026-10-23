@@ -5,6 +5,8 @@ use ondas::{ScanRef, Selection, Time, TimeRange};
 
 #[path = "fst/composed.rs"]
 mod composed;
+#[path = "support/explicit_times.rs"]
+mod explicit_times;
 #[path = "../tests/support/fixtures.rs"]
 mod fixtures;
 #[path = "fst/hotpaths.rs"]
@@ -398,8 +400,15 @@ fn matched_constant_history(c: &mut Criterion) {
     );
 }
 
+fn explicit_batch(c: &mut Criterion) {
+    let fixture = "fst/fst0084-topology-small";
+    let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
+    explicit_times::register(c, fixture, &path, BACKEND, "top.probe_sparse", 4096);
+}
+
 criterion_group!(
     benches,
+    explicit_batch,
     scr1,
     chipyard,
     picorv32,
