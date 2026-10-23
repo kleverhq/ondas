@@ -1,6 +1,8 @@
 # FSDB loading, state reuse and SDK boundaries
 
-`native/fsdb.cpp` calls the Reader API. `src/backends/fsdb.rs` copies its observations into the common engine. `docs/images/fsdb-lib-flow.drawio.svg` shows the paths. Events and mixed values use the chronological cold path. Bit-only reads can establish state by seeking.
+`native/fsdb.cpp` calls the Reader API. `src/backends/fsdb.rs` copies its observations into the common engine. Events and mixed values use the chronological cold path. Bit-only reads can establish state by seeking.
+
+![FSDB SDK loading and read paths.](images/fsdb-lib-flow.drawio.svg)
 
 ## Linking is a downstream deployment constraint
 

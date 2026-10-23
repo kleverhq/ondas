@@ -1,6 +1,8 @@
 # VCD validation and replay
 
-`src/backends/vcd.rs` defines parsing and replay. `docs/images/vcd-native-flow.drawio.svg` shows the serial path without cached state. Parallel paths use the same engine for completed ticks.
+`src/backends/vcd.rs` defines parsing and replay. The diagram shows the serial path without cached state. Parallel paths use the same engine for completed ticks.
+
+![VCD serial read path without cached state.](images/vcd-native-flow.drawio.svg)
 
 ## Opening settles more than syntax
 

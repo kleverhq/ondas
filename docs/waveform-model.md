@@ -1,6 +1,8 @@
 # Waveform observations and identity
 
-Rustdoc in `src/` defines public contracts. This document explains the reasons for them. `docs/images/architecture.drawio.svg` shows the common read path.
+Rustdoc in `src/` defines public contracts. This document explains the reasons for them.
+
+![Ondas architecture and common read path.](images/architecture.drawio.svg)
 
 ## Declarations are not histories
 

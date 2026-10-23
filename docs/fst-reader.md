@@ -1,6 +1,8 @@
 # FST sections, prefix reads and decoder limits
 
-`src/backends/fst.rs` uses the published decoder pinned in `Cargo.toml`. There is no local decoder patch. `docs/images/fst-lib-flow.drawio.svg` shows the stateful and candidate-only paths.
+`src/backends/fst.rs` uses the published decoder pinned in `Cargo.toml`. There is no local decoder patch.
+
+![FST stateful and candidate-only read paths.](images/fst-lib-flow.drawio.svg)
 
 ## Section access is not point lookup
 
