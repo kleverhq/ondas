@@ -397,6 +397,9 @@ fn matched_constant_history(c: &mut Criterion) {
 fn explicit_batch(c: &mut Criterion) {
     let fixture = "fsdb/fsdb0010-history-short";
     let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
+    if fsdb_compatibility::open(ondas::open_with(&path, BACKEND), &path).is_none() {
+        return;
+    }
     explicit_times::register(c, fixture, &path, BACKEND, "top.clock", 4096);
 }
 
