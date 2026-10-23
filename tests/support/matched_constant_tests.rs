@@ -4,7 +4,7 @@ use ondas::{Encoding, Logic, SampleRef, ScanRef, Time, TimeRange, ValueRef, Wave
 
 use super::{fixture_support, root};
 
-fn check(mut wave: Waveform, fixture: &str) {
+fn check(mut wave: Waveform, fixture: &str, driver_name: &str, driver_tick: u64) {
     let signal = wave.hierarchy().signal("top.probe_constant").unwrap();
     assert_eq!(signal.encoding(), Encoding::Bits { width: 1 });
     let end = Time::from_ticks(1_048_576);
@@ -47,7 +47,7 @@ fn check(mut wave: Waveform, fixture: &str) {
     assert_eq!(bits.bit(0), Some(Logic::Zero));
     assert_eq!(changed_at, None);
 
-    // Quiet ticks and a quiet window still have state. Read all operations
+    // Quiet ticks and a quiet window still have state. Read the quiet operations
     // through the same selection, without choosing a strategy by format.
     let range = TimeRange::closed(Time::from_ticks(1), end);
     let mut selected = wave.select(&[signal, signal]).unwrap();
@@ -80,17 +80,29 @@ fn check(mut wave: Waveform, fixture: &str) {
         .unwrap();
     assert_eq!(outcome, ControlFlow::Continue(()));
     assert_eq!(records, 2);
-    let _ = selected
-        .query(range, &[0], |ctx| {
+    // Initial states do not schedule query callbacks, so use a changing driver.
+    let driver = wave.hierarchy().signal(driver_name).unwrap();
+    let mut selected = wave.select(&[signal, signal, driver]).unwrap();
+    let tick = Time::from_ticks(driver_tick);
+    let mut callbacks = 0;
+    let mut samples = 0;
+    let outcome = selected
+        .query(TimeRange::closed(tick, tick), &[2], |ctx| {
+            assert_eq!(ctx.time(), tick);
+            callbacks += 1;
             for time in [ctx.time(), Time::from_ticks(ctx.time().ticks() - 1)] {
                 let _ = ctx.visit_samples(time, &[1, 0, 1], |_, sample| {
                     assert_constant(sample, signal);
+                    samples += 1;
                     Ok(ControlFlow::<()>::Continue(()))
                 })?;
             }
             Ok(ControlFlow::<()>::Continue(()))
         })
         .unwrap();
+    assert_eq!(outcome, ControlFlow::Continue(()));
+    assert_eq!(callbacks, 1);
+    assert_eq!(samples, 6);
     println!(
         "{fixture}: scopes={} variables={} signals={}",
         wave.hierarchy().scopes().count(),
@@ -119,7 +131,12 @@ fn assert_constant(sample: SampleRef<'_>, signal: ondas::Signal) {
 fn fst_matched_constant_observations() {
     let fixture = "fst/fst0084-topology-small";
     let (path, _) = fixture_support::load_artifact(&root(), fixture);
-    check(ondas::open_with(path, "fst-lib").unwrap(), fixture);
+    check(
+        ondas::open_with(path, "fst-lib").unwrap(),
+        fixture,
+        "top.probe_sparse",
+        4096,
+    );
 }
 
 #[cfg(feature = "shm-lib")]
@@ -128,7 +145,12 @@ fn fst_matched_constant_observations() {
 fn shm_matched_constant_observations() {
     let fixture = "shm/shm0081-history-long";
     let (path, _) = fixture_support::load_artifact(&root(), fixture);
-    check(ondas::open_with(path, "shm-lib").unwrap(), fixture);
+    check(
+        ondas::open_with(path, "shm-lib").unwrap(),
+        fixture,
+        "top.phase_0",
+        1,
+    );
 }
 
 #[cfg(feature = "fsdb-lib")]
@@ -141,5 +163,5 @@ fn fsdb_matched_constant_observations() {
     else {
         return;
     };
-    check(wave, fixture);
+    check(wave, fixture, "top.probe_sparse", 4096);
 }
