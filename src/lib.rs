@@ -41,9 +41,14 @@ adapter reads the latest matching recording across its TRN components.
 It preserves bits, real values, ASCII strings and event observations.
 Confirmed aliases share a handle. If the reader does not provide
 alias identity, each declaration has a separate handle. Qualified bit-only points
-can seek values after certifying their availability. Other histories collect
-their prefixes before calling users. Memory grows with those prefixes. Validated
-entering states can bound later window collection.
+can seek values after certifying their availability. Other histories traverse
+their prefixes to establish state, then deliver completed ticks in bounded batches.
+Ondas retains one pending tick per selected history and at most 1024 batch records
+(64 in the first batch). Each batch stops at 64 KiB of retained payload capacity; one value can cross that
+threshold. Same-tick state writes are folded and events are counted. `Break`
+releases these buffers after that bounded read-ahead. Value sizes and SDK
+histories have separate memory costs. Validated entering states can bound later
+window traversal.
 Recording gaps and invalid strings return
 errors. Keep the directory and its components unchanged and available.
 

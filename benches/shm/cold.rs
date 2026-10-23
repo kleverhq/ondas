@@ -99,7 +99,7 @@ fn history(c: &mut Criterion, fixture: &str, end: u64) {
             b.iter(|| {
                 let mut selection = wave.select(black_box(&signals[..4])).unwrap();
                 if stop {
-                    black_box(first_change(&mut selection, black_box(full)).unwrap());
+                    let _ = black_box(first_change(&mut selection, black_box(full)).unwrap());
                 } else {
                     black_box(scan_count(&mut selection, black_box(full)).unwrap());
                 }

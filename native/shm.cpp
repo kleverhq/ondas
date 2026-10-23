@@ -58,9 +58,11 @@ struct Enumeration {
     }
     ~Enumeration() { if (handle) da_delete(handle); }
 };
+void suspend_active();
 struct Session {
     SstHandle handle = 0;
     explicit Session(const std::string &path) {
+        suspend_active();
         static const bool initialized = sst2Init() == 1;
         if (!initialized) throw Unavailable("sst2Init failed");
         try {
@@ -127,6 +129,8 @@ struct Session {
             throw;
         }
     }
+    Session(const Session &) = delete;
+    Session &operator=(const Session &) = delete;
     ~Session() { if (handle) drClose(handle); }
 };
 constexpr size_t root_node = std::numeric_limits<size_t>::max();
@@ -404,6 +408,8 @@ struct Cursor {
             throw;
         }
     }
+    Cursor(const Cursor &) = delete;
+    Cursor &operator=(const Cursor &) = delete;
     ~Cursor() {
         if (handle) da_delete(handle);
         SstHandle result = da_handle(0x13f, variable);
@@ -507,84 +513,226 @@ struct Record {
     // Own either the payload bytes or the failure text. Short payloads need no
     // separate allocation, and successful records carry no empty error string.
     std::string data;
+    std::uint64_t occurrences = 0;
 };
 bool before(const Record &a, const Record &b) {
     if (a.tick != b.tick) return a.tick < b.tick;
     if (a.id != b.id) return a.id < b.id;
     return a.sequence < b.sequence;
 }
-void merge_histories(std::vector<Record> &records, const std::vector<size_t> &bounds,
-                     size_t first, size_t last) {
-    if (last - first <= 1) return;
-    const auto middle = first + (last - first) / 2;
-    merge_histories(records, bounds, first, middle);
-    merge_histories(records, bounds, middle, last);
-    std::inplace_merge(records.begin() + bounds[first], records.begin() + bounds[middle],
-                       records.begin() + bounds[last], before);
-}
-void history(const Declaration &declaration, std::uint64_t from, std::uint64_t end,
-             std::vector<Record> &out, bool resume, ondas_shm_work &work) {
-    ++work.histories;
+Record decode(const Declaration &declaration, Cursor &cursor, SstTime current, int state) {
     const auto &d = declaration.descriptor;
-    Cursor cursor(declaration.variable);
-    if (resume) {
-        // Start before the boundary so every write at that tick is retained.
-        const SstTime before{from - 1, UINT64_MAX};
-        const SstHandle sought = da_handle_pl(0x17f, cursor.handle, 0x126, before, 0x10);
-        check_handle(sought, "cannot seek validated SHM prefix");
-        if (!sought) return;
-        require(sought == 1, "cannot seek validated SHM prefix");
-    }
-    bool available = resume;
-    while (true) {
-        SstTime current{}, next{};
-        require(da_get_xvalseq(0x136, cursor.handle, &current) >= 0 &&
-                da_get_xvalseq(0x146, cursor.handle, &next) >= 0, "cannot read SHM record time");
-        if (current.tick > end) break;
-        ++work.history_records;
-        int state = da_get(0x1a3, cursor.handle);
-        if (!(d.encoding == 4 && state == 1) && !(state < 0 && !available)) {
-            available = true;
-            Record record{d.id, current.tick, current.sequence, d.encoding, false, {}};
-            try {
-                require(state >= 0, "SHM history has an unavailable recording interval");
-                if (d.encoding == 1) {
-                    record.data = text(0x15a, cursor.handle);
-                    require(record.data.size() == d.width, "SHM bit value width disagrees with declaration");
-                    for (char &stored : record.data) {
-                        if (stored == '0' || stored == '1') continue;
-                        unsigned char bit = static_cast<unsigned char>(stored);
-                        if (bit >= 'A' && bit <= 'Z') bit += 'a' - 'A';
-                        require(std::strchr("01xzuwlh-", bit) && bit, "invalid SHM logic state");
-                        stored = static_cast<char>(bit);
-                    }
-                } else if (d.encoding == 2) {
-                    double real = 0;
-                    require(da_get_real(0x107, cursor.handle, &real) >= 0, "cannot read SHM real value");
-                    record.data.resize(sizeof(real));
-                    std::memcpy(record.data.data(), &real, sizeof(real));
-                } else if (d.encoding == 3) {
-                    const char *encoded = da_get_sstr_pl(0x15a, cursor.handle, 0x1b3, 5, 0x204, 0x200, 0x10);
-                    record.data = ondas_shm_value::decode_quoted(encoded);
-                } else if (d.encoding == 4) require(state == 2, "unsupported SHM event state");
-                else throw std::runtime_error("unsupported SHM value encoding");
-            } catch (const std::exception &error) {
-                record.failed = true;
-                record.data = error.what();
-            }
-            bool failed = record.failed;
-            // The ordinary path validates the prefix; resume starts at a
-            // validated boundary. Both retain requested records and failures.
-            if (failed || record.tick >= from) out.push_back(std::move(record));
-            if (failed) break;
+    Record record{d.id, current.tick, current.sequence, d.encoding, false, {}};
+    require(state >= 0, "SHM history has an unavailable recording interval");
+    if (d.encoding == 1) {
+        record.data = text(0x15a, cursor.handle);
+        require(record.data.size() == d.width, "SHM bit value width disagrees with declaration");
+        for (char &stored : record.data) {
+            if (stored == '0' || stored == '1') continue;
+            unsigned char bit = static_cast<unsigned char>(stored);
+            if (bit >= 'A' && bit <= 'Z') bit += 'a' - 'A';
+            require(std::strchr("01xzuwlh-", bit) && bit, "invalid SHM logic state");
+            stored = static_cast<char>(bit);
         }
-        if (next.sequence == UINT64_MAX || next.tick > end) break;
-        SstHandle advanced = da_handle(0x17f, cursor.handle);
-        check_handle(advanced, "cannot advance SHM value iterator");
-        if (!advanced) break;
-        require(advanced == 1, "cannot advance SHM value iterator");
+    } else if (d.encoding == 2) {
+        double real = 0;
+        require(da_get_real(0x107, cursor.handle, &real) >= 0, "cannot read SHM real value");
+        record.data.resize(sizeof(real));
+        std::memcpy(record.data.data(), &real, sizeof(real));
+    } else if (d.encoding == 3) {
+        const char *encoded = da_get_sstr_pl(0x15a, cursor.handle, 0x1b3, 5, 0x204, 0x200, 0x10);
+        record.data = ondas_shm_value::decode_quoted(encoded);
+    } else if (d.encoding == 4) {
+        require(state == 2, "unsupported SHM event state");
+        record.occurrences = 1;
+    } else throw std::runtime_error("unsupported SHM value encoding");
+    return record;
+}
+bool earlier(SstTime a, SstTime b) {
+    return a.tick < b.tick || (a.tick == b.tick && a.sequence < b.sequence);
+}
+SstTime current_time(Cursor &cursor) {
+    SstTime current{};
+    require(da_get_xvalseq(0x136, cursor.handle, &current) >= 0, "cannot read SHM record time");
+    return current;
+}
+bool advance(Cursor &cursor, SstTime current, std::uint64_t end) {
+    SstTime next{};
+    require(da_get_xvalseq(0x146, cursor.handle, &next) >= 0, "cannot read SHM next time");
+    if (next.sequence == UINT64_MAX || next.tick > end) return false;
+    const auto advanced = da_handle(0x17f, cursor.handle);
+    check_handle(advanced, "cannot advance SHM value iterator");
+    require(advanced == 0 || advanced == 1, "invalid SHM advance result");
+    if (!advanced) return false;
+    require(earlier(current, current_time(cursor)), "SHM history is not in source order");
+    return true;
+}
+struct History {
+    Record head{};
+    bool ready = false, done = false, available = false, checkpoint = false;
+    std::uint64_t through = 0;
+
+    template<class Account>
+    void fill(const Declaration &declaration, Cursor &cursor, std::uint64_t end,
+              ondas_shm_work &work, Account account) {
+        while (!ready && !done) {
+            auto current = current_time(cursor);
+            if (current.tick > end) { done = true; break; }
+            const auto tick = current.tick;
+            do {
+                ++work.history_records;
+                const int state = da_get(0x1a3, cursor.handle);
+                try {
+                    if (!(declaration.descriptor.encoding == 4 && state == 1) && !(state < 0 && !available)) {
+                        available = true;
+                        auto value = decode(declaration, cursor, current, state);
+                        account(&value);
+                        // Rust preserves the typed ASCII-domain error. Do not
+                        // overwrite an invalid intermediate string at this tick.
+                        const bool invalid_string = value.encoding == 3 &&
+                            std::any_of(value.data.begin(), value.data.end(), [](unsigned char c) { return c > 127; });
+                        if (ready && value.encoding == 4) {
+                            require(head.occurrences != UINT64_MAX, "SHM event count overflow");
+                            value.occurrences += head.occurrences;
+                        }
+                        head = std::move(value);
+                        ready = true;
+                        if (invalid_string) { done = true; break; }
+                    }
+                    if (!advance(cursor, current, end)) { done = true; break; }
+                    current = current_time(cursor);
+                } catch (const std::exception &failure) {
+                    head = {declaration.descriptor.id, tick, current.sequence,
+                            declaration.descriptor.encoding, true, failure.what()};
+                    ready = true; done = true;
+                    account(nullptr);
+                    break;
+                }
+            } while (current.tick == tick);
+            through = tick;
+            checkpoint = true;
+        }
+    }
+};
+
+struct Stream {
+    const std::string &path;
+    const std::vector<Declaration> &imported;
+    const std::vector<SourceNode> &nodes;
+    ondas_shm_work &work;
+    std::vector<std::uint64_t> ids;
+    std::uint64_t from, end;
+    bool resume;
+    std::vector<History> histories;
+    std::unique_ptr<Session> session;
+    std::vector<Declaration> declarations;
+    std::vector<std::unique_ptr<Cursor>> cursors;
+    std::vector<size_t> heap;
+    size_t refill = root_node;
+    bool started = false, activated = false, first_batch = true;
+    Record output{};
+    std::uint64_t queued_payload = 0;
+
+    Stream(const std::string &path, const std::vector<Declaration> &imported,
+           const std::vector<SourceNode> &nodes, ondas_shm_work &work,
+           const std::uint64_t *ids, size_t count, std::uint64_t from,
+           std::uint64_t end, bool resume)
+        : path(path), imported(imported), nodes(nodes), work(work),
+          ids(ids, ids + count), from(from), end(end), resume(resume), histories(count) {
+        heap.reserve(count);
+        for (auto &history : histories) history.available = resume;
+    }
+    void suspend() {
+        cursors.clear();
+        declarations.clear();
+        session.reset();
+    }
+    void activate();
+    ~Stream();
+    bool later(size_t a, size_t b) const { return before(histories[b].head, histories[a].head); }
+    void fill(size_t index) {
+        auto &h = histories[index];
+        if (!h.done) h.fill(declarations[index], *cursors[index], end, work,
+                            [this](const Record *record) { account(record); });
+        if (h.ready) {
+            heap.push_back(index);
+            std::push_heap(heap.begin(), heap.end(), [this](size_t a, size_t b) { return later(a, b); });
+        }
+    }
+    void account(const Record *transient = nullptr) {
+        std::uint64_t payload = queued_payload + output.data.capacity();
+        for (const auto &h : histories) payload += h.head.data.capacity();
+        if (transient) payload += transient->data.capacity();
+        work.pending_records = std::max<std::uint64_t>(work.pending_records, histories.capacity() + 2);
+        work.pending_payload = std::max(work.pending_payload, payload);
+    }
+    const Record *next() {
+        if (!started || (refill != root_node && !histories[refill].done)) activate();
+        if (!started) {
+            for (size_t i = 0; i < histories.size(); ++i) fill(i);
+            started = true;
+        }
+        if (refill != root_node) { fill(refill); refill = root_node; }
+        if (heap.empty()) return nullptr;
+        std::pop_heap(heap.begin(), heap.end(), [this](size_t a, size_t b) { return later(a, b); });
+        const auto index = heap.back(); heap.pop_back();
+        output = std::move(histories[index].head);
+        histories[index].head = {};
+        histories[index].ready = false;
+        refill = index;
+        account();
+        return &output;
+    }
+};
+Stream *active_stream = nullptr;
+void suspend_active() {
+    if (auto *stream = active_stream) {
+        active_stream = nullptr;
+        stream->suspend();
     }
 }
+Stream::~Stream() {
+    if (active_stream == this) active_stream = nullptr;
+    suspend();
+}
+void Stream::activate() {
+    if (active_stream == this) return;
+    // Session suspends the previous stream before touching SST2's shared state.
+    try {
+        if (!session) {
+            session = std::make_unique<Session>(path);
+            if (activated) ++work.reopens;
+            else ++work.sessions;
+            declarations = selected_declarations(session->handle, ids.data(), ids.size(), imported, nodes, work);
+        }
+        cursors.resize(ids.size());
+        for (size_t i = 0; i < ids.size(); ++i) {
+            auto &history = histories[i];
+            if (history.done) continue;
+            if (activated) ++work.reloaded_histories;
+            else ++work.histories;
+            cursors[i] = std::make_unique<Cursor>(declarations[i].variable);
+            auto &cursor = *cursors[i];
+            if (history.checkpoint || resume) {
+                const auto boundary = history.checkpoint ? history.through : from - 1;
+                const auto sought = da_handle_pl(0x17f, cursor.handle, 0x126, SstTime{boundary, UINT64_MAX}, 0x10);
+                check_handle(sought, "cannot seek SHM completed tick");
+                require(sought == 0 || sought == 1, "invalid SHM seek result");
+                if (!sought) { history.done = true; continue; }
+                auto current = current_time(cursor);
+                require(current.tick <= boundary, "SHM seek skipped the resume boundary");
+                while (current.tick <= boundary) {
+                    if (history.checkpoint) ++work.replayed_records;
+                    if (!advance(cursor, current, end)) { history.done = true; break; }
+                    current = current_time(cursor);
+                }
+            }
+        }
+        active_stream = this;
+        activated = true;
+    } catch (...) { suspend(); throw; }
+}
+
 }
 
 struct ondas_shm {
@@ -593,9 +741,10 @@ struct ondas_shm {
     std::vector<Declaration> declarations;
     std::vector<SourceNode> source_nodes;
     ondas_shm_work work{};
-    std::vector<Record> records;
-    std::vector<Record> points;
+    std::unique_ptr<Stream> stream;
+    std::vector<Record> batch;
     size_t position = 0;
+    std::vector<Record> points;
     bool point_ready = false;
     std::uint64_t point_end = 0;
     std::vector<std::uint64_t> point_ids;
@@ -642,49 +791,38 @@ extern "C" void ondas_shm_enum_variant(const ondas_shm *reader, size_t declarati
 }
 extern "C" int ondas_shm_read(ondas_shm *reader, const uint64_t *ids, size_t count, uint64_t from, uint64_t end, int validated_resume, char *error, size_t cap, int *os_error) {
     *os_error = 0;
-    const bool prepared = reader->point_ready && from == 0 && !validated_resume &&
-                          end == reader->point_end && count == reader->point_ids.size() &&
-                          std::equal(reader->point_ids.begin(), reader->point_ids.end(), ids);
+    const bool prepared = reader->point_ready && reader->stream && !reader->stream->started &&
+        from == 0 && !validated_resume && end == reader->point_end &&
+        count == reader->point_ids.size() && std::equal(reader->point_ids.begin(), reader->point_ids.end(), ids);
     reader->point_ready = false; reader->point_ids.clear();
     reader->points.clear();
-    if (prepared) { reader->position = 0; return 0; }
-    reader->records.clear(); reader->position = 0;
+    if (prepared) return 0;
+    reader->stream.reset(); reader->batch.clear(); reader->position = 0;
     try {
         require(!validated_resume || from > 0, "invalid SHM resume boundary");
-        Session session(reader->path);
-        ++reader->work.sessions;
-        const auto declarations = selected_declarations(session.handle, ids, count,
-            reader->declarations, reader->source_nodes, reader->work);
-        std::vector<size_t> bounds{0};
-        for (size_t i = 0; i < count; ++i) {
-            history(declarations[i], from, end, reader->records, validated_resume != 0, reader->work);
-            // Native histories normally arrive in source order. Keep a stable
-            // fallback for an unordered history, then merge the ordered runs.
-            const auto first = reader->records.begin() + bounds.back();
-            if (!std::is_sorted(first, reader->records.end(), before))
-                std::stable_sort(first, reader->records.end(), before);
-            bounds.push_back(reader->records.size());
-        }
-        merge_histories(reader->records, bounds, 0, count);
+        reader->stream = std::make_unique<Stream>(reader->path, reader->declarations,
+            reader->source_nodes, reader->work, ids, count, from, end, validated_resume != 0);
+        reader->stream->activate();
         return 0;
     } catch (const Unavailable &failure) {
-        reader->records.clear(); report(error, cap, failure.what()); return -3;
+        reader->stream.reset(); report(error, cap, failure.what()); return -3;
     } catch (const std::filesystem::filesystem_error &failure) {
-        reader->records.clear(); return filesystem_failure(failure, os_error, error, cap);
+        reader->stream.reset(); return filesystem_failure(failure, os_error, error, cap);
     } catch (const std::exception &failure) { report(error, cap, failure.what()); }
     catch (...) { report(error, cap, "unexpected SHM native exception"); }
-    reader->records.clear();
+    reader->stream.reset();
     return -1;
 }
+
 extern "C" int ondas_shm_sample_bits(ondas_shm *reader, const uint64_t *ids, size_t count,
                                       uint64_t end, int prepare_fallback, ondas_shm_point *out) {
     reader->point_ready = false; reader->point_ids.clear();
-    reader->records.clear(); reader->points.clear(); reader->position = 0;
+    reader->stream.reset(); reader->points.clear(); reader->batch.clear(); reader->position = 0;
     if (!count || end == UINT64_MAX || end > reader->meta.last) return 0;
     try {
-        Session session(reader->path);
+        auto session = std::make_unique<Session>(reader->path);
         ++reader->work.sessions;
-        const auto declarations = selected_declarations(session.handle, ids, count,
+        const auto declarations = selected_declarations(session->handle, ids, count,
             reader->declarations, reader->source_nodes, reader->work);
         reader->points.resize(count);
         std::vector<size_t> fallback;
@@ -708,18 +846,13 @@ extern "C" int ondas_shm_sample_bits(ondas_shm *reader, const uint64_t *ids, siz
         if (fallback.empty()) return 1;
         const bool partial = fallback.size() != count;
         if (!partial && !prepare_fallback) { reader->points.clear(); return 0; }
-        // The common Rust normalizer consumes just the unqualified histories.
-        // Keep certified point bytes separate while collecting their fallback.
-        std::vector<size_t> bounds{0};
-        for (size_t index : fallback) {
-            history(declarations[index], 0, end, reader->records, false, reader->work);
-            const auto first = reader->records.begin() + bounds.back();
-            if (!std::is_sorted(first, reader->records.end(), before))
-                std::stable_sort(first, reader->records.end(), before);
-            bounds.push_back(reader->records.size());
-            reader->point_ids.push_back(ids[index]);
-        }
-        merge_histories(reader->records, bounds, 0, fallback.size());
+        // Prepare only identities. No fallback history is collected before delivery.
+        for (size_t index : fallback) reader->point_ids.push_back(ids[index]);
+        reader->stream = std::make_unique<Stream>(reader->path, reader->declarations,
+            reader->source_nodes, reader->work, reader->point_ids.data(), fallback.size(), 0, end, false);
+        reader->stream->session = std::move(session);
+        for (size_t index : fallback) reader->stream->declarations.push_back(declarations[index]);
+        reader->stream->activate();
         reader->point_end = end;
         reader->point_ready = true;
         return partial ? 2 : 0;
@@ -727,25 +860,62 @@ extern "C" int ondas_shm_sample_bits(ondas_shm *reader, const uint64_t *ids, siz
         // Structural/SDK exceptions leave no reusable partial batch. Timed
         // payload failures in collected ordinary records remain ordered data.
         reader->point_ready = false; reader->point_ids.clear();
-        reader->records.clear(); reader->points.clear();
+        reader->stream.reset(); reader->points.clear();
         return 0;
     }
 }
-extern "C" int ondas_shm_next(ondas_shm *reader, ondas_shm_record *out, char *error, size_t cap) {
-    if (reader->position == reader->records.size()) return 0;
-    const auto &record = reader->records[reader->position++];
-    *out = {record.id, record.tick, record.encoding, nullptr, 0};
-    if (record.failed) {
-        if (cap) std::snprintf(error, cap, "history %llu at tick %llu: %s",
-                              static_cast<unsigned long long>(record.id),
-                              static_cast<unsigned long long>(record.tick), record.data.c_str());
-        return -1;
-    }
-    out->data = reinterpret_cast<const std::uint8_t *>(record.data.data());
-    out->len = record.data.size();
-    return 1;
+extern "C" int ondas_shm_next(ondas_shm *reader, ondas_shm_record *out, char *error, size_t cap, int *os_error) {
+    *os_error = 0;
+    try {
+        if (!reader->stream) return 0;
+        if (reader->position == reader->batch.size()) {
+            reader->batch.clear(); reader->position = 0;
+            reader->stream->queued_payload = 0;
+            // Amortize session restoration between interleaved readers. Both
+            // row count and payload are bounded; one value can cross the byte cap.
+            constexpr size_t batch_payload = 64 * 1024;
+            const size_t batch_records = reader->stream->first_batch ? 64 : 1024;
+            reader->stream->first_batch = false;
+            reader->batch.reserve(batch_records);
+            while (reader->batch.size() < batch_records) {
+                const auto *next = reader->stream->next();
+                if (!next) break;
+                const bool failed = next->failed;
+                reader->batch.push_back(std::move(reader->stream->output));
+                reader->stream->output = {};
+                reader->stream->queued_payload += reader->batch.back().data.capacity();
+                reader->stream->account();
+                if (failed || reader->stream->queued_payload >= batch_payload) break;
+            }
+            reader->work.pending_records = std::max<std::uint64_t>(reader->work.pending_records,
+                reader->stream->histories.capacity() + reader->batch.capacity() + 2);
+        }
+        if (reader->position == reader->batch.size()) return 0;
+        const auto *record = &reader->batch[reader->position++];
+        if (!reader->work.delivered) reader->work.first_delivery_records = reader->work.history_records;
+        ++reader->work.delivered;
+        *out = {record->id, record->tick, record->encoding, nullptr, 0, record->occurrences};
+        if (record->failed) {
+            if (cap) std::snprintf(error, cap, "history %llu at tick %llu: %s",
+                                  static_cast<unsigned long long>(record->id),
+                                  static_cast<unsigned long long>(record->tick), record->data.c_str());
+            return -1;
+        }
+        out->data = reinterpret_cast<const std::uint8_t *>(record->data.data());
+        out->len = record->data.size();
+        return 1;
+    } catch (const std::filesystem::filesystem_error &failure) {
+        const auto code = filesystem_failure(failure, os_error, error, cap);
+        return code == -2 ? -2 : -4;
+    } catch (const Unavailable &failure) { report(error, cap, failure.what()); return -3; }
+    catch (const std::exception &failure) { report(error, cap, failure.what()); }
+    catch (...) { report(error, cap, "unexpected SHM native exception"); }
+    return -4;
 }
 extern "C" void ondas_shm_end(ondas_shm *reader) {
     reader->point_ready = false; reader->point_ids.clear();
-    reader->records.clear(); reader->points.clear(); reader->position = 0;
+    reader->stream.reset();
+    std::vector<Record>().swap(reader->batch);
+    std::vector<Record>().swap(reader->points);
+    reader->position = 0;
 }

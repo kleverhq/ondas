@@ -1,4 +1,5 @@
-//! Private build-selected SST2 adapter. No vendor handles survive an FFI call.
+//! Private build-selected SST2 adapter. Vendor state is serialized and suspended
+//! before another operation changes the shared files or global time unit.
 use crate::{
     BitRange, BitsRef, Direction, Encoding, Error, Hierarchy, Metadata, Result, Signal, Time,
     TimeSpan, TimeUnit, Timescale, ValueRef,
@@ -13,8 +14,9 @@ use std::{
     sync::Mutex,
 };
 const BACKEND: &str = "shm-lib";
-// SST2 shares open files and a process-wide time unit. Serialize complete native
-// sessions, copy selected records, and close before unlocking or calling users.
+// SST2 shares open files and a process-wide time unit. Serialize native calls.
+// The shim suspends cursors before another session opens. Copy bytes before
+// unlocking; user callbacks can open and read another waveform.
 static SDK: Mutex<()> = Mutex::new(());
 fn lock() -> std::sync::MutexGuard<'static, ()> {
     SDK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -57,6 +59,7 @@ struct Record {
     encoding: u32,
     data: *const u8,
     len: usize,
+    occurrences: u64,
 }
 #[repr(C)]
 #[derive(Clone, Default)]
@@ -75,6 +78,13 @@ pub(crate) struct Work {
     pub(crate) hierarchy_nodes: u64,
     pub(crate) histories: u64,
     pub(crate) history_records: u64,
+    pub(crate) delivered: u64,
+    pub(crate) first_delivery_records: u64,
+    pub(crate) pending_records: u64,
+    pub(crate) pending_payload: u64,
+    pub(crate) reopens: u64,
+    pub(crate) reloaded_histories: u64,
+    pub(crate) replayed_records: u64,
 }
 unsafe extern "C" {
     fn ondas_shm_open(
@@ -113,6 +123,7 @@ unsafe extern "C" {
         out: *mut Record,
         error: *mut c_char,
         cap: usize,
+        os_error: *mut c_int,
     ) -> c_int;
     fn ondas_shm_end(reader: *mut c_void);
     fn ondas_shm_sample_bits(
@@ -172,16 +183,16 @@ unsafe fn string(pointer: *const c_char) -> Result<Option<String>> {
         .map_err(|_| error("non-UTF-8 SHM declaration text"))
 }
 struct Handle(NonNull<c_void>);
-// SAFETY: this pointer owns only C++ strings/vectors and a path. The shim closes
-// every SDK session before returning. No vendor handle, thread-local buffer or
-// callback survives. All native operations/destruction are serialized; mutable
-// traversal additionally requires &mut Reader. User callbacks run unlocked.
+// SAFETY: the shim owns its data and exclusive native traversal. Every SDK
+// access and destruction uses the same mutex, including session suspension.
+// Mutable traversal additionally requires &mut Reader. No borrowed SDK buffer
+// escapes the lock. User callbacks receive copied bytes and run unlocked.
 unsafe impl Send for Handle {}
 unsafe impl Sync for Handle {}
 impl Drop for Handle {
     fn drop(&mut self) {
         let _lock = lock();
-        // SAFETY: sole owner of an Ondas C++ object, with no SDK session.
+        // SAFETY: sole owner; the shim releases cursors before closing its session.
         unsafe { ondas_shm_close(self.0.as_ptr()) };
     }
 }
@@ -408,7 +419,7 @@ impl Reader {
             .take()
             .is_some_and(|(prepared_ids, at)| prepared_ids == ids && at == time)
         {
-            // A mixed point already collected this subset in the native call.
+            // A mixed point already prepared this subset in the native call.
             // Let the normalizer consume that handoff without trying it again.
             return Ok(None);
         }
@@ -422,8 +433,8 @@ impl Reader {
         let samples = {
             let _lock = lock();
             // SAFETY: exclusive live owner, validated identities and a writable
-            // descriptor array. Copy Ondas-owned bytes before unlocking/end;
-            // no SDK handle survives. Partial success prepares only its subset.
+            // descriptor array. Copy Ondas-owned bytes before unlocking/end.
+            // Partial success prepares only its unqualified subset.
             let code = unsafe {
                 ondas_shm_sample_bits(
                     traversal.0.0.as_ptr(),
@@ -435,7 +446,7 @@ impl Reader {
                 )
             };
             if code == 0 {
-                // The shim cleared point data or prepared owned ordinary rows
+                // The shim cleared point data or prepared an ordinary traversal
                 // for the immediate fallback. Its read guard will release them.
                 if prepare_fallback {
                     self.point_fallback = Some((ids, time));
@@ -514,7 +525,7 @@ impl Reader {
         if keep_fallback {
             // Reader owns these buffers until the immediate matching read.
             // Other native reads/points and empty reads discard the handoff;
-            // dropping Reader also releases it. No SDK state is retained.
+            // dropping Reader also releases its suspended or active traversal.
             std::mem::forget(traversal);
         }
         Ok(samples)
@@ -564,7 +575,8 @@ impl Reader {
             let _lock = lock();
             // SAFETY: live exclusive owner, validated identities and output buffers.
             // Resume uses the caller's successful immutable-prefix checkpoint.
-            // The shim closes its session after copying selected histories.
+            // The shim retains bounded tick state and suspends its cursors
+            // before another operation needs the shared SDK state.
             let code = unsafe {
                 ondas_shm_read(
                     traversal.0.0.as_ptr(),
@@ -588,15 +600,19 @@ impl Reader {
             {
                 let _lock = lock();
                 // SAFETY: live owner and writable output. Copy the private buffer
-                // before unlocking or calling users; no vendor call occurs here.
+                // before unlocking or calling users; a bounded batch can call SST2.
                 let code = unsafe {
                     ondas_shm_next(
                         traversal.0.0.as_ptr(),
                         &mut record,
                         buffer.as_mut_ptr(),
                         buffer.len(),
+                        &mut os_error,
                     )
                 };
+                if code < -1 {
+                    return Err(status(code, os_error, &buffer, "read").unwrap_err());
+                }
                 failure = status(code, 0, &buffer, "read").err();
                 if code == 0 {
                     break;
@@ -644,7 +660,9 @@ impl Reader {
                             "shm-lib",
                             Time::from_ticks(record.tick),
                         )?),
-                        (Encoding::Event, 4) => ValueRef::Event { occurrences: 1 },
+                        (Encoding::Event, 4) if record.occurrences > 0 => ValueRef::Event {
+                            occurrences: record.occurrences,
+                        },
                         _ => return Err(error("SHM value disagrees with declaration")),
                     })
                 })()
@@ -732,6 +750,209 @@ mod tests {
         );
     }
 
+    #[test]
+    #[ignore = "requires real SHM runtime and installed fixtures"]
+    fn shm_streaming_work() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures/shm/shm0081-history-long/waveform.shm");
+        let mut stopped_work = Vec::new();
+        for end in [64, 1_048_576] {
+            let (mut reader, hierarchy, _) = Reader::open(&path, "stream".into()).unwrap();
+            let signals = ["top.phase_0", "top.phase_1", "top.phase_2", "top.phase_3"]
+                .map(|name| hierarchy.signal(name).unwrap());
+            let before = reader.work();
+            assert!(
+                reader
+                    .read(&signals, Time::from_ticks(end), |_, time, value| {
+                        value.unwrap();
+                        if time.ticks() > 1 {
+                            ControlFlow::Break(())
+                        } else {
+                            ControlFlow::Continue(())
+                        }
+                    })
+                    .unwrap()
+                    .is_break()
+            );
+            let after = reader.work();
+            let read = after.history_records - before.history_records;
+            eprintln!("SHM_STREAM end={end} records={read} work={after:?}");
+            assert!(read <= 128, "stop must not read the suffix: {after:?}");
+            assert!(after.first_delivery_records <= 128);
+            assert!(after.pending_records <= 70);
+            assert!(after.pending_payload <= 2048);
+            stopped_work.push((read, after.pending_records, after.pending_payload));
+
+            let mut wave = crate::open_with(&path, "shm-lib").unwrap();
+            let signals = ["top.phase_0", "top.phase_1", "top.phase_2", "top.phase_3"]
+                .map(|name| wave.hierarchy().signal(name).unwrap());
+            let crate::backends::Reader::Shm(backend) = &wave.reader else {
+                unreachable!()
+            };
+            let handle = backend.handle.0.as_ptr();
+            let mut calls = 0;
+            let mut accepted = Work::default();
+            let result = wave
+                .select(&signals)
+                .unwrap()
+                .query(
+                    crate::TimeRange::closed(Time::ZERO, Time::from_ticks(end)),
+                    &[0, 1, 2, 3],
+                    |ctx| {
+                        calls += 1;
+                        if ctx.time() == Time::ZERO {
+                            return Ok(ControlFlow::Continue(()));
+                        }
+                        assert_eq!(ctx.time(), Time::from_ticks(1));
+                        let _ = ctx.visit_samples(ctx.time(), &[0], |_, sample| {
+                            let crate::SampleRef::Value {
+                                value: ValueRef::Bits(bits),
+                                changed_at,
+                                ..
+                            } = sample
+                            else {
+                                panic!("phase state required")
+                            };
+                            assert_eq!(bits.bit(0), Some(crate::Logic::One));
+                            assert_eq!(changed_at, Some(Time::from_ticks(1)));
+                            Ok(ControlFlow::<u8>::Continue(()))
+                        })?;
+                        let _lock = lock();
+                        // SAFETY: the query owns this live reader and only copies counters.
+                        unsafe { ondas_shm_work_done(handle, &mut accepted) };
+                        Ok(ControlFlow::Break(7))
+                    },
+                )
+                .unwrap();
+            assert_eq!(result, ControlFlow::Break(7));
+            assert_eq!(calls, 2);
+            let crate::backends::Reader::Shm(backend) = &wave.reader else {
+                unreachable!()
+            };
+            assert_eq!(backend.work().history_records, accepted.history_records);
+            assert!(accepted.history_records <= 128);
+            eprintln!("SHM_QUERY_STOP end={end} accepted_tick=1 work={accepted:?}");
+        }
+        assert_eq!(stopped_work[0], stopped_work[1]);
+    }
+
+    #[test]
+    #[ignore = "requires real SHM runtime and installed fixtures"]
+    fn shm_stream_panic_and_nested_reopen_preserve_history() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/shm");
+        let path = root.join("shm0080-history-short/waveform.shm");
+        let (mut reader, hierarchy, _) = Reader::open(&path, "stream".into()).unwrap();
+        let signals = ["top.phase_0", "top.phase_1", "top.phase_2", "top.phase_3"]
+            .map(|name| hierarchy.signal(name).unwrap());
+        let expected = records(&mut reader, &signals, 0, 96, false);
+        for other in [&path, &root.join("shm0088-time-scale/waveform.shm")] {
+            let mut got = Vec::new();
+            assert!(
+                reader
+                    .read(&signals, Time::from_ticks(96), |index, time, value| {
+                        got.push((index, time.ticks(), format!("{value:?}")));
+                        // Repeated opens of the same path also share SDK file state.
+                        let (mut nested, h, _) = Reader::open(other, "nested".into()).unwrap();
+                        let first = h.variables().find_map(|v| v.signal()).unwrap();
+                        let _ = nested
+                            .read(&[first], Time::from_ticks(8), |_, _, value| {
+                                value.unwrap();
+                                ControlFlow::<()>::Continue(())
+                            })
+                            .unwrap();
+                        ControlFlow::<()>::Continue(())
+                    })
+                    .unwrap()
+                    .is_continue()
+            );
+            assert_eq!(got, expected.1);
+        }
+        assert!(reader.work().reopens > 0);
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = reader.read(
+                &signals,
+                Time::from_ticks(4096),
+                |_, _, _| -> ControlFlow<()> { panic!("stream callback") },
+            );
+        }));
+        assert!(panic.is_err());
+        assert_eq!(records(&mut reader, &signals, 0, 96, false), expected);
+        let gap = root.join("shm0089-probe-gap/waveform.shm");
+        let mut wave = crate::open_with(gap, "shm-lib").unwrap();
+        let glitch = wave.hierarchy().signal("top.glitch").unwrap();
+        assert!(
+            wave.trace(
+                glitch,
+                crate::TimeRange::closed(Time::ZERO, Time::from_ticks(3))
+            )
+            .is_err()
+        );
+        assert!(
+            wave.trace(
+                glitch,
+                crate::TimeRange::closed(Time::ZERO, Time::from_ticks(1))
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    #[ignore = "requires real SHM runtime and installed fixtures"]
+    fn shm_reopen_failure_preserves_io_and_releases_traversal() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/shm");
+        let source = root.join("shm0080-history-short/waveform.shm");
+        let path = std::env::temp_dir().join(format!(
+            "ondas-shm-reopen-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let hidden = path.with_extension("hidden");
+        struct Cleanup(std::path::PathBuf, std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+                let _ = std::fs::remove_dir_all(&self.1);
+            }
+        }
+        let _cleanup = Cleanup(path.clone(), hidden.clone());
+        std::fs::create_dir(&path).unwrap();
+        for entry in std::fs::read_dir(&source).unwrap() {
+            let entry = entry.unwrap();
+            std::os::unix::fs::symlink(entry.path(), path.join(entry.file_name())).unwrap();
+        }
+        let (mut reader, hierarchy, _) = Reader::open(&path, "reopen".into()).unwrap();
+        let signals = [hierarchy.signal("top.phase_0").unwrap()];
+        let mut moved = false;
+        let result = reader.read(&signals, Time::from_ticks(256), |_, _, value| {
+            value.unwrap();
+            if !moved {
+                // Another operation suspends the outer native cursor. Make its
+                // next session fail without changing the pinned fixture files.
+                drop(Reader::open(&source, "other".into()).unwrap());
+                std::fs::rename(&path, &hidden).unwrap();
+                moved = true;
+            }
+            ControlFlow::<()>::Continue(())
+        });
+        assert!(
+            matches!(result, Err(Error::Io(ref cause)) if cause.kind() == std::io::ErrorKind::NotFound),
+            "{result:?}"
+        );
+        std::fs::rename(&hidden, &path).unwrap();
+        assert!(
+            reader
+                .read(&signals, Time::from_ticks(256), |_, _, value| {
+                    value.unwrap();
+                    ControlFlow::<()>::Continue(())
+                })
+                .unwrap()
+                .is_continue()
+        );
+    }
+
     fn records(
         reader: &mut Reader,
         signals: &[Signal],
@@ -787,6 +1008,7 @@ mod tests {
                 let _lock = lock();
                 let mut record = Record::default();
                 let mut buffer = [0; 512];
+                let mut os_error = 0;
                 // SAFETY: exclusive live owner and writable outputs. A preparing
                 // rejection must survive the Rust method; its matching read
                 // rewinds this one inspected record before consuming the batch.
@@ -796,6 +1018,7 @@ mod tests {
                         &mut record,
                         buffer.as_mut_ptr(),
                         buffer.len(),
+                        &mut os_error,
                     )
                 };
                 assert_eq!(code, if prepare { 1 } else { 0 });
@@ -823,6 +1046,7 @@ mod tests {
                 let _lock = lock();
                 let mut record = Record::default();
                 let mut buffer = [0; 512];
+                let mut os_error = 0;
                 // SAFETY: exclusive owner and writable outputs. Even an empty
                 // read must release any earlier prepared ordinary rows.
                 assert_eq!(
@@ -832,6 +1056,7 @@ mod tests {
                             &mut record,
                             buffer.as_mut_ptr(),
                             buffer.len(),
+                            &mut os_error,
                         )
                     },
                     0

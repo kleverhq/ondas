@@ -6,7 +6,7 @@ pub(crate) mod fst;
 pub(crate) mod generated;
 pub(crate) mod ghw;
 #[cfg(feature = "shm-lib")]
-#[allow(unsafe_code)] // Private C ABI; native sessions end before user callbacks.
+#[allow(unsafe_code)] // Private C ABI; native calls are serialized and user callbacks run unlocked.
 pub(crate) mod shm;
 pub(crate) mod vcd;
 #[cfg(feature = "wlf-lib")]
