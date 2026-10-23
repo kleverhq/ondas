@@ -1,6 +1,70 @@
 use super::*;
 
 #[test]
+fn child_links_preserve_identity_order_and_share_lazy_storage() {
+    let mut data = Arc::try_unwrap(fixture().data).ok().unwrap();
+    data.scopes = [Some(2), None, None, Some(2), Some(1)]
+        .into_iter()
+        .map(|parent| ScopeData {
+            name: "same".into(),
+            name_was_escaped: false,
+            parent,
+            kind: "module".into(),
+            definition_name: None,
+            packing: None,
+            is_hidden: false,
+        })
+        .collect();
+    for (variable, parent) in data.variables.iter_mut().zip([
+        None,
+        Some(2),
+        Some(0),
+        Some(2),
+        None,
+        Some(1),
+        Some(3),
+        Some(4),
+    ]) {
+        variable.parent = parent;
+    }
+    let hierarchy = Hierarchy::new(data.scopes, data.variables, data.encodings);
+    let cloned = hierarchy.clone();
+    assert_eq!(hierarchy.scopes().count(), 5);
+    assert_eq!(hierarchy.variables().count(), 8);
+    assert!(hierarchy.data.children.get().is_none());
+    let identify = |item| match item {
+        Item::Scope(scope) => ("scope", scope.index),
+        Item::Variable(variable) => ("variable", variable.index),
+    };
+    assert_eq!(
+        cloned.roots().map(identify).collect::<Vec<_>>(),
+        [("scope", 1), ("scope", 2), ("variable", 0), ("variable", 4)]
+    );
+    assert!(hierarchy.data.children.get().is_none());
+    assert_eq!(cloned.scopes().next().unwrap().children().count(), 1);
+    assert!(std::ptr::eq(
+        hierarchy.data.children.get().unwrap(),
+        cloned.data.children.get().unwrap()
+    ));
+    let expected = [
+        vec![("variable", 2)],
+        vec![("scope", 4), ("variable", 5)],
+        vec![("scope", 0), ("scope", 3), ("variable", 1), ("variable", 3)],
+        vec![("variable", 6)],
+        vec![("variable", 7)],
+    ];
+    for (scope, expected) in hierarchy.scopes().zip(expected) {
+        assert_eq!(scope.children().map(identify).collect::<Vec<_>>(), expected);
+        assert_eq!(scope.children().map(identify).collect::<Vec<_>>(), expected);
+    }
+    drop(hierarchy);
+    assert_eq!(cloned.roots().count(), 4);
+    let empty = Hierarchy::new(vec![], vec![], vec![]);
+    assert_eq!(empty.roots().count(), 0);
+    assert!(empty.data.children.get().is_none());
+}
+
+#[test]
 fn enum_keys_match_whole_bits_without_guessing_or_restricting_labels() {
     let data = EnumerationData::for_encoding(
         Some("state".into()),

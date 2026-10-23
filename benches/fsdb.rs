@@ -3,6 +3,8 @@ use std::{collections::HashSet, hint::black_box, ops::ControlFlow};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use ondas::{ScanRef, Selection, Time, TimeRange};
 
+#[path = "support/explicit_times.rs"]
+mod explicit_times;
 #[path = "../tests/support/fixtures.rs"]
 mod fixtures;
 #[path = "../tests/support/fsdb_compatibility.rs"]
@@ -392,8 +394,18 @@ fn matched_constant_history(c: &mut Criterion) {
     matched_constant::register(c, fixture, BACKEND, wave);
 }
 
+fn explicit_batch(c: &mut Criterion) {
+    let fixture = "fsdb/fsdb0010-history-short";
+    let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
+    if fsdb_compatibility::open(ondas::open_with(&path, BACKEND), &path).is_none() {
+        return;
+    }
+    explicit_times::register(c, fixture, &path, BACKEND, "top.clock", 4096);
+}
+
 criterion_group!(
     benches,
+    explicit_batch,
     compare,
     mode_change,
     wide,

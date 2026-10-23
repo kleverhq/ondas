@@ -5,6 +5,8 @@ use ondas::{Signal, Time, Waveform};
 
 #[path = "shm/cold.rs"]
 mod cold;
+#[path = "support/explicit_times.rs"]
+mod explicit_times;
 #[path = "../tests/support/fixtures.rs"]
 mod fixtures;
 #[path = "support/matched_active4.rs"]
@@ -444,8 +446,15 @@ fn cold_queries(c: &mut Criterion) {
     cold::register(c);
 }
 
+fn explicit_batch(c: &mut Criterion) {
+    let fixture = "shm/shm0080-history-short";
+    let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
+    explicit_times::register(c, fixture, &path, BACKEND, "top.phase_0", 4096);
+}
+
 criterion_group!(
     benches,
+    explicit_batch,
     reader_identity,
     histories,
     banks,

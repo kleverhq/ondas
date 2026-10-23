@@ -5,6 +5,8 @@ use ondas::{ScanRef, Selection, Time, TimeRange};
 
 #[path = "wlf/controlled.rs"]
 mod controlled;
+#[path = "support/explicit_times.rs"]
+mod explicit_times;
 #[path = "../tests/support/fixtures.rs"]
 mod fixtures;
 
@@ -191,5 +193,11 @@ fn workloads(c: &mut Criterion) {
     typed(c, fixture, &path, "count4b.clk", 100, 200);
 }
 
-criterion_group!(benches, workloads);
+fn explicit_batch(c: &mut Criterion) {
+    let fixture = "wlf/wlf0075-history-long";
+    let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
+    explicit_times::register(c, fixture, &path, BACKEND, "top.clock", 4096);
+}
+
+criterion_group!(benches, explicit_batch, workloads);
 criterion_main!(benches);

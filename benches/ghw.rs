@@ -5,6 +5,8 @@ use ondas::{SampleRef, Selection, Time, TimeRange, ValueRef, Waveform};
 
 #[path = "../tests/support/ghw_workloads.rs"]
 mod coordinates;
+#[path = "support/explicit_times.rs"]
+mod explicit_times;
 #[path = "../tests/support/fixtures.rs"]
 mod fixtures;
 #[path = "../tests/support/query_workloads.rs"]
@@ -380,5 +382,18 @@ fn wellen_reference(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, wide, topology, realistic, wellen_reference);
+fn explicit_batch(c: &mut Criterion) {
+    let fixture = "ghw/ghw0097-wide-toggle";
+    let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
+    explicit_times::register(c, fixture, &path, BACKEND, "top.control", 4096);
+}
+
+criterion_group!(
+    benches,
+    explicit_batch,
+    wide,
+    topology,
+    realistic,
+    wellen_reference
+);
 criterion_main!(benches);

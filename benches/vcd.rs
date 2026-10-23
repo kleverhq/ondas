@@ -3,6 +3,10 @@ use std::{collections::HashSet, hint::black_box, ops::ControlFlow};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use ondas::{ScanRef, Time, TimeRange};
 
+#[path = "support/core.rs"]
+mod core;
+#[path = "support/explicit_times.rs"]
+mod explicit_times;
 #[path = "../tests/support/fixtures.rs"]
 mod fixtures;
 
@@ -932,5 +936,20 @@ fn picorv32_open(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, composed, swerv, compact_wide, scr1, picorv32_open);
+fn explicit_batch(c: &mut Criterion) {
+    let fixture = "vcd/vcd0096-wide-compact-toggle";
+    let (path, _) = fixtures::load_artifact(&fixtures::root(), fixture);
+    explicit_times::register(c, fixture, &path, BACKEND, "top.control", 4096);
+}
+
+criterion_group!(
+    benches,
+    core::register,
+    explicit_batch,
+    composed,
+    swerv,
+    compact_wide,
+    scr1,
+    picorv32_open
+);
 criterion_main!(benches);
