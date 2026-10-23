@@ -273,8 +273,34 @@ struct HierarchyData {
     scopes: Vec<ScopeData>,
     variables: Vec<VariableData>,
     encodings: Vec<Encoding>,
+    children: OnceLock<ChildLinks>,
     first_variable_lookup: OnceLock<()>,
     variables_by_path: OnceLock<HashMap<HierarchyPath, (usize, usize)>>,
+}
+
+struct ChildLinks {
+    first: Vec<usize>,
+    next: Vec<usize>,
+}
+
+impl ChildLinks {
+    fn new(scopes: &[ScopeData], variables: &[VariableData]) -> Self {
+        let mut first = vec![usize::MAX; scopes.len() + 1];
+        let mut next = vec![usize::MAX; scopes.len() + variables.len()];
+        // The last parent slot is the root. Scope IDs precede variable IDs.
+        // Prepending in reverse order keeps scopes before variables and retains
+        // declaration order within each kind, without per-parent allocations.
+        for (index, variable) in variables.iter().enumerate().rev() {
+            let child = scopes.len() + index;
+            next[child] =
+                std::mem::replace(&mut first[variable.parent.unwrap_or(scopes.len())], child);
+        }
+        for (index, scope) in scopes.iter().enumerate().rev() {
+            next[index] =
+                std::mem::replace(&mut first[scope.parent.unwrap_or(scopes.len())], index);
+        }
+        Self { first, next }
+    }
 }
 
 static NEXT_SOURCE: AtomicU64 = AtomicU64::new(1);
@@ -372,6 +398,7 @@ impl Hierarchy {
                 scopes,
                 variables,
                 encodings,
+                children: OnceLock::new(),
                 first_variable_lookup: OnceLock::new(),
                 variables_by_path: OnceLock::new(),
             }),
@@ -431,14 +458,30 @@ impl Hierarchy {
     }
 
     fn children_of(&self, parent: Option<usize>) -> impl Iterator<Item = Item<'_>> + '_ {
-        self.scopes()
-            .filter(move |scope| scope.data().parent == parent)
-            .map(Item::Scope)
-            .chain(
-                self.variables()
-                    .filter(move |variable| variable.data().parent == parent)
-                    .map(Item::Variable),
-            )
+        let links = self
+            .data
+            .children
+            .get_or_init(|| ChildLinks::new(&self.data.scopes, &self.data.variables));
+        let scopes = self.data.scopes.len();
+        let mut next = links.first[parent.unwrap_or(scopes)];
+        std::iter::from_fn(move || {
+            let index = next;
+            if index == usize::MAX {
+                return None;
+            }
+            next = links.next[index];
+            Some(if index < scopes {
+                Item::Scope(Scope {
+                    hierarchy: self,
+                    index,
+                })
+            } else {
+                Item::Variable(Variable {
+                    hierarchy: self,
+                    index: index - scopes,
+                })
+            })
+        })
     }
 
     fn scope_path_at(&self, mut index: Option<usize>) -> HierarchyPath {
