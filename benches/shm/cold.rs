@@ -1,4 +1,4 @@
-use std::{collections::HashSet, hint::black_box};
+use std::{collections::HashSet, hint::black_box, ops::ControlFlow};
 
 use criterion::{BenchmarkId, Criterion};
 use ondas::{Encoding, Signal, Time, Waveform};
@@ -83,6 +83,30 @@ fn history(c: &mut Criterion, fixture: &str, end: u64) {
     );
     group.finish();
     drop(selection);
+    let full = range(1, end);
+    let mut selected = wave.select(&signals[..4]).unwrap();
+    assert_eq!(
+        first_change(&mut selected, full).unwrap(),
+        ControlFlow::Break(Time::from_ticks(1))
+    );
+    drop(selected);
+    let mut group = c.benchmark_group(format!(
+        "{fixture}/directory/stop-horizon/bases4/slots4/1..={end}"
+    ));
+    group.sample_size(10);
+    for (name, stop) in [("first-change", true), ("scan", false)] {
+        group.bench_function(BenchmarkId::new(name, BACKEND), |b| {
+            b.iter(|| {
+                let mut selection = wave.select(black_box(&signals[..4])).unwrap();
+                if stop {
+                    black_box(first_change(&mut selection, black_box(full)).unwrap());
+                } else {
+                    black_box(scan_count(&mut selection, black_box(full)).unwrap());
+                }
+            })
+        });
+    }
+    group.finish();
     for (label, selected) in [
         ("phases/bases4/slots4", &signals[..4]),
         ("phases-integer/bases5/slots5", &signals[..]),
