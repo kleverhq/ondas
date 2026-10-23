@@ -112,12 +112,17 @@ not HDL indices.
 |---|---|
 | Read one signal at one tick | [`Waveform::sample`] |
 | Read several signals at one tick | [`Waveform::samples`] or [`Selection::samples`] |
+| Read signals at specified ticks | [`Waveform::samples_at`] or [`Selection::samples_at`] |
 | Keep the state and changes over a range | [`Waveform::trace`], [`Waveform::traces`] or [`Selection::traces`] |
+| Read a saved window at specified ticks | [`Trace::sample`] or [`Trace::samples_at`] |
 | Process changes without collecting a trace | [`Selection::scan`] or [`Selection::scan_each`] |
 | Visit possible change times | [`Selection::scan_candidate_times`] |
 | Check conditions at activity ticks and read only the requested samples | [`Selection::query`] |
 
-Use a point or batch query when you already know the observation time.
+Use a point read when you know one observation tick. Use an explicit-time batch
+for several ticks, including quiet ticks. It preserves time and selection order,
+including duplicates. A saved trace can answer repeated reads without source access;
+outside its coverage, sampling returns [`Error::TraceCoverage`].
 Use a selection for repeated queries over the same signal list.
 
 For streamed output, [`Selection::scan_each`] identifies each record by its
@@ -128,7 +133,8 @@ For conditional sampling, [`Selection::query`] separates driver signals, which
 determine candidate times, from the other signals the caller may read. Each
 [`QueryContext`] can read its completed tick and the preceding tick. It cannot
 read arbitrary history. Its example checks a transition and control value before copying a
-payload. Write conditions in ordinary Rust code. The query does not collect a
+payload. Selected data may fail decoding before the condition matches, including
+a query with no matches. Write conditions in ordinary Rust code. The query does not collect a
 candidate list or require another waveform borrow inside a callback.
 
 ## Time, values and errors
@@ -151,7 +157,9 @@ candidate list or require another waveform borrow inside a callback.
   path and metadata resolution errors. Opening and query failures use [`Error`].
   Reader failures return errors. Empty results do not represent failures.
 - Scans and callback queries may have delivered observations before a later
-  failure. Owned samples and traces return no partial collection.
+  failure. Owned samples, explicit-time batches and traces return no partial collection.
+  A callback break stops further delivery and returns its payload. It does not
+  limit work already done by the reader or SDK.
 
 ## Reader details
 

@@ -1732,9 +1732,7 @@ fn pool_queries(fixture: &Fixture, bytes: bool, context: &str) -> bool {
         }
     }
     for (time, mut entries) in samples {
-        if matches!(fixture.format, Format::Fsdb | Format::Ghw | Format::Wlf) {
-            entries.extend_from_within(..);
-        }
+        entries.extend_from_within(..);
         let handles: Vec<_> = entries.iter().map(|(_, signal, _)| *signal).collect();
         let actual = wave.samples(&handles, Time::from_ticks(time)).unwrap();
         assert_eq!(actual.len(), entries.len(), "{context}: sample count");
@@ -1754,11 +1752,12 @@ fn pool_queries(fixture: &Fixture, bytes: bool, context: &str) -> bool {
         }
     }
     for ((start, end), mut entries) in windows {
-        if matches!(fixture.format, Format::Fsdb | Format::Ghw | Format::Wlf) {
-            entries.extend_from_within(..);
-        }
+        entries.extend_from_within(..);
         let handles: Vec<_> = entries.iter().map(|(_, signal, _)| *signal).collect();
         let range = TimeRange::closed(Time::from_ticks(start), Time::from_ticks(end));
+        // These paths must agree for every reader and value class. The trace
+        // assertions below independently constrain their common observations.
+        scan_queries(&mut wave, &handles, range, context);
         if matches!(fixture.format, Format::Fsdb | Format::Ghw | Format::Wlf) {
             // Candidate-time and duplicate-selection assertions are derived from
             // supplied complete windows, without extending the oracle schema.
@@ -1783,14 +1782,6 @@ fn pool_queries(fixture: &Fixture, bytes: bool, context: &str) -> bool {
                 required.is_subset(&candidates.into_iter().collect()),
                 "{context}: missing oracle candidate ticks"
             );
-            if handles.iter().any(|s| {
-                matches!(
-                    s.encoding(),
-                    Encoding::Real | Encoding::String | Encoding::Event
-                )
-            }) {
-                scan_queries(&mut wave, &handles, range, context);
-            }
         }
         let actual = wave
             .traces(
@@ -1820,10 +1811,19 @@ fn pool_queries(fixture: &Fixture, bytes: bool, context: &str) -> bool {
             for ((time, values), requested) in rows.iter().zip(times) {
                 assert_eq!(*time, requested, "{context}: batch row time");
                 assert_eq!(values.len(), handles.len(), "{context}: batch row width");
-                for (index, value) in values.iter().enumerate() {
+                let points = wave.samples(&handles, *time).unwrap();
+                assert_eq!(points.len(), handles.len(), "{context}: point row width");
+                for (index, (value, point)) in values.iter().zip(&points).enumerate() {
                     let expected = evidence[index].sample(time.ticks());
                     sample(
                         value.as_ref(),
+                        handles[index],
+                        &expected,
+                        time.ticks(),
+                        context,
+                    );
+                    sample(
+                        point.as_ref(),
                         handles[index],
                         &expected,
                         time.ticks(),
@@ -1846,24 +1846,6 @@ fn pool_queries(fixture: &Fixture, bytes: bool, context: &str) -> bool {
                 }
             }
         }
-        if fixture.format == Format::Shm && start <= end {
-            // Imported SHM oracles often contain complete windows but no point
-            // assertions. Derive fresh one-shot points from that independent
-            // evidence; callback samples below reuse an existing traversal.
-            for time in BTreeSet::from([start, start + (end - start) / 2, end]) {
-                let actual = wave.samples(&handles, Time::from_ticks(time)).unwrap();
-                assert_eq!(actual.len(), handles.len(), "{context}: cold point count");
-                for (index, sample_value) in actual.iter().enumerate() {
-                    sample(
-                        sample_value.as_ref(),
-                        handles[index],
-                        &evidence[index].sample(time),
-                        time,
-                        &format!("{context} / cold point slot {index}"),
-                    );
-                }
-            }
-        }
         let mut selection = wave.select(&handles).unwrap();
         let required = changes(entries[0].2)
             .into_iter()
@@ -1874,6 +1856,10 @@ fn pool_queries(fixture: &Fixture, bytes: bool, context: &str) -> bool {
         let _ = selection
             .query(range, &[0], |query| {
                 let tick = query.time().ticks();
+                assert!(
+                    start <= tick && tick <= end,
+                    "{context}: query candidate range"
+                );
                 assert!(
                     previous.is_none_or(|before| before < tick),
                     "{context}: query candidate order"
