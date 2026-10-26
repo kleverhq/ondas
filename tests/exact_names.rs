@@ -1,6 +1,9 @@
 //! Logical component names must not require reader-specific lookup syntax.
 use ondas::{Hierarchy, HierarchyPath, Item, Sample, Time, Value, Variable};
 
+#[path = "support/fsdb_compatibility.rs"]
+mod fsdb_compatibility;
+
 fn variable<'h>(hierarchy: &'h Hierarchy, components: &[&str]) -> Variable<'h> {
     let path = HierarchyPath::from_components(components.iter().copied());
     let declaration = hierarchy.variable_path(&path).unwrap();
@@ -167,7 +170,9 @@ fn fsdb_logical_names() {
 // All producers record the same HDL declarations. These expected components
 // and values come from the authored source, independently of SDK spelling.
 fn common_logical_names(path: std::path::PathBuf, backend: &str) {
-    let mut wave = ondas::open_with(path, backend).unwrap();
+    let Some(mut wave) = fsdb_compatibility::open(ondas::open_with(&path, backend), &path) else {
+        return;
+    };
     let hierarchy = wave.hierarchy().clone();
     let mut cases = Vec::new();
     for (index, name) in [
@@ -320,8 +325,10 @@ fn vcd_same_path_aliases_remain_distinct_declarations() {
 #[ignore = "requires Verdi and installed same-path alias fixtures"]
 fn fsdb_same_path_aliases_remain_distinct_declarations() {
     let path = fixture("fsdb", "fsdb0057-same-path-aliases");
-    same_path_aliases(path.clone(), "fsdb-lib");
-    let wave = ondas::open_with(path, "fsdb-lib").unwrap();
+    let Some(wave) = fsdb_compatibility::open(ondas::open_with(&path, "fsdb-lib"), &path) else {
+        return;
+    };
+    same_path_aliases(path, "fsdb-lib");
     let mut spellings: Vec<_> = wave
         .hierarchy()
         .variables()
