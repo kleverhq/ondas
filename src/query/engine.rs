@@ -649,7 +649,6 @@ impl<'w> Selection<'w> {
         Ok(Some(samples.into_iter().map(Option::unwrap).collect()))
     }
 
-    #[cfg(any(feature = "fsdb-lib", feature = "shm-lib", feature = "wlf-lib"))]
     fn point_states(
         &mut self,
         time: Time,
@@ -667,6 +666,8 @@ impl<'w> Selection<'w> {
             return Ok(None);
         }
         match &self.waveform.reader {
+            crate::backends::Reader::Wdb(_)
+                if self.retained_signals.iter().all(|s| !s.is_slice()) => {}
             #[cfg(feature = "fsdb-lib")]
             crate::backends::Reader::Fsdb(_) => {}
             #[cfg(feature = "wlf-lib")]
@@ -701,6 +702,24 @@ impl<'w> Selection<'w> {
         self.replay = None;
         self.checkpoint = None;
         let slots: Vec<_> = match &mut self.waveform.reader {
+            crate::backends::Reader::Wdb(reader) => {
+                let Some(samples) = reader.sample_bits(&self.retained_signals, time)? else {
+                    return Ok(None);
+                };
+                samples
+                    .into_iter()
+                    .map(|sample| Slot {
+                        state: match sample {
+                            Sample::Value {
+                                value, changed_at, ..
+                            } => Some(State { value, changed_at }),
+                            Sample::Missing { .. } => None,
+                            Sample::Event { .. } => unreachable!("bit-only point selection"),
+                        },
+                        ..Slot::default()
+                    })
+                    .collect()
+            }
             #[cfg(feature = "fsdb-lib")]
             crate::backends::Reader::Fsdb(reader) => reader
                 .sample_bits(&self.bases, &self.retained_signals, time)?
@@ -766,6 +785,7 @@ impl<'w> Selection<'w> {
             // reuse it; same-tick point reads are handled explicitly above.
             self.replay = Some(Replay {
                 position: match &self.waveform.reader {
+                    crate::backends::Reader::Wdb(_) => Position::Wdb(next),
                     #[cfg(feature = "fsdb-lib")]
                     crate::backends::Reader::Fsdb(_) => Position::Fsdb(next),
                     #[cfg(feature = "wlf-lib")]
@@ -843,7 +863,6 @@ impl<'w> Selection<'w> {
         if let Some(result) = self.shm_replay_sample_visit(time, &mut visitor) {
             return Ok(result);
         }
-        #[cfg(any(feature = "fsdb-lib", feature = "shm-lib", feature = "wlf-lib"))]
         let (point_sampled, mut states) = {
             let states = self.point_states(time, true)?;
             (
@@ -851,8 +870,6 @@ impl<'w> Selection<'w> {
                 states.unwrap_or_else(|| vec![None; self.signals.len()]),
             )
         };
-        #[cfg(not(any(feature = "fsdb-lib", feature = "shm-lib", feature = "wlf-lib")))]
-        let (point_sampled, mut states) = (false, vec![None; self.signals.len()]);
         let mut events = vec![0u64; self.signals.len()];
         if !point_sampled {
             // SHM already tried this point. Its fallback must not retry the
@@ -1122,10 +1139,9 @@ impl<'w> Selection<'w> {
     ) -> Result<ControlFlow<B>> {
         let eligible =
             |replay: &Replay| start.is_some_and(|start| replay.start <= start) && replay.end <= end;
-        #[cfg(not(any(feature = "fsdb-lib", feature = "shm-lib", feature = "wlf-lib")))]
-        let _ = seed_point;
-        #[cfg(any(feature = "fsdb-lib", feature = "shm-lib", feature = "wlf-lib"))]
         if seed_point
+            // WDB still reconstructs raw prefix bytes, so a cold seed adds work.
+            && !matches!(self.waveform.reader, crate::backends::Reader::Wdb(_))
             && let Some(start) = start.filter(|start| *start > Time::ZERO)
             && !self.replay.as_ref().is_some_and(eligible)
             && !self.checkpoint.as_ref().is_some_and(eligible)

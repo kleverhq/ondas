@@ -38,7 +38,7 @@ msrv: _inside
 test: _inside
     cargo test --locked
 
-# Check every FST/VCD/GHW in the pinned fixtures plus focused API regressions.
+# Check built-in readers against the pinned fixtures plus focused API regressions.
 conformance: _inside
     cargo test --locked --profile conformance --test conformance -- --ignored --nocapture
     cargo test --locked --profile conformance --test exact_names -- --ignored
@@ -76,11 +76,12 @@ _conformance-wlf: _inside
     cargo test --locked --profile conformance --features wlf-lib --lib wlf_ -- --ignored
     cargo test --locked --profile conformance --features wlf-lib --test exact_names wlf_ -- --ignored
 
-# Execute VCD/FST/GHW Criterion workloads without timing thresholds.
+# Execute built-in Criterion workloads without timing thresholds.
 bench-smoke: _inside
     CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}" cargo bench --locked --bench vcd -- --test
     CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}" cargo bench --locked --bench fst -- --test
     CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}" cargo bench --locked --bench ghw -- --test
+    CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}" cargo bench --locked --bench wdb -- --test
 
 # Execute vendor Criterion workloads against pinned fixtures.
 bench-smoke-fsdb: _inside
@@ -88,6 +89,7 @@ bench-smoke-fsdb: _inside
 
 _bench-smoke-fsdb: _inside
     CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}" cargo bench --locked --features fsdb-lib --bench fsdb -- --test
+    CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}" cargo bench --locked --features fsdb-lib --bench wdb -- --test
 
 # Measure FSDB workloads for each selected SDK; accepts Criterion arguments.
 bench-fsdb *args: _inside

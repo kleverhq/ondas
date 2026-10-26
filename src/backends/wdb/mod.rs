@@ -3,6 +3,7 @@ mod container;
 mod debug;
 mod hierarchy;
 mod model;
+mod point;
 mod types;
 mod wire;
 

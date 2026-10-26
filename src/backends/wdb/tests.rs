@@ -183,6 +183,256 @@ fn recorded(version: u8, records: &[(u64, u32, &[u8])]) -> Vec<u8> {
     bytes
 }
 
+fn recorded_integer(records: &[(u64, u32, &[u8])]) -> Vec<u8> {
+    let mut data = recorded(6, records);
+    let mut rtti = vec![0; 40];
+    rtti[..25].copy_from_slice(b"Xilinx ISim TYPE FILE 001");
+    let mut body = b"INTEGER\0".to_vec();
+    for word in [2, i32::MIN as u32, i32::MAX as u32, 1] {
+        body.extend_from_slice(&word.to_le_bytes());
+    }
+    rtti.extend_from_slice(&(8 + body.len() as u32).to_le_bytes());
+    rtti.extend_from_slice(&0xa000_0005_u32.to_le_bytes());
+    rtti.extend_from_slice(&body);
+    let end = rtti.len() as u32;
+    put32(&mut rtti, 32, 1);
+    put32(&mut rtti, 36, end);
+    rtti.extend_from_slice(&40_u64.to_le_bytes());
+    data[0x300..0x300 + rtti.len()].copy_from_slice(&rtti);
+    put64(&mut data, 0x180 + 48 + 40, rtti.len() as u64);
+    let declarations = u32::from_le_bytes(data[0x428..0x42c].try_into().unwrap()) as usize;
+    put32(&mut data, 0x400 + declarations + 16, 4);
+    data
+}
+
+#[test]
+fn wdb_cold_points_whole_writes_partial_fallback_and_page_boundaries() {
+    use crate::{Sample, Time, Value};
+    let zero = 0_u32.to_le_bytes();
+    let one = 1_u32.to_le_bytes();
+    let value256 = 256_u32.to_le_bytes();
+    let full = recorded_integer(&[
+        (2, 0, &zero),
+        (3, 0, &one),
+        (3, 0, &zero),
+        (7, 0, &one),
+        (8, 0, &one),
+    ]);
+    let partial = recorded_integer(&[
+        (2, 0, &zero),
+        (7, 1, &[1]),
+        (7, 0, &[1]),
+        (8, 0, &[0]),
+        (9, 0, &value256),
+    ]);
+    let initial_parts =
+        recorded_integer(&[(2, 1, &[1]), (3, 0, &[2]), (4, 2, &[0, 0]), (5, 0, &zero)]);
+    let mut pages = recorded_integer(&[(2, 0, &zero), (7, 0, &one)]);
+    let second = recorded(6, &[(7, 0, &zero), (8, 0, &zero)]).split_off(0x14c0);
+    let offset = pages.len() as u64;
+    put64(&mut pages, 0x1000 + 16, offset);
+    put32(&mut pages, 0x1000 + 0x32c, second.len() as u32);
+    put32(&mut pages, 0x1000 + 0x4b8, 2);
+    pages.extend_from_slice(&second);
+    type Point = (u64, Option<(u32, Option<u64>)>);
+    let cases: &[(&[u8], &[Point])] = &[
+        (
+            &full,
+            &[
+                (0, None),
+                (2, Some((0, None))),
+                (3, Some((0, None))),
+                (7, Some((1, Some(7)))),
+                (100, Some((1, Some(7)))),
+                (u64::MAX, Some((1, Some(7)))),
+            ],
+        ),
+        (
+            &partial,
+            &[
+                (0, None),
+                (7, Some((257, Some(7)))),
+                (8, Some((256, Some(8)))),
+                (100, Some((256, Some(8)))),
+            ],
+        ),
+        (
+            &initial_parts,
+            &[
+                (2, None),
+                (3, None),
+                (4, Some((258, None))),
+                (5, Some((0, Some(5)))),
+            ],
+        ),
+        (
+            &pages,
+            &[
+                (2, Some((0, None))),
+                (7, Some((0, None))),
+                (8, Some((0, None))),
+                (100, Some((0, None))),
+            ],
+        ),
+    ];
+    for (bytes, cases) in cases {
+        for &(tick, expected) in *cases {
+            // Fresh selections exercise the cold path, without a primed replay.
+            let mut wave = crate::open_bytes("point.wdb", (*bytes).into()).unwrap();
+            let signal = wave.hierarchy().signal("top.flag").unwrap();
+            let actual = wave.sample(signal, Time::from_ticks(tick)).unwrap();
+            match (actual, expected) {
+                (Sample::Missing { .. }, None) => (),
+                (
+                    Sample::Value {
+                        value: Value::Bits(bits),
+                        changed_at,
+                        ..
+                    },
+                    Some((value, changed)),
+                ) => {
+                    assert_eq!(
+                        bits.as_ref().to_string(),
+                        format!("{value:032b}"),
+                        "t{tick}"
+                    );
+                    assert_eq!(changed_at.map(Time::ticks), changed, "t{tick}");
+                }
+                _ => panic!("wrong observation at {tick}"),
+            }
+        }
+    }
+    for bytes in [&full, &pages] {
+        let mut wave = crate::open_bytes("native.wdb", bytes.clone().into()).unwrap();
+        let signal = wave.hierarchy().signal("top.flag").unwrap();
+        let crate::backends::Reader::Wdb(reader) = &mut wave.reader else {
+            unreachable!()
+        };
+        assert!(
+            reader
+                .sample_bits(&[signal], Time::from_ticks(100))
+                .unwrap()
+                .is_some()
+        );
+    }
+    let mut wave = crate::open_bytes("partial.wdb", partial.into()).unwrap();
+    let signal = wave.hierarchy().signal("top.flag").unwrap();
+    let crate::backends::Reader::Wdb(reader) = &mut wave.reader else {
+        unreachable!()
+    };
+    assert!(
+        reader
+            .sample_bits(&[signal], Time::from_ticks(100))
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn wdb_cold_points_preserve_retained_order_and_reject_probed_bad_boundaries() {
+    use crate::{Sample, Time, Value};
+    let mut data = recorded_integer(&[
+        (2, 0, &[0, 0, 0, 0]),
+        (2, 8, &[1, 0, 0, 0]),
+        (7, 0, &[2, 0, 0, 0]),
+        (7, 8, &[3, 0, 0, 0]),
+    ]);
+    let len = u64::from_le_bytes(data[0x208..0x210].try_into().unwrap()) as usize;
+    let instances = u32::from_le_bytes(data[0x424..0x428].try_into().unwrap()) as usize;
+    let mut object = data[0x400 + instances..0x400 + instances + 56].to_vec();
+    put64(&mut object, 0, 8);
+    data[0x400 + len..0x400 + len + 56].copy_from_slice(&object);
+    put64(&mut data, 0x208, (len + 56) as u64);
+    put32(&mut data, 0x400 + 108, 2);
+    let mut wave = crate::open_bytes("order.wdb", data.into()).unwrap();
+    let signals: Vec<_> = wave
+        .hierarchy()
+        .variables()
+        .map(|v| v.signal().unwrap())
+        .collect();
+    assert_eq!(signals.len(), 2);
+    let crate::backends::Reader::Wdb(reader) = &mut wave.reader else {
+        unreachable!()
+    };
+    assert!(
+        reader
+            .sample_bits(&[signals[1], signals[0]], Time::from_ticks(7))
+            .unwrap()
+            .is_some()
+    );
+    let actual = wave
+        .samples(&[signals[1], signals[0], signals[1]], Time::from_ticks(7))
+        .unwrap();
+    assert_eq!(actual.len(), 3);
+    for (sample, expected) in actual.iter().zip([3, 2, 3]) {
+        let Sample::Value {
+            value: Value::Bits(bits),
+            changed_at,
+            ..
+        } = sample
+        else {
+            panic!("expected bits")
+        };
+        assert_eq!(bits.as_ref().to_string(), format!("{expected:032b}"));
+        assert_eq!(*changed_at, Some(Time::from_ticks(7)));
+    }
+    let mut data = recorded_integer(&[(2, 0, &[0, 0, 0, 0]), (7, 0, &[1, 0, 0, 0])]);
+    let second = recorded(6, &[(3, 0, &[0, 0, 0, 0]), (8, 0, &[1, 0, 0, 0])]).split_off(0x14c0);
+    let offset = data.len() as u64;
+    put64(&mut data, 0x1000 + 16, offset);
+    put32(&mut data, 0x1000 + 0x32c, second.len() as u32);
+    put32(&mut data, 0x1000 + 0x4b8, 2);
+    data.extend_from_slice(&second);
+    let mut wave = crate::open_bytes("bad-order.wdb", data.into()).unwrap();
+    let signal = wave.hierarchy().signal("top.flag").unwrap();
+    assert!(matches!(
+        wave.sample(signal, Time::from_ticks(2)),
+        Err(Error::Malformed { .. })
+    ));
+}
+
+#[test]
+fn wdb_cold_point_combines_final_bytes_across_arenas() {
+    use crate::{Sample, Time, Value};
+    let mut data = recorded_integer(&[(2, 2046, &[0, 0]), (7, 2046, &[1, 0]), (7, 2046, &[0, 0])]);
+    let event = data[0xd0..0x118].to_vec();
+    data[0xe0..0x128].copy_from_slice(&event);
+    put64(&mut data, 0x180 + 32, 0xe0);
+    put32(&mut data, 0xe0 + 12, 2);
+    put64(&mut data, 0xe0 + 24, 4096);
+    put64(&mut data, 0xd0, 0x1000);
+    put64(&mut data, 0xd8, 0x2000);
+    let instances = u32::from_le_bytes(data[0x424..0x428].try_into().unwrap()) as usize;
+    put64(&mut data, 0x400 + instances, 2046);
+    let second = recorded(6, &[(2, 0, &[0, 0]), (7, 0, &[1, 0])]).split_off(0x14c0);
+    data.resize(0x24c0, 0);
+    put64(&mut data, 0x2000 + 8, 0x24c0);
+    put32(&mut data, 0x2000 + 0x328, second.len() as u32);
+    put32(&mut data, 0x2000 + 0x4b8, 1);
+    data.extend_from_slice(&second);
+    let mut wave = crate::open_bytes("arenas.wdb", data.into()).unwrap();
+    let signal = wave.hierarchy().signal("top.flag").unwrap();
+    let crate::backends::Reader::Wdb(reader) = &mut wave.reader else {
+        unreachable!()
+    };
+    assert!(
+        reader
+            .sample_bits(&[signal], Time::from_ticks(7))
+            .unwrap()
+            .is_some()
+    );
+    let Sample::Value {
+        value: Value::Bits(bits),
+        changed_at,
+        ..
+    } = wave.sample(signal, Time::from_ticks(7)).unwrap()
+    else {
+        panic!("expected bits")
+    };
+    assert_eq!(bits.as_ref().to_string(), format!("{:032b}", 65536));
+    assert_eq!(changed_at, Some(Time::from_ticks(7)));
+}
+
 #[test]
 fn wdb_public_values_stop_repeat_and_composition() {
     use crate::{Sample, ScanRef, Time, TimeRange, Value};

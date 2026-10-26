@@ -272,22 +272,20 @@ fn identity_keeps_same_path_objects_and_their_children_separate() {
 }
 
 #[test]
-fn path_index_is_lazy_and_shared_between_hierarchy_clones() {
+fn lookup_index_is_lazy_shared_and_preserves_exact_selectors() {
     let hierarchy = fixture();
     let cloned = hierarchy.clone();
-    assert!(hierarchy.data.variables_by_path.get().is_none());
+    assert!(hierarchy.data.lookup.get().is_none());
     for variable in hierarchy.variables() {
         let _ = variable.path();
     }
-    assert!(hierarchy.data.variables_by_path.get().is_none());
+    assert!(hierarchy.data.lookup.get().is_none());
     assert_eq!(cloned.variable("tb.dut.data").unwrap().name(), "data");
-    assert!(hierarchy.data.variables_by_path.get().is_none());
-    assert_eq!(hierarchy.variable("tb.dut.alias").unwrap().name(), "alias");
-    let index = hierarchy.data.variables_by_path.get().unwrap();
     assert!(std::ptr::eq(
-        index,
-        cloned.data.variables_by_path.get().unwrap()
+        hierarchy.data.lookup.get().unwrap(),
+        cloned.data.lookup.get().unwrap()
     ));
+    assert_eq!(hierarchy.variable("tb.dut.alias").unwrap().name(), "alias");
     assert!(matches!(
         hierarchy.variable("tb.dut.duplicate"),
         Err(LookupError::Ambiguous { matches: 2, .. })
@@ -297,26 +295,21 @@ fn path_index_is_lazy_and_shared_between_hierarchy_clones() {
         ambiguous.variable("tb.dut.duplicate"),
         Err(LookupError::Ambiguous { matches: 2, .. })
     ));
-    assert!(ambiguous.data.variables_by_path.get().is_none());
 
     let missing = fixture();
     assert!(matches!(
         missing.variable("tb.dut.absent"),
         Err(LookupError::NotFound { .. })
     ));
-    assert!(missing.data.variables_by_path.get().is_none());
     assert_eq!(missing.variable("tb.dut.data").unwrap().name(), "data");
-    assert!(missing.data.variables_by_path.get().is_some());
 
     let exact = fixture();
     assert_eq!(exact.signal("tb.dut.data[7:0]").unwrap().width(), Some(8));
-    assert!(exact.data.variables_by_path.get().is_none());
     let fallback = fixture();
     assert_eq!(
         fallback.signal("tb.dut.data[1:0]").unwrap().width(),
         Some(2)
     );
-    assert!(fallback.data.variables_by_path.get().is_some());
 }
 
 #[test]

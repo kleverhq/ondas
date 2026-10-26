@@ -274,8 +274,72 @@ struct HierarchyData {
     variables: Vec<VariableData>,
     encodings: Vec<Encoding>,
     children: OnceLock<ChildLinks>,
-    first_variable_lookup: OnceLock<()>,
-    variables_by_path: OnceLock<HashMap<HierarchyPath, (usize, usize)>>,
+    lookup: OnceLock<LookupIndex>,
+}
+
+struct LookupIndex {
+    scopes: HashMap<(Option<usize>, String), usize>,
+    next_scope: Vec<usize>,
+    variables: HashMap<(Option<usize>, String), (usize, usize)>,
+}
+
+impl LookupIndex {
+    fn new(scopes: &[ScopeData], variables: &[VariableData]) -> Self {
+        let mut scope_index = HashMap::with_capacity(scopes.len());
+        let mut next_scope = vec![usize::MAX; scopes.len()];
+        for (index, scope) in scopes.iter().enumerate().rev() {
+            if let Some(next) = scope_index.insert((scope.parent, scope.name.clone()), index) {
+                next_scope[index] = next;
+            }
+        }
+        let mut variable_index = HashMap::with_capacity(variables.len());
+        for (index, variable) in variables.iter().enumerate() {
+            let entry = variable_index
+                .entry((variable.parent, variable.name.clone()))
+                .or_insert((index, 0));
+            entry.1 += 1;
+        }
+        Self {
+            scopes: scope_index,
+            next_scope,
+            variables: variable_index,
+        }
+    }
+
+    fn variable(&self, path: &HierarchyPath) -> Option<(usize, usize)> {
+        let (name, scopes) = path.components.split_last()?;
+        let mut parents = vec![None];
+        let mut next = Vec::new();
+        let mut key = (None, String::new());
+        for component in scopes {
+            key.1.clear();
+            key.1.push_str(component);
+            for &parent in &parents {
+                key.0 = parent;
+                let mut scope = self.scopes.get(&key).copied().unwrap_or(usize::MAX);
+                while scope != usize::MAX {
+                    next.push(Some(scope));
+                    scope = self.next_scope[scope];
+                }
+            }
+            std::mem::swap(&mut parents, &mut next);
+            next.clear();
+            if parents.is_empty() {
+                return None;
+            }
+        }
+        let mut found = None;
+        key.1.clear();
+        key.1.push_str(name);
+        for parent in parents {
+            key.0 = parent;
+            if let Some(&(index, count)) = self.variables.get(&key) {
+                let entry = found.get_or_insert((index, 0));
+                entry.1 += count;
+            }
+        }
+        found
+    }
 }
 
 struct ChildLinks {
@@ -401,8 +465,7 @@ impl Hierarchy {
                 variables,
                 encodings,
                 children: OnceLock::new(),
-                first_variable_lookup: OnceLock::new(),
-                variables_by_path: OnceLock::new(),
+                lookup: OnceLock::new(),
             }),
         }
     }
@@ -595,37 +658,17 @@ impl Hierarchy {
         &self,
         path: &HierarchyPath,
     ) -> std::result::Result<Variable<'_>, LookupError> {
-        if self.data.variables_by_path.get().is_none()
-            && self.data.first_variable_lookup.set(()).is_ok()
-        {
-            let mut matches = self.variables().filter(|variable| {
-                Some(variable.name()) == path.name() && variable.path() == *path
-            });
-            let first = matches.next();
-            return match (first, matches.count()) {
-                (None, _) => Err(LookupError::NotFound { path: path.clone() }),
-                (Some(variable), 0) => Ok(variable),
-                (_, remaining) => Err(LookupError::Ambiguous {
-                    path: path.clone(),
-                    matches: remaining + 1,
-                }),
-            };
-        }
-        let variables_by_path = self.data.variables_by_path.get_or_init(|| {
-            let mut index = HashMap::with_capacity(self.data.variables.len());
-            for variable in self.variables() {
-                let entry = index.entry(variable.path()).or_insert((variable.index, 0));
-                entry.1 += 1;
-            }
-            index
-        });
-        match variables_by_path.get(path) {
+        let index = self
+            .data
+            .lookup
+            .get_or_init(|| LookupIndex::new(&self.data.scopes, &self.data.variables));
+        match index.variable(path) {
             None => Err(LookupError::NotFound { path: path.clone() }),
-            Some(&(index, 1)) => Ok(Variable {
+            Some((index, 1)) => Ok(Variable {
                 hierarchy: self,
                 index,
             }),
-            Some(&(_, matches)) => Err(LookupError::Ambiguous {
+            Some((_, matches)) => Err(LookupError::Ambiguous {
                 path: path.clone(),
                 matches,
             }),
