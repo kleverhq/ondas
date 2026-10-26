@@ -9,10 +9,7 @@ pub(crate) mod ghw;
 #[allow(unsafe_code)] // Private C ABI; native calls are serialized and user callbacks run unlocked.
 pub(crate) mod shm;
 pub(crate) mod vcd;
-// The format parser is qualified before it is connected to the public reader.
-#[cfg(test)]
-#[allow(dead_code)]
-mod wdb;
+pub(crate) mod wdb;
 #[cfg(feature = "wlf-lib")]
 #[allow(unsafe_code)] // The private, audited C ABI boundary only.
 pub(crate) mod wlf;
@@ -31,6 +28,7 @@ pub(crate) enum Reader {
     Fst(Box<fst::Reader>),
     Vcd(Box<vcd::Reader>),
     Ghw(Box<ghw::Reader>),
+    Wdb(Box<wdb::Reader>),
     #[cfg(feature = "fsdb-lib")]
     Fsdb(Box<fsdb::Reader>),
     #[cfg(feature = "shm-lib")]
@@ -69,6 +67,9 @@ impl Reader {
             Self::Ghw(reader) => reader.read(signals, end, |event| match event {
                 ghw::Notification::Value { index, time, value } => visitor(index, time, Ok(value)),
                 ghw::Notification::Tick(_) => ControlFlow::Continue(()),
+            }),
+            Self::Wdb(reader) => reader.read(signals, end, |index, time, value| {
+                visitor(index, time, Ok(value))
             }),
             #[cfg(feature = "fsdb-lib")]
             Self::Fsdb(reader) => reader.read(signals, end, |index, time, value| {

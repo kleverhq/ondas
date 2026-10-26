@@ -76,6 +76,7 @@ impl Fixture {
             Format::Fst => "fst-lib",
             Format::Vcd => "vcd-native",
             Format::Ghw => "ghw-native",
+            Format::Wdb => "wdb-native",
             Format::Fsdb => "fsdb-lib",
             Format::Shm => "shm-lib",
 
@@ -89,6 +90,7 @@ impl Fixture {
             Format::Fst => "conformance.fst",
             Format::Vcd => "conformance.vcd",
             Format::Ghw => "conformance.ghw",
+            Format::Wdb => "conformance.wdb",
             Format::Fsdb => "conformance.fsdb",
             Format::Shm => "conformance.shm",
 
@@ -346,6 +348,7 @@ fn load_conformance_fixture(root: &Path, name: &str) -> Option<Fixture> {
         "fst" => Format::Fst,
         "vcd" => Format::Vcd,
         "ghw" => Format::Ghw,
+        "wdb" => Format::Wdb,
         "fsdb" if cfg!(feature = "fsdb-lib") => Format::Fsdb,
         "shm" if cfg!(feature = "shm-lib") => Format::Shm,
 
@@ -390,7 +393,15 @@ fn logical_name_oracle(name: &str, mut oracle: Json) -> Json {
             | "fsdb/fsdb0046-ise"
             | "fsdb/fsdb0055-riscv-soc-debug-netlist"
     );
-    if fsdb_verilog || name == "wlf/wlf0072-strings-and-names" {
+    let wdb_verilog = matches!(
+        name,
+        "wdb/wdb0142-tb-comb-behav"
+            | "wdb/wdb0159-tb-systolicarray-behav"
+            | "wdb/wdb0295-tb-top-behav"
+            | "wdb/wdb0305-enum-core"
+            | "wdb/wdb0119-tb-gf283-top-time-impl"
+    );
+    if fsdb_verilog || name == "wlf/wlf0072-strings-and-names" || wdb_verilog {
         for key in ["scopes", "variables"] {
             if let Some(declarations) = oracle
                 .get_mut("hierarchy")
@@ -407,6 +418,14 @@ fn logical_name_oracle(name: &str, mut oracle: Json) -> Json {
                             && raw == "\\name.with.dot "
                         {
                             *component = json!("name.with.dot");
+                        } else if wdb_verilog && raw.starts_with('\\') && raw.ends_with(' ') {
+                            let identifier = raw[1..].trim_end();
+                            assert!(
+                                !identifier.is_empty()
+                                    && identifier.bytes().all(|b| (33..=126).contains(&b)),
+                                "{name}: unqualified escaped identifier {raw:?}"
+                            );
+                            *component = json!(identifier);
                         }
                     }
                     assert!(
@@ -768,7 +787,9 @@ fn hierarchy(wave: &Waveform, oracle: &Json, check_lookups: bool) -> BTreeMap<St
                 continue;
             }
             let id = id.as_str().unwrap();
-            let signal = variable.signal().unwrap();
+            let signal = variable
+                .signal()
+                .unwrap_or_else(|| panic!("{path}: no signal"));
             if check_lookups {
                 assert_eq!(hierarchy.signal_path(&path).unwrap(), signal);
                 assert_eq!(hierarchy.signal(&path.to_string()).unwrap(), signal);
@@ -1699,8 +1720,22 @@ fn static_composition_queries(
     }
 }
 
+fn unqualified_wdb_producer(fixture: &Fixture, error: &Error) -> bool {
+    // A new diagnostic requires explicit source qualification, not a broad skip.
+    fixture.format == Format::Wdb
+        && matches!(error,
+        Error::UnsupportedFeature { format: Format::Wdb, backend, operation: "open", message }
+            if backend == "wdb-native" && message == "non-simulation WDB producer")
+}
+
 fn pool_queries(fixture: &Fixture, bytes: bool, context: &str) -> bool {
     let result = open(fixture, bytes);
+    if let Err(error) = &result
+        && unqualified_wdb_producer(fixture, error)
+    {
+        eprintln!("UNSUPPORTED {context}: {error}");
+        return false;
+    }
     if let Err(error) = &result
         && fsdb_compatibility::is_version_error(error)
     {
@@ -1930,6 +1965,139 @@ fn full_vcd_pool() {
 #[ignore = "requires installed fixtures; run just conformance"]
 fn full_ghw_pool() {
     full_pool("ghw");
+}
+
+#[test]
+#[ignore = "requires installed WDB fixtures"]
+fn wdb_directed_published_controls() {
+    for name in [
+        "wdb0305-enum-core",
+        "wdb0306-enum-xz",
+        "wdb0307-enum-wide-constants",
+        "wdb0300-opb-s",
+        "wdb0000-testbench-behav",
+    ] {
+        let name = format!("wdb/{name}");
+        let fixture = load_conformance_fixture(&root(), &name).unwrap();
+        for bytes in [false, true] {
+            assert!(pool_queries(&fixture, bytes, &name));
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires the complete installed WDB corpus"]
+fn full_wdb_pool() {
+    full_pool("wdb");
+}
+
+#[test]
+#[ignore = "requires the complete installed WDB corpus"]
+fn wdb_metadata_and_hierarchy_corpus() {
+    let root = root();
+    let mut passed = 0;
+    let mut unsupported = 0;
+    let mut failures = Vec::new();
+    for name in discover(&root, "wdb") {
+        let result = std::panic::catch_unwind(|| {
+            let fixture = load_conformance_fixture(&root, &name).unwrap_or_else(|| {
+                panic!("{name}: independent WDB metadata/hierarchy oracle required")
+            });
+            let wave = match open(&fixture, false) {
+                Err(error) if unqualified_wdb_producer(&fixture, &error) => {
+                    return false;
+                }
+                result => result.unwrap(),
+            };
+            metadata(&wave, &fixture.oracle["metadata"], false, &fixture);
+            hierarchy(&wave, &fixture.oracle, true);
+            true
+        })
+        .map_err(panic_message);
+        match result {
+            Ok(true) => {
+                passed += 1;
+                eprintln!("PASS {name}: open, metadata, hierarchy (no histories)");
+            }
+            Ok(false) => {
+                unsupported += 1;
+                eprintln!("UNSUPPORTED {name}: non-simulation producer");
+            }
+            Err(error) => {
+                eprintln!("FAIL {name}: {error}");
+                failures.push((name, error));
+            }
+        }
+    }
+    eprintln!(
+        "WDB public metadata/hierarchy: passed={passed}, unsupported={unsupported}, failed={}",
+        failures.len()
+    );
+    assert!(passed > 0);
+    assert!(failures.is_empty(), "{failures:?}");
+}
+
+#[test]
+#[ignore = "requires installed WDB unmarked declaration controls"]
+fn wdb_unmarked_recorded_controls() {
+    let cases: &[(&str, &[&str])] = &[
+        ("wdb0038-fsic-tb-behav", &["fsic_tb", "DUT", "sys_clock"]),
+        (
+            "wdb0066-tb-1-behav",
+            &["tb_1", "u1", "u1", "attribute_ram_data"],
+        ),
+        ("wdb0068-rom-tb-behav", &["ROM_TB", "A1"]),
+        ("wdb0073-userdma", &["apatb_userdma_top", "tb_continue"]),
+        (
+            "wdb0075-design-1-wrapper-sim-wrapper-behav",
+            &[
+                "design_1_wrapper_sim_wrapper",
+                "nps4_0_mnpp_south0_flit_net",
+            ],
+        ),
+        ("wdb0099-tb-i2c-rtc-behav", &["tb_I2C_RTC", "clk"]),
+        (
+            "wdb0113-treehash-8-core-sha256-height-6-tb-behav",
+            &["treehash_8_core_sha256_height_6_tb", "CLK"],
+        ),
+        ("wdb0153-canny", &["apatb_canny_top", "DEP_address_1_from"]),
+        ("wdb0161-mcvga-tb-behav", &["MCVGA_TB", "clk_ext_port"]),
+        ("wdb0181-mac-tb-behav", &["mac_tb", "clk"]),
+        ("wdb0281-tb-behav", &["tb", "in1"]),
+        ("wdb0282-tb-behav", &["tb", "i0"]),
+    ];
+    for &(name, components) in cases {
+        let name = format!("wdb/{name}");
+        let fixture = load_conformance_fixture(&root(), &name).unwrap();
+        let selected_path = HierarchyPath::from_components(components.iter().copied());
+        let variable = fixture.oracle["hierarchy"]["variables"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| path(&v["path"]) == selected_path)
+            .unwrap_or_else(|| panic!("{name}: missing oracle variable {selected_path}"));
+        let expected = &fixture.oracle["signals"][variable["signal"].as_str().unwrap()];
+        let window = expected["windows"]
+            .as_array()
+            .and_then(|windows| windows.first())
+            .unwrap_or_else(|| panic!("{name}: no complete window for {selected_path}"));
+        let time = tick(&window["start"]);
+        for bytes in [false, true] {
+            let mut wave = open(&fixture, bytes).unwrap();
+            let signal = wave
+                .hierarchy()
+                .signal_path(&path(&variable["path"]))
+                .unwrap();
+            let actual = wave.sample(signal, Time::from_ticks(time)).unwrap();
+            sample(
+                actual.as_ref(),
+                signal,
+                &normalized_oracle::sample(window, time, false),
+                time,
+                &name,
+            );
+        }
+    }
 }
 
 #[cfg(not(feature = "fsdb-lib"))]

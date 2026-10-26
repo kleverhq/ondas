@@ -56,17 +56,13 @@ pub(super) enum Body {
         class: u32,
         literals: Vec<Vec<u8>>,
         bytes: usize,
-        variant: u32,
     },
     Values {
         base: usize,
         entries: Vec<(String, Vec<u8>)>,
         ranges: Vec<Range>,
     },
-    Integer {
-        low: i32,
-        high: i32,
-    },
+    Integer,
     Real,
     Alias {
         target: usize,
@@ -83,7 +79,7 @@ pub(super) enum Body {
         layout: u16,
         fields: Vec<Field>,
     },
-    Unsupported(u8),
+    Unsupported,
 }
 
 pub(super) struct Type {
@@ -133,7 +129,7 @@ fn read_type(kind: u8, bytes: &[u8]) -> Result<Type> {
     }
     let body = match kind {
         3 => {
-            let variant = c.u32()?;
+            c.u32()?;
             let class = c.u32()?;
             let n = c.count(1)?;
             // VHDL CHARACTER literals can contain one non-UTF-8 character byte.
@@ -150,7 +146,6 @@ fn read_type(kind: u8, bytes: &[u8]) -> Result<Type> {
                 class,
                 literals,
                 bytes,
-                variant,
             }
         }
         4 => {
@@ -171,10 +166,10 @@ fn read_type(kind: u8, bytes: &[u8]) -> Result<Type> {
             }
         }
         5 => {
-            let low = c.i32()?;
-            let high = c.i32()?;
+            c.i32()?;
+            c.i32()?;
             c.expect(1)?;
-            Body::Integer { low, high }
+            Body::Integer
         }
         6 => {
             c.u32()?;
@@ -190,7 +185,7 @@ fn read_type(kind: u8, bytes: &[u8]) -> Result<Type> {
         },
         8 | 12 => {
             c.take(12)?;
-            Body::Unsupported(kind)
+            Body::Unsupported
         }
         13 => {
             let n = c.count(9)?;
@@ -222,22 +217,22 @@ fn read_type(kind: u8, bytes: &[u8]) -> Result<Type> {
         }
         19 | 20 => {
             c.take(8)?;
-            Body::Unsupported(kind)
+            Body::Unsupported
         }
         21 => {
             c.take(12)?;
-            Body::Unsupported(kind)
+            Body::Unsupported
         }
         11 => {
             c.expect(0)?;
-            Body::Unsupported(kind)
+            Body::Unsupported
         }
         23 => {
             c.take(8)?;
             fields(&mut c, true)?;
-            Body::Unsupported(kind)
+            Body::Unsupported
         }
-        24 => Body::Unsupported(kind),
+        24 => Body::Unsupported,
         _ => return Err(unsupported(format!("RTTI type kind {kind:#x}"))),
     };
     c.finish()?;

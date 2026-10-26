@@ -163,6 +163,173 @@ fn populated(version: u8) -> Vec<u8> {
     data
 }
 
+fn recorded(version: u8, records: &[(u64, u32, &[u8])]) -> Vec<u8> {
+    let mut page = Vec::new();
+    page.extend_from_slice(&records.first().unwrap().0.to_le_bytes());
+    page.extend_from_slice(&(records.last().unwrap().0 - records.first().unwrap().0).to_le_bytes());
+    page.extend_from_slice(&(records.len() as u32).to_le_bytes());
+    for &(time, key, value) in records {
+        page.extend_from_slice(&time.to_le_bytes());
+        page.extend_from_slice(&key.to_le_bytes());
+        page.extend_from_slice(&(value.len() as u32).to_le_bytes());
+        page.extend_from_slice(value);
+    }
+    page.resize(10240, 0);
+    let compressed = miniz_oxide::deflate::compress_to_vec_zlib(&page, 6);
+    let mut bytes = populated(version);
+    bytes.truncate(0x14c0);
+    put32(&mut bytes, 0x1000 + 0x328, compressed.len() as u32);
+    bytes.extend_from_slice(&compressed);
+    bytes
+}
+
+#[test]
+fn wdb_public_values_stop_repeat_and_composition() {
+    use crate::{Sample, ScanRef, Time, TimeRange, Value};
+    use std::ops::ControlFlow;
+    for version in [4, 5, 6] {
+        let bytes: std::sync::Arc<[u8]> = recorded(
+            version,
+            &[(0, 0, &[0]), (3, 0, &[1]), (3, 0, &[0]), (7, 0, &[1])],
+        )
+        .into();
+        let mut wave = crate::open_bytes_with("source.bin", bytes.clone(), "wdb-native").unwrap();
+        assert_eq!(wave.format(), crate::Format::Wdb);
+        assert_eq!(wave.backend(), "wdb-native");
+        let signal = wave.hierarchy().signal("top.flag").unwrap();
+        let assert_value = |sample: Sample, expected: &str| {
+            let Sample::Value {
+                value: Value::Bits(bits),
+                ..
+            } = sample
+            else {
+                panic!("expected bits")
+            };
+            assert_eq!(bits.as_ref().to_string(), expected);
+        };
+        for (tick, expected) in [(3, "0"), (7, "1"), (0, "0"), (100, "1")] {
+            assert_value(
+                wave.sample(signal, Time::from_ticks(tick)).unwrap(),
+                expected,
+            );
+        }
+        let joined = wave.concat(&[signal, signal]).unwrap();
+        assert_value(wave.sample(joined, Time::from_ticks(7)).unwrap(), "11");
+        let range = TimeRange::closed(Time::ZERO, Time::from_ticks(10));
+        let mut changes = Vec::new();
+        let _ = wave
+            .select(&[signal])
+            .unwrap()
+            .scan(range, |record| {
+                if let ScanRef::Change { time, value, .. } = record {
+                    changes.push((time.ticks(), value.to_owned()));
+                }
+                ControlFlow::<()>::Continue(())
+            })
+            .unwrap();
+        assert_eq!(changes.len(), 2);
+        assert_eq!(changes[0].0, 0);
+        assert_eq!(changes[1].0, 7);
+        let outcome = wave
+            .select(&[signal])
+            .unwrap()
+            .scan(range, |_| ControlFlow::Break(42))
+            .unwrap();
+        assert_eq!(outcome, ControlFlow::Break(42));
+        assert_value(wave.sample(signal, Time::from_ticks(7)).unwrap(), "1");
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = wave
+                .select(&[signal])
+                .unwrap()
+                .scan(range, |_| -> ControlFlow<()> { panic!("consumer") });
+        }));
+        assert!(panic.is_err());
+        assert_value(wave.sample(signal, Time::ZERO).unwrap(), "0");
+        let mut nested = crate::open_bytes("nested.wdb", bytes).unwrap();
+        let other = nested.hierarchy().signal("top.flag").unwrap();
+        let _ = wave
+            .select(&[signal])
+            .unwrap()
+            .scan(range, |_| {
+                assert_value(nested.sample(other, Time::from_ticks(7)).unwrap(), "1");
+                ControlFlow::<()>::Continue(())
+            })
+            .unwrap();
+    }
+}
+
+#[test]
+fn wdb_read_errors_and_selected_prefixes() {
+    use crate::{Time, TimeRange};
+    use std::ops::ControlFlow;
+    let mut unmarked = recorded(6, &[(0, 0, &[1])]);
+    put64(&mut unmarked, 0xd0 + 48, 0);
+    put64(&mut unmarked, 0xd0 + 56, 0);
+    let mut wave = crate::open_bytes("unmarked.wdb", unmarked.into()).unwrap();
+    let s = wave.hierarchy().signal("top.flag").unwrap();
+    assert!(matches!(
+        wave.sample(s, Time::ZERO).unwrap(),
+        crate::Sample::Value { .. }
+    ));
+    let mut corrupt = recorded(6, &[(0, 0, &[0])]);
+    let last = corrupt.len() - 1;
+    corrupt[last] ^= 1;
+    let mut wave = crate::open_bytes("bad.wdb", corrupt.into()).unwrap();
+    let s = wave.hierarchy().signal("top.flag").unwrap();
+    assert!(matches!(
+        wave.sample(s, Time::ZERO),
+        Err(Error::Malformed { .. })
+    ));
+    let mut backwards = crate::open_bytes(
+        "bad.wdb",
+        recorded(6, &[(0, 0, &[0]), (7, 0, &[1]), (3, 0, &[0])]).into(),
+    )
+    .unwrap();
+    let s = backwards.hierarchy().signal("top.flag").unwrap();
+    assert!(matches!(
+        backwards.sample(s, Time::from_ticks(10)),
+        Err(Error::Malformed { .. })
+    ));
+    let mut unrelated =
+        crate::open_bytes("other.wdb", recorded(6, &[(0, 1, &[0])]).into()).unwrap();
+    let s = unrelated.hierarchy().signal("top.flag").unwrap();
+    let mut count = 0;
+    let _ = unrelated
+        .select(&[s])
+        .unwrap()
+        .scan(TimeRange::closed(Time::ZERO, Time::from_ticks(10)), |_| {
+            count += 1;
+            ControlFlow::<()>::Continue(())
+        })
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn wdb_mismatched_declaration_is_checked_for_each_object() {
+    for marked in [0, 1] {
+        let mut bytes = populated(6);
+        let debug_len = u64::from_le_bytes(bytes[0x208..0x210].try_into().unwrap()) as usize;
+        let instances = u32::from_le_bytes(bytes[0x424..0x428].try_into().unwrap()) as usize;
+        let declarations = u32::from_le_bytes(bytes[0x428..0x42c].try_into().unwrap()) as usize;
+        let mut second = bytes[0x400 + instances..0x400 + instances + 56].to_vec();
+        put64(&mut second, 0, 8);
+        bytes[0x400 + debug_len..0x400 + debug_len + 56].copy_from_slice(&second);
+        put64(&mut bytes, 0x208, (debug_len + 56) as u64);
+        put32(&mut bytes, 0x400 + 108, 2);
+        put32(&mut bytes, 0x400 + declarations + 16, 2);
+        put64(&mut bytes, 0x220, marked);
+        put64(&mut bytes, 0x228, marked);
+        assert!(
+            matches!(
+                crate::open_bytes("mismatch.wdb", bytes.into()),
+                Err(Error::Malformed { .. })
+            ),
+            "marked object {marked}"
+        );
+    }
+}
+
 fn structure(data: Vec<u8>) -> crate::Result<debug::Debug> {
     metadata(Box::new(Cursor::new(data)))
 }

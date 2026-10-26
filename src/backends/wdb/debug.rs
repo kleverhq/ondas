@@ -37,6 +37,7 @@ pub(super) struct Object {
 }
 
 pub(super) struct Debug {
+    #[cfg(test)]
     pub version: u8,
     pub precision: i32,
     pub scopes: Vec<Scope>,
@@ -238,6 +239,7 @@ pub(super) fn read(source: &mut Source, container: &Container, num_types: usize)
         }
     }
     Ok(Debug {
+        #[cfg(test)]
         version,
         precision,
         scopes,

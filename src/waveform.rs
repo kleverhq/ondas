@@ -11,12 +11,13 @@ mod composition;
 use crate::{
     Error, Hierarchy, Result, Sample, ScanRef, Selection, Signal, Time, TimeRange, TimeSpan,
     Timescale, Trace,
-    backends::{Input, Reader, fst, ghw, vcd},
+    backends::{Input, Reader, fst, ghw, vcd, wdb},
 };
 
 /// Opens a waveform source with an automatically selected available backend.
 ///
 /// FST uses `fst-lib`. VCD uses `vcd-native`. GHW uses `ghw-native`.
+/// Simulation WDB uses `wdb-native` (DBG 004, 005 and 006).
 /// FSDB and WLF files use the optional `fsdb-lib` and `wlf-lib` features.
 /// SHM directories use the optional `shm-lib` feature. Content recognition takes
 /// priority over the filename. A recognized extension is a fallback hint.
@@ -33,7 +34,7 @@ pub fn open(path: impl AsRef<Path>) -> Result<Waveform> {
 /// Reads owned source metadata without retaining a waveform or hierarchy.
 ///
 /// FSDB, SHM and WLF read native source metadata without materializing declarations.
-/// FST, VCD and GHW use their regular readers, so this is not a fast path for those
+/// FST, VCD, GHW and WDB use their regular readers, so this is not a fast path for those
 /// formats. Format detection matches [`open`], as do metadata values for sources
 /// that open successfully. Unlike [`open`], it does not validate a vendor
 /// declaration tree. Use [`open`] for validated hierarchy or signal access.
@@ -58,7 +59,7 @@ pub fn read_metadata(path: impl AsRef<Path>) -> Result<Metadata> {
         Format::Fst => fst::Reader::open(input, name).map(|(_, _, metadata)| metadata),
         Format::Vcd => vcd::Reader::open(input, name, vcd_file).map(|(_, _, metadata)| metadata),
         Format::Ghw => ghw::Reader::open(input, name).map(|(_, _, metadata)| metadata),
-        Format::Wdb => Err(Error::NoBackend { format }),
+        Format::Wdb => wdb::Reader::open(input, name).map(|(_, _, metadata)| metadata),
         #[cfg(feature = "fsdb-lib")]
         Format::Fsdb => crate::backends::fsdb::read_metadata(path, name),
         #[cfg(feature = "shm-lib")]
@@ -72,7 +73,7 @@ pub fn read_metadata(path: impl AsRef<Path>) -> Result<Metadata> {
 
 /// Opens a waveform source with only the named backend, without fallback.
 ///
-/// Available names are `fst-lib`, `vcd-native`, `ghw-native`, and feature-enabled
+/// Available names are `fst-lib`, `vcd-native`, `ghw-native`, `wdb-native`, and feature-enabled
 /// `fsdb-lib`, `shm-lib` and `wlf-lib`. SHM input must be a database directory.
 /// A disabled optional backend is an unknown name. Unknown names return
 /// [`Error::UnknownBackend`]. A format unsupported by the selected backend returns
@@ -85,7 +86,7 @@ pub fn open_with(path: impl AsRef<Path>, backend: &str) -> Result<Waveform> {
 ///
 /// `name` is the logical [`Metadata::source_name`] and a format-detection hint.
 /// The input stays alive through the shared ownership of `bytes`. Detection,
-/// errors, and reader limitations are the same as [`open`]. FST, VCD and GHW readers
+/// errors, and reader limitations are the same as [`open`]. FST, VCD, GHW and WDB readers
 /// support file and byte input. `fsdb-lib` and `wlf-lib` read files only. `shm-lib`
 /// reads directories only. An enabled FSDB, SHM or WLF filename hint returns
 /// [`Error::UnsupportedInput`].
@@ -115,7 +116,10 @@ pub fn open_bytes_with(
 
 fn check_backend(backend: Option<&str>) -> Result<()> {
     if let Some(backend) = backend
-        && !matches!(backend, "fst-lib" | "vcd-native" | "ghw-native")
+        && !matches!(
+            backend,
+            "fst-lib" | "vcd-native" | "ghw-native" | "wdb-native"
+        )
         && !(cfg!(feature = "fsdb-lib") && backend == "fsdb-lib")
         && !(cfg!(feature = "shm-lib") && backend == "shm-lib")
         && !(cfg!(feature = "wlf-lib") && backend == "wlf-lib")
@@ -211,7 +215,10 @@ fn open_input(
             let (reader, hierarchy, metadata) = ghw::Reader::open(input, name)?;
             (Reader::Ghw(Box::new(reader)), hierarchy, metadata)
         }
-        (Format::Wdb, None) => return Err(Error::NoBackend { format }),
+        (Format::Wdb, None | Some("wdb-native")) => {
+            let (reader, hierarchy, metadata) = wdb::Reader::open(input, name)?;
+            (Reader::Wdb(Box::new(reader)), hierarchy, metadata)
+        }
         #[cfg(feature = "fsdb-lib")]
         (Format::Fsdb, None | Some("fsdb-lib")) => {
             let path = _path.ok_or_else(|| Error::UnsupportedInput {
@@ -302,6 +309,8 @@ fn detect_format(input: &mut dyn Input, name: &str, _path: Option<&Path>) -> Res
             Some(Format::Fst)
         } else if prefix.starts_with(b"GHDLwave") {
             Some(Format::Ghw)
+        } else if prefix.starts_with(b"Xilinx WAVE DATABASE 01\0") {
+            Some(Format::Wdb)
         } else {
             None
         };
@@ -344,6 +353,7 @@ fn detect_format(input: &mut dyn Input, name: &str, _path: Option<&Path>) -> Res
             "fst" => Ok(Format::Fst),
             "vcd" => Ok(Format::Vcd),
             "ghw" => Ok(Format::Ghw),
+            "wdb" => Ok(Format::Wdb),
             "fsdb" => Ok(Format::Fsdb),
             "wlf" => Ok(Format::Wlf),
             "shm" => Ok(Format::Shm),
@@ -437,6 +447,7 @@ impl Waveform {
             Reader::Vcd(_) => Format::Vcd,
             Reader::Fst(_) => Format::Fst,
             Reader::Ghw(_) => Format::Ghw,
+            Reader::Wdb(_) => Format::Wdb,
             #[cfg(feature = "fsdb-lib")]
             Reader::Fsdb(_) => Format::Fsdb,
             #[cfg(feature = "shm-lib")]
@@ -457,6 +468,7 @@ impl Waveform {
             Reader::Fst(_) => "fst-lib",
             Reader::Vcd(_) => "vcd-native",
             Reader::Ghw(_) => "ghw-native",
+            Reader::Wdb(_) => "wdb-native",
             #[cfg(feature = "fsdb-lib")]
             Reader::Fsdb(_) => "fsdb-lib",
             #[cfg(feature = "shm-lib")]
