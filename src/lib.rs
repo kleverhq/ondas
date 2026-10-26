@@ -17,6 +17,7 @@ handles, native callbacks and format-local indices stay private.
 | FST | `fst-lib` | Files and shared in-memory bytes | Included; uses `fst-reader` 0.17.0 |
 | VCD | `vcd-native` | Files and shared in-memory bytes | Included; reads VCD directly without conversion |
 | GHW | `ghw-native` | Files and shared in-memory bytes | Included; reads GHW directly without conversion |
+| WDB | `wdb-native` | Files and shared in-memory bytes | Included; reads simulation WDB directly without conversion |
 | FSDB | `fsdb-lib` | Files only | Optional Cargo feature; requires a local FSDB Reader SDK |
 | SHM | `shm-lib` | Database directories only | Optional Cargo feature; requires a compatible Xcelium reader (2021+) |
 | WLF | `wlf-lib` | Files only | Optional Cargo feature; requires a local Questa SDK |
@@ -253,6 +254,51 @@ Source files must remain unchanged while open.
   [`Metadata::timescale`] returns `None`. Compression containers and unknown
   layouts are unsupported. Missing required nested array bounds are malformed.
   Empty derived layouts have a checked limit of 1,000,000 scopes.
+
+### WDB
+
+`wdb-native` is a built-in Rust reader for simulation WDB with DBG 004, 005
+and 006. It accepts files and shared in-memory bytes without an SDK or conversion.
+Non-simulation producers, including ILA recordings, are unsupported.
+Source files must remain unchanged while open.
+
+- Known scalar, vector, integer, physical and enum values preserve source bits
+  and logic states. Supported real storage maps to binary64. Named enum tables
+  retain complete keys and labels, including keys wider than 64 bits.
+- Supported whole bit arrays and records expose a vector. Qualified composite
+  layouts can expose element or field views; these views are not available for
+  every whole value. Other encodings retain declarations with
+  [`Encoding::Unsupported`]. Native string and event transports are not qualified.
+- Native path component boundaries remain exact, including literal dots.
+  Generated views have no native [`Variable::reader_name`]. Exact physical
+  recipes establish aliases; observed value equality does not.
+- A value is Missing until all required bytes are known. A recorded-object
+  marker is not used as a complete availability list. Source ticks and precision
+  are retained. Writer, date and comment metadata remain absent.
+- Opening reads declarations, not the complete value body. Queries validate the
+  pages they visit. Point seeking assumes native monotone page order and does
+  not validate unvisited adjacent pages. Typed errors report unsupported layouts
+  and malformed spans or records; opening is not a full-file validation pass.
+- Sequential queries merge selected arenas and complete each tick before
+  decoding. Eligible bit-only points can seek backwards through complete stored
+  values. Incomplete storage, values with more than 2,048 storage bytes, slices
+  and compositions use the chronological path. No full value history is cached.
+- Each retained query snapshot is limited to 4 MiB. Later reads can skip earlier
+  value decoding while reconstructing raw prefix bytes. Repeated points can
+  avoid source I/O. Callback termination discards provisional query state.
+- Type nesting is limited to 128. Each expanded array has at most 1,000,000
+  positions; the hierarchy has at most 2,000,000 generated variables. Native
+  declarations do not count toward that generated-variable limit.
+
+```no_run
+# fn example() -> Result<(), Box<dyn std::error::Error>> {
+let mut wave = ondas::open_with("dump.wdb", "wdb-native")?;
+let path = ondas::HierarchyPath::from_components(["tb", "word[0].data", "q"]);
+let signal = wave.hierarchy().signal_path(&path)?;
+let sample = wave.sample(signal, ondas::Time::from_ticks(10))?;
+# Ok(())
+# }
+```
 
 ### FSDB
 

@@ -1,6 +1,6 @@
 # ondas
 
-A read-only Rust library for waveform analysis across VCD, FST, GHW, FSDB, SHM and WLF.
+A read-only Rust library for waveform analysis across VCD, FST, GHW, WDB, FSDB, SHM and WLF.
 
 ![Ondas architecture: readers supply declarations and observations to the common query engine.](docs/images/architecture.drawio.svg)
 
@@ -15,7 +15,7 @@ Public contracts and runnable examples live in Rustdoc under `src/`. See the [re
 
 ## Cargo features
 
-No Cargo features are enabled by default. VCD, FST and GHW are built in, also with `default-features = false`. Native readers use optional Cargo features with the same names as their reader IDs. They need a local SDK at build time and runtime.
+No Cargo features are enabled by default. VCD, FST, GHW and WDB are built in, also with `default-features = false`. SDK-backed readers use optional Cargo features with the same names as their reader IDs. They need a local SDK at build time and runtime.
 
 ```toml
 [dependencies]
@@ -29,6 +29,7 @@ ondas = { version = "1", features = ["fsdb-lib"] }
 | `vcd-native` | VCD | Built-in Rust parser | `vcd-reader.md` |
 | `fst-lib` | FST | Published `fst-reader` decoder | `fst-reader.md` |
 | `ghw-native` | GHW | Built-in Rust parser | `ghw-reader.md` |
+| `wdb-native` | WDB | Built-in Rust parser | `wdb-reader.md` |
 | `fsdb-lib` | FSDB | Optional Verdi Reader SDK; file input | `fsdb-reader.md` |
 | `shm-lib` | SHM | Optional Xcelium reader; directory input | `shm-reader.md` |
 | `wlf-lib` | WLF | Optional Questa SDK; file input | `wlf-reader.md` |

@@ -30,7 +30,7 @@ Some pinned version-1 string observations contain non-ASCII values. They now pro
 
 Native GHDL observations use a conventional 1 fs scale. GHW stores no resolution. Conformance checks this known convention separately and expects absent Ondas timescale. Raw ticks remain unchanged. The convention does not prove physical time.
 
-Some pinned FSDB/WLF paths keep SDK Verilog spelling. The explicit audited mapping in `logical_name_oracle` adapts only those inputs. It does not call the production name adapter. Other paths stay exact. Keep raw sidecars, hashes and observations unchanged. Conversion or SDK spelling does not justify general name heuristics.
+Some pinned FSDB/WLF/WDB paths keep native Verilog spelling. The explicit audited mapping in `logical_name_oracle` adapts only those inputs. It does not call the production name adapter. Other paths stay exact. Keep raw sidecars, hashes and observations unchanged. Conversion or native spelling does not justify general name heuristics. In particular, WDB can contain literal dots within one native component; do not split them.
 
 ## Counters and skips have limited meaning
 
@@ -39,6 +39,8 @@ The shared generated reader counts retained slot values, advances, read starts a
 `src/waveform/semantics_tests.rs` defines reference histories separately from raw observations and production projection code. Keep this independence when changing semantics. Common pools compare point, batch, scan, Trace and query observations against complete oracle windows. Agreement between operations is not the oracle. Reader-specific failures and ABI/loader behavior need evidence outside the sparse schema.
 
 FSDB can report a confirmed newer source version after a failed open. Pool and benchmark wrappers report these skips separately. Focused tests can return after printing SKIP. A passing Rust test count therefore does not prove that its reader path ran. A standalone consumer can also start successfully and then skip a newer input. This proves loading, not query coverage for that file. Other opening failures and observation mismatches remain failures. WLF and SHM do not have this source-version skip rule.
+
+Simulation WDB with qualified DBG 004, 005 and 006 runs in file and byte modes. Recognized non-simulation producers, including ILA recordings, report explicit unsupported skips. Unknown layouts and malformed data are failures. A metadata-only matrix does not establish history support. Wide enum constant controls establish their tables and constant values; they do not prove dynamic wide enum transport.
 
 ## Corpus and artifact identity
 

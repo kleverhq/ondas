@@ -1,6 +1,6 @@
 //! Full-pool conformance plus focused public-API regressions.
 //! The independent oracle is sparse: only listed declarations and observations
-//! are assertions. Every discovered FST/VCD/GHW runs in file and bytes modes.
+//! are assertions. Every discovered FST/VCD/GHW/WDB runs in file and bytes modes.
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fs,

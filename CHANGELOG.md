@@ -26,6 +26,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Read simulation WDB files and shared bytes with the built-in `wdb-native` reader for DBG 004, 005 and 006. Preserve exact native paths, supported structured views and full-width enum tables through the common query API.
+
 - Add `Error::UnsupportedFeature` for confirmed GHW and FSDB source or query
   support limits. These cases previously returned `Error::Backend`.
 - Sample several explicit times with `Selection::samples_at` and
