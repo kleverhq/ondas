@@ -52,6 +52,7 @@ impl Slot {
 #[derive(Clone, Copy)]
 enum Position {
     Vcd(crate::backends::vcd::Position),
+    Wdb(Time),
     #[cfg(feature = "fsdb-lib")]
     Fsdb(Time),
     #[cfg(feature = "shm-lib")]
@@ -64,6 +65,7 @@ impl Position {
     fn time(self) -> Time {
         match self {
             Self::Vcd(position) => Time::from_ticks(position.time),
+            Self::Wdb(time) => time,
             #[cfg(feature = "fsdb-lib")]
             Self::Fsdb(time) => time,
             #[cfg(feature = "shm-lib")]
@@ -1296,6 +1298,7 @@ impl<'w> Selection<'w> {
             crate::backends::Reader::Vcd(reader) => {
                 let position = position.map(|position| match position {
                     Position::Vcd(position) => position,
+                    Position::Wdb(_) => unreachable!("reader is fixed for a selection"),
                     #[cfg(feature = "fsdb-lib")]
                     Position::Fsdb(_) => unreachable!("reader is fixed for a selection"),
                     #[cfg(feature = "shm-lib")]
@@ -1305,6 +1308,16 @@ impl<'w> Selection<'w> {
                 });
                 reader.read_from(&self.bases, end, position, |base, time, value, position| {
                     consume(Some((base, Ok(value))), time, Some(Position::Vcd(position)))
+                })
+            }
+            crate::backends::Reader::Wdb(reader) => {
+                let from = match position {
+                    Some(Position::Wdb(time)) => time,
+                    None => Time::ZERO,
+                    _ => unreachable!("reader is fixed for a selection"),
+                };
+                reader.read_from(&self.bases, from, end, |base, time, value| {
+                    consume(Some((base, Ok(value))), time, Some(Position::Wdb(time)))
                 })
             }
             crate::backends::Reader::Ghw(reader) => {
@@ -1321,6 +1334,7 @@ impl<'w> Selection<'w> {
                     Some(Position::Fsdb(time)) => time,
                     None => Time::ZERO,
                     Some(Position::Vcd(_)) => unreachable!("reader is fixed for a selection"),
+                    Some(Position::Wdb(_)) => unreachable!("reader is fixed for a selection"),
                     #[cfg(feature = "shm-lib")]
                     Some(Position::Shm(_)) => unreachable!("reader is fixed for a selection"),
                     #[cfg(feature = "wlf-lib")]
@@ -1393,6 +1407,15 @@ impl<'w> Selection<'w> {
                 time: pending_time,
                 slots: slots.to_vec(),
             }),
+            crate::backends::Reader::Wdb(_) if checkpoint_bytes(slots) <= CHECKPOINT_BYTES => {
+                end.ticks().checked_add(1).map(|next| Replay {
+                    position: Position::Wdb(Time::from_ticks(next)),
+                    start: pending_time.unwrap_or(replay_start),
+                    end,
+                    time: pending_time,
+                    slots: slots.to_vec(),
+                })
+            }
             #[cfg(feature = "fsdb-lib")]
             crate::backends::Reader::Fsdb(_)
                 if !self.bases.iter().any(|s| s.encoding() == Encoding::Event) =>

@@ -76,8 +76,21 @@ impl Reader {
         &mut self,
         signals: &[Signal],
         end: Time,
+        visitor: impl for<'v> FnMut(usize, Time, ValueRef<'v>) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>> {
+        self.read_from(signals, Time::ZERO, end, visitor)
+    }
+
+    pub(crate) fn read_from<B>(
+        &mut self,
+        signals: &[Signal],
+        from: Time,
+        end: Time,
         mut visitor: impl for<'v> FnMut(usize, Time, ValueRef<'v>) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>> {
+        if from > end {
+            return Ok(ControlFlow::Continue(()));
+        }
         let mut buffers = Vec::new();
         let mut routes: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
         for signal in signals {
@@ -166,7 +179,9 @@ impl Reader {
                         for slot in touched.drain(..) {
                             let b = &mut buffers[slot];
                             b.dirty = false;
-                            if b.known_count != b.raw.len() {
+                            // Reconstruct partial storage writes before a certified
+                            // boundary, but leave its normalized state to the caller.
+                            if time < from.ticks() || b.known_count != b.raw.len() {
                                 continue;
                             }
                             let value =

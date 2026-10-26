@@ -1793,7 +1793,10 @@ fn pool_queries(fixture: &Fixture, bytes: bool, context: &str) -> bool {
         // These paths must agree for every reader and value class. The trace
         // assertions below independently constrain their common observations.
         scan_queries(&mut wave, &handles, range, context);
-        if matches!(fixture.format, Format::Fsdb | Format::Ghw | Format::Wlf) {
+        if matches!(
+            fixture.format,
+            Format::Fsdb | Format::Ghw | Format::Wlf | Format::Wdb
+        ) {
             // Candidate-time and duplicate-selection assertions are derived from
             // supplied complete windows, without extending the oracle schema.
             let required: BTreeSet<_> = entries

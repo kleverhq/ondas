@@ -259,6 +259,175 @@ fn wdb_public_values_stop_repeat_and_composition() {
 }
 
 #[test]
+fn wdb_prepared_repeat_avoids_source_reads_and_invalidates_on_stop() {
+    use crate::{Sample, ScanRef, Time, TimeRange, Value, ValueRef};
+    use std::{
+        io::{BufRead, Read, Seek, SeekFrom},
+        ops::ControlFlow,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+    };
+    struct Counted {
+        cursor: std::io::Cursor<Arc<[u8]>>,
+        reads: Arc<AtomicUsize>,
+    }
+    impl Read for Counted {
+        fn read(&mut self, data: &mut [u8]) -> std::io::Result<usize> {
+            self.reads.fetch_add(1, Ordering::Relaxed);
+            self.cursor.read(data)
+        }
+    }
+    impl BufRead for Counted {
+        fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+            self.cursor.fill_buf()
+        }
+        fn consume(&mut self, n: usize) {
+            self.cursor.consume(n);
+        }
+    }
+    impl Seek for Counted {
+        fn seek(&mut self, at: SeekFrom) -> std::io::Result<u64> {
+            self.cursor.seek(at)
+        }
+    }
+    let bytes: Arc<[u8]> =
+        recorded(6, &[(2, 0, &[0]), (3, 0, &[1]), (3, 0, &[0]), (7, 0, &[1])]).into();
+    let mut wave = crate::open_bytes("repeat.wdb", bytes.clone()).unwrap();
+    let crate::backends::Reader::Wdb(reader) = &mut wave.reader else {
+        unreachable!()
+    };
+    let reads = Arc::new(AtomicUsize::new(0));
+    reader.source = Source::new(Box::new(Counted {
+        cursor: std::io::Cursor::new(bytes),
+        reads: reads.clone(),
+    }))
+    .unwrap();
+    let s = wave.hierarchy().signal("top.flag").unwrap();
+    let joined = wave.concat(&[s, s]).unwrap();
+    let mut selection = wave.select(&[s, joined, s]).unwrap();
+    let check = |samples: Vec<Sample>, values: &[&str], changed: Option<u64>| {
+        assert_eq!(samples.len(), values.len());
+        for (sample, expected) in samples.iter().zip(values) {
+            let Sample::Value {
+                value: Value::Bits(bits),
+                changed_at,
+                ..
+            } = sample
+            else {
+                panic!("expected bits")
+            };
+            assert_eq!(bits.as_ref().to_string(), *expected);
+            assert_eq!(changed_at.map(Time::ticks), changed);
+        }
+    };
+    let check_window = |selection: &mut crate::Selection<'_>, start, end| {
+        let mut rows = Vec::new();
+        let _ = selection
+            .scan_each(
+                TimeRange::closed(Time::from_ticks(start), Time::from_ticks(end)),
+                |index, record| {
+                    let (time, value, changed_at) = match record {
+                        ScanRef::Initial {
+                            value, changed_at, ..
+                        } => (None, value, changed_at.map(Time::ticks)),
+                        ScanRef::Change { time, value, .. } => (Some(time.ticks()), value, None),
+                    };
+                    let ValueRef::Bits(bits) = value else {
+                        panic!("expected bits")
+                    };
+                    rows.push((index, time, bits.to_string(), changed_at));
+                    ControlFlow::<()>::Continue(())
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                (0, None, "0".into(), None),
+                (1, None, "00".into(), None),
+                (2, None, "0".into(), None),
+                (0, Some(7), "1".into(), None),
+                (1, Some(7), "11".into(), None),
+                (2, Some(7), "1".into(), None),
+            ]
+        );
+    };
+    check(
+        selection.samples(Time::from_ticks(5)).unwrap(),
+        &["0", "00", "0"],
+        None,
+    );
+    let before = reads.load(Ordering::Relaxed);
+    check(
+        selection.samples(Time::from_ticks(5)).unwrap(),
+        &["0", "00", "0"],
+        None,
+    );
+    assert_eq!(
+        reads.load(Ordering::Relaxed),
+        before,
+        "prepared repeat must not read the source"
+    );
+    check(
+        selection.samples(Time::from_ticks(7)).unwrap(),
+        &["1", "11", "1"],
+        Some(7),
+    );
+    assert!(reads.load(Ordering::Relaxed) > before);
+    // A point snapshot still holds the entering state and pending boundary tick.
+    check_window(&mut selection, 7, 100);
+    // The second window must use the inclusive checkpoint: replay starts at 7.
+    check_window(&mut selection, 5, 10);
+    check_window(&mut selection, 5, 10);
+    assert!(
+        selection
+            .samples(Time::ZERO)
+            .unwrap()
+            .iter()
+            .all(|s| matches!(s, Sample::Missing { .. }))
+    );
+    check(
+        selection.samples(Time::from_ticks(100)).unwrap(),
+        &["1", "11", "1"],
+        Some(7),
+    );
+    assert_eq!(
+        selection
+            .visit_samples(Time::from_ticks(100), |_| ControlFlow::Break(42))
+            .unwrap(),
+        ControlFlow::Break(42)
+    );
+    let before = reads.load(Ordering::Relaxed);
+    check(
+        selection.samples(Time::from_ticks(100)).unwrap(),
+        &["1", "11", "1"],
+        Some(7),
+    );
+    assert!(
+        reads.load(Ordering::Relaxed) > before,
+        "Break must discard provisional replay"
+    );
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = selection.visit_samples(Time::from_ticks(100), |_| -> ControlFlow<()> {
+            panic!("consumer")
+        });
+    }));
+    assert!(panic.is_err());
+    let before = reads.load(Ordering::Relaxed);
+    check(
+        selection.samples(Time::from_ticks(100)).unwrap(),
+        &["1", "11", "1"],
+        Some(7),
+    );
+    assert!(
+        reads.load(Ordering::Relaxed) > before,
+        "panic must discard provisional replay"
+    );
+}
+
+#[test]
 fn wdb_read_errors_and_selected_prefixes() {
     use crate::{Time, TimeRange};
     use std::ops::ControlFlow;
