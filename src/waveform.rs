@@ -58,6 +58,7 @@ pub fn read_metadata(path: impl AsRef<Path>) -> Result<Metadata> {
         Format::Fst => fst::Reader::open(input, name).map(|(_, _, metadata)| metadata),
         Format::Vcd => vcd::Reader::open(input, name, vcd_file).map(|(_, _, metadata)| metadata),
         Format::Ghw => ghw::Reader::open(input, name).map(|(_, _, metadata)| metadata),
+        Format::Wdb => Err(Error::NoBackend { format }),
         #[cfg(feature = "fsdb-lib")]
         Format::Fsdb => crate::backends::fsdb::read_metadata(path, name),
         #[cfg(feature = "shm-lib")]
@@ -210,6 +211,7 @@ fn open_input(
             let (reader, hierarchy, metadata) = ghw::Reader::open(input, name)?;
             (Reader::Ghw(Box::new(reader)), hierarchy, metadata)
         }
+        (Format::Wdb, None) => return Err(Error::NoBackend { format }),
         #[cfg(feature = "fsdb-lib")]
         (Format::Fsdb, None | Some("fsdb-lib")) => {
             let path = _path.ok_or_else(|| Error::UnsupportedInput {
@@ -362,6 +364,8 @@ pub enum Format {
     Fst,
     /// GHDL Waveform.
     Ghw,
+    /// Waveform Database simulation recording.
+    Wdb,
     /// Fast Signal Database.
     Fsdb,
     /// Wave Log Format.

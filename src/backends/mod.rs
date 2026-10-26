@@ -9,6 +9,10 @@ pub(crate) mod ghw;
 #[allow(unsafe_code)] // Private C ABI; native calls are serialized and user callbacks run unlocked.
 pub(crate) mod shm;
 pub(crate) mod vcd;
+// The format parser is qualified before it is connected to the public reader.
+#[cfg(test)]
+#[allow(dead_code)]
+mod wdb;
 #[cfg(feature = "wlf-lib")]
 #[allow(unsafe_code)] // The private, audited C ABI boundary only.
 pub(crate) mod wlf;
