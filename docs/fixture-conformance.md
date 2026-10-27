@@ -4,6 +4,8 @@ The pinned `fixtures/` gitlink owns `fixtures/schemas/fixture.schema.json` and i
 
 `justfile` defines installation and reader gates. They never download, repair or generate inputs during a query. Fixture discovery uses the selected format and explicit reader. A change in automatic reader selection therefore cannot remove an adapter from coverage. A deliberately malformed artifact can be a valid negative test.
 
+Fixtures tagged `opb` are reserved for performance benchmarks. Conformance discovery excludes them before oracle and payload checks. Other `benchmark` fixtures stay in conformance.
+
 ## Evidence is sparse, but a window is complete
 
 An omitted field makes no assertion. A permitted null asserts absence, except when `changed_at` is unknown. Empty hierarchy lists do not rule out unlisted objects. Metadata, tags, relations and provenance are not value observations. An oracle with only metadata or hierarchy does not prove history behavior. An absent or empty oracle supplies no coverage.

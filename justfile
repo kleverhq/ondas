@@ -38,12 +38,12 @@ msrv: _inside
 test: _inside
     cargo test --locked
 
-# Check every FST/VCD/GHW in the pinned fixtures plus focused API regressions.
+# Check FST/VCD/GHW conformance fixtures and focused API regressions.
 conformance: _inside
     cargo test --locked --profile conformance --test conformance -- --ignored --nocapture
     cargo test --locked --profile conformance --test exact_names -- --ignored
 
-# Check every FSDB in the pinned fixtures, plus focused regressions.
+# Check FSDB conformance fixtures and focused regressions.
 conformance-fsdb: _inside
     tools/repo/fsdb-sweep just _conformance-fsdb
 
@@ -52,7 +52,7 @@ _conformance-fsdb: _inside
     cargo test --locked --profile conformance --features fsdb-lib --lib fsdb_ -- --ignored --nocapture
     cargo test --locked --profile conformance --features fsdb-lib --test exact_names fsdb_ -- --ignored
 
-# Check every SHM directory and focused native-reader regressions.
+# Check SHM conformance fixtures and focused native-reader regressions.
 conformance-shm: _inside
     tools/repo/shm-sweep just _conformance-shm
 
@@ -66,7 +66,7 @@ shm-consumer: _inside
     python3 tools/repo/check_shm_consumer.py
 
 
-# Check every WLF in the pinned fixtures, plus directed SDK regressions.
+# Check WLF conformance fixtures and directed SDK regressions.
 conformance-wlf: _inside
     tools/repo/wlf-sweep just _conformance-wlf
 
