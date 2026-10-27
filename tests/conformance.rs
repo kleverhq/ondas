@@ -1,6 +1,7 @@
 //! Full-pool conformance plus focused public-API regressions.
 //! The independent oracle is sparse: only listed declarations and observations
 //! are assertions. Every discovered FST/VCD/GHW runs in file and bytes modes.
+//! OPB fixtures are reserved for performance benchmarks.
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fs,
@@ -1523,11 +1524,14 @@ fn discover(root: &Path, extension: &str) -> Vec<String> {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
             Err(e) => panic!("{}: {e}", sidecar.display()),
             Ok(_) => {
-                let (_, sidecar) = fixture_sidecar(&root, &name);
+                let (_, sidecar) = fixture_support::read_sidecar(&root, &name);
                 assert!(
                     sidecar["artifact"]["format"] == extension,
                     "{name}: format directory mismatch"
                 );
+                if list(&sidecar, "tags").iter().any(|tag| tag == "opb") {
+                    continue;
+                }
                 true
             }
         };
@@ -2850,6 +2854,51 @@ fn discovery_uses_artifacts_not_fixture_names_or_a_whitelist() {
         )
         .unwrap();
         assert!(std::panic::catch_unwind(|| discover(&root, "fst")).is_err());
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn discovery_excludes_opb_by_tag_before_oracle_and_payload_checks() {
+    let root = std::env::temp_dir().join(format!(
+        "ondas-conformance-selection-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let root = root.canonicalize().unwrap();
+    for format in ["fst", "vcd", "ghw", "fsdb", "shm", "wlf"] {
+        for (name, tags, oracle) in [
+            ("benchmark-case", json!(["benchmark"]), json!({})),
+            ("opb-in-name", json!(["not-opb"]), json!({})),
+            (
+                "renamed-case",
+                json!(["benchmark", "opb", "profile-s"]),
+                json!({"schema": 2}),
+            ),
+        ] {
+            let directory = root.join(format).join(name);
+            fs::create_dir_all(&directory).unwrap();
+            fs::write(
+                directory.join("fixture.json"),
+                json!({"schema": 1,
+                    "artifact": {"format": format, "file": format!("waveform.{format}"),
+                        "size": 0, "sha256": "0".repeat(64)},
+                    "tags": tags, "oracle": oracle})
+                .to_string(),
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            discover(&root, format),
+            [
+                format!("{format}/benchmark-case"),
+                format!("{format}/opb-in-name")
+            ]
+        );
     }
     fs::remove_dir_all(root).unwrap();
 }
