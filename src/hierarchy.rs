@@ -4,7 +4,6 @@ mod tests;
 mod path;
 
 use std::{
-    collections::HashMap,
     fmt,
     str::FromStr,
     sync::{
@@ -274,8 +273,12 @@ struct HierarchyData {
     variables: Vec<VariableData>,
     encodings: Vec<Encoding>,
     children: OnceLock<ChildLinks>,
-    first_variable_lookup: OnceLock<()>,
-    variables_by_path: OnceLock<HashMap<HierarchyPath, (usize, usize)>>,
+    declarations_by_name: OnceLock<NameIndex>,
+}
+
+struct NameIndex {
+    offsets: Vec<usize>,
+    declarations: Vec<usize>,
 }
 
 struct ChildLinks {
@@ -401,8 +404,7 @@ impl Hierarchy {
                 variables,
                 encodings,
                 children: OnceLock::new(),
-                first_variable_lookup: OnceLock::new(),
-                variables_by_path: OnceLock::new(),
+                declarations_by_name: OnceLock::new(),
             }),
         }
     }
@@ -595,41 +597,87 @@ impl Hierarchy {
         &self,
         path: &HierarchyPath,
     ) -> std::result::Result<Variable<'_>, LookupError> {
-        if self.data.variables_by_path.get().is_none()
-            && self.data.first_variable_lookup.set(()).is_ok()
-        {
-            let mut matches = self.variables().filter(|variable| {
-                Some(variable.name()) == path.name() && variable.path() == *path
-            });
-            let first = matches.next();
-            return match (first, matches.count()) {
-                (None, _) => Err(LookupError::NotFound { path: path.clone() }),
-                (Some(variable), 0) => Ok(variable),
-                (_, remaining) => Err(LookupError::Ambiguous {
-                    path: path.clone(),
-                    matches: remaining + 1,
-                }),
-            };
-        }
-        let variables_by_path = self.data.variables_by_path.get_or_init(|| {
-            let mut index = HashMap::with_capacity(self.data.variables.len());
-            for variable in self.variables() {
-                let entry = index.entry(variable.path()).or_insert((variable.index, 0));
-                entry.1 += 1;
+        let Some((name, scopes)) = path.components.split_last() else {
+            return Err(LookupError::NotFound { path: path.clone() });
+        };
+        let mut parents = vec![None];
+        for name in scopes {
+            parents = parents
+                .into_iter()
+                .flat_map(|parent| self.declarations_named(parent, name))
+                .copied()
+                .filter(|index| *index < self.data.scopes.len())
+                .map(Some)
+                .collect();
+            if parents.is_empty() {
+                return Err(LookupError::NotFound { path: path.clone() });
             }
-            index
-        });
-        match variables_by_path.get(path) {
-            None => Err(LookupError::NotFound { path: path.clone() }),
-            Some(&(index, 1)) => Ok(Variable {
+        }
+        let mut matches = parents
+            .into_iter()
+            .flat_map(|parent| self.declarations_named(parent, name))
+            .filter_map(|index| index.checked_sub(self.data.scopes.len()))
+            .map(|index| Variable {
                 hierarchy: self,
                 index,
-            }),
-            Some(&(_, matches)) => Err(LookupError::Ambiguous {
+            });
+        let first = matches.next();
+        match (first, matches.count()) {
+            (None, _) => Err(LookupError::NotFound { path: path.clone() }),
+            (Some(variable), 0) => Ok(variable),
+            (_, remaining) => Err(LookupError::Ambiguous {
                 path: path.clone(),
-                matches,
+                matches: remaining + 1,
             }),
         }
+    }
+
+    fn declaration_key(&self, index: usize) -> (Option<usize>, &str) {
+        if index < self.data.scopes.len() {
+            let scope = &self.data.scopes[index];
+            (scope.parent, &scope.name)
+        } else {
+            let variable = &self.data.variables[index - self.data.scopes.len()];
+            (variable.parent, &variable.name)
+        }
+    }
+
+    fn declarations_named(&self, parent: Option<usize>, name: &str) -> &[usize] {
+        // Keep only declaration indices. Full paths duplicate every ancestor's
+        // name for each variable and are unnecessary for component lookup.
+        let index = self.data.declarations_by_name.get_or_init(|| {
+            let root = self.data.scopes.len();
+            let count = root + self.data.variables.len();
+            let mut offsets = vec![0; root + 2];
+            for item in 0..count {
+                let parent = self.declaration_key(item).0.unwrap_or(root);
+                offsets[parent + 1] += 1;
+            }
+            for parent in 1..offsets.len() {
+                offsets[parent] += offsets[parent - 1];
+            }
+            let mut next = offsets[..offsets.len() - 1].to_vec();
+            let mut declarations = vec![0; count];
+            for item in 0..count {
+                let parent = self.declaration_key(item).0.unwrap_or(root);
+                declarations[next[parent]] = item;
+                next[parent] += 1;
+            }
+            for range in offsets.windows(2) {
+                declarations[range[0]..range[1]].sort_unstable_by(|a, b| {
+                    self.declaration_key(*a).1.cmp(self.declaration_key(*b).1)
+                });
+            }
+            NameIndex {
+                offsets,
+                declarations,
+            }
+        });
+        let parent = parent.unwrap_or(self.data.scopes.len());
+        let index = &index.declarations[index.offsets[parent]..index.offsets[parent + 1]];
+        let start = index.partition_point(|item| self.declaration_key(*item).1 < name);
+        let count = index[start..].partition_point(|item| self.declaration_key(*item).1 == name);
+        &index[start..start + count]
     }
 
     /// Resolves an already parsed exact variable path to a whole signal.

@@ -8,6 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Improve WDB read performance, hierarchy lookup and bit value formatting.
 - Deliver SHM completed ticks with bounded adapter buffers and stop traversal after bounded read-ahead. SDK history storage has separate memory costs.
 - Build shared child links on first scope child traversal to avoid repeated full-hierarchy scans.
 - Disable FSDB SDK messages to stdout. SDK diagnostics can still appear on stderr.
@@ -26,6 +27,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Read WDB files with the optional `wdb-lib` backend. See `docs/wdb-reader.md` for setup and value limits.
+- Add WDB performance benchmarks.
 - Add `Error::UnsupportedFeature` for confirmed GHW and FSDB source or query
   support limits. These cases previously returned `Error::Backend`.
 - Sample several explicit times with `Selection::samples_at` and

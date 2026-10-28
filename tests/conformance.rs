@@ -81,6 +81,7 @@ impl Fixture {
             Format::Shm => "shm-lib",
 
             Format::Wlf => "wlf-lib",
+            Format::Wdb => "wdb-lib",
             _ => unreachable!(),
         }
     }
@@ -94,6 +95,7 @@ impl Fixture {
             Format::Shm => "conformance.shm",
 
             Format::Wlf => "conformance.wlf",
+            Format::Wdb => "conformance.wdb",
             _ => unreachable!(),
         }
     }
@@ -351,6 +353,7 @@ fn load_conformance_fixture(root: &Path, name: &str) -> Option<Fixture> {
         "shm" if cfg!(feature = "shm-lib") => Format::Shm,
 
         "wlf" if cfg!(feature = "wlf-lib") => Format::Wlf,
+        "wdb" if cfg!(feature = "wdb-lib") => Format::Wdb,
         other => panic!("{name}: unexpected selected format {other}"),
     };
     let oracle = logical_name_oracle(
@@ -374,8 +377,7 @@ fn load_conformance_fixture(root: &Path, name: &str) -> Option<Fixture> {
 }
 
 // These pinned producer oracles report SDK identifier spelling. Translate
-// only the audited Verilog inputs, independently of the production adapters.
-// Other fixtures, including VHDL and literal backslashes, remain exact.
+// only independently audited names. Other components remain exact.
 fn logical_name_oracle(name: &str, mut oracle: Json) -> Json {
     let fsdb_verilog = matches!(
         name,
@@ -391,7 +393,16 @@ fn logical_name_oracle(name: &str, mut oracle: Json) -> Json {
             | "fsdb/fsdb0046-ise"
             | "fsdb/fsdb0055-riscv-soc-debug-netlist"
     );
-    if fsdb_verilog || name == "wlf/wlf0072-strings-and-names" {
+    let wdb_verilog = matches!(
+        name,
+        "wdb/wdb0119-tb-gf283-top-time-impl"
+            | "wdb/wdb0142-tb-comb-behav"
+            | "wdb/wdb0159-tb-systolicarray-behav"
+            | "wdb/wdb0295-tb-top-behav"
+            | "wdb/wdb0305-enum-core"
+    );
+    let wdb_vhdl = name == "wdb/wdb0280-test-bench-mem-addr-func-synth";
+    if fsdb_verilog || wdb_verilog || wdb_vhdl || name == "wlf/wlf0072-strings-and-names" {
         for key in ["scopes", "variables"] {
             if let Some(declarations) = oracle
                 .get_mut("hierarchy")
@@ -402,8 +413,19 @@ fn logical_name_oracle(name: &str, mut oracle: Json) -> Json {
                 for declaration in declarations {
                     for component in declaration["path"].as_array_mut().unwrap() {
                         let raw = component.as_str().unwrap();
-                        if fsdb_verilog && raw.starts_with('\\') {
+                        if wdb_verilog
+                            && raw.starts_with('\\')
+                            && raw.ends_with(|c: char| c.is_ascii_whitespace())
+                        {
+                            *component = json!(raw[1..].trim_end());
+                        } else if fsdb_verilog && raw.starts_with('\\') {
                             *component = json!(&raw[1..]);
+                        } else if wdb_vhdl
+                            && raw.len() > 1
+                            && raw.starts_with('\\')
+                            && raw.ends_with('\\')
+                        {
+                            *component = json!(&raw[1..raw.len() - 1]);
                         } else if name == "wlf/wlf0072-strings-and-names"
                             && raw == "\\name.with.dot "
                         {
@@ -437,6 +459,32 @@ fn sdk_oracle_name_mapping_is_scoped_and_rejects_collisions() {
         json!(["top", "literal[0]"])
     );
     assert_eq!(logical_name_oracle("unlisted-input", raw.clone()), raw);
+    let escaped = json!({"hierarchy": {"variables": [{"path": ["top", "\\alternate.value "]}]}});
+    let mapped = logical_name_oracle("wdb/wdb0305-enum-core", escaped.clone());
+    assert_eq!(
+        mapped["hierarchy"]["variables"][0]["path"],
+        json!(["top", "alternate.value"])
+    );
+    assert_eq!(
+        logical_name_oracle("wdb/unlisted-input", escaped.clone()),
+        escaped
+    );
+    assert_eq!(
+        logical_name_oracle("wdb/wdb0305-enum-core", raw.clone()),
+        raw
+    );
+    let vhdl = json!({"hierarchy": {"variables": [{"path": [
+        "test_bench_mem_addr", "PROJECT", "\\FSM_sequential_cur_state[3]_i_1_n_0\\"
+    ]}]}});
+    assert_eq!(
+        logical_name_oracle("wdb/wdb0280-test-bench-mem-addr-func-synth", vhdl.clone())["hierarchy"]
+            ["variables"][0]["path"][2],
+        "FSM_sequential_cur_state[3]_i_1_n_0"
+    );
+    assert_eq!(
+        logical_name_oracle("wdb/unlisted-input", vhdl.clone()),
+        vhdl
+    );
 
     let collision = json!({"hierarchy": {"scopes": [
         {"path": ["top", "\\same"]}, {"path": ["top", "same"]}
@@ -1762,7 +1810,10 @@ fn pool_queries(fixture: &Fixture, bytes: bool, context: &str) -> bool {
         // These paths must agree for every reader and value class. The trace
         // assertions below independently constrain their common observations.
         scan_queries(&mut wave, &handles, range, context);
-        if matches!(fixture.format, Format::Fsdb | Format::Ghw | Format::Wlf) {
+        if matches!(
+            fixture.format,
+            Format::Fsdb | Format::Ghw | Format::Wlf | Format::Wdb
+        ) {
             // Candidate-time and duplicate-selection assertions are derived from
             // supplied complete windows, without extending the oracle schema.
             let required: BTreeSet<_> = entries
@@ -2351,7 +2402,21 @@ fn full_pool(extension: &str) {
     run_pool(&root(), extension);
 }
 
+#[cfg(feature = "wdb-lib")]
+fn wdb_cases(root: &Path) -> Vec<String> {
+    let names = discover(root, "wdb");
+    assert_eq!(names.len(), 303, "non-OPB pinned WDB inventory");
+    names
+}
+
 fn run_pool(root: &Path, extension: &str) {
+    #[cfg(feature = "wdb-lib")]
+    let names = if extension == "wdb" {
+        wdb_cases(root)
+    } else {
+        discover(root, extension)
+    };
+    #[cfg(not(feature = "wdb-lib"))]
     let names = discover(root, extension);
     assert!(
         !names.is_empty(),
@@ -2390,7 +2455,10 @@ fn run_pool(root: &Path, extension: &str) {
             skipped += 1;
             continue;
         };
-        let modes: &[bool] = if matches!(fixture.format, Format::Fsdb | Format::Shm | Format::Wlf) {
+        let modes: &[bool] = if matches!(
+            fixture.format,
+            Format::Fsdb | Format::Shm | Format::Wlf | Format::Wdb
+        ) {
             &[false]
         } else {
             &[false, true]
@@ -2870,7 +2938,7 @@ fn discovery_excludes_opb_by_tag_before_oracle_and_payload_checks() {
     ));
     fs::create_dir_all(&root).unwrap();
     let root = root.canonicalize().unwrap();
-    for format in ["fst", "vcd", "ghw", "fsdb", "shm", "wlf"] {
+    for format in ["fst", "vcd", "ghw", "fsdb", "shm", "wlf", "wdb"] {
         for (name, tags, oracle) in [
             ("benchmark-case", json!(["benchmark"]), json!({})),
             ("opb-in-name", json!(["not-opb"]), json!({})),
@@ -3440,4 +3508,168 @@ fn wlf_enum_integration_windows() {
         let fixture = load_fixture(&root(), name);
         pool_queries(&fixture, false, name);
     }
+}
+
+#[cfg(feature = "wdb-lib")]
+#[test]
+#[ignore = "requires the selected native reader and installed WDB fixtures"]
+fn wdb_focused_enum_conformance() {
+    for name in [
+        "wdb/wdb0305-enum-core",
+        "wdb/wdb0306-enum-xz",
+        "wdb/wdb0307-enum-wide-constants",
+    ] {
+        let fixture = load_conformance_fixture(&root(), name).expect("enum oracle");
+        assert!(pool_queries(&fixture, false, name));
+    }
+}
+
+#[cfg(feature = "wdb-lib")]
+#[test]
+#[ignore = "requires the selected reader and installed WDB class-graph fixture"]
+fn wdb_class_graphs_keep_recorded_histories_usable() {
+    let name = "wdb/wdb0069-axi-dma-tb-top-behav";
+    let fixture = load_conformance_fixture(&root(), name).expect("class-graph oracle");
+    assert!(pool_queries(&fixture, false, name));
+}
+
+#[cfg(feature = "wdb-lib")]
+#[test]
+#[ignore = "requires the selected reader and installed WDB fixtures"]
+fn wdb_unpacked_arrays_match_complete_oracle() {
+    let name = "wdb/wdb0153-canny";
+    let fixture = load_conformance_fixture(&root(), name).expect("unpacked-array oracle");
+    assert!(pool_queries(&fixture, false, name));
+}
+
+#[cfg(feature = "wdb-lib")]
+#[test]
+#[ignore = "requires the selected reader and installed WDB fixtures"]
+fn wdb_vhdl_extended_name_metadata_matches_oracle() {
+    let name = "wdb/wdb0280-test-bench-mem-addr-func-synth";
+    let fixture = load_conformance_fixture(&root(), name).expect("extended-name oracle");
+    assert!(pool_queries(&fixture, false, name));
+}
+
+#[cfg(feature = "wdb-lib")]
+#[test]
+#[ignore = "requires the selected reader and all installed WDB fixtures"]
+fn wdb_changed_type_conformance() {
+    let root = root();
+    let mut names = wdb_cases(&root);
+    if let Ok(name) = std::env::var("ONDAS_WDB_CASE") {
+        assert!(names.contains(&name), "unknown WDB fixture");
+        names.retain(|candidate| candidate == &name);
+    }
+    let inspected = names.len();
+    let mut checked = 0;
+    for name in names {
+        let mut fixture = load_conformance_fixture(&root, &name).expect("WDB oracle");
+        let wave = ondas::open(&fixture.path).unwrap();
+        metadata(&wave, &fixture.oracle["metadata"], false, &fixture);
+        hierarchy(&wave, &fixture.oracle, false);
+        let hierarchy = wave.hierarchy();
+        let mut selected = BTreeSet::new();
+        for item in list(&fixture.oracle["hierarchy"], "variables") {
+            let Some(id) = item.get("signal").and_then(Json::as_str) else {
+                continue;
+            };
+            let path = path(&item["path"]);
+            let affected = match hierarchy.variable_path(&path) {
+                Ok(variable) => {
+                    variable.kind() == "integer"
+                        || variable.kind() == "real"
+                        || (variable.kind() == "array"
+                            && (variable.type_name().is_some() || variable.range().is_none()))
+                        || (variable.enumeration().is_some() && variable.name().contains('['))
+                        || variable
+                            .signal()
+                            .is_none_or(|signal| signal.encoding() == Encoding::Unsupported)
+                }
+                Err(_) => true,
+            };
+            if affected {
+                selected.insert(id.to_owned());
+            }
+        }
+        drop(wave);
+        if selected.is_empty() {
+            continue;
+        }
+        fixture.oracle["signals"]
+            .as_object_mut()
+            .unwrap()
+            .retain(|id, _| selected.contains(id));
+        fixture.oracle["hierarchy"]["variables"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|item| {
+                item.get("signal")
+                    .and_then(Json::as_str)
+                    .is_none_or(|id| selected.contains(id))
+            });
+        fixture.non_ascii.retain(|id, _| selected.contains(id));
+        eprintln!("affected {name}: {} oracle histories", selected.len());
+        assert!(pool_queries(&fixture, false, &name));
+        checked += 1;
+    }
+    assert!(checked > 0);
+    eprintln!(
+        "PASS affected-type WDB regressions: {checked} files; metadata inspected for {inspected}"
+    );
+}
+
+#[cfg(feature = "wdb-lib")]
+#[test]
+#[ignore = "requires independently qualified local controls in ONDAS_WDB_CONTROLS"]
+fn wdb_dynamic_logic65xz_control() {
+    let controls = std::env::var_os("ONDAS_WDB_CONTROLS").expect("ONDAS_WDB_CONTROLS is required");
+    let name = "wdb/dynamic-logic65xz";
+    let fixture = load_conformance_fixture(Path::new(&controls), name).expect("dynamic oracle");
+    assert!(pool_queries(&fixture, false, name));
+}
+
+#[cfg(feature = "wdb-lib")]
+#[test]
+#[ignore = "requires source-backed local controls in ONDAS_WDB_CONTROLS"]
+fn wdb_metadata_control() {
+    let controls = std::env::var_os("ONDAS_WDB_CONTROLS").expect("ONDAS_WDB_CONTROLS is required");
+    for name in [
+        "wdb/metadata",
+        "wdb/vhdl-enum",
+        "wdb/real-layout",
+        "wdb/packed-shapes",
+        "wdb/vhdl-strings-ports",
+        "wdb/partial-logging",
+        "wdb/vhdl-bit-arrays",
+        "wdb/sv-integral-types",
+        "wdb/vhdl-numeric-arrays",
+    ] {
+        let fixture =
+            load_conformance_fixture(Path::new(&controls), name).expect("metadata oracle");
+        assert!(pool_queries(&fixture, false, name));
+    }
+}
+
+#[cfg(feature = "wdb-lib")]
+#[test]
+#[ignore = "requires the selected native reader and installed ILA fixtures"]
+fn wdb_ila_conformance() {
+    let root = root();
+    let names = discover(&root, "wdb")
+        .into_iter()
+        .filter(|name| name.contains("-hw-ila-"))
+        .collect::<Vec<_>>();
+    assert!(!names.is_empty());
+    for name in names {
+        let fixture = load_conformance_fixture(&root, &name).expect("ILA oracle");
+        assert!(pool_queries(&fixture, false, &name));
+    }
+}
+
+#[cfg(feature = "wdb-lib")]
+#[test]
+#[ignore = "requires the selected native reader and all installed WDB fixtures"]
+fn full_wdb_pool() {
+    full_pool("wdb");
 }

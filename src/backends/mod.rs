@@ -9,6 +9,9 @@ pub(crate) mod ghw;
 #[allow(unsafe_code)] // Private C ABI; native calls are serialized and user callbacks run unlocked.
 pub(crate) mod shm;
 pub(crate) mod vcd;
+#[cfg(feature = "wdb-lib")]
+#[allow(unsafe_code)] // Private C ABI; native calls are serialized and callbacks run unlocked.
+pub(crate) mod wdb;
 #[cfg(feature = "wlf-lib")]
 #[allow(unsafe_code)] // The private, audited C ABI boundary only.
 pub(crate) mod wlf;
@@ -33,6 +36,8 @@ pub(crate) enum Reader {
     Shm(Box<shm::Reader>),
     #[cfg(feature = "wlf-lib")]
     Wlf(Box<wlf::Reader>),
+    #[cfg(feature = "wdb-lib")]
+    Wdb(Box<wdb::Reader>),
     #[cfg(test)]
     Generated(generated::Reader),
     #[cfg(test)]
@@ -74,6 +79,10 @@ impl Reader {
             Self::Shm(reader) => reader.read(signals, end, visitor),
             #[cfg(feature = "wlf-lib")]
             Self::Wlf(reader) => reader.read(signals, end, |index, time, value| {
+                visitor(index, time, Ok(value))
+            }),
+            #[cfg(feature = "wdb-lib")]
+            Self::Wdb(reader) => reader.read(signals, end, |index, time, value| {
                 visitor(index, time, Ok(value))
             }),
             #[cfg(test)]

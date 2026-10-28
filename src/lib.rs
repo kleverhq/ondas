@@ -20,6 +20,7 @@ handles, native callbacks and format-local indices stay private.
 | FSDB | `fsdb-lib` | Files only | Optional Cargo feature; requires a local FSDB Reader SDK |
 | SHM | `shm-lib` | Database directories only | Optional Cargo feature; requires a compatible Xcelium reader (2021+) |
 | WLF | `wlf-lib` | Files only | Optional Cargo feature; requires a local Questa SDK |
+| WDB | `wdb-lib` | Files only | Optional Cargo feature; requires a compatible Vivado reader |
 
 Other formats have no reader in this release. The minimum supported Rust version
 is 1.88. See [reader details](#reader-details) for format limits and native reader setup.
@@ -56,6 +57,49 @@ errors. Keep the directory and its components unchanged and available.
 # #[cfg(feature = "shm-lib")]
 # fn example() -> Result<(), Box<dyn std::error::Error>> {
 let mut wave = ondas::open_with("waveform.shm", "shm-lib")?;
+let signal = wave.hierarchy().signal("top.ready")?;
+let sample = wave.sample(signal, ondas::Time::from_ticks(10))?;
+# Ok(())
+# }
+```
+
+### WDB setup
+
+Enable `wdb-lib` and set `XILINX_VIVADO` to the selected installation when building
+on Linux x86_64 GNU. Building requires a C++17 compiler and binutils. At runtime,
+set `RDI_DATADIR` to that installation's `data` directory and make its
+`lib/lnx64.o` libraries and their dependencies available to the dynamic loader.
+The application must use a compatible system C++ runtime.
+
+First access to selected stored bytes builds their SDK history indexes, including
+times after the query end. These indexes remain until the waveform is dropped.
+A point or early stop can therefore pay the full selected-history loading cost.
+Later bit points and range reads with an established entering state can seek.
+This includes compositions whose intermediate values are whole copies of one
+source, joined or sliced at source-width boundaries. Other compositions can
+still traverse a prefix to establish their change times.
+Proving `changed_at` for a constant slice can still require many predecessor reads.
+
+The adapter uses a private reader ABI. Build-time symbol checks do not qualify
+other reader layouts. Keep the source file unchanged and available. The reader
+libraries must remain at their build-time paths. A different loaded installation
+is rejected before opening a native session. The reader provides bits, binary64
+real values, native enum tables and static one-dimensional VHDL CHARACTER arrays
+as strings. Strings preserve ASCII NUL; non-ASCII contents return
+[`Error::NonAsciiString`]. Dynamic SystemVerilog String and named Event values
+have no qualified read path and return [`Error::UnsupportedSignal`] when selected.
+This does not establish whether those values are present in an existing recording.
+Changing unsigned 129-bit enum values are also unqualified: a tested A-to-B-to-C
+sequence is read as A throughout. These histories can return stale values instead
+of an error. The cause remains unresolved between recording and reading. Successful
+constant values and enum tables do not qualify changing unsigned 129-bit values.
+Reads preserve the common completed-tick semantics. Vendor calls are serialized; user callbacks run
+after the lock is released.
+
+```no_run
+# #[cfg(feature = "wdb-lib")]
+# fn example() -> Result<(), Box<dyn std::error::Error>> {
+let mut wave = ondas::open_with("waveform.wdb", "wdb-lib")?;
 let signal = wave.hierarchy().signal("top.ready")?;
 let sample = wave.sample(signal, ondas::Time::from_ticks(10))?;
 # Ok(())
