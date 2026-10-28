@@ -1,6 +1,9 @@
 #[cfg(feature = "shm-lib")]
 #[path = "tools/repo/shm_build.rs"]
 mod shm_build;
+#[cfg(feature = "wdb-lib")]
+#[path = "tools/repo/wdb_build.rs"]
+mod wdb_build;
 
 fn main() {
     #[cfg(feature = "fsdb-lib")]
@@ -9,6 +12,8 @@ fn main() {
     shm();
     #[cfg(feature = "wlf-lib")]
     wlf();
+    #[cfg(feature = "wdb-lib")]
+    wdb_build::build();
 }
 
 #[cfg(feature = "shm-lib")]

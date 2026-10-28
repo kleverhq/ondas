@@ -145,6 +145,14 @@ bench-wlf *args: _inside
 _bench-wlf *args: _inside
     cargo bench --locked --features wlf-lib --bench wlf -- "$@"
 
+# Execute WDB workloads with the selected reader without measurements.
+bench-smoke-wdb: _inside
+    cargo bench --locked --features wdb-lib --bench wdb -- --test
+
+# Measure WDB workloads; accepts Criterion arguments.
+bench-wdb *args: _inside
+    cargo bench --locked --features wdb-lib --bench wdb -- "$@"
+
 # Verify actual downstream linking, independent of Cargo's runtime environment.
 fsdb-consumer: _inside
     python3 tools/repo/check_fsdb_consumer.py

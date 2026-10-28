@@ -18,6 +18,7 @@ exclude = ["fixtures/**"]
 fsdb-lib = ["dep:cc"]
 shm-lib = ["dep:cc"]
 wlf-lib = ["dep:cc"]
+wdb-lib = ["dep:cc"]
 
 [build-dependencies]
 cc = { version = "1", optional = true }
@@ -63,6 +64,11 @@ required-features = ["shm-lib"]
 name = "wlf"
 harness = false
 required-features = ["wlf-lib"]
+
+[[bench]]
+name = "wdb"
+harness = false
+required-features = ["wdb-lib"]
 
 [package.metadata.docs.rs]
 all-features = false

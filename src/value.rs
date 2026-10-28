@@ -341,8 +341,16 @@ impl<'a> BitsRef<'a> {
 impl fmt::Display for BitsRef<'_> {
     /// Formats the vector as a most-significant-bit-first logic string.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for byte in self.data {
-            write!(formatter, "{}", byte.to_ascii_lowercase() as char)?;
+        if !self.data.iter().any(u8::is_ascii_uppercase) {
+            return formatter
+                .write_str(std::str::from_utf8(self.data).expect("validated logic bytes"));
+        }
+        let mut buffer = [0; 256];
+        for chunk in self.data.chunks(buffer.len()) {
+            let lowered = &mut buffer[..chunk.len()];
+            lowered.copy_from_slice(chunk);
+            lowered.make_ascii_lowercase();
+            formatter.write_str(std::str::from_utf8(lowered).expect("validated logic bytes"))?;
         }
         Ok(())
     }
@@ -619,6 +627,20 @@ mod tests {
         assert_eq!(right_owned == left, expected);
         assert_eq!(PartialEq::eq(&left, &right), expected);
         assert_eq!(PartialEq::eq(&left_owned, &right_owned), expected);
+    }
+
+    #[test]
+    fn wide_bit_display_preserves_logic_states_and_slices() {
+        let source = b"01XZHUWL-".repeat(129);
+        let expected = "01xzhuwl-".repeat(129);
+        let bits = BitsRef::from_ascii(&source).unwrap();
+        assert_eq!(bits.to_string(), expected);
+        assert_eq!(bits.to_owned().as_ref().to_string(), expected);
+        let sliced = bits.slice(1024, 3);
+        assert_eq!(
+            sliced.to_string(),
+            expected[expected.len() - 1025..expected.len() - 3]
+        );
     }
 
     #[test]

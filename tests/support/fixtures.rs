@@ -56,7 +56,10 @@ pub fn read_sidecar(root: &Path, name: &str) -> (PathBuf, Json) {
 pub fn verify_artifact(directory: &Path, artifact: &Json, name: &str) -> PathBuf {
     let extension = artifact["format"].as_str().unwrap();
     assert!(
-        matches!(extension, "fst" | "vcd" | "fsdb" | "ghw" | "wlf" | "shm"),
+        matches!(
+            extension,
+            "fst" | "vcd" | "fsdb" | "ghw" | "wlf" | "shm" | "wdb"
+        ),
         "{name}: invalid artifact format"
     );
     let filename = format!("waveform.{extension}");
