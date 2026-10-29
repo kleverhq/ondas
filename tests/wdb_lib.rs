@@ -3,8 +3,15 @@
 use ondas::{Error, Format, Sample, Time, TimeRange, Value};
 use std::{ops::ControlFlow, path::PathBuf, sync::Arc};
 
+#[path = "support/fixtures.rs"]
+mod fixture_support;
+
+fn fixture_path(name: &str) -> PathBuf {
+    fixture_support::load_artifact(&fixture_support::root(), name).0
+}
+
 fn fixture() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/wdb/wdb0305-enum-core/waveform.wdb")
+    fixture_path("wdb/wdb0305-enum-core")
 }
 fn bits(sample: Sample) -> String {
     let Sample::Value {
@@ -365,12 +372,9 @@ fn wdb_independent_owners_on_parallel_threads() {
 }
 
 #[test]
-#[ignore = "requires source-backed local controls in ONDAS_WDB_CONTROLS"]
+#[ignore = "requires the selected reader and installed WDB fixtures"]
 fn wdb_native_unavailable_values_fail_without_losing_other_histories() {
-    let root = PathBuf::from(
-        std::env::var_os("ONDAS_WDB_CONTROLS").expect("ONDAS_WDB_CONTROLS is required"),
-    );
-    let mut wave = ondas::open(root.join("wdb/string-event/waveform.wdb")).unwrap();
+    let mut wave = ondas::open(fixture_path("wdb/wdb0313-string-event")).unwrap();
     let clock = wave.hierarchy().signal("top.clock").unwrap();
     for path in ["top.text", "top.pulse"] {
         let signal = wave.hierarchy().signal(path).unwrap();
@@ -381,7 +385,7 @@ fn wdb_native_unavailable_values_fail_without_losing_other_histories() {
         ));
         assert_eq!(bits(wave.sample(clock, Time::from_ticks(4)).unwrap()), "1");
     }
-    let mut wave = ondas::open(root.join("wdb/metadata/waveform.wdb")).unwrap();
+    let mut wave = ondas::open(fixture_path("wdb/wdb0309-metadata")).unwrap();
     let hierarchy = wave.hierarchy().clone();
     assert_eq!(
         hierarchy
@@ -406,7 +410,7 @@ fn wdb_native_unavailable_values_fail_without_losing_other_histories() {
         ),
         "0011"
     );
-    let wave = ondas::open(root.join("wdb/vhdl-enum/waveform.wdb")).unwrap();
+    let wave = ondas::open(fixture_path("wdb/wdb0316-vhdl-enum")).unwrap();
     let character = wave
         .hierarchy()
         .variable("std_logic_1164.NBSP")
@@ -417,7 +421,7 @@ fn wdb_native_unavailable_values_fail_without_losing_other_histories() {
     let nbsp = character.variants().nth(160).unwrap();
     assert_eq!(nbsp.encoded.to_string(), "10100000");
     assert_eq!(nbsp.label, "\u{a0}");
-    let wave = ondas::open(root.join("wdb/packed-shapes/waveform.wdb")).unwrap();
+    let wave = ondas::open(fixture_path("wdb/wdb0310-packed-shapes")).unwrap();
     for name in ["top.packed_enum[0]", "top.packed_enum[1]"] {
         let variable = wave.hierarchy().variable(name).unwrap();
         assert_eq!(variable.kind(), "enum");
@@ -439,12 +443,9 @@ fn wdb_native_unavailable_values_fail_without_losing_other_histories() {
 }
 
 #[test]
-#[ignore = "requires source-backed local controls in ONDAS_WDB_CONTROLS"]
+#[ignore = "requires the selected reader and installed WDB fixtures"]
 fn wdb_strings_names_and_decode_error_recovery() {
-    let root = PathBuf::from(
-        std::env::var_os("ONDAS_WDB_CONTROLS").expect("ONDAS_WDB_CONTROLS is required"),
-    );
-    let mut wave = ondas::open(root.join("wdb/vhdl-strings-ports/waveform.wdb")).unwrap();
+    let mut wave = ondas::open(fixture_path("wdb/wdb0317-vhdl-strings-ports")).unwrap();
     let hierarchy = wave.hierarchy().clone();
     for (name, reader_name, expected) in [
         ("message.with.dot", "\\message.with.dot\\", "more"),
@@ -481,12 +482,9 @@ fn wdb_strings_names_and_decode_error_recovery() {
 }
 
 #[test]
-#[ignore = "requires source-backed local controls in ONDAS_WDB_CONTROLS"]
+#[ignore = "requires the selected reader and installed WDB fixtures"]
 fn wdb_compositions_preserve_missing_and_validate_foreign_handles() {
-    let root = PathBuf::from(
-        std::env::var_os("ONDAS_WDB_CONTROLS").expect("ONDAS_WDB_CONTROLS is required"),
-    );
-    let path = root.join("wdb/partial-logging/waveform.wdb");
+    let path = fixture_path("wdb/wdb0311-partial-logging");
     let mut wave = ondas::open(&path).unwrap();
     let recorded = wave.hierarchy().signal("top.recorded").unwrap();
     let hidden = wave.hierarchy().signal("top.hidden").unwrap();
@@ -547,12 +545,9 @@ fn wdb_compositions_preserve_missing_and_validate_foreign_handles() {
 }
 
 #[test]
-#[ignore = "requires source-backed local controls in ONDAS_WDB_CONTROLS"]
+#[ignore = "requires the selected reader and installed WDB fixtures"]
 fn wdb_vhdl_primitive_types_preserve_metadata_and_values() {
-    let root = PathBuf::from(
-        std::env::var_os("ONDAS_WDB_CONTROLS").expect("ONDAS_WDB_CONTROLS is required"),
-    );
-    let mut wave = ondas::open(root.join("wdb/vhdl-bit-arrays/waveform.wdb")).unwrap();
+    let mut wave = ondas::open(fixture_path("wdb/wdb0315-vhdl-bit-arrays")).unwrap();
     let hierarchy = wave.hierarchy().clone();
     for name in ["top.vector_value", "top.bit_value", "top.binary_matrix"] {
         assert_eq!(

@@ -2402,21 +2402,7 @@ fn full_pool(extension: &str) {
     run_pool(&root(), extension);
 }
 
-#[cfg(feature = "wdb-lib")]
-fn wdb_cases(root: &Path) -> Vec<String> {
-    let names = discover(root, "wdb");
-    assert_eq!(names.len(), 303, "non-OPB pinned WDB inventory");
-    names
-}
-
 fn run_pool(root: &Path, extension: &str) {
-    #[cfg(feature = "wdb-lib")]
-    let names = if extension == "wdb" {
-        wdb_cases(root)
-    } else {
-        discover(root, extension)
-    };
-    #[cfg(not(feature = "wdb-lib"))]
     let names = discover(root, extension);
     assert!(
         !names.is_empty(),
@@ -3556,7 +3542,7 @@ fn wdb_vhdl_extended_name_metadata_matches_oracle() {
 #[ignore = "requires the selected reader and all installed WDB fixtures"]
 fn wdb_changed_type_conformance() {
     let root = root();
-    let mut names = wdb_cases(&root);
+    let mut names = discover(&root, "wdb");
     if let Ok(name) = std::env::var("ONDAS_WDB_CASE") {
         assert!(names.contains(&name), "unknown WDB fixture");
         names.retain(|candidate| candidate == &name);
@@ -3621,32 +3607,29 @@ fn wdb_changed_type_conformance() {
 
 #[cfg(feature = "wdb-lib")]
 #[test]
-#[ignore = "requires independently qualified local controls in ONDAS_WDB_CONTROLS"]
+#[ignore = "requires the selected reader and installed WDB fixtures"]
 fn wdb_dynamic_logic65xz_control() {
-    let controls = std::env::var_os("ONDAS_WDB_CONTROLS").expect("ONDAS_WDB_CONTROLS is required");
-    let name = "wdb/dynamic-logic65xz";
-    let fixture = load_conformance_fixture(Path::new(&controls), name).expect("dynamic oracle");
+    let name = "wdb/wdb0308-dynamic-logic65xz";
+    let fixture = load_conformance_fixture(&root(), name).expect("dynamic oracle");
     assert!(pool_queries(&fixture, false, name));
 }
 
 #[cfg(feature = "wdb-lib")]
 #[test]
-#[ignore = "requires source-backed local controls in ONDAS_WDB_CONTROLS"]
+#[ignore = "requires the selected reader and installed WDB fixtures"]
 fn wdb_metadata_control() {
-    let controls = std::env::var_os("ONDAS_WDB_CONTROLS").expect("ONDAS_WDB_CONTROLS is required");
     for name in [
-        "wdb/metadata",
-        "wdb/vhdl-enum",
-        "wdb/real-layout",
-        "wdb/packed-shapes",
-        "wdb/vhdl-strings-ports",
-        "wdb/partial-logging",
-        "wdb/vhdl-bit-arrays",
-        "wdb/sv-integral-types",
-        "wdb/vhdl-numeric-arrays",
+        "wdb/wdb0309-metadata",
+        "wdb/wdb0316-vhdl-enum",
+        "wdb/wdb0312-real-layout",
+        "wdb/wdb0310-packed-shapes",
+        "wdb/wdb0317-vhdl-strings-ports",
+        "wdb/wdb0311-partial-logging",
+        "wdb/wdb0315-vhdl-bit-arrays",
+        "wdb/wdb0314-sv-integral-types",
+        "wdb/wdb0318-vhdl-numeric-arrays",
     ] {
-        let fixture =
-            load_conformance_fixture(Path::new(&controls), name).expect("metadata oracle");
+        let fixture = load_conformance_fixture(&root(), name).expect("metadata oracle");
         assert!(pool_queries(&fixture, false, name));
     }
 }

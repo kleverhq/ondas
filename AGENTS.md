@@ -11,3 +11,5 @@ Target Simplified Technical English in `docs/` and public Rustdoc.
 Keep Git, editors, agents, credentials and signing on the host. Run project commands through `./dev`. Follow `development-workflow.md` for hooks, required checks and release policy.
 
 Keep materialized fixtures, vendor files, credentials and user-environment details out of Git and Docker build contexts. Use ignored local configuration and logs.
+
+Do not merge changes that require unpublished test inputs, thread directories, or ad hoc environment variables. Waveform tests use published, pinned fixtures; SDK and container configuration use the existing documented settings. Supply required data before merge; do not hide missing data with skips.
