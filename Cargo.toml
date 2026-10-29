@@ -31,46 +31,17 @@ thiserror = "2"
 [dev-dependencies]
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 sha2 = "0.10"
-wellen = "=0.25.6"
 
 [profile.conformance]
 inherits = "release"
 debug-assertions = true
 overflow-checks = true
 
-[[bench]]
-name = "vcd"
-harness = false
-
-[[bench]]
-name = "fst"
-harness = false
-
-[[bench]]
-name = "ghw"
-harness = false
-
-[[bench]]
-name = "fsdb"
-harness = false
-required-features = ["fsdb-lib"]
-
-[[bench]]
-name = "shm"
-harness = false
-required-features = ["shm-lib"]
-
-[[bench]]
-name = "wlf"
-harness = false
-required-features = ["wlf-lib"]
-
-[[bench]]
-name = "wdb"
-harness = false
-required-features = ["wdb-lib"]
-
 [package.metadata.docs.rs]
 all-features = false
 default-target = "x86_64-unknown-linux-gnu"
 targets = []
+
+[[bench]]
+name = "profile"
+harness = false

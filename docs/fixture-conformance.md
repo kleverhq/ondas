@@ -40,7 +40,7 @@ The shared generated reader counts retained slot values, advances, read starts a
 
 `src/waveform/semantics_tests.rs` defines reference histories separately from raw observations and production projection code. Keep this independence when changing semantics. Common pools compare point, batch, scan, Trace and query observations against complete oracle windows. Agreement between operations is not the oracle. Reader-specific failures and ABI/loader behavior need evidence outside the sparse schema.
 
-FSDB and WDB can report a confirmed newer source version after a failed open. Pool and benchmark wrappers report these skips separately. Focused tests can return after printing SKIP. A passing Rust test count therefore does not prove that its reader path ran. A standalone consumer can also start successfully and then skip a newer input. This proves loading, not query coverage for that file. Other opening failures and observation mismatches remain failures. WLF and SHM do not have this source-version skip rule.
+FSDB and WDB can report a confirmed newer source version after a failed open. Pool checks report these skips separately. OPB records a failed measurement for an unsupported input. Focused tests can return after printing SKIP. A passing Rust test count therefore does not prove that its reader path ran. A standalone consumer can also start successfully and then skip a newer input. This proves loading, not query coverage for that file. Other opening failures and observation mismatches remain failures. WLF and SHM do not have this source-version skip rule.
 
 ## Corpus and artifact identity
 

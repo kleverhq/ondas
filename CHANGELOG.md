@@ -8,6 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Replace format-specific benchmark suites with the verified OPB runner and quick checks in public and SDK CI.
 - Support older WDB readers and report confirmed newer DBG recordings as unsupported.
 - Improve WDB read performance, hierarchy lookup and bit value formatting.
 - Deliver SHM completed ticks with bounded adapter buffers and stop traversal after bounded read-ahead. SDK history storage has separate memory costs.
@@ -29,7 +30,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - Read WDB files with the optional `wdb-lib` backend. See `docs/wdb-reader.md` for setup and value limits.
-- Add WDB performance benchmarks.
 - Add `Error::UnsupportedFeature` for confirmed GHW and FSDB source or query
   support limits. These cases previously returned `Error::Backend`.
 - Sample several explicit times with `Selection::samples_at` and
