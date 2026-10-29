@@ -124,14 +124,25 @@ struct ByteValue {
 struct TimeByteValue { int64_t tick; ByteValue byte; };
 struct TimeByteValues { int64_t tick = 0; std::vector<ByteValue> bytes; };
 static_assert(sizeof(ByteValue) == 8 && sizeof(TimeByteValue) == 16 && sizeof(TimeByteValues) == 32);
+// The older reader can lose same-tick updates in byte indexes. Its bit indexes
+// retain those updates and still describe physical storage for the same decoder.
+constexpr size_t indexes_per_byte = ONDAS_WDB_BIT_INDEX ? 8 : 1;
+struct AddressBitPair { long long address; unsigned bit; };
+static_assert(sizeof(AddressBitPair) == 16);
 struct IndexBatch {
     void* manager;
     std::vector<void*> created;
+    std::vector<AddressBitPair> rollback_bit = std::vector<AddressBitPair>(ONDAS_WDB_BIT_INDEX ? 1 : 0);
     bool committed = false;
     long long (*address)(const void*) = symbol<long long(*)(const void*)>(
         "_ZNK9SimBridge14WdbScalarBTree10getAddressEv");
     void (*remove)(void*, long long, long long) = symbol<void(*)(void*, long long, long long)>(
         "_ZN9SimBridge22WdbAddressBTreeManager16deleteByteBTreesExx");
+    unsigned (*bit)(const void*) = ONDAS_WDB_BIT_INDEX ? symbol<unsigned(*)(const void*)>(
+        "_ZNK9SimBridge14WdbScalarBTree14getBitPositionEv") : nullptr;
+    void (*remove_bits)(void*, const std::vector<AddressBitPair>&) = ONDAS_WDB_BIT_INDEX ?
+        symbol<void(*)(void*, const std::vector<AddressBitPair>&)>(
+            "_ZN9SimBridge22WdbAddressBTreeManager15deleteBitBTreesERKSt6vectorINS_17WdbAddressBitPairESaIS2_EE") : nullptr;
     explicit IndexBatch(void* source) : manager(source) {}
     void deduplicate() {
         std::sort(created.begin(), created.end(), std::less<void*>{});
@@ -141,14 +152,37 @@ struct IndexBatch {
         // A failed scan must not leave a partial SDK index available for reuse.
         if (!committed) {
             deduplicate();
-            for (auto tree : created) remove(manager, address(tree), 1);
+            if constexpr (ONDAS_WDB_BIT_INDEX) {
+                for (auto tree : created) {
+                    rollback_bit[0] = {address(tree), bit(tree)};
+                    remove_bits(manager, rollback_bit);
+                }
+            } else {
+                for (auto tree : created) remove(manager, address(tree), 1);
+            }
         }
     }
     void add(long long address, unsigned length, std::vector<void*>& trees) {
-        static auto create = symbol<void(*)(void*, long long, long long, std::vector<void*>&, std::vector<void*>&)>(
-            "_ZN9SimBridge22WdbAddressBTreeManager21getOrCreateByteBTreesExxRSt6vectorIPNS_14WdbScalarBTreeESaIS3_EES6_");
-        create(manager, address, length, trees, created);
-        if (trees.size() != length) throw std::runtime_error("native byte index width disagrees with extent");
+        if constexpr (ONDAS_WDB_BIT_INDEX) {
+            static auto create = symbol<void(*)(void*, const std::vector<AddressBitPair>&, std::vector<void*>&, std::vector<void*>&)>(
+                "_ZN9SimBridge22WdbAddressBTreeManager20getOrCreateBitBTreesERKSt6vectorINS_17WdbAddressBitPairESaIS2_EERS1_IPNS_14WdbScalarBTreeESaIS8_EESB_");
+            std::vector<AddressBitPair> pairs;
+            pairs.reserve(size_t(length) * indexes_per_byte);
+            for (unsigned byte = 0; byte < length; ++byte)
+                for (unsigned bit = 0; bit < 8; ++bit) pairs.push_back({address + byte, bit});
+            create(manager, pairs, trees, created);
+        } else {
+            static auto create = symbol<void(*)(void*, long long, long long, std::vector<void*>&, std::vector<void*>&)>(
+                "_ZN9SimBridge22WdbAddressBTreeManager21getOrCreateByteBTreesExxRSt6vectorIPNS_14WdbScalarBTreeESaIS3_EES6_");
+            create(manager, address, length, trees, created);
+        }
+        if (trees.size() != size_t(length) * indexes_per_byte)
+            throw std::runtime_error("native index width disagrees with extent");
+        if constexpr (ONDAS_WDB_BIT_INDEX) {
+            for (size_t i = 0; i < trees.size(); ++i)
+                if (this->address(trees[i]) != address + static_cast<long long>(i / 8) || bit(trees[i]) != i % 8)
+                    throw std::runtime_error("native bit index order disagrees with extent");
+        }
     }
     void load() {
         deduplicate();
@@ -267,16 +301,26 @@ struct Reader {
             "_ZNK9SimBridge15WdbCommonReader13getValueEventExRKSt6vectorIPNS_14WdbScalarBTreeESaIS3_EERNS_17WdbTimeByteValuesE");
         TimeByteValues state;
         get(common, time, selected.trees, state);
-        if (state.bytes.size() != selected.declaration->length || state.tick < 0 || state.tick > time)
+        if (state.bytes.size() != selected.trees.size() || state.tick < 0 || state.tick > time)
             throw std::runtime_error("invalid native point extent or time");
-        bytes.resize(state.bytes.size());
+        bytes.assign(selected.declaration->length, 0);
+        if (known) known->assign(bytes.size(), 0);
         bool complete = true;
-        for (size_t i = 0; i < bytes.size(); ++i) {
+        for (size_t i = 0; i < state.bytes.size(); ++i) {
             const auto byte = state.bytes[i];
             if (byte.kind != 0 && byte.kind != 1)
                 throw std::runtime_error("native point returned a non-value record");
-            bytes[i] = byte.value;
-            if (known) (*known)[i] = byte.kind == 1;
+            const auto offset = i / indexes_per_byte;
+            const unsigned mask = ONDAS_WDB_BIT_INDEX ? 1u << (i % 8) : 0xff;
+            if constexpr (ONDAS_WDB_BIT_INDEX) {
+                if (byte.kind == 1) {
+                    if (byte.value > 1) throw std::runtime_error("native bit index returned a non-bit value");
+                    if (byte.value) bytes[offset] |= mask;
+                }
+            } else {
+                bytes[offset] = byte.value;
+            }
+            if (known && byte.kind == 1) (*known)[offset] |= mask;
             complete &= byte.kind == 1;
         }
         tick = state.tick;
@@ -404,8 +448,9 @@ void describe_type(Reader& reader, Declaration& d) {
     unsigned count = 0;
     d.constraints = vcall<std::shared_ptr<const RTTI::FullConstraints>>(data, 52, &count);
     Constraints top{};
-    // The native range getter copies these three words from FullConstraints.
-    if (d.constraints) std::memcpy(&top, d.constraints.get(), sizeof(top));
+    // Scalar members can have a non-null empty constraints view.
+    // The native range getter copies three words only when a range exists.
+    if (count && d.constraints) std::memcpy(&top, d.constraints.get(), sizeof(top));
     auto native_kind = vcall<int>(d.object, 2);
     if (native_class == "vtable for SimBridge::FloatTypeObj") {
         // FloatTypeObj's native encoder writes binary64. The generic bit metric
@@ -756,7 +801,8 @@ extern "C" int ondas_wdb_begin(void* opaque, const uint64_t* ids, size_t count, 
             if (start) {
                 long long tick = 0;
                 reader.raw(selected, std::min(start - 1, reader.meta.last), selected.bytes, tick, &selected.known);
-                selected.unknown = std::count(selected.known.begin(), selected.known.end(), 0);
+                selected.unknown = std::count_if(selected.known.begin(), selected.known.end(),
+                                                [](auto mask) { return mask != 0xff; });
                 if (!selected.unknown) {
                     reader.decode(*selected.declaration, selected.bytes.data(), selected.value);
                     selected.observed = true;
@@ -834,9 +880,18 @@ extern "C" int ondas_wdb_next(void* opaque, ondas_wdb_record* out, char* error, 
                     for (auto [index, offset] : cursor.targets) {
                         auto& selected = t.selected[index];
                         auto byte = cursor.current.byte.value;
-                        selected.dirty |= !selected.known[offset] || selected.bytes[offset] != byte;
-                        selected.bytes[offset] = byte;
-                        if (!selected.known[offset]) { selected.known[offset] = 1; --selected.unknown; }
+                        const unsigned mask = ONDAS_WDB_BIT_INDEX ? 1u << (offset % 8) : 0xff;
+                        if constexpr (ONDAS_WDB_BIT_INDEX) {
+                            if (byte > 1) throw std::runtime_error("native bit iterator returned a non-bit value");
+                            byte = byte ? mask : 0;
+                        }
+                        offset /= indexes_per_byte;
+                        auto value = (selected.bytes[offset] & ~mask) | byte;
+                        selected.dirty |= selected.known[offset] != 0xff || selected.bytes[offset] != value;
+                        selected.bytes[offset] = value;
+                        const bool was_complete = selected.known[offset] == 0xff;
+                        selected.known[offset] |= mask;
+                        if (!was_complete && selected.known[offset] == 0xff) --selected.unknown;
                     }
                     cursor.advance();
                     if (cursor.valid) t.queue.emplace(cursor.current.tick, item.second);

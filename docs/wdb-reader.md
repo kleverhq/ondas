@@ -4,15 +4,17 @@
 
 ## The selected installation is an ABI boundary
 
-The adapter uses private C++ interfaces. Exported symbols alone do not establish layout compatibility. The build checks required symbols and the reader's kernel dependency. Before a native session starts, the adapter checks the loaded reader, kernel and data-directory paths against the build selection. These checks do not qualify another ABI that happens to export the same names.
+The adapter uses private C++ interfaces. Exported symbols alone do not establish layout compatibility. The build checks required symbols and the reader's kernel dependency. Before a native session starts, the adapter checks the loaded reader, kernel and data-directory paths against the build selection. These checks do not qualify another ABI that happens to export the same names. The build selects a complete installed `rdi` or `xv` reader/kernel pair and checks the corresponding dependency.
 
-The executable depends on the installed shared libraries. A missing library or incompatible C++ runtime can stop process startup before Rust runs. The adapter copies no vendor library into the crate. A short or invalid container header is rejected before SDK entry; an unknown container version is unsupported. This check does not validate the complete recording. Native exceptions can become Rust errors; native faults and process termination cannot.
+The executable depends on the installed shared libraries. A missing library or incompatible C++ runtime can stop process startup before Rust runs. The adapter copies no vendor library into the crate. A short or invalid container header is rejected before SDK entry; an unknown container version is unsupported. This check does not validate the complete recording. After a failed SDK open, the adapter can compare the embedded DBG version with the expected signature referenced by the selected reader. A confirmed newer DBG is unsupported. Unknown reader signatures or container framing preserve the original failure; they do not justify a version skip. Native exceptions can become Rust errors; native faults and process termination cannot.
 
 Each waveform owns its native session. SDK calls and destruction share one adapter lock. Immutable copied declaration tables need no SDK call. Values are copied before unlocking, and user visitors run after the lock is released. A visitor can query another waveform. The lock does not coordinate unrelated SDK users in the application.
 
 ## Storage and presentation have different representations
 
 The SDK builds byte-history indexes for selected physical extents. The adapter merges exact-resolution byte cursors and applies all bytes at one tick before conversion. A declaration's complete physical extent and bit offset select its stored value. Vendor conversion supplies the logical bits. Point reads use the same indexed bytes and decoder. The SDK typed point-value transport is not interchangeable with stored memory, especially for enum values.
+
+The older `rdi` reader can lose final updates after an intermediate return to an earlier byte value within one tick. For this reader, the adapter requests eight SDK bit indexes per physical byte and assembles the stored bytes before conversion. Point reads and traversal use the same indexes. This requires more SDK indexes and cursors than the `xv` reader's byte path. Both paths keep histories in SDK-owned storage.
 
 Native enum tables supply codes and labels. Ordinal VHDL enums and discrete SV enums have different conversions. A table or constant does not establish that a producer recorded later changes. Real storage also needs independent qualification: the generic type bit metric can differ from the native encoder's binary64 storage.
 

@@ -11,6 +11,8 @@ mod fixtures;
 #[allow(dead_code, unused_imports)]
 #[path = "../tests/support/normalized_oracle.rs"]
 mod normalized_oracle;
+#[path = "../tests/support/wdb_compatibility.rs"]
+mod wdb_compatibility;
 
 const BACKEND: &str = "wdb-lib";
 
@@ -82,7 +84,10 @@ fn workloads(c: &mut Criterion) {
         ),
     ] {
         let (path, sidecar) = fixtures::load_artifact(&fixtures::root(), fixture);
-        let mut wave = ondas::open_with(&path, BACKEND).unwrap();
+        let Some(mut wave) = wdb_compatibility::open(ondas::open_with(&path, BACKEND), &path)
+        else {
+            continue;
+        };
         let signals = paths.map(|name| wave.hierarchy().signal(name).unwrap());
         let histories = paths.map(|name| {
             let components = name.split('.').collect::<Vec<_>>();
@@ -293,7 +298,9 @@ fn repeated_source(c: &mut Criterion) {
     let fixture = "wdb/wdb0161-mcvga-tb-behav";
     let name = "MCVGA_TB.uut.vga.letter_change_counter";
     let (path, sidecar) = fixtures::load_artifact(&fixtures::root(), fixture);
-    let mut wave = ondas::open_with(&path, BACKEND).unwrap();
+    let Some(mut wave) = wdb_compatibility::open(ondas::open_with(&path, BACKEND), &path) else {
+        return;
+    };
     let base = wave.hierarchy().signal(name).unwrap();
     let width = base.width().unwrap();
     let bus = wave.concat(&[base, base, base]).unwrap();

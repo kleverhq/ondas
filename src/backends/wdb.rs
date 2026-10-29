@@ -6,7 +6,7 @@ use crate::{
 };
 use std::{
     ffi::{CStr, CString, c_char, c_int, c_void},
-    io::Read,
+    io::{Read, Seek, SeekFrom},
     ops::ControlFlow,
     os::unix::ffi::OsStrExt,
     path::Path,
@@ -148,6 +148,76 @@ fn status(code: c_int, error: &[c_char; 512], operation: &'static str) -> Result
         }
     })
 }
+
+fn dbg_version(file: &mut (impl Read + Seek), length: u64) -> std::io::Result<Option<u16>> {
+    let mut header = [0; 0xc8];
+    if length < header.len() as u64 {
+        return Ok(None);
+    }
+    file.seek(SeekFrom::Start(0))?;
+    file.read_exact(&mut header)?;
+    if header[..24] != *b"Xilinx WAVE DATABASE 01\0" {
+        return Ok(None);
+    }
+    let word = |bytes: &[u8]| u64::from_le_bytes(bytes.try_into().unwrap());
+    let in_bounds = |offset: u64, size: u64| {
+        offset >= header.len() as u64 && offset <= length && size <= length - offset
+    };
+    let mut seen = 0;
+    let mut debug = None;
+    let mut ranges = vec![(0, header.len() as u64)];
+    for pointer in header[0x48..0x60].as_chunks::<8>().0 {
+        let pointer = word(pointer);
+        if !in_bounds(pointer, 48) {
+            return Ok(None);
+        }
+        ranges.push((pointer, pointer + 48));
+        file.seek(SeekFrom::Start(pointer))?;
+        let mut entry = [0; 48];
+        file.read_exact(&mut entry)?;
+        let Some(end) = entry[..24].iter().position(|byte| *byte == 0) else {
+            return Ok(None);
+        };
+        let flag = match &entry[..end] {
+            b"WDB.Event" => 1,
+            b"Xilinx RTTI" => 2,
+            b"Xilinx DBG" => 4,
+            _ => return Ok(None),
+        };
+        let start = word(&entry[32..40]);
+        let size = word(&entry[40..48]);
+        if seen & flag != 0 || word(&entry[24..32]) != 1 || !in_bounds(start, size) {
+            return Ok(None);
+        }
+        if (flag == 1 && size != 72) || (flag == 2 && size < 40) || (flag == 4 && size < 184) {
+            return Ok(None);
+        }
+        ranges.push((start, start + size));
+        seen |= flag;
+        if flag == 4 {
+            debug = Some((start, size));
+        }
+    }
+    ranges.sort_unstable();
+    if ranges.windows(2).any(|pair| pair[0].1 > pair[1].0) {
+        return Ok(None);
+    }
+    let Some((start, _)) = debug else {
+        return Ok(None);
+    };
+    file.seek(SeekFrom::Start(start))?;
+    let mut signature = [0; 20];
+    file.read_exact(&mut signature)?;
+    if !signature.starts_with(b"Xilinx ISim DBG ")
+        || !signature[16..19].iter().all(u8::is_ascii_digit)
+        || signature[19] != 0
+    {
+        return Ok(None);
+    }
+    Ok(std::str::from_utf8(&signature[16..19])
+        .ok()
+        .and_then(|version| version.parse().ok()))
+}
 // SAFETY: used only for shim-owned immutable strings while their owner is alive.
 unsafe fn string(pointer: *const c_char) -> Result<Option<String>> {
     if pointer.is_null() {
@@ -183,7 +253,8 @@ fn open_handle(path: &Path, metadata_only: bool) -> Result<Handle> {
         message: "invalid or truncated WDB container header".into(),
     };
     let mut file = std::fs::File::open(path)?;
-    if file.metadata()?.len() < 0xc8 {
+    let length = file.metadata()?.len();
+    if length < 0xc8 {
         return Err(malformed());
     }
     let mut header = [0; 24];
@@ -219,7 +290,26 @@ fn open_handle(path: &Path, metadata_only: bool) -> Result<Handle> {
                 error.len(),
             )
         };
-        status(code, &error, operation)?;
+        if let Err(error) = status(code, &error, operation) {
+            // Diagnose only a failed SDK open, as with FSDB. Unknown framing or
+            // reader capability must preserve the original failure.
+            let reader_version = env!("ONDAS_WDB_DBG_VERSION").parse::<u16>().unwrap();
+            if code == -1
+                && reader_version != 0
+                && let Ok(Some(version)) = dbg_version(&mut file, length)
+                && version > reader_version
+            {
+                return Err(Error::UnsupportedFeature {
+                    format: Format::Wdb,
+                    backend: BACKEND.into(),
+                    operation,
+                    message: format!(
+                        "WDB DBG version {version:03} is newer than Reader DBG {reader_version:03}"
+                    ),
+                });
+            }
+            return Err(error);
+        }
     }
     Ok(Handle(
         NonNull::new(raw).ok_or_else(|| backend_error("null native reader"))?,
@@ -641,6 +731,92 @@ fn declaration_name(mut name: String, syntax: u32, base_len: usize) -> Result<(S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn container(version: &[u8; 3]) -> Vec<u8> {
+        let mut bytes = vec![0; 640];
+        bytes[..24].copy_from_slice(b"Xilinx WAVE DATABASE 01\0");
+        for (index, (name, start, size)) in [
+            ("WDB.Event", 344_u64, 72_u64),
+            ("Xilinx RTTI", 416, 40),
+            ("Xilinx DBG", 456, 184),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let entry = 200 + index * 48;
+            bytes[0x48 + index * 8..0x50 + index * 8]
+                .copy_from_slice(&(entry as u64).to_le_bytes());
+            bytes[entry..entry + name.len()].copy_from_slice(name.as_bytes());
+            bytes[entry + 24..entry + 32].copy_from_slice(&1_u64.to_le_bytes());
+            bytes[entry + 32..entry + 40].copy_from_slice(&start.to_le_bytes());
+            bytes[entry + 40..entry + 48].copy_from_slice(&size.to_le_bytes());
+        }
+        bytes[456..476].copy_from_slice(b"Xilinx ISim DBG 000\0");
+        bytes[472..475].copy_from_slice(version);
+        bytes
+    }
+
+    #[test]
+    fn dbg_version_uses_the_directory_instead_of_embedded_strings() {
+        let mut bytes = container(b"004");
+        bytes.extend_from_slice(b"Xilinx ISim DBG 999\0");
+        let debug = bytes[456..640].to_vec();
+        bytes.resize(2 * 1024 * 1024, 0);
+        let start = bytes.len() as u64;
+        bytes.extend_from_slice(&debug);
+        bytes[328..336].copy_from_slice(&start.to_le_bytes());
+        let length = bytes.len() as u64;
+        assert_eq!(
+            dbg_version(&mut std::io::Cursor::new(bytes), length).unwrap(),
+            Some(4)
+        );
+        for (signature, expected) in [(b"005", 5), (b"006", 6)] {
+            let bytes = container(signature);
+            let length = bytes.len() as u64;
+            assert_eq!(
+                dbg_version(&mut std::io::Cursor::new(bytes), length).unwrap(),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn dbg_version_does_not_classify_invalid_framing() {
+        let original = container(b"006");
+        let mut cases = vec![Vec::new(), original[..199].to_vec()];
+        let mut invalid = original.clone();
+        invalid[0] = b'!';
+        cases.push(invalid);
+        let mut invalid = original.clone();
+        invalid[0x48..0x50].copy_from_slice(&u64::MAX.to_le_bytes());
+        cases.push(invalid);
+        let mut invalid = original.clone();
+        invalid[328..336].copy_from_slice(&u64::MAX.to_le_bytes());
+        cases.push(invalid);
+        let mut invalid = original.clone();
+        invalid[320..328].copy_from_slice(&2_u64.to_le_bytes());
+        cases.push(invalid);
+        let mut invalid = original.clone();
+        invalid[296..320].copy_from_slice(&original[200..224]);
+        cases.push(invalid);
+        let mut invalid = original.clone();
+        invalid[240..248].copy_from_slice(&8_u64.to_le_bytes());
+        cases.push(invalid);
+        let mut invalid = original.clone();
+        invalid[328..336].copy_from_slice(&200_u64.to_le_bytes());
+        cases.push(invalid);
+        let mut invalid = original;
+        invalid[472] = b'?';
+        cases.push(invalid);
+        for bytes in cases {
+            let length = bytes.len() as u64;
+            assert_eq!(
+                dbg_version(&mut std::io::Cursor::new(bytes), length).unwrap(),
+                None
+            );
+        }
+    }
+
     #[test]
     fn invalid_native_precision_returns_an_error() {
         for precision in [i32::MIN, -22, 3, i32::MAX] {
@@ -658,10 +834,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires the selected reader and installed WDB enum fixture"]
+    #[ignore = "requires the selected reader and installed WDB fixture"]
     fn wdb_invalid_native_metadata_indices() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("fixtures/wdb/wdb0305-enum-core/waveform.wdb");
+            .join("fixtures/wdb/wdb0091-tesbench-behav/waveform.wdb");
         let handle = open_handle(&path, false).unwrap();
         let raw = handle.0.as_ptr();
         let mut declaration = Declaration::default();

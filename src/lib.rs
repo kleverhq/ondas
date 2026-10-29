@@ -69,7 +69,9 @@ Enable `wdb-lib` and set `XILINX_VIVADO` to the selected installation when build
 on Linux x86_64 GNU. Building requires a C++17 compiler and binutils. At runtime,
 set `RDI_DATADIR` to that installation's `data` directory and make its
 `lib/lnx64.o` libraries and their dependencies available to the dynamic loader.
-The application must use a compatible system C++ runtime.
+The application must use a compatible system C++ runtime. The build selects the
+installed `rdi` or `xv` reader libraries without a separate setting. A confirmed
+newer embedded DBG format returns [`Error::UnsupportedFeature`].
 
 First access to selected stored bytes builds their SDK history indexes, including
 times after the query end. These indexes remain until the waveform is dropped.
