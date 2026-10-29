@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+(( $# )) || { echo "usage: wdb-sweep <command> [args...]" >&2; exit 2; }
+if [[ -n ${XILINX_VIVADO_HOMES:-} ]]; then
+    IFS=$' \t\n' read -r -d '' -a homes < <(printf '%s\0' "$XILINX_VIVADO_HOMES")
+else
+    [[ -n ${XILINX_VIVADO:-} ]] || {
+        echo "error: set XILINX_VIVADO_HOMES or XILINX_VIVADO in the local container environment" >&2
+        exit 1
+    }
+    homes=("$XILINX_VIVADO")
+fi
+(( ${#homes[@]} )) || { echo "error: XILINX_VIVADO_HOMES contains no SDK paths" >&2; exit 1; }
+
+target_base=${CARGO_TARGET_DIR:-target}/wdb-sdk
+result=0
+for index in "${!homes[@]}"; do
+    home_path=${homes[$index]}
+    printf 'WDB SDK %s/%s: %s\n' "$((index + 1))" "${#homes[@]}" "$home_path"
+    if [[ ! -d $home_path ]]; then
+        echo "error: SDK directory is absent: $home_path" >&2
+        result=1
+        continue
+    fi
+    home_path=$(realpath "$home_path")
+    if env -u XILINX_VIVADO_HOMES XILINX_VIVADO="$home_path" \
+        RDI_DATADIR="$home_path/data" \
+        LD_LIBRARY_PATH="$home_path/lib/lnx64.o${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+        CARGO_TARGET_DIR="$target_base/$((index + 1))" "$@"; then
+        printf 'PASS SDK %s\n' "$((index + 1))"
+    else
+        status=$?
+        (( status != 130 && status != 143 )) || exit "$status"
+        printf 'FAIL SDK %s (exit %s)\n' "$((index + 1))" "$status" >&2
+        result=1
+    fi
+done
+exit "$result"

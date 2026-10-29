@@ -76,6 +76,15 @@ _conformance-wlf: _inside
     cargo test --locked --profile conformance --features wlf-lib --lib wlf_ -- --ignored
     cargo test --locked --profile conformance --features wlf-lib --test exact_names wlf_ -- --ignored
 
+# Check WDB fixtures and native regressions that use published fixtures.
+conformance-wdb: _inside
+    tools/repo/wdb-sweep just _conformance-wdb
+
+_conformance-wdb: _inside
+    cargo test --locked --profile conformance --features wdb-lib --test conformance wdb_ -- --ignored --nocapture --test-threads=1
+    cargo test --locked --profile conformance --features wdb-lib --test wdb_lib -- --ignored --test-threads=1
+    cargo test --locked --profile conformance --features wdb-lib --lib wdb_ -- --ignored --test-threads=1
+
 # Execute VCD/FST/GHW Criterion workloads without timing thresholds.
 bench-smoke: _inside
     CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}" cargo bench --locked --bench vcd -- --test
@@ -145,13 +154,31 @@ bench-wlf *args: _inside
 _bench-wlf *args: _inside
     cargo bench --locked --features wlf-lib --bench wlf -- "$@"
 
-# Execute WDB workloads with the selected reader without measurements.
+# Execute WDB workloads for each selected SDK without measurements.
 bench-smoke-wdb: _inside
-    cargo bench --locked --features wdb-lib --bench wdb -- --test
+    tools/repo/wdb-sweep just _bench-smoke-wdb
 
-# Measure WDB workloads; accepts Criterion arguments.
+_bench-smoke-wdb: _inside
+    CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}" cargo bench --locked --features wdb-lib --bench wdb -- --test
+
+# Measure WDB workloads for each selected SDK; accepts Criterion arguments.
 bench-wdb *args: _inside
+    tools/repo/wdb-sweep just _bench-wdb "$@"
+
+_bench-wdb *args: _inside
     cargo bench --locked --features wdb-lib --bench wdb -- "$@"
+
+# Validate each SDK in XILINX_VIVADO_HOMES, or the single XILINX_VIVADO.
+ci-wdb: _inside
+    tools/repo/wdb-sweep just _ci-wdb
+
+_ci-wdb: _inside
+    cargo clippy --locked --all-targets --features wdb-lib -- -D warnings
+    cargo test --locked --features wdb-lib
+    cargo +{{msrv}} check --locked --lib --features wdb-lib
+    RUSTDOCFLAGS="-D warnings" cargo doc --locked --lib --features wdb-lib --no-deps
+    just _conformance-wdb
+    just _bench-smoke-wdb
 
 # Verify actual downstream linking, independent of Cargo's runtime environment.
 fsdb-consumer: _inside
