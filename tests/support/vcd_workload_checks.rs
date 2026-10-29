@@ -1,4 +1,4 @@
-//! Observation checks for the exact consumers timed by benches/vcd.rs.
+//! Observation checks for fixture-backed VCD query workloads.
 use std::ops::ControlFlow;
 
 use ondas::{SampleRef, Time, TimeRange, ValueRef};

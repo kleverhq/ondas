@@ -85,40 +85,6 @@ _conformance-wdb: _inside
     cargo test --locked --profile conformance --features wdb-lib --test wdb_lib -- --ignored --nocapture --test-threads=1
     cargo test --locked --profile conformance --features wdb-lib --lib wdb_ -- --ignored --nocapture --test-threads=1
 
-# Execute VCD/FST/GHW Criterion workloads without timing thresholds.
-bench-smoke: _inside
-    CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}" cargo bench --locked --bench vcd -- --test
-    CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}" cargo bench --locked --bench fst -- --test
-    CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}" cargo bench --locked --bench ghw -- --test
-
-# Execute vendor Criterion workloads against pinned fixtures.
-bench-smoke-fsdb: _inside
-    tools/repo/fsdb-sweep just _bench-smoke-fsdb
-
-_bench-smoke-fsdb: _inside
-    CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}" cargo bench --locked --features fsdb-lib --bench fsdb -- --test
-
-# Measure FSDB workloads for each selected SDK; accepts Criterion arguments.
-bench-fsdb *args: _inside
-    tools/repo/fsdb-sweep just _bench-fsdb "$@"
-
-_bench-fsdb *args: _inside
-    cargo bench --locked --features fsdb-lib --bench fsdb -- "$@"
-
-# Execute SHM workloads for each selected SDK without measurements.
-bench-smoke-shm: _inside
-    tools/repo/shm-sweep just _bench-smoke-shm
-
-_bench-smoke-shm: _inside
-    CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}" cargo bench --locked --features shm-lib --bench shm -- --test
-
-# Measure SHM workloads for each selected SDK; accepts Criterion arguments.
-bench-shm *args: _inside
-    tools/repo/shm-sweep just _bench-shm "$@"
-
-_bench-shm *args: _inside
-    cargo bench --locked --features shm-lib --bench shm -- "$@"
-
 # Validate each SDK in XCELIUM_HOMES, or the single XCELIUM_HOME.
 ci-shm: _inside
     tools/repo/shm-sweep just _ci-shm
@@ -129,44 +95,9 @@ _ci-shm: _inside
     cargo +{{msrv}} check --locked --lib --features shm-lib
     RUSTDOCFLAGS="-D warnings" cargo doc --locked --lib --features shm-lib --no-deps
     just _conformance-shm
-    just _bench-smoke-shm
+    just opb run --backend shm-lib --quick
     just shm-consumer
     RUSTUP_TOOLCHAIN={{msrv}} just shm-consumer
-
-# Compile WLF workloads without executing Criterion or opening fixtures.
-bench-build-wlf: _inside
-    tools/repo/wlf-sweep just _bench-build-wlf
-
-_bench-build-wlf: _inside
-    cargo bench --locked --features wlf-lib --bench wlf --no-run
-
-# Execute WLF Criterion workloads without timing thresholds.
-bench-smoke-wlf: _inside
-    tools/repo/wlf-sweep just _bench-smoke-wlf
-
-_bench-smoke-wlf: _inside
-    CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}" cargo bench --locked --features wlf-lib --bench wlf -- --test
-
-# Measure WLF workloads for each selected SDK; accepts Criterion arguments.
-bench-wlf *args: _inside
-    tools/repo/wlf-sweep just _bench-wlf "$@"
-
-_bench-wlf *args: _inside
-    cargo bench --locked --features wlf-lib --bench wlf -- "$@"
-
-# Execute WDB workloads for each selected SDK without measurements.
-bench-smoke-wdb: _inside
-    tools/repo/wdb-sweep just _bench-smoke-wdb
-
-_bench-smoke-wdb: _inside
-    CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}" cargo bench --locked --features wdb-lib --bench wdb -- --test
-
-# Measure WDB workloads for each selected SDK; accepts Criterion arguments.
-bench-wdb *args: _inside
-    tools/repo/wdb-sweep just _bench-wdb "$@"
-
-_bench-wdb *args: _inside
-    cargo bench --locked --features wdb-lib --bench wdb -- "$@"
 
 # Validate each SDK in XILINX_VIVADO_HOMES, or the single XILINX_VIVADO.
 ci-wdb: _inside
@@ -178,7 +109,7 @@ _ci-wdb: _inside
     cargo +{{msrv}} check --locked --lib --features wdb-lib
     RUSTDOCFLAGS="-D warnings" cargo doc --locked --lib --features wdb-lib --no-deps
     just _conformance-wdb
-    just _bench-smoke-wdb
+    just opb run --backend wdb-lib --quick
     just wdb-consumer
     RUSTUP_TOOLCHAIN={{msrv}} just wdb-consumer
 
@@ -204,7 +135,7 @@ _ci-wlf: _inside
     cargo +{{msrv}} check --locked --lib --features wlf-lib
     RUSTDOCFLAGS="-D warnings" cargo doc --locked --lib --features wlf-lib --no-deps
     just _conformance-wlf
-    just _bench-smoke-wlf
+    just opb run --backend wlf-lib --quick
     just wlf-consumer
     RUSTUP_TOOLCHAIN={{msrv}} just wlf-consumer
 
@@ -218,13 +149,14 @@ _ci-fsdb: _inside
     cargo +{{msrv}} check --locked --lib --features fsdb-lib
     RUSTDOCFLAGS="-D warnings" cargo doc --locked --lib --features fsdb-lib --no-deps
     just _conformance-fsdb
-    just _bench-smoke-fsdb
+    just opb run --backend fsdb-lib --quick
     just fsdb-consumer
     RUSTUP_TOOLCHAIN={{msrv}} just fsdb-consumer
 
 # Test repository automation without Docker or external fixtures.
 tools-test: _inside
     python3 -B -m unittest discover -s tools/repo -p 'test_*.py'
+    python3 -B -m unittest discover -s tools/opb -t . -p 'test_*.py'
 
 # Run the same pre-commit checks against all tracked files.
 pre-commit: _inside
@@ -244,5 +176,23 @@ release-check: _inside
     cargo package --list --locked
     cargo publish --dry-run --locked
 
+# Run the OPB end-to-end smoke on the public backends.
+opb-smoke: _inside
+    just opb run --backend vcd-native --quick
+    just opb run --backend fst-lib --quick
+    just opb run --backend ghw-native --quick
+
 # Run the full quality gate; fixtures must already be installed.
-ci: check-local conformance bench-smoke release-check
+ci: check-local conformance opb-smoke release-check
+
+# List OPB cases or measure selected workloads, then verify them.
+opb *args: _inside
+    python3 -B -m tools.opb "$@"
+
+# Sweep the selected backend's SDKs with one barrier before all verification.
+opb-sweep *args: _inside
+    python3 -B -m tools.opb run --sweep "$@"
+
+# Check the standalone OPB model and process controller without external inputs.
+opb-test: _inside
+    python3 -B -m unittest discover -s tools/opb -t . -p 'test_*.py'

@@ -1,0 +1,819 @@
+{
+  "schema": 1,
+  "fixtures_revision": "229addb72a05e7b530ea1d68e4142deb85cd7f16",
+  "scope_digest": "sha256 of compact ASCII JSON sorted arrays of literal native scope components; no newline",
+  "bindings": [
+    {
+      "format": "vcd",
+      "profile": "S",
+      "fixture": "vcd/vcd0104-opb-s",
+      "artifact": {
+        "file": "waveform.vcd",
+        "format": "vcd",
+        "size": 47057377,
+        "sha256": "c353d9b1cc8936aab886fd2c116f58c4aac01455ee1ab21b8dfda03c55b6e912"
+      },
+      "physical_scopes": 2834,
+      "recorded": 1476,
+      "scope_sha256": "55f551bc8fe403eb454c8d0c21b2c3d48f8b02d38a73a232d9a58218a829752e",
+      "unrecorded": 0,
+      "empty_extra_scopes": []
+    },
+    {
+      "format": "vcd",
+      "profile": "M",
+      "fixture": "vcd/vcd0105-opb-m",
+      "artifact": {
+        "file": "waveform.vcd",
+        "format": "vcd",
+        "size": 472685910,
+        "sha256": "a3243987aa147236b7f1dcd28335d6b38cc382d73db01007b9f3ae2834f3a455"
+      },
+      "physical_scopes": 54344,
+      "recorded": 29216,
+      "scope_sha256": "afa73b6b9917eab7ceaeb93fac8733c9aa501ba202a5ae0e37fac0c2e288ff2b",
+      "unrecorded": 0,
+      "empty_extra_scopes": []
+    },
+    {
+      "format": "vcd",
+      "profile": "L",
+      "fixture": "vcd/vcd0106-opb-l",
+      "artifact": {
+        "file": "waveform.vcd",
+        "format": "vcd",
+        "size": 4689132772,
+        "sha256": "8da91b4f9b22c216f088200e4c7e4b45475de290672eadfc06b0ef89f36f580b"
+      },
+      "physical_scopes": 140384,
+      "recorded": 86576,
+      "scope_sha256": "fa65e5965b4975472139d6a6bec9f839b514a657e539ff5815c9096f9ded21a4",
+      "unrecorded": 0,
+      "empty_extra_scopes": []
+    },
+    {
+      "format": "vcd",
+      "profile": "MH",
+      "fixture": "vcd/vcd0107-opb-mh",
+      "artifact": {
+        "file": "waveform.vcd",
+        "format": "vcd",
+        "size": 481664223,
+        "sha256": "4b19d63ce18666b289cd94351f28b82018d52e9604ee94338ddd1f0eff886890"
+      },
+      "physical_scopes": 152647,
+      "recorded": 94751,
+      "scope_sha256": "c5ebd0d1204dc72453ba95ee3ee00ce06f9cfc3321b05a44cf9ee61e3a160e62",
+      "unrecorded": 0,
+      "empty_extra_scopes": []
+    },
+    {
+      "format": "vcd",
+      "profile": "MT",
+      "fixture": "vcd/vcd0108-opb-mt",
+      "artifact": {
+        "file": "waveform.vcd",
+        "format": "vcd",
+        "size": 520985895,
+        "sha256": "9bd786e838d039179ad33ee3af953e71188c41023141360c33a353ce61063bee"
+      },
+      "physical_scopes": 54344,
+      "recorded": 29216,
+      "scope_sha256": "afa73b6b9917eab7ceaeb93fac8733c9aa501ba202a5ae0e37fac0c2e288ff2b",
+      "unrecorded": 0,
+      "empty_extra_scopes": []
+    },
+    {
+      "format": "fst",
+      "profile": "S",
+      "fixture": "fst/fst0092-opb-s",
+      "artifact": {
+        "file": "waveform.fst",
+        "format": "fst",
+        "size": 4307275,
+        "sha256": "4a31ed3f7ecf0a5d404621944c2b25cbc04d12c997981ae9ad4b9a34f1e84201"
+      },
+      "physical_scopes": 2834,
+      "recorded": 1476,
+      "scope_sha256": "55f551bc8fe403eb454c8d0c21b2c3d48f8b02d38a73a232d9a58218a829752e",
+      "unrecorded": 0,
+      "empty_extra_scopes": []
+    },
+    {
+      "format": "fst",
+      "profile": "M",
+      "fixture": "fst/fst0093-opb-m",
+      "artifact": {
+        "file": "waveform.fst",
+        "format": "fst",
+        "size": 45235422,
+        "sha256": "322cf8f23e925915065fb4ed37314dca0c9841a49664d1d2c27bb5c84220a931"
+      },
+      "physical_scopes": 54344,
+      "recorded": 29216,
+      "scope_sha256": "afa73b6b9917eab7ceaeb93fac8733c9aa501ba202a5ae0e37fac0c2e288ff2b",
+      "unrecorded": 0,
+      "empty_extra_scopes": []
+    },
+    {
+      "format": "fst",
+      "profile": "L",
+      "fixture": "fst/fst0094-opb-l",
+      "artifact": {
+        "file": "waveform.fst",
+        "format": "fst",
+        "size": 459949608,
+        "sha256": "104f9f5e7f85add50e92ffdd99e8dad3804512598ca319e829b68f33e549c15a"
+      },
+      "physical_scopes": 140384,
+      "recorded": 86576,
+      "scope_sha256": "fa65e5965b4975472139d6a6bec9f839b514a657e539ff5815c9096f9ded21a4",
+      "unrecorded": 0,
+      "empty_extra_scopes": []
+    },
+    {
+      "format": "fst",
+      "profile": "MH",
+      "fixture": "fst/fst0095-opb-mh",
+      "artifact": {
+        "file": "waveform.fst",
+        "format": "fst",
+        "size": 46869448,
+        "sha256": "125ce9002369284b874922fc1b0c4088a915b7649f396b1ad01686bb46026deb"
+      },
+      "physical_scopes": 152647,
+      "recorded": 94751,
+      "scope_sha256": "c5ebd0d1204dc72453ba95ee3ee00ce06f9cfc3321b05a44cf9ee61e3a160e62",
+      "unrecorded": 0,
+      "empty_extra_scopes": []
+    },
+    {
+      "format": "fst",
+      "profile": "MT",
+      "fixture": "fst/fst0096-opb-mt",
+      "artifact": {
+        "file": "waveform.fst",
+        "format": "fst",
+        "size": 52431918,
+        "sha256": "8a65bbe287e2eff440621bcb0c9508396c3e18ddf65a179b25bf2feaddd9f919"
+      },
+      "physical_scopes": 54344,
+      "recorded": 29216,
+      "scope_sha256": "afa73b6b9917eab7ceaeb93fac8733c9aa501ba202a5ae0e37fac0c2e288ff2b",
+      "unrecorded": 0,
+      "empty_extra_scopes": []
+    },
+    {
+      "format": "ghw",
+      "profile": "S",
+      "fixture": "ghw/ghw0102-opb-s",
+      "artifact": {
+        "file": "waveform.ghw",
+        "format": "ghw",
+        "size": 37993377,
+        "sha256": "356a2b4702b8a881f1346f15bafeef11cea93e9b7b0171f4eb44c2d5cb431af1"
+      },
+      "physical_scopes": 2834,
+      "recorded": 1476,
+      "scope_sha256": "7bbef81e75dfeadc101e5b5a3828f3ce6a43b638010fa6521028846649d52df6",
+      "unrecorded": 0,
+      "empty_extra_scopes": []
+    },
+    {
+      "format": "ghw",
+      "profile": "M",
+      "fixture": "ghw/ghw0103-opb-m",
+      "artifact": {
+        "file": "waveform.ghw",
+        "format": "ghw",
+        "size": 377633131,
+        "sha256": "3fe79082d7a90d60011891f84c76cf17226e3d36edea1f28dc5a34886e563d88"
+      },
+      "physical_scopes": 54344,
+      "recorded": 29216,
+      "scope_sha256": "4a89fce9fab6faa39823074190f09f2879cba115c3adfcd2fb0a8b79863491ee",
+      "unrecorded": 0,
+      "empty_extra_scopes": []
+    },
+    {
+      "format": "ghw",
+      "profile": "L",
+      "fixture": "ghw/ghw0104-opb-l",
+      "artifact": {
+        "file": "waveform.ghw",
+        "format": "ghw",
+        "size": 3715873179,
+        "sha256": "affebbfb50ab41d76a7bce0e6f06a8bdabd68827b22344c92a603adfb1706848"
+      },
+      "physical_scopes": 140384,
+      "recorded": 86576,
+      "scope_sha256": "d4aa0bbd8d7ffa625885ac0ff8c3e7abc3704b6b07a05354089e3ffa28ab56c9",
+      "unrecorded": 0,
+      "empty_extra_scopes": []
+    },
+    {
+      "format": "ghw",
+      "profile": "MH",
+      "fixture": "ghw/ghw0105-opb-mh",
+      "artifact": {
+        "file": "waveform.ghw",
+        "format": "ghw",
+        "size": 399185688,
+        "sha256": "61ac3eebd2b944a5e04a9ac430e49e5e7f1c6545a4ca77da7711c42db2f9b5b9"
+      },
+      "physical_scopes": 152647,
+      "recorded": 94751,
+      "scope_sha256": "7890391143cdcac50405cbf1f23fb7628b9ae3ed6ae17a3c23c72ba0c2f247fc",
+      "unrecorded": 0,
+      "empty_extra_scopes": []
+    },
+    {
+      "format": "ghw",
+      "profile": "MT",
+      "fixture": "ghw/ghw0106-opb-mt",
+      "artifact": {
+        "file": "waveform.ghw",
+        "format": "ghw",
+        "size": 422745097,
+        "sha256": "b44539eee45cdbeb9d2be96d48bfb7405a519d72243174b57103e3f86207fc55"
+      },
+      "physical_scopes": 54344,
+      "recorded": 29216,
+      "scope_sha256": "4a89fce9fab6faa39823074190f09f2879cba115c3adfcd2fb0a8b79863491ee",
+      "unrecorded": 0,
+      "empty_extra_scopes": []
+    },
+    {
+      "format": "fsdb",
+      "profile": "S",
+      "fixture": "fsdb/fsdb0060-opb-s",
+      "artifact": {
+        "file": "waveform.fsdb",
+        "format": "fsdb",
+        "size": 951232,
+        "sha256": "4a063983db977320c06b38c03089660e4af326af9133aeaee02b9cf23200ae17"
+      },
+      "physical_scopes": 2836,
+      "recorded": 1476,
+      "scope_sha256": "a10fa90b32023cb0b992899e60d86781bfee36d1542093309f1aa8d3d20425a6",
+      "unrecorded": 0,
+      "empty_extra_scopes": [
+        [
+          "$_fsdbgate_"
+        ],
+        [
+          "$attribute_root"
+        ]
+      ]
+    },
+    {
+      "format": "fsdb",
+      "profile": "M",
+      "fixture": "fsdb/fsdb0061-opb-m",
+      "artifact": {
+        "file": "waveform.fsdb",
+        "format": "fsdb",
+        "size": 9393711,
+        "sha256": "08df8f7fa40e32be8c7a84d292028ef35870869f832dde7d56dfa241ed852f03"
+      },
+      "physical_scopes": 54346,
+      "recorded": 29216,
+      "scope_sha256": "362e091f0d3162f2a93693f3c27c397fd116bc5f95a929c1766020c4c7ef38a4",
+      "unrecorded": 0,
+      "empty_extra_scopes": [
+        [
+          "$_fsdbgate_"
+        ],
+        [
+          "$attribute_root"
+        ]
+      ]
+    },
+    {
+      "format": "fsdb",
+      "profile": "L",
+      "fixture": "fsdb/fsdb0062-opb-l",
+      "artifact": {
+        "file": "waveform.fsdb",
+        "format": "fsdb",
+        "size": 88256969,
+        "sha256": "08e916c4e27d4ffeae115cfdcb24f0dfdf3a096a5d83ad5a4f49a3b7ab2be64b"
+      },
+      "physical_scopes": 140386,
+      "recorded": 86576,
+      "scope_sha256": "ec2bb16652aaf1506ecdfd5c28aa10653d47f47370c2ca68fceaa4de5bd3ae2a",
+      "unrecorded": 0,
+      "empty_extra_scopes": [
+        [
+          "$_fsdbgate_"
+        ],
+        [
+          "$attribute_root"
+        ]
+      ]
+    },
+    {
+      "format": "fsdb",
+      "profile": "MH",
+      "fixture": "fsdb/fsdb0063-opb-mh",
+      "artifact": {
+        "file": "waveform.fsdb",
+        "format": "fsdb",
+        "size": 12239809,
+        "sha256": "043ea81c38aa82d4284fe0920c7d3c48591bb47e62aec453421a56694c5b6069"
+      },
+      "physical_scopes": 152649,
+      "recorded": 94751,
+      "scope_sha256": "51cc0c536e133370c51eb60f90b078cd93558d496811713aa214cf00a3fd74df",
+      "unrecorded": 0,
+      "empty_extra_scopes": [
+        [
+          "$_fsdbgate_"
+        ],
+        [
+          "$attribute_root"
+        ]
+      ]
+    },
+    {
+      "format": "fsdb",
+      "profile": "MT",
+      "fixture": "fsdb/fsdb0064-opb-mt",
+      "artifact": {
+        "file": "waveform.fsdb",
+        "format": "fsdb",
+        "size": 15577199,
+        "sha256": "95186dd5db1ad7d0615fbe63e774a37c191302e22f6b91e862b25cfde23a5516"
+      },
+      "physical_scopes": 54346,
+      "recorded": 29216,
+      "scope_sha256": "362e091f0d3162f2a93693f3c27c397fd116bc5f95a929c1766020c4c7ef38a4",
+      "unrecorded": 0,
+      "empty_extra_scopes": [
+        [
+          "$_fsdbgate_"
+        ],
+        [
+          "$attribute_root"
+        ]
+      ]
+    },
+    {
+      "format": "wlf",
+      "profile": "S",
+      "fixture": "wlf/wlf0085-opb-s",
+      "artifact": {
+        "file": "waveform.wlf",
+        "format": "wlf",
+        "size": 6045696,
+        "sha256": "db7ec25c9e25e321248e0d6b05d4592f7ebf57d71f95dc35a04254a14ac689cd"
+      },
+      "physical_scopes": 2834,
+      "recorded": 1476,
+      "scope_sha256": "55f551bc8fe403eb454c8d0c21b2c3d48f8b02d38a73a232d9a58218a829752e",
+      "unrecorded": 0,
+      "empty_extra_scopes": []
+    },
+    {
+      "format": "wlf",
+      "profile": "M",
+      "fixture": "wlf/wlf0086-opb-m",
+      "artifact": {
+        "file": "waveform.wlf",
+        "format": "wlf",
+        "size": 84148224,
+        "sha256": "1ff3b64a5f5f9425b7496a06509f86b87f5cb1eb9d0caf44bfa20489a932eb54"
+      },
+      "physical_scopes": 54344,
+      "recorded": 29216,
+      "scope_sha256": "afa73b6b9917eab7ceaeb93fac8733c9aa501ba202a5ae0e37fac0c2e288ff2b",
+      "unrecorded": 0,
+      "empty_extra_scopes": []
+    },
+    {
+      "format": "wlf",
+      "profile": "L",
+      "fixture": "wlf/wlf0087-opb-l",
+      "artifact": {
+        "file": "waveform.wlf",
+        "format": "wlf",
+        "size": 842178560,
+        "sha256": "95bdad5d9aaba37b9ce20353cdb2522c6f38f98e4444b9250e67f27bf116d63e"
+      },
+      "physical_scopes": 140384,
+      "recorded": 86576,
+      "scope_sha256": "fa65e5965b4975472139d6a6bec9f839b514a657e539ff5815c9096f9ded21a4",
+      "unrecorded": 0,
+      "empty_extra_scopes": []
+    },
+    {
+      "format": "wlf",
+      "profile": "MH",
+      "fixture": "wlf/wlf0088-opb-mh",
+      "artifact": {
+        "file": "waveform.wlf",
+        "format": "wlf",
+        "size": 86818816,
+        "sha256": "cd96814decba3d67c906b4c333987f8d3892f0c615eb7b606e50d8ddd1955597"
+      },
+      "physical_scopes": 152647,
+      "recorded": 94751,
+      "scope_sha256": "c5ebd0d1204dc72453ba95ee3ee00ce06f9cfc3321b05a44cf9ee61e3a160e62",
+      "unrecorded": 0,
+      "empty_extra_scopes": []
+    },
+    {
+      "format": "wlf",
+      "profile": "MT",
+      "fixture": "wlf/wlf0089-opb-mt",
+      "artifact": {
+        "file": "waveform.wlf",
+        "format": "wlf",
+        "size": 96993280,
+        "sha256": "d6d5e106e59bd44f2ceb4f1cb5250eda6c45f798e4a4b7533d0c745726a5bf1a"
+      },
+      "physical_scopes": 54344,
+      "recorded": 29216,
+      "scope_sha256": "afa73b6b9917eab7ceaeb93fac8733c9aa501ba202a5ae0e37fac0c2e288ff2b",
+      "unrecorded": 0,
+      "empty_extra_scopes": []
+    },
+    {
+      "format": "shm",
+      "profile": "S",
+      "fixture": "shm/shm0095-opb-s",
+      "artifact": {
+        "file": "waveform.shm",
+        "format": "shm",
+        "files": [
+          {
+            "file": "corpus.dsn",
+            "size": 222096,
+            "sha256": "ca57c295e5228855b369f5243bd561a3d4e64decf66d98a115b2653d7d3cd1b1"
+          },
+          {
+            "file": "corpus.trn",
+            "size": 5960808,
+            "sha256": "851b575d0879d611be37446af858b81434a83134001cc447a062d758c1b19592"
+          }
+        ],
+        "size": 6182904,
+        "sha256": "64752acf23a054fc68c6eb6d09caa6b982d13d1a355079cf6cb96ed0e4d69458"
+      },
+      "physical_scopes": 2834,
+      "recorded": 1476,
+      "scope_sha256": "55f551bc8fe403eb454c8d0c21b2c3d48f8b02d38a73a232d9a58218a829752e",
+      "unrecorded": 0,
+      "empty_extra_scopes": []
+    },
+    {
+      "format": "shm",
+      "profile": "M",
+      "fixture": "shm/shm0096-opb-m",
+      "artifact": {
+        "file": "waveform.shm",
+        "format": "shm",
+        "files": [
+          {
+            "file": "corpus.dsn",
+            "size": 4262256,
+            "sha256": "73c249eb380e844fe8391b527acefc42013b078cfa2a4fe08add9a007b30c2d0"
+          },
+          {
+            "file": "corpus.trn",
+            "size": 75926248,
+            "sha256": "dbe3276df9d93251c7961ca0273cc9bf94e61ce207817070d636af10484676dd"
+          }
+        ],
+        "size": 80188504,
+        "sha256": "a3f3c94e06259676db9efee06c612cdd19b3b13e2966984a98a4e72dd7f4c58e"
+      },
+      "physical_scopes": 54344,
+      "recorded": 29216,
+      "scope_sha256": "afa73b6b9917eab7ceaeb93fac8733c9aa501ba202a5ae0e37fac0c2e288ff2b",
+      "unrecorded": 0,
+      "empty_extra_scopes": []
+    },
+    {
+      "format": "shm",
+      "profile": "L",
+      "fixture": "shm/shm0097-opb-l",
+      "artifact": {
+        "file": "waveform.shm",
+        "format": "shm",
+        "files": [
+          {
+            "file": "corpus.dsn",
+            "size": 13164672,
+            "sha256": "881dd1bf0fb91c900abf4add20a2caeb16e53af97db83be31d945d91e96fd828"
+          },
+          {
+            "file": "corpus.trn",
+            "size": 736745008,
+            "sha256": "211ed39389b27d789c85c8f819b2522f11804077c8b7eccd8bb707dd9c502802"
+          }
+        ],
+        "size": 749909680,
+        "sha256": "523ce82867db1ce17edabdfacdae43274e066cbdd603d8e4189cc72f5c09621f"
+      },
+      "physical_scopes": 140384,
+      "recorded": 86576,
+      "scope_sha256": "fa65e5965b4975472139d6a6bec9f839b514a657e539ff5815c9096f9ded21a4",
+      "unrecorded": 0,
+      "empty_extra_scopes": []
+    },
+    {
+      "format": "shm",
+      "profile": "MH",
+      "fixture": "shm/shm0098-opb-mh",
+      "artifact": {
+        "file": "waveform.shm",
+        "format": "shm",
+        "files": [
+          {
+            "file": "corpus.dsn",
+            "size": 14432016,
+            "sha256": "9cfc5db02e08f5bb410f0861e4d1d37242252d6503e53b3060b20e678eadfe38"
+          },
+          {
+            "file": "corpus.trn",
+            "size": 75561504,
+            "sha256": "9e5471d015cf99ea76ecc0b59405f28d135d3a4597f9624fc678e4beea31163f"
+          }
+        ],
+        "size": 89993520,
+        "sha256": "a5e50f2267bfdf94c5889b460a222807d57a21f7b2ae27f8845b073b0af862f0"
+      },
+      "physical_scopes": 152647,
+      "recorded": 94751,
+      "scope_sha256": "c5ebd0d1204dc72453ba95ee3ee00ce06f9cfc3321b05a44cf9ee61e3a160e62",
+      "unrecorded": 0,
+      "empty_extra_scopes": []
+    },
+    {
+      "format": "shm",
+      "profile": "MT",
+      "fixture": "shm/shm0099-opb-mt",
+      "artifact": {
+        "file": "waveform.shm",
+        "format": "shm",
+        "files": [
+          {
+            "file": "corpus.dsn",
+            "size": 4262256,
+            "sha256": "8ed76ae8b7d387a6211cc0c614074fd969fde300544afa7ae07f33974f0a2fd7"
+          },
+          {
+            "file": "corpus.trn",
+            "size": 84452176,
+            "sha256": "582d7d858803ea6b0f962737a5abc7a97e8ea66fa3736874f701b49c10c33d45"
+          }
+        ],
+        "size": 88714432,
+        "sha256": "d52b3e9da7c08654bcdef718d77398d9a946a2610e7cd9ec1d81129a0b10e85f"
+      },
+      "physical_scopes": 54344,
+      "recorded": 29216,
+      "scope_sha256": "afa73b6b9917eab7ceaeb93fac8733c9aa501ba202a5ae0e37fac0c2e288ff2b",
+      "unrecorded": 0,
+      "empty_extra_scopes": []
+    },
+    {
+      "format": "wdb",
+      "profile": "S",
+      "fixture": "wdb/wdb0300-opb-s",
+      "artifact": {
+        "file": "waveform.wdb",
+        "format": "wdb",
+        "size": 11169288,
+        "sha256": "e1c44354482b884e39071abb2d87a908ae662d66b89aabdfdd39ddb282a37a26"
+      },
+      "physical_scopes": 7821,
+      "recorded": 1476,
+      "scope_sha256": "1d5f75cc99d9b4bf740fd20a36f7faf3d2a25ad360261ca2d1bea6bda6c45e9e",
+      "unrecorded": 33303,
+      "empty_extra_scopes": [],
+      "local_children": {
+        "browse": {
+          "scopes": 31,
+          "scope_sha256": "8b7e570b14a20a1b258dd5469b77845ddc985b95441495ccf6b9718e058ec07d",
+          "variables": 52,
+          "variable_path_sha256": "f7795b63e6870dc450eeaeef3891fd587e5795b3d24b416c085982a114278829",
+          "recorded_variables": 4,
+          "unrecorded_variables": 48,
+          "unrecorded_path_sha256": "8d77002114057710902c841357b4646d6ec81271b992c5f272c0e3dc141bd53a"
+        },
+        "deep": {
+          "scopes": 3,
+          "scope_sha256": "cac3caa168600f2e05733ba464a0fee640284a9b66f4b53ff6e383827bda4965",
+          "variables": 8,
+          "variable_path_sha256": "e840d6f6f284cc43e6a135194313f262259d69f5299682c7ab194079947827d6",
+          "recorded_variables": 1,
+          "unrecorded_variables": 7,
+          "unrecorded_path_sha256": "a778ed08d96a91408ce46ea1dc2c196adca879bf948c0476ac78d958abd993be"
+        },
+        "shallow": {
+          "scopes": 3,
+          "scope_sha256": "073d1e076a467783d6e7f2b1b9f821af504658928a11c3ed0c78c78f19433f03",
+          "variables": 8,
+          "variable_path_sha256": "184827fb609b987222270e163f2d215f583f49040f581e21c205a5bd8ded24b8",
+          "recorded_variables": 1,
+          "unrecorded_variables": 7,
+          "unrecorded_path_sha256": "1d3fc32ecedfee99a24b45c753d6572fc370e8810118acbb8a7d62e9dca8d369"
+        }
+      },
+      "variable_path_checksum": "0cd3d61f48138c419e9daf4b6f9acd1e49de395e19e1cae78a333f02a7fa94f8",
+      "unrecorded_path_checksum": "cb3169a430555828bd516e61bfeebdcea60b20798c26de688ba75def21f2ae29"
+    },
+    {
+      "format": "wdb",
+      "profile": "M",
+      "fixture": "wdb/wdb0301-opb-m",
+      "artifact": {
+        "file": "waveform.wdb",
+        "format": "wdb",
+        "size": 146400676,
+        "sha256": "3f9f7e0eaeb91e163c90027ca162f76fef02339f5444efab632132646243f6fc"
+      },
+      "physical_scopes": 142505,
+      "recorded": 29216,
+      "scope_sha256": "8be5f111ebad9987380c4ea12e7d9b199b7e2b4faea083ba452a2d4fa4803add",
+      "unrecorded": 595769,
+      "empty_extra_scopes": [],
+      "local_children": {
+        "browse": {
+          "scopes": 37,
+          "scope_sha256": "87824d1b285900ca5161929831feaa3ac8b2df159c0f6b6b50f524e87494d5be",
+          "variables": 68,
+          "variable_path_sha256": "95c329d3c3838fc30566d5397f2696530d0f74da2db10b643a4819d2696dc9d8",
+          "recorded_variables": 6,
+          "unrecorded_variables": 62,
+          "unrecorded_path_sha256": "b0989d7d007952389ef349b501f5b571a110cc2ba98ebfe8a444a18b106fe26c"
+        },
+        "deep": {
+          "scopes": 3,
+          "scope_sha256": "f4a355ad3b7b030b743f3019b4954182ac4e660986427486c732ff8937813385",
+          "variables": 8,
+          "variable_path_sha256": "509de3d42cb13877330681bdb86e71ae5cb48c2b19d8b24bcddfb6197aa6b4b5",
+          "recorded_variables": 1,
+          "unrecorded_variables": 7,
+          "unrecorded_path_sha256": "8932fb55d810ebc75ae118fbdc27d474566b7db1983a2d132067a1b08d5f48f4"
+        },
+        "shallow": {
+          "scopes": 3,
+          "scope_sha256": "6dd8c4bc54511dc3913a6ce3263ca81ded198056f29a1037a51cf64c79992b2b",
+          "variables": 8,
+          "variable_path_sha256": "184827fb609b987222270e163f2d215f583f49040f581e21c205a5bd8ded24b8",
+          "recorded_variables": 1,
+          "unrecorded_variables": 7,
+          "unrecorded_path_sha256": "1d3fc32ecedfee99a24b45c753d6572fc370e8810118acbb8a7d62e9dca8d369"
+        }
+      },
+      "variable_path_checksum": "b2bf0e07a7a863451bf9711da88bb96a9cb16a0c85d9728f07b67f3cbaae7815",
+      "unrecorded_path_checksum": "cd297dbd2d8dc43f9e9d8146acb5b422ee0cd93978a66752fb2744aa01a7d280"
+    },
+    {
+      "format": "wdb",
+      "profile": "L",
+      "fixture": "wdb/wdb0302-opb-l",
+      "artifact": {
+        "file": "waveform.wdb",
+        "format": "wdb",
+        "size": 766837661,
+        "sha256": "cf03406276f9409ac434f36324087c24433490573c775ad8a93592583ec1bcb2"
+      },
+      "physical_scopes": 257241,
+      "recorded": 86576,
+      "scope_sha256": "bece8cb5f0c98c86445ed0ad890b1d696404a518c73ed3957de4bbd786b15ffa",
+      "unrecorded": 940033,
+      "empty_extra_scopes": [],
+      "local_children": {
+        "browse": {
+          "scopes": 61,
+          "scope_sha256": "eee0a9b1d5fce5393cb4dbf2c18ffa5662db0f6ae0fdb2c90987866c4d92865f",
+          "variables": 132,
+          "variable_path_sha256": "94f64163be6e1172e528df3778b0288a2a5f3183757b8e97159be563f55f4c99",
+          "recorded_variables": 14,
+          "unrecorded_variables": 118,
+          "unrecorded_path_sha256": "11872f105e3fcc5f6d2f8aee88015f716a6287414145f97f5e8efff8fc2e01eb"
+        },
+        "deep": {
+          "scopes": 3,
+          "scope_sha256": "8812f3cdccd27334a0e8703ec06694cb08b0a1691830cc392286b3666b4c32fb",
+          "variables": 8,
+          "variable_path_sha256": "8fecf9d4bb0a67d5bbabd07a2fbc53a7f2878ab17090360f48c8a47352e0d42e",
+          "recorded_variables": 1,
+          "unrecorded_variables": 7,
+          "unrecorded_path_sha256": "7151abf75e58b773537a55daaaef5837789cccdb4775e926065ea0395a3d4fbf"
+        },
+        "shallow": {
+          "scopes": 3,
+          "scope_sha256": "e46d63a7798953fce2ec1d9b456643c2ac27f19c906f4e3e5712677d8d60dd68",
+          "variables": 8,
+          "variable_path_sha256": "184827fb609b987222270e163f2d215f583f49040f581e21c205a5bd8ded24b8",
+          "recorded_variables": 1,
+          "unrecorded_variables": 7,
+          "unrecorded_path_sha256": "1d3fc32ecedfee99a24b45c753d6572fc370e8810118acbb8a7d62e9dca8d369"
+        }
+      },
+      "variable_path_checksum": "4fd46c5c40c2e2901666cf9ce55f14e27770ad2db07848d91effbe714bfdf7af",
+      "unrecorded_path_checksum": "7f6be1562143b9315046d4a0f7cb906065534b323a8c399e0c2436933927a676"
+    },
+    {
+      "format": "wdb",
+      "profile": "MH",
+      "fixture": "wdb/wdb0303-opb-mh",
+      "artifact": {
+        "file": "waveform.wdb",
+        "format": "wdb",
+        "size": 204825489,
+        "sha256": "72b7150ef15a62c5b1975d29b1f1c0187037b753f30431e3619b6597c1c1a23a"
+      },
+      "physical_scopes": 273575,
+      "recorded": 94751,
+      "scope_sha256": "fb46fc3f002b4ab06a62fa3d258f7c1078175ee1f7fb7aaf9a1de2ca43b9658a",
+      "unrecorded": 988979,
+      "empty_extra_scopes": [],
+      "local_children": {
+        "browse": {
+          "scopes": 38,
+          "scope_sha256": "b1df90d5cc0a70a5262727506b60656d9649509c1aa15348c5d87d76b5b6802e",
+          "variables": 68,
+          "variable_path_sha256": "95c329d3c3838fc30566d5397f2696530d0f74da2db10b643a4819d2696dc9d8",
+          "recorded_variables": 6,
+          "unrecorded_variables": 62,
+          "unrecorded_path_sha256": "b0989d7d007952389ef349b501f5b571a110cc2ba98ebfe8a444a18b106fe26c"
+        },
+        "deep": {
+          "scopes": 3,
+          "scope_sha256": "f4a355ad3b7b030b743f3019b4954182ac4e660986427486c732ff8937813385",
+          "variables": 8,
+          "variable_path_sha256": "509de3d42cb13877330681bdb86e71ae5cb48c2b19d8b24bcddfb6197aa6b4b5",
+          "recorded_variables": 1,
+          "unrecorded_variables": 7,
+          "unrecorded_path_sha256": "8932fb55d810ebc75ae118fbdc27d474566b7db1983a2d132067a1b08d5f48f4"
+        },
+        "shallow": {
+          "scopes": 3,
+          "scope_sha256": "6dd8c4bc54511dc3913a6ce3263ca81ded198056f29a1037a51cf64c79992b2b",
+          "variables": 8,
+          "variable_path_sha256": "184827fb609b987222270e163f2d215f583f49040f581e21c205a5bd8ded24b8",
+          "recorded_variables": 1,
+          "unrecorded_variables": 7,
+          "unrecorded_path_sha256": "1d3fc32ecedfee99a24b45c753d6572fc370e8810118acbb8a7d62e9dca8d369"
+        }
+      },
+      "variable_path_checksum": "6471a65ca7e54b9c97a59d66fff0234a3b497f9f928769982d05649a9c903e32",
+      "unrecorded_path_checksum": "b27652172781afe5a4e6e79bf9adb49149a07cce6bfc9affaf054dad21b2c85e"
+    },
+    {
+      "format": "wdb",
+      "profile": "MT",
+      "fixture": "wdb/wdb0304-opb-mt",
+      "artifact": {
+        "file": "waveform.wdb",
+        "format": "wdb",
+        "size": 156482484,
+        "sha256": "41219bf8156a019fe37b8ab0c0da22426abfdb728a1de8016344d7bba157c12d"
+      },
+      "physical_scopes": 142505,
+      "recorded": 29216,
+      "scope_sha256": "4ad4ad7e08b48ea7b89c6dceed9f00f6dc60449219db8152a1d44435d7e2011b",
+      "unrecorded": 595769,
+      "empty_extra_scopes": [],
+      "local_children": {
+        "browse": {
+          "scopes": 37,
+          "scope_sha256": "87824d1b285900ca5161929831feaa3ac8b2df159c0f6b6b50f524e87494d5be",
+          "variables": 68,
+          "variable_path_sha256": "95c329d3c3838fc30566d5397f2696530d0f74da2db10b643a4819d2696dc9d8",
+          "recorded_variables": 6,
+          "unrecorded_variables": 62,
+          "unrecorded_path_sha256": "b0989d7d007952389ef349b501f5b571a110cc2ba98ebfe8a444a18b106fe26c"
+        },
+        "deep": {
+          "scopes": 3,
+          "scope_sha256": "f4a355ad3b7b030b743f3019b4954182ac4e660986427486c732ff8937813385",
+          "variables": 8,
+          "variable_path_sha256": "509de3d42cb13877330681bdb86e71ae5cb48c2b19d8b24bcddfb6197aa6b4b5",
+          "recorded_variables": 1,
+          "unrecorded_variables": 7,
+          "unrecorded_path_sha256": "8932fb55d810ebc75ae118fbdc27d474566b7db1983a2d132067a1b08d5f48f4"
+        },
+        "shallow": {
+          "scopes": 3,
+          "scope_sha256": "6dd8c4bc54511dc3913a6ce3263ca81ded198056f29a1037a51cf64c79992b2b",
+          "variables": 8,
+          "variable_path_sha256": "184827fb609b987222270e163f2d215f583f49040f581e21c205a5bd8ded24b8",
+          "recorded_variables": 1,
+          "unrecorded_variables": 7,
+          "unrecorded_path_sha256": "1d3fc32ecedfee99a24b45c753d6572fc370e8810118acbb8a7d62e9dca8d369"
+        }
+      },
+      "variable_path_checksum": "b2bf0e07a7a863451bf9711da88bb96a9cb16a0c85d9728f07b67f3cbaae7815",
+      "unrecorded_path_checksum": "cd297dbd2d8dc43f9e9d8146acb5b422ee0cd93978a66752fb2744aa01a7d280"
+    }
+  ],
+  "scope_digest_source": "Independent qualified artifact-bound source mappings (native scope prefixes plus declared empty scopes); WDB native scope digest from independent qualification.",
+  "variable_checksum": "sum modulo 2^256 of big-endian SHA256(compact ASCII JSON literal native variable path), with declaration counts checked separately"
+}
