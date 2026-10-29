@@ -82,8 +82,8 @@ conformance-wdb: _inside
 
 _conformance-wdb: _inside
     cargo test --locked --profile conformance --features wdb-lib --test conformance wdb_ -- --ignored --nocapture --test-threads=1
-    cargo test --locked --profile conformance --features wdb-lib --test wdb_lib -- --ignored --test-threads=1
-    cargo test --locked --profile conformance --features wdb-lib --lib wdb_ -- --ignored --test-threads=1
+    cargo test --locked --profile conformance --features wdb-lib --test wdb_lib -- --ignored --nocapture --test-threads=1
+    cargo test --locked --profile conformance --features wdb-lib --lib wdb_ -- --ignored --nocapture --test-threads=1
 
 # Execute VCD/FST/GHW Criterion workloads without timing thresholds.
 bench-smoke: _inside
@@ -179,6 +179,8 @@ _ci-wdb: _inside
     RUSTDOCFLAGS="-D warnings" cargo doc --locked --lib --features wdb-lib --no-deps
     just _conformance-wdb
     just _bench-smoke-wdb
+    just wdb-consumer
+    RUSTUP_TOOLCHAIN={{msrv}} just wdb-consumer
 
 # Verify actual downstream linking, independent of Cargo's runtime environment.
 fsdb-consumer: _inside
@@ -187,6 +189,10 @@ fsdb-consumer: _inside
 # Verify WLF linking in a separate downstream executable.
 wlf-consumer: _inside
     python3 tools/repo/check_wlf_consumer.py
+
+# Verify compatible WDB observations outside Cargo's loader environment.
+wdb-consumer: _inside
+    python3 tools/repo/check_wdb_consumer.py
 
 # Validate each SDK in QUESTA_HOMES, or the single QUESTA_HOME.
 ci-wlf: _inside

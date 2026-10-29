@@ -5,6 +5,11 @@ use std::{ops::ControlFlow, path::PathBuf, sync::Arc};
 
 #[path = "support/fixtures.rs"]
 mod fixture_support;
+#[allow(dead_code)]
+#[path = "support/normalized_oracle.rs"]
+mod normalized_oracle;
+#[path = "support/wdb_compatibility.rs"]
+mod wdb_compatibility;
 
 fn fixture_path(name: &str) -> PathBuf {
     fixture_support::load_artifact(&fixture_support::root(), name).0
@@ -100,7 +105,10 @@ fn wdb_invalid_files_return_errors_before_native_entry() {
 #[test]
 #[ignore = "requires the selected WDB reader and installed enum fixture"]
 fn wdb_lifecycle_stop_panic_and_reentrant_visitors() {
-    let mut wave = ondas::open_with(fixture(), "wdb-lib").unwrap();
+    let path = fixture();
+    let Some(mut wave) = wdb_compatibility::open(ondas::open_with(&path, "wdb-lib"), &path) else {
+        return;
+    };
     let signal = wave.hierarchy().signal("top.sparse8").unwrap();
     let mut other = ondas::open(fixture()).unwrap();
     let other_signal = other.hierarchy().signal("top.sparse8").unwrap();
@@ -186,7 +194,10 @@ fn wdb_lifecycle_stop_panic_and_reentrant_visitors() {
 #[test]
 #[ignore = "requires the selected WDB reader and installed enum fixture"]
 fn wdb_point_projections_keep_normalized_times_after_seek_and_stop() {
-    let mut wave = ondas::open_with(fixture(), "wdb-lib").unwrap();
+    let path = fixture();
+    let Some(mut wave) = wdb_compatibility::open(ondas::open_with(&path, "wdb-lib"), &path) else {
+        return;
+    };
     let base = wave.hierarchy().signal("top.sparse8").unwrap();
     let bit = base.slice(1, 1).unwrap();
     let constant = base.slice(7, 6).unwrap();
@@ -259,7 +270,10 @@ fn wdb_point_projections_keep_normalized_times_after_seek_and_stop() {
 #[test]
 #[ignore = "requires the selected WDB reader and installed enum fixture"]
 fn wdb_repeated_source_points_seed_ranges_without_changing_projection_times() {
-    let mut wave = ondas::open_with(fixture(), "wdb-lib").unwrap();
+    let path = fixture();
+    let Some(mut wave) = wdb_compatibility::open(ondas::open_with(&path, "wdb-lib"), &path) else {
+        return;
+    };
     let base = wave.hierarchy().signal("top.sparse8").unwrap();
     let bus = wave.concat(&[base, base, base]).unwrap();
     let cut = bus.slice(15, 8).unwrap();
@@ -350,6 +364,10 @@ fn wdb_repeated_source_points_seed_ranges_without_changing_projection_times() {
 #[test]
 #[ignore = "requires the selected WDB reader and installed enum fixture"]
 fn wdb_independent_owners_on_parallel_threads() {
+    let path = fixture();
+    if wdb_compatibility::open(ondas::open(&path), &path).is_none() {
+        return;
+    }
     let workers = (0..4)
         .map(|_| {
             std::thread::spawn(|| {
@@ -372,9 +390,12 @@ fn wdb_independent_owners_on_parallel_threads() {
 }
 
 #[test]
-#[ignore = "requires the selected reader and installed WDB fixtures"]
+#[ignore = "requires the selected reader and installed WDB fixtures; run just conformance-wdb"]
 fn wdb_native_unavailable_values_fail_without_losing_other_histories() {
-    let mut wave = ondas::open(fixture_path("wdb/wdb0313-string-event")).unwrap();
+    let path = fixture_path("wdb/wdb0313-string-event");
+    let Some(mut wave) = wdb_compatibility::open(ondas::open(&path), &path) else {
+        return;
+    };
     let clock = wave.hierarchy().signal("top.clock").unwrap();
     for path in ["top.text", "top.pulse"] {
         let signal = wave.hierarchy().signal(path).unwrap();
@@ -443,9 +464,12 @@ fn wdb_native_unavailable_values_fail_without_losing_other_histories() {
 }
 
 #[test]
-#[ignore = "requires the selected reader and installed WDB fixtures"]
+#[ignore = "requires the selected reader and installed WDB fixtures; run just conformance-wdb"]
 fn wdb_strings_names_and_decode_error_recovery() {
-    let mut wave = ondas::open(fixture_path("wdb/wdb0317-vhdl-strings-ports")).unwrap();
+    let path = fixture_path("wdb/wdb0317-vhdl-strings-ports");
+    let Some(mut wave) = wdb_compatibility::open(ondas::open(&path), &path) else {
+        return;
+    };
     let hierarchy = wave.hierarchy().clone();
     for (name, reader_name, expected) in [
         ("message.with.dot", "\\message.with.dot\\", "more"),
@@ -482,10 +506,12 @@ fn wdb_strings_names_and_decode_error_recovery() {
 }
 
 #[test]
-#[ignore = "requires the selected reader and installed WDB fixtures"]
+#[ignore = "requires the selected reader and installed WDB fixtures; run just conformance-wdb"]
 fn wdb_compositions_preserve_missing_and_validate_foreign_handles() {
     let path = fixture_path("wdb/wdb0311-partial-logging");
-    let mut wave = ondas::open(&path).unwrap();
+    let Some(mut wave) = wdb_compatibility::open(ondas::open(&path), &path) else {
+        return;
+    };
     let recorded = wave.hierarchy().signal("top.recorded").unwrap();
     let hidden = wave.hierarchy().signal("top.hidden").unwrap();
     let repeated_hidden = wave.concat(&[hidden, hidden, hidden]).unwrap();
@@ -545,9 +571,12 @@ fn wdb_compositions_preserve_missing_and_validate_foreign_handles() {
 }
 
 #[test]
-#[ignore = "requires the selected reader and installed WDB fixtures"]
+#[ignore = "requires the selected reader and installed WDB fixtures; run just conformance-wdb"]
 fn wdb_vhdl_primitive_types_preserve_metadata_and_values() {
-    let mut wave = ondas::open(fixture_path("wdb/wdb0315-vhdl-bit-arrays")).unwrap();
+    let path = fixture_path("wdb/wdb0315-vhdl-bit-arrays");
+    let Some(mut wave) = wdb_compatibility::open(ondas::open(&path), &path) else {
+        return;
+    };
     let hierarchy = wave.hierarchy().clone();
     for name in ["top.vector_value", "top.bit_value", "top.binary_matrix"] {
         assert_eq!(
@@ -614,4 +643,172 @@ fn wdb_vhdl_primitive_types_preserve_metadata_and_values() {
             ]
         );
     }
+}
+
+#[test]
+#[ignore = "requires the selected reader and installed WDB fixture"]
+fn wdb_compatible_recording_preserves_query_lifecycle() {
+    let path = fixture_path("wdb/wdb0091-tesbench-behav");
+    let mut wave = ondas::open_with(&path, "wdb-lib").unwrap();
+    let mut other = ondas::open(&path).unwrap();
+    let signal = wave.hierarchy().signal("tesbench.sel").unwrap();
+    let other_signal = other.hierarchy().signal("tesbench.sel").unwrap();
+    let metadata = ondas::read_metadata(&path).unwrap();
+    assert_eq!(metadata.time_span(), wave.metadata().time_span());
+    for (tick, expected) in [(20_000, "01"), (0, "uu"), (10_000, "00")] {
+        assert_eq!(
+            bits(wave.sample(signal, Time::from_ticks(tick)).unwrap()),
+            expected
+        );
+    }
+    assert_eq!(
+        wave.scan(&[signal], TimeRange::all(), |_| {
+            assert_eq!(
+                bits(
+                    other
+                        .sample(other_signal, Time::from_ticks(20_000))
+                        .unwrap()
+                ),
+                "01"
+            );
+            ControlFlow::Break(7)
+        })
+        .unwrap(),
+        ControlFlow::Break(7)
+    );
+    assert_eq!(
+        bits(wave.sample(signal, Time::from_ticks(30_000)).unwrap()),
+        "10"
+    );
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = wave.scan(&[signal], TimeRange::all(), |_| -> ControlFlow<()> {
+            panic!("stop WDB visitor");
+        });
+    }));
+    assert!(panic.is_err());
+    assert_eq!(
+        bits(wave.sample(signal, Time::from_ticks(10_000)).unwrap()),
+        "00"
+    );
+}
+
+#[test]
+#[ignore = "requires the selected reader and installed WDB version fixtures"]
+fn wdb_newer_dbg_is_distinct_from_a_generic_open_failure() {
+    let reader: u16 = env!("ONDAS_WDB_DBG_VERSION").parse().unwrap();
+    assert_ne!(reader, 0, "selected reader has no identified DBG version");
+    for (name, version) in [
+        ("wdb/wdb0020-rs32i-testbench-behav", 5),
+        ("wdb/wdb0002-reg-test-behav", 6),
+    ] {
+        let path = fixture_path(name);
+        for result in [
+            ondas::open_with(&path, "wdb-lib").map(|_| ()),
+            ondas::read_metadata(&path).map(|_| ()),
+        ] {
+            if version > reader {
+                let error = result.unwrap_err();
+                assert!(matches!(
+                    error,
+                    Error::UnsupportedFeature {
+                        format: Format::Wdb,
+                        ..
+                    }
+                ));
+                assert!(wdb_compatibility::is_version_error(&error));
+            } else {
+                result.unwrap();
+            }
+        }
+    }
+    let path = fixture_support::root().join("absent-waveform.wdb");
+    let error = ondas::open(&path).err().expect("missing input must fail");
+    assert!(matches!(error, Error::Io(_)));
+    assert!(!wdb_compatibility::is_version_error(&error));
+}
+
+#[test]
+#[ignore = "requires the selected reader and installed WDB wide recordings"]
+fn wdb_legacy_wide_recordings_match_independent_oracles() {
+    for (name, tick) in [
+        ("wdb/wdb0131-matrixmul", 244_566),
+        ("wdb/wdb0132-cordiccart2pol", 23_166_666),
+        ("wdb/wdb0155-dut", 349_154),
+        ("wdb/wdb0185-adders-io", 230_000),
+    ] {
+        let (path, sidecar) = fixture_support::load_artifact(&fixture_support::root(), name);
+        let mut wave = ondas::open_with(&path, "wdb-lib").unwrap();
+        let oracle = &sidecar["oracle"];
+        let mut checked = 0;
+        for variable in oracle["hierarchy"]["variables"].as_array().unwrap() {
+            let Some(id) = variable["signal"].as_str() else {
+                continue;
+            };
+            let history = &oracle["signals"][id];
+            if history["encoding"]["kind"] != "bits"
+                || history["encoding"]["width"].as_u64().unwrap_or(0) < 128
+            {
+                continue;
+            }
+            let windows = history["windows"].as_array().unwrap();
+            let window = windows
+                .iter()
+                .find(|window| {
+                    window["start"].as_str().unwrap().parse::<u64>().unwrap() <= tick
+                        && tick <= window["end"].as_str().unwrap().parse::<u64>().unwrap()
+                })
+                .expect("complete wide oracle window");
+            let expected =
+                normalized_oracle::WindowEvidence::new(window, windows, false).sample(tick);
+            let components: Vec<_> = variable["path"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|name| name.as_str().unwrap())
+                .collect();
+            let signal = wave
+                .hierarchy()
+                .signal_path(&ondas::HierarchyPath::from_components(
+                    components.iter().copied(),
+                ))
+                .unwrap();
+            assert_eq!(
+                bits(wave.sample(signal, Time::from_ticks(tick)).unwrap()),
+                expected["value"]["bits"].as_str().unwrap(),
+                "{name}: {components:?} at {tick}"
+            );
+            checked += 1;
+        }
+        assert!(checked > 0, "{name}: no wide histories checked");
+    }
+}
+
+#[test]
+#[ignore = "requires the selected reader and installed WDB same-tick recording"]
+fn wdb_same_tick_byte_updates_keep_final_values_and_candidate_ticks() {
+    let path = fixture_path("wdb/wdb0288-asc-tb-behav");
+    let mut wave = ondas::open_with(path, "wdb-lib").unwrap();
+    let signal = wave.hierarchy().signal("ASC_tb.S").unwrap();
+    for (tick, expected) in [
+        (5_560_000, "1111"),
+        (5_880_000, "1011"),
+        (6_200_000, "0111"),
+    ] {
+        assert_eq!(
+            bits(wave.sample(signal, Time::from_ticks(tick)).unwrap()),
+            expected
+        );
+    }
+    let mut candidates = Vec::new();
+    let _ = wave
+        .scan_candidate_times(
+            &[signal],
+            TimeRange::closed(Time::from_ticks(5_520_001), Time::from_ticks(5_600_000)),
+            |time| {
+                candidates.push(time.ticks());
+                ControlFlow::<()>::Continue(())
+            },
+        )
+        .unwrap();
+    assert!(candidates.contains(&5_560_000), "{candidates:?}");
 }
