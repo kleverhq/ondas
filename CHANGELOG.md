@@ -1,79 +1,42 @@
 # Changelog
 
-All notable changes to this project are documented here.
-
-The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Changed
+## [2.0.0] - 2026-10-30
 
-- Replace format-specific benchmark suites with the verified OPB runner and quick checks in public and SDK CI.
-- Support older WDB readers and report confirmed newer DBG recordings as unsupported.
-- Improve WDB read performance, hierarchy lookup and bit value formatting.
-- Deliver SHM completed ticks with bounded adapter buffers and stop traversal after bounded read-ahead. SDK history storage has separate memory costs.
-- Build shared child links on first scope child traversal to avoid repeated full-hierarchy scans.
-- Disable FSDB SDK messages to stdout. SDK diagnostics can still appear on stderr.
-- Restrict reader string samples to exact ASCII (0 through 127). Non-ASCII
-  values now return `Error::NonAsciiString`, including valid non-ASCII UTF-8.
-  Names, enum labels and diagnostics keep their separate text rules. This
-  narrows the string support in 1.1.1 and requires a major release.
-- Return no GHW timescale because the file does not store time resolution.
-  Raw ticks are unchanged. Consumers must not assume the previous conventional
-  1 fs scale when converting time.
-- Expose enum tables only when every key matches the whole queryable bit value.
-  Change `EnumerationVariant::encoded` from `&str` to `BitsRef`. Inspect keys
-  with the bit API; use `to_string()` when text is required. Incompatible
-  mappings remain absent instead of requiring reader-specific interpretation. Labels
-  retain reader spelling and are not restricted to ASCII.
+### Breaking changes
+
+- `EnumerationVariant::encoded` is now `BitsRef` instead of `&str`. Compare keys with the bit API; use `to_string()` for text. Enum tables are absent unless every key matches the complete queryable bit value. Labels retain reader spelling and can contain non-ASCII text.
+- String samples now accept exact ASCII (0 through 127) only. Non-ASCII values, including valid UTF-8, return `Error::NonAsciiString`. Names, enum labels and diagnostics keep their separate text rules.
+- GHW metadata now returns no timescale because the file does not store time resolution. Raw ticks are unchanged. Supply an external scale for physical-time conversion instead of assuming 1 fs.
 
 ### Added
 
-- Read WDB files with the optional `wdb-lib` backend. See `docs/wdb-reader.md` for setup and value limits.
-- Add `Error::UnsupportedFeature` for confirmed GHW and FSDB source or query
-  support limits. These cases previously returned `Error::Backend`.
-- Sample several explicit times with `Selection::samples_at` and
-  `Waveform::samples_at`. Results retain both time and signal order, including
-  repetitions and quiet ticks, and return a complete owned batch or an error.
-- Read saved histories with borrowed `Trace::sample` and `Trace::samples_at`.
-  Outside coverage returns `Error::TraceCoverage`; `SampleRef::to_owned` creates
-  an independent observation.
+- Optional `wdb-lib` reader for WDB files, with support for older reader installations and typed errors for confirmed newer DBG recordings. Dynamic SystemVerilog String and named Event reads are unsupported. Changing unsigned 129-bit enums are unqualified and can return stale values. Reader setup and other limits are in `wdb-reader.md`.
+- Static bit composition with `Waveform::concat`, including nested signals, slices and repeated parts. Missing parts become X when another part is observed; an entirely Missing composition and its slices remain Missing.
+- Checked translation of signed HDL indices with `BitRange::slice`.
+- Explicit-time batches with `Selection::samples_at` and `Waveform::samples_at`. Results preserve time and signal order, repetitions and quiet ticks, and return a complete owned batch or an error.
+- Borrowed saved-history reads with `Trace::sample` and `Trace::samples_at`, typed `Error::TraceCoverage` outside coverage, and `SampleRef::to_owned` for independent observations.
+- Exact equality for `BitsRef`, `Bits` and mixed pairs, including width and every logic state.
+- Object-identity equality for `Scope` and `Variable`. Hierarchy clones keep identity; independent opens and alias declarations stay distinct.
+- Complete recorded SHM and WLF enum tables with full-width bit keys, including wide, signed and X/Z codes and variants absent from history. WLF array elements are exposed as declarations.
 
-- Compose bit signals and slices with `Waveform::concat`, including static
-  nesting and repeated parts. Read computed Signals through the existing
-  sample, scan, query and Trace operations. Partial observations fill Missing
-  parts with X; all-Missing results remain Missing, including their slices.
-- Select signed HDL indices with checked `BitRange::slice` translation to
-  normalized Signal positions.
+### Changed
 
-- Read WLF enum values and complete native tables with full-width bit keys,
-  including wide and X/Z variants. Expose SDK array elements as declarations.
-- Add exact equality for `BitsRef`, `Bits`, and mixed pairs. Equal values have
-  the same width and the same logic state at each bit. Compare queried bits
-  with enum keys without formatting text or copying the bit payload.
-- Expose recorded SHM enum tables as whole-value `BitsRef` keys, including wide
-  and signed codes, X/Z states, array elements and variants absent from history.
-- Compare `Scope` and `Variable` views by object identity. Hierarchy clones keep
-  identity; independent opens and alias declarations stay distinct.
-- Add cross-format exact-name, same-path alias, and scope-collision regression
-  fixtures and tests.
+- SHM delivers completed ticks with bounded adapter buffers and stops traversal after bounded read-ahead. SDK history storage and total memory use have separate costs.
+- Improve WDB reads, hierarchy lookup and traversal, and bit value formatting.
+- Disable FSDB SDK messages to stdout; stderr remains visible. Consumers that need diagnostic or crash isolation must use a process boundary.
+- Replace format-specific benchmarks with the verified OPB runner and quick checks.
 
 ### Fixed
 
-- Classify unfinished FST gzip wrappers as `Error::Backend` instead of
-  `Error::Malformed`.
-- Preserve confirmed SHM initialization failures as `Error::BackendUnavailable`
-  and native filesystem failures with known OS codes as `Error::Io`. Retain
-  operation, SDK status, history and tick details in native reader diagnostics
-  when available. Unknown SDK failures remain `Error::Backend`.
-- Retain entering state for unbounded traces and scans starting after EOF.
-  Such traces support ordinary post-EOF sampling without synthetic changes.
-
-- Remove recognized Verilog escape syntax from FSDB and WLF logical names.
-  Preserve literal punctuation and backslashes. Keep available reader spelling
-  for diagnostics.
-- Keep distinct VCD, FST, and FSDB declarations with equal logical paths separate.
-  Preserve their parent and child links and report ambiguous lookup.
+- Preserve literal punctuation and backslashes in logical names while removing recognized Verilog escape syntax in FSDB and WLF. Keep distinct VCD, FST and FSDB declarations with equal logical paths and report ambiguous lookup.
+- Preserve entering state in unbounded traces and scans that start after EOF, without synthetic changes.
+- Report confirmed GHW and FSDB source or query limits as `Error::UnsupportedFeature` instead of `Error::Backend`.
+- Preserve confirmed SHM initialization failures as `Error::BackendUnavailable` and known native filesystem failures as `Error::Io`. Keep available operation, status, history and tick details in diagnostics; unknown failures remain `Error::Backend`.
+- Classify unfinished FST gzip wrappers as `Error::Backend` instead of `Error::Malformed`.
 
 ## [1.1.1] - 2026-10-17
 
@@ -143,7 +106,8 @@ Initial release of Ondas, a read-only Rust library for waveform analysis.
 - Final-tick state normalization and event occurrence counts, with documented reader limits.
 - Fixture-backed conformance tests, performance benchmarks, and automated release checks.
 
-[Unreleased]: https://github.com/kleverhq/ondas/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/kleverhq/ondas/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/kleverhq/ondas/compare/v1.1.1...v2.0.0
 [1.1.1]: https://github.com/kleverhq/ondas/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/kleverhq/ondas/compare/v1.0.2...v1.1.0
 [1.0.2]: https://github.com/kleverhq/ondas/compare/v1.0.1...v1.0.2
