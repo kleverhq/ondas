@@ -8,10 +8,12 @@ A read-only Rust library for waveform analysis across VCD, FST, GHW, FSDB, SHM, 
 
 ```toml
 [dependencies]
-ondas = "1"
+ondas = "=2.0.0"
 ```
 
 Public contracts and runnable examples live in Rustdoc under `src/`. See the [released API reference](https://docs.rs/ondas) for the published crate. `waveform-model.md` explains the reasons for the common model.
+
+For upgrades from 1.x, see the [2.0.0 migration notes](CHANGELOG.md#200---2026-10-30). The versioned Rustdoc has examples for [opening and reader limits](https://docs.rs/ondas/2.0.0/ondas/), [hierarchy](https://docs.rs/ondas/2.0.0/ondas/struct.Hierarchy.html), [values](https://docs.rs/ondas/2.0.0/ondas/enum.ValueRef.html), [queries](https://docs.rs/ondas/2.0.0/ondas/struct.Selection.html#method.query), [explicit times](https://docs.rs/ondas/2.0.0/ondas/struct.Selection.html#method.samples_at), [saved traces](https://docs.rs/ondas/2.0.0/ondas/struct.Trace.html#method.sample) and [errors](https://docs.rs/ondas/2.0.0/ondas/enum.Error.html).
 
 ## Cargo features
 
@@ -19,7 +21,7 @@ No Cargo features are enabled by default. VCD, FST and GHW are built in, also wi
 
 ```toml
 [dependencies]
-ondas = { version = "1", features = ["fsdb-lib"] }
+ondas = { version = "=2.0.0", features = ["fsdb-lib"] }
 ```
 
 ## Readers
