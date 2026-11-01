@@ -20,6 +20,8 @@ The hook uses only `--exec-only`. A commit cannot start, rebuild or recreate its
 
 ## SDK selection is part of the experiment
 
+When comparing baseline and candidate builds from different source trees, give each tree and SDK/feature configuration a separate `CARGO_TARGET_DIR`. Use only the executable reported by a successful Cargo build. Record its path and content hash with the source revision and source content hashes. After a failed build, do not run an executable left by an earlier build. Reuse each configuration's build cache; do not clear all caches by default.
+
 The sweep wrappers in `tools/repo/` keep each selected SDK's build output separate. Output directories use list positions, not SDK identities. Keep the HOMES list order stable for saved Criterion baselines. Use fresh output if that order changes. A successful build at one position does not qualify another SDK later assigned to that position.
 
 SHM runtime lookup uses a directory with only a symlink to the selected reader. The full vendor library directory can select its older C++ runtime instead of the application's runtime. Use standalone consumers to check loading and downstream dependencies. Cargo supplies a loader environment that can hide deployment failures. The reader documents explain their different SONAME rules.
