@@ -555,6 +555,7 @@ $("map").addEventListener("pointerdown", (e) => {
     previousSelection: selection,
     moved: false,
   };
+  $("map").focus({ preventScroll: true });
   e.preventDefault();
   $("map").setPointerCapture(e.pointerId);
 });
@@ -631,11 +632,13 @@ $("map").addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     if (drag) {
       const pointer = drag.pointer;
+      selection = drag.previousSelection;
       drag = null;
       $("map").releasePointerCapture(pointer);
     }
     rangeSelection = null;
     draw();
+    describe();
     return;
   }
   if (
@@ -681,12 +684,13 @@ $("scroll").addEventListener(
   (e) => {
     if (!e.ctrlKey) return;
     e.preventDefault();
-    const fraction = ($("scroll").scrollLeft + e.offsetX) / width;
+    const offset = e.clientX - $("scroll").getBoundingClientRect().left;
+    const fraction = ($("scroll").scrollLeft + offset) / width;
     $("zoom").value = String(
       Math.max(1, Math.min(12, +$("zoom").value + (e.deltaY < 0 ? 0.5 : -0.5))),
     );
     draw();
-    $("scroll").scrollLeft = fraction * width - e.offsetX;
+    $("scroll").scrollLeft = fraction * width - offset;
   },
   { passive: false },
 );

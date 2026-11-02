@@ -175,6 +175,37 @@ class ViewerTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('no measurements executed', result.stdout)
 
+    def test_output_cannot_overwrite_saved_evidence_or_its_aliases(self):
+        root, data, raw = self.save('protected')
+        (root / 'context.json').write_text('{}')
+        (root / 'build.log').write_text('build diagnostic')
+        data['configurations'][0]['build_log'] = 'build.log'
+        self.update(root, data)
+        evidence = [root / 'run.json', root / 'context.json', root / 'build.log', root / 'measure.log',
+                    *(raw / name for name in ('sample.json', 'estimates.json', 'benchmark.json'))]
+        for source in evidence:
+            for kind in ('direct', 'symlink', 'hardlink'):
+                with self.subTest(source=source.name, kind=kind):
+                    output = source if kind == 'direct' else self.root / f'alias-{kind}.html'
+                    if kind == 'symlink':
+                        output.symlink_to(source)
+                    elif kind == 'hardlink':
+                        output.hardlink_to(source)
+                    before = source.read_bytes()
+                    with self.assertRaisesRegex(ValueError, 'overwrite saved'):
+                        viewer.render([root], output)
+                    self.assertEqual(source.read_bytes(), before)
+                    if output != source:
+                        output.unlink()
+
+    def test_report_can_be_regenerated_beside_or_inside_saved_run(self):
+        root, _, _ = self.save('regeneration')
+        for output in (self.output, root / 'report.html'):
+            viewer.render([root], output)
+            before = output.read_bytes()
+            viewer.render([root], output)
+            self.assertEqual(output.read_bytes(), before)
+
 
 if __name__ == '__main__':
     unittest.main()

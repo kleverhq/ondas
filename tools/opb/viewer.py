@@ -38,6 +38,34 @@ def number(value, zero=False):
     return value
 
 
+def protect_evidence(root, manifest, data, output):
+    output = Path(output).resolve()
+    identity = output.stat() if output.exists() else None
+    files = [manifest, root / 'context.json']
+    relative = [c.get('build_log') for c in data['configurations']]
+    for job in data['jobs']:
+        for record in (job.get('measurement', {}), job.get('verification', {})):
+            relative.append(record.get('log'))
+            if isinstance(record.get('raw_files'), list):
+                relative.extend(record['raw_files'])
+        if job.get('raw'):
+            try:
+                raw = saved_file(root, job['raw'])
+            except (ValueError, TypeError):
+                continue
+            if output.is_relative_to(raw):
+                raise ValueError('output would overwrite saved raw evidence')
+    for name in filter(None, relative):
+        try:
+            files.append(saved_file(root, name))
+        except (ValueError, TypeError):
+            continue
+    for file in files:
+        stat = file.stat() if identity and file.exists() else None
+        if file == output or (stat and (stat.st_dev, stat.st_ino) == (identity.st_dev, identity.st_ino)):
+            raise ValueError('output would overwrite saved evidence')
+
+
 def timing(root, job, backend, settings, output):
     references = job['measurement'].get('raw_files', [])
     expected = {str(Path(job['raw']) / backend / job['case_id'] / 'new' / name)
@@ -74,6 +102,7 @@ def read_run(path, output):
         raise ValueError(f'{path}: unsupported saved-run schema')
     if not isinstance(data.get('configurations'), list) or not isinstance(data.get('jobs'), list):
         raise ValueError(f'{path}: configurations and jobs must be lists')
+    protect_evidence(root, path, data, output)
     rows = [dict(backend=c['backend'], label=c.get('label', c['backend']), config=c, cells={})
             for c in data['configurations']]
     for index, job in enumerate(data['jobs']):
