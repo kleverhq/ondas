@@ -40,7 +40,7 @@ typedef struct {
     uint8_t *data;
     size_t len;
     uint64_t real_bits, occurrences;
-    int present;
+    int present, have_value;
 } selected;
 typedef struct {
     ondas_wlf_record out;
@@ -451,13 +451,18 @@ static WlfCallbackResponse store_value(selected *s) {
     } else {
         const char *bits = wlfValueToString(s->value, WLF_RADIX_BINARY, (int)s->len + 128);
         if (!bits || strlen(bits) != s->len) return callback_failure(r, "invalid WLF bit width");
-        if (!s->present || memcmp(s->data, bits, s->len) != 0) {
+        int changed = !s->have_value;
+        if (changed || memcmp(s->data, bits, s->len) != 0) {
             for (size_t i = 0; i < s->len; ++i) {
                 uint8_t digit = logic_digits[(unsigned char)bits[i]];
                 if (!digit) return callback_failure(r, "invalid WLF logic digit");
+                if (!changed && s->data[i] != digit) changed = 1;
                 s->data[i] = digit;
             }
         }
+        s->have_value = 1;
+        // Retained value validity survives a batch; pending tick state must not be cleared.
+        if (!changed) return WLF_CONTINUE_SCAN;
     }
     s->present = 1;
     return WLF_CONTINUE_SCAN;

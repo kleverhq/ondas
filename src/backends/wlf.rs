@@ -289,6 +289,61 @@ mod tests {
     }
     use crate::{Sample, Value};
     #[test]
+    #[ignore = "requires Questa and installed history fixture; run just conformance-wlf"]
+    fn wlf_batch_continuations_keep_cold_values_and_sparse_updates() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures/wlf/wlf0075-history-long/waveform.wlf");
+        let (reader, hierarchy, _) = Reader::open(&path, "continuations".into()).unwrap();
+        let mut signals = vec![hierarchy.signal("top.clock").unwrap()];
+        signals.extend((0..64).map(|i| hierarchy.signal(&format!("top.word_{i:02}")).unwrap()));
+        for _ in 0..2 {
+            let _traversal = Traversal(reader.session.0);
+            worker::begin(
+                reader.session.0,
+                signals
+                    .iter()
+                    .map(|signal| reader.declarations[signal.index()])
+                    .collect(),
+                Time::ZERO,
+                Time::from_ticks(600),
+            )
+            .unwrap();
+            let mut rows = vec![Vec::new(); signals.len()];
+            let mut batches = 0;
+            loop {
+                let batch = worker::next(reader.session.0).unwrap();
+                batches += 1;
+                let finished = batch.finished;
+                let _ = batch
+                    .visit(|record| {
+                        let Value::Bits(value) = record.value else {
+                            panic!("expected Bits");
+                        };
+                        rows[record.selection]
+                            .push((record.tick.ticks(), value.as_ref().to_string()));
+                        ControlFlow::<()>::Continue(())
+                    })
+                    .unwrap();
+                if finished {
+                    break;
+                }
+            }
+            assert!(batches > 1, "exercise native continuation boundaries");
+            let clock = (0..=600)
+                .map(|tick| (tick, (tick % 2).to_string()))
+                .collect::<Vec<_>>();
+            assert_eq!(rows[0], clock);
+            for (index, row) in rows[1..].iter().enumerate() {
+                let expected = (0..=600)
+                    .step_by(16)
+                    .map(|tick| (tick, format!("{:032b}", tick / 16 + index as u64)))
+                    .collect::<Vec<_>>();
+                assert_eq!(*row, expected, "word {index}");
+            }
+        }
+    }
+
+    #[test]
     #[ignore = "requires Questa and installed fixtures"]
     fn wlf_counter_boundaries() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
