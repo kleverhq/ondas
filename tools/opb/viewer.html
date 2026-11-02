@@ -13,12 +13,13 @@ input[type=range]{width:130px;padding:0}#search{width:130px}#summary{font-varian
 .legend{display:flex;gap:12px;align-items:center;flex-wrap:wrap;font-size:12px;margin:12px 0}.scale{display:inline-block;width:140px;height:10px;background:linear-gradient(90deg,#facc15,#22c55e,#ef4444);border-radius:3px;vertical-align:middle}.scale.absolute{background:linear-gradient(90deg,#22c55e,#facc15,#ef4444)}
 .swatch{display:inline-block;width:12px;height:12px;margin-right:5px;vertical-align:middle;background:#69758a}.timeout{background:#38bdf8}.invalid{background:#b38cff}.missing{background:repeating-linear-gradient(45deg,#172030,#172030 3px,#4b5568 3px,#4b5568 4px)}
 .matrix{display:grid;grid-template-columns:118px minmax(0,1fr);border:1px solid var(--line);border-radius:6px;background:#111927}
-#labels{padding-top:36px;overflow:hidden}#labels div{height:38px;padding:8px 10px;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-top:1px solid #233044}
+#labels{padding-top:52px;overflow:hidden}#labels div{height:38px;padding:8px 10px;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-top:1px solid #233044}
 #scroll{overflow-x:auto;overflow-y:hidden}canvas{display:block;touch-action:pan-x;cursor:crosshair}#tip{min-height:48px;padding:8px 0;font:12px/1.5 ui-monospace,monospace;white-space:pre-wrap}
 .detail{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:16px;margin:14px 0}.facts{display:flex;gap:24px;flex-wrap:wrap}.facts strong{display:block;font-size:19px}.facts small{display:block}
 pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.6 ui-monospace,monospace;background:#101723;padding:12px;border-radius:5px;max-height:340px;overflow:auto}a{color:#9dcaff;overflow-wrap:anywhere}#links{display:flex;gap:16px;flex-wrap:wrap;margin:12px 0}
 #samples{display:grid;grid-auto-columns:minmax(58px,1fr);grid-auto-flow:column;gap:6px;min-height:122px;align-items:end;margin:12px 0;overflow-x:auto}#samples:empty{display:none}.sample{display:flex;flex-direction:column;align-items:center;gap:3px}.sample-value{text-align:center;font-size:11px;line-height:1.3}.sample-bar{display:block;width:100%;background:#66a9d6;border-radius:2px 2px 0 0}details{margin-top:14px}summary{cursor:pointer;color:#c0cce0}#explanation{font-size:13px;color:#c5d1e3}.notice{border-left:3px solid #7190be;padding-left:12px}
 #sampleCaption:empty{display:none}
+.range-heading{display:flex;justify-content:space-between;align-items:center;gap:12px}.range-heading h2{margin:0}.range-table{overflow-x:auto}.range-table table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}.range-table th,.range-table td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--line);white-space:nowrap}.range-table thead th{color:var(--dim);font-size:12px;font-weight:400}.range-table tbody th{font-weight:400}.range-table td{font-weight:600}
 @media(max-width:600px){main{padding:12px}.matrix{grid-template-columns:94px minmax(0,1fr)}#labels div{font-size:11px;padding-left:6px}.controls{gap:8px}h1{font-size:20px}}
 </style>
 <main>
@@ -40,6 +41,12 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.6 ui-monospace,monos
 <div class="matrix"><div id="labels"></div><div id="scroll"><canvas id="map" tabindex="0" role="img" aria-label="OPB heat map; arrow keys select adjacent cells"></canvas></div></div>
 <div id="tip" aria-live="polite"></div>
 <p class="muted" id="range"></p>
+<section id="rangeSummary" class="detail" hidden aria-live="polite">
+<div class="range-heading"><h2 id="rangeTitle"></h2><button id="clearRange">Clear selection</button></div>
+<p id="rangeCounts" class="muted"></p><p id="rangeReference" class="muted"></p>
+<div class="range-table"><table><thead><tr><th>Metric</th><th>Minimum / fastest</th><th>Maximum / slowest</th><th>Arithmetic mean</th></tr></thead><tbody id="rangeStats"></tbody></table></div>
+<p class="muted">Cases have equal weight. Time averages the selected case means. Effect averages each case's time/reference ratio before conversion to +faster / −slower factors. Excluded cells do not count as zero.</p>
+</section>
 <section class="detail"><h2 id="cellTitle">Select a cell</h2><div id="facts" class="facts"></div><p id="explanation"></p><p id="sampleCaption" class="muted"></p><div id="samples"></div><div id="links"></div><details open><summary>Case, input summary and state</summary><pre id="cellContext"></pre></details></section>
 <section class="detail"><h2>Conditions and interpretation</h2>
 <p class="notice">Cross-format ratios compare the recorded operation for the same case. Stored hierarchy, opening, decoding and SDK setup can differ. A ratio is an observation of this experiment, not a code-regression verdict.</p>

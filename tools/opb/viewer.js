@@ -1,11 +1,14 @@
 "use strict";
 const D = JSON.parse(document.getElementById("opb-data").textContent),
   $ = (id) => document.getElementById(id);
-const TOP = 36,
+const TOP = 52,
   ROW = 38;
 let rows = [],
   columns = [],
   selection = { r: 0, id: D.columns[0] },
+  rangeSelection = null,
+  drag = null,
+  ignoreClick = false,
   width = 1,
   cw = 1;
 const def = (cell) => (cell ? D.definitions[cell.case_hash] : null),
@@ -47,9 +50,8 @@ function run() {
 function cellAt(row, id) {
   return row?.cells?.[id] || null;
 }
-function metric(row, id) {
-  const c = cellAt(row, id),
-    mode = $("mode").value;
+function metric(row, id, mode = $("mode").value) {
+  const c = cellAt(row, id);
   if (!c || c.status !== "passed" || !c.timing)
     return { value: null, reason: c?.status || "Not recorded in this run" };
   if (mode === "absolute") return { value: c.timing.mean };
@@ -87,6 +89,81 @@ function link(parent, title, url) {
   a.rel = "noopener";
   parent.append(a);
   parent.append(document.createTextNode(" "));
+}
+function selectRange(r, anchor, focus) {
+  const a = columns.indexOf(anchor),
+    b = columns.indexOf(focus);
+  rangeSelection = {
+    r,
+    anchor,
+    focus,
+    ids: columns.slice(Math.min(a, b), Math.max(a, b) + 1),
+  };
+  selection = { r, id: anchor };
+}
+function rangeSummary() {
+  $("rangeSummary").hidden = !rangeSelection;
+  $("backendLabel").hidden =
+    $("mode").value === "run" ||
+    ($("mode").value === "absolute" && !rangeSelection);
+  if (!rangeSelection) return;
+  const row = rows[rangeSelection.r],
+    ids = rangeSelection.ids;
+  const times = [],
+    ratios = [];
+  let timeouts = 0;
+  const mode = $("mode").value === "run" ? "run" : "backend";
+  for (const id of ids) {
+    const c = cellAt(row, id);
+    if (c?.status === "timeout") timeouts++;
+    if (c?.status === "passed" && c.timing) times.push(c.timing.mean);
+    const ratio = metric(row, id, mode).value;
+    if (ratio > 0 && Number.isFinite(ratio)) ratios.push(ratio);
+  }
+  $("rangeTitle").textContent =
+    row.label + " · " + ids.length + " selected cases";
+  $("rangeCounts").textContent =
+    "Time: " +
+    times.length +
+    " included, " +
+    (ids.length - times.length) +
+    " excluded (" +
+    timeouts +
+    " timeout). Effect: " +
+    ratios.length +
+    " comparable, " +
+    (ids.length - ratios.length) +
+    " excluded.";
+  $("rangeReference").textContent =
+    "Effect relative to " +
+    (mode === "run"
+      ? $("compare").selectedOptions[0].textContent
+      : rows[+$("reference").value].label) +
+    ".";
+  $("rangeStats").replaceChildren();
+  for (const [label, values, format] of [
+    ["Time per operation", times, time],
+    ["Relative effect", ratios, relativeEffect],
+  ]) {
+    const tr = document.createElement("tr"),
+      th = document.createElement("th");
+    th.scope = "row";
+    th.textContent = label;
+    tr.append(th);
+    const stats = values.length
+      ? [
+          Math.min(...values),
+          Math.max(...values),
+          values.reduce((mean, value, i) => mean + (value - mean) / (i + 1), 0),
+        ]
+      : [null, null, null];
+    for (const value of stats) {
+      const td = document.createElement("td");
+      td.textContent = value == null ? "—" : format(value);
+      tr.append(td);
+    }
+    $("rangeStats").append(tr);
+  }
 }
 function rowSet() {
   const r = run(),
@@ -219,14 +296,21 @@ function mix(a, b, t) {
 function colour(value, min, max) {
   const absolute = $("mode").value === "absolute";
   const stops = absolute
-    ? [[34, 197, 94], [250, 204, 21], [239, 68, 68]]
-    : [[250, 204, 21], [34, 197, 94], [239, 68, 68]];
-  const position =
-    absolute
-      ? max === min
-        ? 0.5
-        : (Math.log10(value) - min) / (max - min)
-      : (Math.log2(value) + 6) / 12;
+    ? [
+        [34, 197, 94],
+        [250, 204, 21],
+        [239, 68, 68],
+      ]
+    : [
+        [250, 204, 21],
+        [34, 197, 94],
+        [239, 68, 68],
+      ];
+  const position = absolute
+    ? max === min
+      ? 0.5
+      : (Math.log10(value) - min) / (max - min)
+    : (Math.log2(value) + 6) / 12;
   const t = Math.max(0, Math.min(1, position));
   return (
     "rgb(" +
@@ -287,11 +371,20 @@ function draw() {
       ctx.clip();
       ctx.fillStyle = "#c0cede";
       ctx.font = "10px system-ui";
-      ctx.fillText(group(columns[start]), start * cw + 4, 22);
+      ctx.fillText(group(columns[start]), start * cw + 4, 18);
       ctx.restore();
     }
     start = end;
   }
+  ctx.font = "10px ui-monospace,monospace";
+  ctx.textAlign = "center";
+  ctx.fillStyle = "#e4e8f0";
+  columns.forEach((id, i) => {
+    const number = id.split("-").at(-1);
+    if (ctx.measureText(number).width + 6 <= cw)
+      ctx.fillText(number, (i + 0.5) * cw, TOP - 10);
+  });
+  ctx.textAlign = "start";
   rows.forEach((row, r) =>
     columns.forEach((id, i) => {
       const c = cellAt(row, id),
@@ -331,17 +424,30 @@ function draw() {
         ctx.fillStyle = "#fff";
         ctx.fillRect(x, y, Math.max(0.5, cw - 0.4), 2);
       }
-      if (r === selection.r && id === selection.id) {
+      if (!rangeSelection && r === selection.r && id === selection.id) {
         ctx.strokeStyle = "#fff";
         ctx.lineWidth = 2;
         ctx.strokeRect(x + 0.5, y + 1, Math.max(1, cw - 1), ROW - 3);
       }
     }),
   );
+  if (rangeSelection) {
+    const first = columns.indexOf(rangeSelection.ids[0]);
+    const x = first * cw,
+      y = TOP + rangeSelection.r * ROW;
+    const size = rangeSelection.ids.length * cw;
+    ctx.fillStyle = "rgba(255,255,255,0.12)";
+    ctx.fillRect(x, y, size, ROW - 1);
+    ctx.strokeStyle = "#fff";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x + 0.5, y + 1, Math.max(1, size - 1), ROW - 3);
+  }
   $("zoomText").textContent =
     (+$("zoom").value).toFixed(2).replace(/\.00$/, "") + "×";
+  rangeSummary();
 }
 function render() {
+  const previousColumns = columns;
   rows = rowSet();
   const first = (id) => rows.map((r) => cellAt(r, id)).find(Boolean);
   columns = D.columns.filter((id) => {
@@ -371,6 +477,11 @@ function render() {
     const scores = new Map(columns.map((id) => [id, score(id)]));
     columns.sort((a, b) => scores.get(b) - scores.get(a));
   }
+  if (
+    previousColumns.length !== columns.length ||
+    previousColumns.some((id, i) => id !== columns[i])
+  )
+    rangeSelection = null;
   if (!columns.includes(selection.id))
     selection.id = columns[0] || D.columns[0];
   selection.r = Math.min(selection.r, rows.length - 1);
@@ -399,8 +510,7 @@ function render() {
     (columns[0] || "—") +
     " → " +
     (columns.at(-1) || "—") +
-    ". Scroll to pan when zoomed; Ctrl + wheel to zoom. Arrow keys move the selected cell. Group headers focus a group.";
-  $("backendLabel").hidden = $("mode").value !== "backend";
+    ". Drag across a row to select cases; Shift + left/right arrow extends a selection; Escape clears it. Scroll to pan when zoomed; Ctrl + wheel to zoom. Group headers focus a group.";
   $("compareLabel").hidden = $("mode").value !== "run";
   $("runContext").textContent = JSON.stringify(
     { metadata: run().meta, configurations: run().rows.map((r) => r.config) },
@@ -426,6 +536,54 @@ function locate(event) {
     r: Math.floor((event.clientY - rect.top - TOP) / ROW),
   };
 }
+$("map").addEventListener("pointerdown", (e) => {
+  ignoreClick = false;
+  const p = locate(e);
+  if (
+    e.button !== 0 ||
+    e.pointerType === "touch" ||
+    p.r < 0 ||
+    p.r >= rows.length ||
+    !columns[p.i]
+  )
+    return;
+  drag = {
+    pointer: e.pointerId,
+    r: p.r,
+    anchor: columns[p.i],
+    previousRange: rangeSelection,
+    previousSelection: selection,
+    moved: false,
+  };
+  e.preventDefault();
+  $("map").setPointerCapture(e.pointerId);
+});
+$("map").addEventListener("pointermove", (e) => {
+  if (!drag || drag.pointer !== e.pointerId) return;
+  const id = columns[locate(e).i];
+  if (!id || (!drag.moved && id === drag.anchor)) return;
+  drag.moved = true;
+  selectRange(drag.r, drag.anchor, id);
+  draw();
+});
+$("map").addEventListener("pointerup", (e) => {
+  if (!drag || drag.pointer !== e.pointerId) return;
+  ignoreClick = drag.moved;
+  if (drag.moved) describe();
+  drag = null;
+  $("map").releasePointerCapture(e.pointerId);
+  $("map").focus({ preventScroll: true });
+});
+function cancelDrag(e) {
+  if (!drag || drag.pointer !== e.pointerId) return;
+  rangeSelection = drag.previousRange;
+  selection = drag.previousSelection;
+  drag = null;
+  ignoreClick = true;
+  draw();
+}
+$("map").addEventListener("pointercancel", cancelDrag);
+$("map").addEventListener("lostpointercapture", cancelDrag);
 $("map").addEventListener("mousemove", (e) => {
   const p = locate(e),
     id = columns[p.i];
@@ -450,6 +608,10 @@ $("map").addEventListener("mousemove", (e) => {
     (m.reason ? " · " + m.reason : "");
 });
 $("map").addEventListener("click", (e) => {
+  if (ignoreClick) {
+    ignoreClick = false;
+    return;
+  }
   const p = locate(e);
   if (!columns[p.i]) return;
   if (p.r < 0) {
@@ -460,18 +622,32 @@ $("map").addEventListener("click", (e) => {
     return;
   }
   if (p.r >= rows.length) return;
+  rangeSelection = null;
   selection = { r: p.r, id: columns[p.i] };
   draw();
   describe();
 });
 $("map").addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    if (drag) {
+      const pointer = drag.pointer;
+      drag = null;
+      $("map").releasePointerCapture(pointer);
+    }
+    rangeSelection = null;
+    draw();
+    return;
+  }
   if (
     !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key) ||
     !columns.length
   )
     return;
   e.preventDefault();
-  let i = columns.indexOf(selection.id);
+  const extend = e.shiftKey && ["ArrowLeft", "ArrowRight"].includes(e.key);
+  let i = columns.indexOf(
+    extend && rangeSelection ? rangeSelection.focus : selection.id,
+  );
   selection.r = Math.max(
     0,
     Math.min(
@@ -486,7 +662,11 @@ $("map").addEventListener("keydown", (e) => {
       i + (e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0),
     ),
   );
-  selection.id = columns[i];
+  if (extend) selectRange(selection.r, selection.id, columns[i]);
+  else {
+    rangeSelection = null;
+    selection.id = columns[i];
+  }
   draw();
   describe();
   const x = i * cw;
@@ -528,12 +708,14 @@ refreshReferences();
 for (const id of ["mode", "reference", "compare", "group", "profile", "order"])
   $(id).addEventListener("change", render);
 $("run").addEventListener("change", () => {
+  rangeSelection = null;
   refreshReferences();
   render();
 });
 $("search").addEventListener("input", render);
 $("zoom").addEventListener("input", draw);
 $("fit").addEventListener("click", () => {
+  rangeSelection = null;
   $("zoom").value = "1";
   $("group").value = "";
   $("profile").value = "";
@@ -541,6 +723,10 @@ $("fit").addEventListener("click", () => {
   $("order").value = "catalog";
   $("scroll").scrollLeft = 0;
   render();
+});
+$("clearRange").addEventListener("click", () => {
+  rangeSelection = null;
+  draw();
 });
 new ResizeObserver(draw).observe($("scroll"));
 render();
