@@ -32,10 +32,14 @@ function time(ns) {
     "/op"
   );
 }
-function ratio(n) {
-  return n == null
-    ? "—"
-    : n.toLocaleString(undefined, { maximumSignificantDigits: 3 }) + "×";
+function relativeEffect(n) {
+  if (!(n > 0) || !Number.isFinite(n)) return "—";
+  if (n === 1) return "1×";
+  const magnitude = n < 1 ? 1 / n : n;
+  const text = magnitude.toLocaleString(undefined, {
+    maximumSignificantDigits: 3,
+  });
+  return text === "1" ? "≈1×" : (n < 1 ? "+" : "−") + text + "×";
 }
 function run() {
   return D.runs[+$("run").value];
@@ -118,6 +122,7 @@ function describe() {
   $("cellTitle").textContent = (row?.label || "") + " · " + selection.id;
   $("facts").replaceChildren();
   $("samples").replaceChildren();
+  $("sampleCaption").textContent = "";
   $("links").replaceChildren();
   if (!c) {
     $("explanation").textContent =
@@ -128,13 +133,13 @@ function describe() {
   factsItem("State", c.status);
   factsItem("Mean", c.timing ? time(c.timing.mean) : "—");
   factsItem(
-    $("mode").value === "absolute" ? "Process wall time" : "Ratio",
+    $("mode").value === "absolute" ? "Process wall time" : "Relative effect",
     $("mode").value === "absolute"
       ? c.measurement.wall_seconds?.toFixed(3) + " s"
-      : ratio(m.value),
+      : relativeEffect(m.value),
   );
   if (c.timing) {
-    factsItem("Sample CV", (100 * c.timing.cv).toFixed(1) + "%");
+    factsItem("Sample spread (CV)", (100 * c.timing.cv).toFixed(1) + "%");
     factsItem(
       (100 * c.timing.confidence).toFixed(0) + "% mean CI",
       time(c.timing.lower) + " – " + time(c.timing.upper),
@@ -144,7 +149,7 @@ function describe() {
     m.reason ||
     ($("mode").value === "absolute"
       ? "Operation mean; process wall time also includes setup, warmup and analysis."
-      : "Ratio for this case; <1× is faster, >1× is slower than the reference.");
+      : "+5× means five times faster; −5× means five times slower than the reference. 1× means equal time.");
   if (m.comparison) {
     const p = m.comparison;
     message += " " + p.conditions.join("; ");
@@ -168,11 +173,22 @@ function describe() {
   $("explanation").textContent = message;
   if (c.timing) {
     const max = Math.max(...c.timing.samples);
+    $("sampleCaption").textContent =
+      c.timing.samples.length + " samples · time per operation";
     c.timing.samples.forEach((n, i) => {
+      const sample = document.createElement("div");
+      sample.className = "sample";
+      sample.title = "Sample " + (i + 1) + ": " + time(n);
+      const label = document.createElement("span");
+      label.className = "sample-value";
+      label.textContent = time(n);
       const bar = document.createElement("span");
-      bar.style.height = Math.max(2, (58 * n) / max) + "px";
-      bar.title = "Sample " + (i + 1) + ": " + time(n);
-      $("samples").append(bar);
+      bar.className = "sample-bar";
+      bar.style.height = Math.max(2, (70 * n) / max) + "px";
+      const index = document.createElement("small");
+      index.textContent = String(i + 1);
+      sample.append(label, bar, index);
+      $("samples").append(sample);
     });
   }
   link($("links"), "Original run.json · job " + c.job, run().href);
@@ -201,23 +217,18 @@ function mix(a, b, t) {
   return a.map((v, i) => Math.round(v + (b[i] - v) * t));
 }
 function colour(value, min, max) {
-  let t;
-  if ($("mode").value === "absolute") {
-    t = (Math.log10(value) - min) / Math.max(0.01, max - min);
-    return (
-      "rgb(" +
-      mix([42, 93, 126], [237, 159, 70], Math.max(0, Math.min(1, t))).join(
-        ",",
-      ) +
-      ")"
-    );
-  }
-  t = Math.max(-6, Math.min(6, Math.log2(value))) / 6;
+  const position =
+    $("mode").value === "absolute"
+      ? max === min
+        ? 0.5
+        : (Math.log10(value) - min) / (max - min)
+      : (Math.log2(value) + 6) / 12;
+  const t = Math.max(0, Math.min(1, position));
   return (
     "rgb(" +
-    (t < 0
-      ? mix([83, 97, 119], [47, 153, 203], -t)
-      : mix([83, 97, 119], [237, 91, 65], t)
+    (t < 0.5
+      ? mix([34, 197, 94], [250, 204, 21], t * 2)
+      : mix([250, 204, 21], [239, 68, 68], t * 2 - 1)
     ).join(",") +
     ")"
   );
@@ -242,22 +253,18 @@ function draw() {
     .filter((v) => v != null);
   const min = values.length ? Math.log10(Math.min(...values)) : 0,
     max = values.length ? Math.log10(Math.max(...values)) : 1;
-  document.querySelector(".scale").style.background =
-    $("mode").value === "absolute"
-      ? "linear-gradient(90deg,rgb(42,93,126),rgb(237,159,70))"
-      : "linear-gradient(90deg,rgb(47,153,203),rgb(83,97,119),rgb(237,91,65))";
   $("scaleText").textContent =
     $("mode").value === "absolute"
       ? values.length
         ? time(10 ** min)
         : "No numeric cells"
-      : "≤1/64×";
+      : "+64× or faster";
   $("scaleEnd").textContent =
     $("mode").value === "absolute"
       ? values.length
         ? time(10 ** max) + " · log scale"
         : ""
-      : "≥64× · log₂ scale · 1× neutral";
+      : "−64× or slower · 1× at yellow · log₂ scale";
   let start = 0;
   while (start < columns.length) {
     let end = start + 1;
@@ -290,7 +297,7 @@ function draw() {
         v != null
           ? colour(v, min, max)
           : c?.status === "timeout"
-            ? "#ff5e85"
+            ? "#38bdf8"
             : c &&
                 [
                   "measurement failed",
@@ -434,7 +441,7 @@ $("map").addEventListener("mousemove", (e) => {
     "\n" +
     (c?.timing ? time(c.timing.mean) : "—") +
     " · " +
-    ($("mode").value === "absolute" ? "absolute" : ratio(m.value)) +
+    ($("mode").value === "absolute" ? "absolute" : relativeEffect(m.value)) +
     (m.reason ? " · " + m.reason : "");
 });
 $("map").addEventListener("click", (e) => {
