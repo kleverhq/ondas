@@ -217,8 +217,12 @@ function mix(a, b, t) {
   return a.map((v, i) => Math.round(v + (b[i] - v) * t));
 }
 function colour(value, min, max) {
+  const absolute = $("mode").value === "absolute";
+  const stops = absolute
+    ? [[34, 197, 94], [250, 204, 21], [239, 68, 68]]
+    : [[250, 204, 21], [34, 197, 94], [239, 68, 68]];
   const position =
-    $("mode").value === "absolute"
+    absolute
       ? max === min
         ? 0.5
         : (Math.log10(value) - min) / (max - min)
@@ -227,8 +231,8 @@ function colour(value, min, max) {
   return (
     "rgb(" +
     (t < 0.5
-      ? mix([34, 197, 94], [250, 204, 21], t * 2)
-      : mix([250, 204, 21], [239, 68, 68], t * 2 - 1)
+      ? mix(stops[0], stops[1], t * 2)
+      : mix(stops[1], stops[2], t * 2 - 1)
     ).join(",") +
     ")"
   );
@@ -253,6 +257,7 @@ function draw() {
     .filter((v) => v != null);
   const min = values.length ? Math.log10(Math.min(...values)) : 0,
     max = values.length ? Math.log10(Math.max(...values)) : 1;
+  $("scale").classList.toggle("absolute", $("mode").value === "absolute");
   $("scaleText").textContent =
     $("mode").value === "absolute"
       ? values.length
@@ -264,7 +269,7 @@ function draw() {
       ? values.length
         ? time(10 ** max) + " · log scale"
         : ""
-      : "−64× or slower · 1× at yellow · log₂ scale";
+      : "−64× or slower · 1× at green · log₂ scale";
   let start = 0;
   while (start < columns.length) {
     let end = start + 1;
