@@ -87,6 +87,53 @@ fn counts(probe: &Probe) -> Counts {
     probe.lock().unwrap().clone()
 }
 
+#[cfg(feature = "wlf-lib")]
+#[test]
+#[ignore = "requires Questa and installed string fixture; run just conformance-wlf"]
+fn wlf_last_completed_tick_precedes_late_string_error() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("fixtures/wlf/wlf0072-strings-and-names/waveform.wlf");
+    for count in [1, 256] {
+        for bits_first in [false, true] {
+            let mut wave = crate::open_with(&path, "wlf-lib").unwrap();
+            let bits = wave.hierarchy().signal("top.ascending").unwrap();
+            let text = wave.hierarchy().signal("top.message").unwrap();
+            for stop in [Some(3), None] {
+                let mut selection = wave.select(&[bits, text]).unwrap();
+                // Bypass base deduplication only to fill native batches with this
+                // small published input. The SDK, worker and query path are real.
+                selection.bases = vec![bits; count];
+                selection
+                    .bases
+                    .insert(if bits_first { count } else { 0 }, text);
+                let mut candidates = Vec::new();
+                let outcome = selection.query(
+                    TimeRange::closed(Time::ZERO, Time::from_ticks(7)),
+                    &[0, 1],
+                    |ctx| {
+                        candidates.push(ctx.time().ticks());
+                        Ok(if stop == Some(ctx.time().ticks()) {
+                            ControlFlow::Break(17)
+                        } else {
+                            ControlFlow::Continue(())
+                        })
+                    },
+                );
+                assert_eq!(candidates, [0, 1, 2, 3]);
+                if stop.is_some() {
+                    assert!(matches!(outcome, Ok(ControlFlow::Break(17))));
+                } else {
+                    assert!(matches!(
+                        outcome,
+                        Err(Error::NonAsciiString { format: crate::Format::Wlf, time, .. })
+                            if time == Time::from_ticks(4)
+                    ));
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn sparse_active_finalization_visits_only_touched_slots() {
     let mut text = String::new();

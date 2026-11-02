@@ -170,7 +170,7 @@ impl Reader {
         &mut self,
         signals: &[Signal],
         end: Time,
-        visitor: impl for<'v> FnMut(usize, Time, ValueRef<'v>) -> ControlFlow<B>,
+        visitor: impl for<'v> FnMut(usize, Time, Result<ValueRef<'v>>) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>> {
         self.read_from(signals, Time::ZERO, end, visitor)
     }
@@ -179,7 +179,7 @@ impl Reader {
         signals: &[Signal],
         start: Time,
         end: Time,
-        mut visitor: impl for<'v> FnMut(usize, Time, ValueRef<'v>) -> ControlFlow<B>,
+        mut visitor: impl for<'v> FnMut(usize, Time, Result<ValueRef<'v>>) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>> {
         if signals.is_empty() || start > end {
             return Ok(ControlFlow::Continue(()));
@@ -193,13 +193,12 @@ impl Reader {
         loop {
             let batch = worker::next(self.session.0)?;
             let finished = batch.finished;
-            if let ControlFlow::Break(value) = batch.visit(|record| {
-                visitor(
-                    signals[record.selection].index(),
-                    record.tick,
-                    record.value.as_ref(),
-                )
-            })? {
+            if let ControlFlow::Break(value) =
+                batch.visit(|selection, tick, value| match value {
+                    Ok(value) => visitor(signals[selection].index(), tick, Ok(value.as_ref())),
+                    Err(error) => visitor(signals[selection].index(), tick, Err(error)),
+                })?
+            {
                 return Ok(ControlFlow::Break(value));
             }
             if finished {
@@ -289,6 +288,54 @@ mod tests {
     }
     use crate::{Sample, Value};
     #[test]
+    #[ignore = "requires Questa and installed string fixture; run just conformance-wlf"]
+    fn wlf_late_string_error_crosses_native_continuation() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures/wlf/wlf0072-strings-and-names/waveform.wlf");
+        let (reader, hierarchy, _) = Reader::open(&path, "error continuation".into()).unwrap();
+        let bits = hierarchy.signal("top.ascending").unwrap();
+        let text = hierarchy.signal("top.message").unwrap();
+        let signals = std::iter::repeat_n(bits, 256)
+            .chain(std::iter::once(text))
+            .collect::<Vec<_>>();
+        let _traversal = Traversal(reader.session.0);
+        worker::begin(
+            reader.session.0,
+            signals
+                .iter()
+                .map(|signal| reader.declarations[signal.index()])
+                .collect(),
+            Time::ZERO,
+            Time::from_ticks(7),
+        )
+        .unwrap();
+        let mut batches = 0;
+        loop {
+            let batch = worker::next(reader.session.0).unwrap();
+            batches += 1;
+            let mut ticks = std::collections::BTreeMap::new();
+            for record in &batch.records {
+                *ticks.entry(record.tick.ticks()).or_insert(0) += 1;
+            }
+            eprintln!("batch={batches}, ticks={ticks:?}, error={:?}", batch.error);
+            if batches == 1 {
+                assert_eq!(batch.records.len(), 257);
+                assert_eq!(ticks.keys().copied().collect::<Vec<_>>(), [0]);
+            }
+            if let Some(error) = batch.error {
+                assert!(matches!(
+                    error,
+                    worker::Failure::Decode { error: Error::NonAsciiString { format: crate::Format::Wlf, time, .. }, .. }
+                        if time == Time::from_ticks(4)
+                ));
+                break;
+            }
+            assert!(!batch.finished, "the selected invalid String must fail");
+        }
+        assert!(batches > 1, "exercise real native continuation");
+    }
+
+    #[test]
     #[ignore = "requires Questa and installed history fixture; run just conformance-wlf"]
     fn wlf_batch_continuations_keep_cold_values_and_sparse_updates() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -315,12 +362,11 @@ mod tests {
                 batches += 1;
                 let finished = batch.finished;
                 let _ = batch
-                    .visit(|record| {
-                        let Value::Bits(value) = record.value else {
+                    .visit(|selection, tick, value| {
+                        let Value::Bits(value) = value.unwrap() else {
                             panic!("expected Bits");
                         };
-                        rows[record.selection]
-                            .push((record.tick.ticks(), value.as_ref().to_string()));
+                        rows[selection].push((tick.ticks(), value.as_ref().to_string()));
                         ControlFlow::<()>::Continue(())
                     })
                     .unwrap();
@@ -400,7 +446,8 @@ mod tests {
                 let batch = worker::next(id).unwrap();
                 let finished = batch.finished;
                 let _ = batch
-                    .visit(|_| {
+                    .visit(|_, _, value| {
+                        assert!(value.is_ok());
                         records += 1;
                         ControlFlow::<()>::Continue(())
                     })

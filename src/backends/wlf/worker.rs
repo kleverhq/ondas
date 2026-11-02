@@ -139,24 +139,48 @@ pub(super) struct Record {
     pub tick: Time,
     pub value: Value,
 }
+#[derive(Debug)]
+pub(super) enum Failure {
+    Read(Error),
+    Decode {
+        selection: usize,
+        tick: Time,
+        error: Error,
+    },
+}
 #[derive(Default)]
 pub(super) struct Batch {
     pub records: Vec<Record>,
     pub finished: bool,
-    pub error: Option<Error>,
+    pub error: Option<Failure>,
 }
 impl Batch {
     pub fn visit<B>(
         self,
-        mut visitor: impl FnMut(Record) -> ControlFlow<B>,
+        mut visitor: impl FnMut(usize, Time, Result<Value>) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>> {
         for record in self.records {
-            if let ControlFlow::Break(value) = visitor(record) {
+            if let ControlFlow::Break(value) =
+                visitor(record.selection, record.tick, Ok(record.value))
+            {
                 return Ok(ControlFlow::Break(value));
             }
         }
-        if let Some(error) = self.error {
-            return Err(error);
+        match self.error {
+            Some(Failure::Read(error)) => return Err(error),
+            Some(Failure::Decode {
+                selection,
+                tick,
+                error,
+            }) => {
+                if let ControlFlow::Break(value) = visitor(selection, tick, Err(error)) {
+                    return Ok(ControlFlow::Break(value));
+                }
+                return Err(backend_error(
+                    "WLF visitor continued after a decoding failure",
+                ));
+            }
+            None => (),
         }
         Ok(ControlFlow::Continue(()))
     }
@@ -709,7 +733,7 @@ pub(super) fn next(id: u64) -> Result<Batch> {
                 )
             };
             if let Err(error) = status(code, &error, "read") {
-                batch.error = Some(error);
+                batch.error = Some(Failure::Read(error));
                 return Ok(batch);
             }
             if code == 0 {
@@ -731,9 +755,17 @@ pub(super) fn next(id: u64) -> Result<Batch> {
                     batch.records.push(record);
                 }
                 Err(error) => {
-                    // A later conversion failure must not erase the prefix or
-                    // override an earlier caller Break.
-                    batch.error = Some(error);
+                    // Keep the failed record's time so the consumer can finish
+                    // an earlier tick before deciding between Break and error.
+                    batch.error = Some(if out.selection < query.encodings.len() {
+                        Failure::Decode {
+                            selection: out.selection,
+                            tick: Time::from_ticks(out.tick),
+                            error,
+                        }
+                    } else {
+                        Failure::Read(error)
+                    });
                     return Ok(batch);
                 }
             }
@@ -847,15 +879,18 @@ mod tests {
                     value: Value::Real(2.0),
                 },
             ],
-            error: Some(backend_error("later value conversion failed")),
+            error: Some(Failure::Read(backend_error(
+                "later value conversion failed",
+            ))),
             finished: false,
         }
     }
     #[test]
     fn wlf_batch_keeps_successful_prefix_before_error() {
         let mut ticks = Vec::new();
-        let result = failed_batch().visit(|record| {
-            ticks.push(record.tick.ticks());
+        let result = failed_batch().visit(|_, tick, value| {
+            assert!(value.is_ok());
+            ticks.push(tick.ticks());
             ControlFlow::<()>::Continue(())
         });
         assert!(matches!(result, Err(Error::Backend { .. })));
@@ -863,8 +898,68 @@ mod tests {
     }
     #[test]
     fn wlf_batch_caller_break_wins_over_deferred_error() {
-        let result = failed_batch().visit(|_| ControlFlow::Break(std::rc::Rc::new("stop")));
+        let result = failed_batch().visit(|_, _, _| ControlFlow::Break(std::rc::Rc::new("stop")));
         assert_eq!(*result.unwrap().break_value().unwrap(), "stop");
+    }
+    #[test]
+    fn wlf_batch_timed_failure_keeps_exact_location_and_successful_prefix() {
+        for failed_tick in [0, 1, 2] {
+            let mut batch = failed_batch();
+            batch
+                .records
+                .retain(|record| record.tick.ticks() <= failed_tick);
+            if failed_tick == 0 {
+                batch.records.clear();
+            }
+            batch.error = Some(Failure::Decode {
+                selection: 7,
+                tick: Time::from_ticks(failed_tick),
+                error: backend_error("sentinel"),
+            });
+            let mut prefix = Vec::new();
+            let result = batch
+                .visit(|selection, tick, value| match value {
+                    Ok(_) => {
+                        prefix.push(tick.ticks());
+                        ControlFlow::Continue(())
+                    }
+                    Err(error) => {
+                        assert_eq!(selection, 7);
+                        assert_eq!(tick, Time::from_ticks(failed_tick));
+                        ControlFlow::Break(error)
+                    }
+                })
+                .unwrap();
+            assert!(
+                matches!(result, ControlFlow::Break(Error::Backend { message, .. }) if message == "sentinel")
+            );
+            assert_eq!(prefix, if failed_tick == 0 { vec![] } else { vec![0, 1] });
+        }
+    }
+    #[test]
+    fn wlf_batch_timed_failure_cannot_be_ignored_or_override_break() {
+        for stop in [false, true] {
+            let mut batch = failed_batch();
+            batch.error = Some(Failure::Decode {
+                selection: 0,
+                tick: Time::from_ticks(2),
+                error: backend_error("later failure"),
+            });
+            let result = batch.visit(|_, _, _| {
+                if stop {
+                    ControlFlow::Break(17)
+                } else {
+                    ControlFlow::Continue(())
+                }
+            });
+            if stop {
+                assert_eq!(result.unwrap(), ControlFlow::Break(17));
+            } else {
+                assert!(
+                    matches!(result, Err(Error::Backend { message, .. }) if message == "WLF visitor continued after a decoding failure")
+                );
+            }
+        }
     }
     #[test]
     fn wlf_private_abi_layouts() {

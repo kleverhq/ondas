@@ -479,6 +479,19 @@ fn wlf_retained_bits_do_not_hide_late_string_errors_or_breaks() {
             .unwrap(),
         ControlFlow::Break(17)
     );
+    assert_eq!(
+        wave.scan(&[bits, text], range, |record| {
+            if matches!(record, ondas::ScanRef::Change { signal, time, .. }
+                if signal == text && time == Time::from_ticks(3))
+            {
+                ControlFlow::Break(23)
+            } else {
+                ControlFlow::Continue(())
+            }
+        })
+        .unwrap(),
+        ControlFlow::Break(23)
+    );
     assert!(matches!(
         wave.scan(&[bits, text], range, |_| ControlFlow::<()>::Continue(())),
         Err(Error::NonAsciiString { format: Format::Wlf, time, .. }) if time == Time::from_ticks(4)
