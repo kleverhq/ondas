@@ -42,6 +42,14 @@ The Criterion configuration uses ten samples, 0.2 seconds of warmup and a 0.6 se
 
 Each case/backend measurement process has a default wall limit of 600 seconds, including warmup, preparation, samples and analysis. `--timeout SECONDS` changes the limit; `--no-timeout` disables it. Verification has no timeout. The resolved limit is saved as `measurement_timeout_seconds` in `run.json`, or `null` when disabled. A timeout uses the ordinary failed-measurement path with `reason: timeout`; logs and any raw files remain available for diagnosis. The runner continues with the next measurement and verifies only successful measurements. Failed measurements have no usable Criterion estimate. Their elapsed wall time and the timeout limit must not replace a missing performance value.
 
+## Saved-result heat map
+
+`just opb view RUN_JSON... --output target/opb-view.html` reads saved manifests and native Criterion JSON. It does not build a reader or run a measurement. Keep the HTML and run directories in the same relative locations when moving them. The report embeds its display data; links open the original manifest, measurement log and raw files. Use a directory or its `run.json` as each input.
+
+The default heat map shows operation means relative to a selected backend, with FST as the first choice. Each column is one saved case. Zoom and horizontal scrolling retain the overview; filters and ordering help find slow cases and sample spread. Absolute time uses a logarithmic colour scale in ns/op. Process wall time is separate. Missing, unchecked, failed and invalid records stay outside the numeric scale. A failed reference produces no ratio.
+
+Saved-run ratios require the same backend, exact case and concrete inputs, waveform payload, workload source and Criterion settings. Different library revisions can be compared. Changes in SDK selection or fixture revision remain visible. A matching payload can be compared across fixture revisions. Cross-format ratios compare the same case but do not make opening, native hierarchy or storage work equal. Confidence intervals and sample CV describe one series; they do not establish repeatability or a code regression.
+
 ## Retired benchmark workloads
 
 OPB covers common opening, hierarchy, lookup, point and batch reads, sessions, scans, traces, queries and bit composition. The core uses file paths and bit values. It does not retain the former timings for byte input, `read_metadata`, Real/String/Event values, physical alias scaling, format-specific storage controls, selected recordings, Wellen comparisons or value formatting. Independent correctness tests and published fixtures remain. Add a focused performance case only when a concrete problem requires it.

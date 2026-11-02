@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>OPB saved results</title>
+<style>
+:root{color-scheme:dark;font:14px/1.5 system-ui,sans-serif;color:#e4e8f0;--panel:#151c28;--line:#303d51;--dim:#a0aec2}
+*{box-sizing:border-box}body{margin:0;background:transparent}main{padding:20px;background:#0d131e;min-width:300px}
+[hidden]{display:none!important}
+h1{font-size:23px;margin:0 0 4px}h2{font-size:17px;margin:0 0 10px}p{margin:6px 0 14px}.muted,small{color:var(--dim)}
+label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--dim)}select,input,button{font:inherit;color:#e4e8f0;background:#1b2535;border:1px solid #42516a;border-radius:5px;padding:6px 9px;min-height:32px}
+button{cursor:pointer}button:hover,select:hover{border-color:#8ba9db}button:focus-visible,canvas:focus-visible{outline:2px solid #70b8ff;outline-offset:2px}
+.controls{display:flex;gap:12px;align-items:end;flex-wrap:wrap;padding:14px;background:var(--panel);border:1px solid var(--line);border-radius:8px;margin:16px 0}
+input[type=range]{width:130px;padding:0}#search{width:130px}#summary{font-variant-numeric:tabular-nums;color:#c3d0e2}
+.legend{display:flex;gap:12px;align-items:center;flex-wrap:wrap;font-size:12px;margin:12px 0}.scale{display:inline-block;width:140px;height:10px;background:linear-gradient(90deg,#337fa8,#5a657a,#e79748,#db4d42);border-radius:3px;vertical-align:middle}
+.swatch{display:inline-block;width:12px;height:12px;margin-right:5px;vertical-align:middle;background:#69758a}.timeout{background:#ff5e85}.invalid{background:#b38cff}.missing{background:repeating-linear-gradient(45deg,#172030,#172030 3px,#4b5568 3px,#4b5568 4px)}
+.matrix{display:grid;grid-template-columns:118px minmax(0,1fr);border:1px solid var(--line);border-radius:6px;background:#111927}
+#labels{padding-top:36px;overflow:hidden}#labels div{height:38px;padding:8px 10px;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-top:1px solid #233044}
+#scroll{overflow-x:auto;overflow-y:hidden}canvas{display:block;touch-action:pan-x;cursor:crosshair}#tip{min-height:48px;padding:8px 0;font:12px/1.5 ui-monospace,monospace;white-space:pre-wrap}
+.detail{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:16px;margin:14px 0}.facts{display:flex;gap:24px;flex-wrap:wrap}.facts strong{display:block;font-size:19px}.facts small{display:block}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.6 ui-monospace,monospace;background:#101723;padding:12px;border-radius:5px;max-height:340px;overflow:auto}a{color:#9dcaff;overflow-wrap:anywhere}#links{display:flex;gap:16px;flex-wrap:wrap;margin:12px 0}
+#samples{display:flex;gap:4px;height:60px;align-items:end;margin:12px 0}#samples span{flex:1;min-width:3px;background:#66a9d6;border-radius:2px 2px 0 0}details{margin-top:14px}summary{cursor:pointer;color:#c0cce0}#explanation{font-size:13px;color:#c5d1e3}.notice{border-left:3px solid #7190be;padding-left:12px}
+@media(max-width:600px){main{padding:12px}.matrix{grid-template-columns:94px minmax(0,1fr)}#labels div{font-size:11px;padding-left:6px}.controls{gap:8px}h1{font-size:20px}}
+</style>
+<main>
+<h1>OPB · saved results</h1>
+<p class="muted">One column per case. One row per backend. Select a cell to inspect its timing, status and source records.</p>
+<div class="controls">
+<label>Run<select id="run"></select></label>
+<label>Colour by<select id="mode"><option value="backend">Relative to backend</option><option value="absolute">Absolute time</option><option value="run">Relative to saved run</option></select></label>
+<label id="backendLabel">Reference = 1×<select id="reference"></select></label>
+<label id="compareLabel" hidden>Reference run = 1×<select id="compare"></select></label>
+<label>Group<select id="group"><option value="">All groups</option></select></label>
+<label>Profile<select id="profile"><option value="">All profiles</option></select></label>
+<label>Find case<input id="search" type="search" placeholder="POINT-028"></label>
+<label>Order<select id="order"><option value="catalog">Catalog</option><option value="ratio">Largest displayed value</option><option value="time">Longest operation</option><option value="spread">Largest sample CV</option></select></label>
+<label>Zoom <span id="zoomText">1×</span><input id="zoom" type="range" min="1" max="12" step="0.25" value="1"></label><button id="fit">Fit all</button>
+</div>
+<div id="summary"></div>
+<div class="legend"><span id="scaleText"></span><span class="scale"></span><span id="scaleEnd"></span><span><i class="swatch timeout"></i>Timeout</span><span><i class="swatch invalid"></i>Failure / invalid data</span><span><i class="swatch missing"></i>Missing / unchecked / incomparable</span><span>White edge: sample CV ≥20%</span></div>
+<div class="matrix"><div id="labels"></div><div id="scroll"><canvas id="map" tabindex="0" role="img" aria-label="OPB heat map; arrow keys select adjacent cells"></canvas></div></div>
+<div id="tip" aria-live="polite"></div>
+<p class="muted" id="range"></p>
+<section class="detail"><h2 id="cellTitle">Select a cell</h2><div id="facts" class="facts"></div><p id="explanation"></p><div id="samples"></div><div id="links"></div><details open><summary>Case, input summary and state</summary><pre id="cellContext"></pre></details></section>
+<section class="detail"><h2>Conditions and interpretation</h2>
+<p class="notice">Cross-format ratios compare the recorded operation for the same case. Stored hierarchy, opening, decoding and SDK setup can differ. A ratio is an observation of this experiment, not a code-regression verdict.</p>
+<p class="muted">R includes open, target setup, operation and drop. P excludes fresh open and target resolution. S prepares an explicit prior on a retained selection. T reads saved traces. Each column keeps its original boundary. Fresh readers can use warm filesystem caches.</p>
+<p class="muted">Colours use verified operation means, in ns/op. Process wall time is separate. Failed, unchecked and missing results have no numeric colour or ratio. CV is the sample standard deviation divided by the mean; the 20% edge is a viewing flag. Sample spread and confidence intervals do not measure drift between runs. One series cannot establish a stable regression.</p>
+<p class="muted">Saved manifests can omit host, compiler and load conditions. Follow the experiment context when available. Matching inputs do not establish equal external conditions.</p>
+<p id="runLinks"></p><details><summary>Original run / source / build / SDK context</summary><pre id="runContext"></pre></details>
+</section>
+</main>
+<script id="opb-data" type="application/json">/*OPB_DATA*/null</script>
+<script>
+/*OPB_SCRIPT*/
+</script></html>
