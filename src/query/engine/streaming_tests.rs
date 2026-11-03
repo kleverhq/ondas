@@ -93,7 +93,7 @@ fn counts(probe: &Probe) -> Counts {
 fn wlf_last_completed_tick_precedes_late_string_error() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("fixtures/wlf/wlf0072-strings-and-names/waveform.wlf");
-    for count in [1, 256] {
+    for count in [1, 2048] {
         for bits_first in [false, true] {
             let mut wave = crate::open_with(&path, "wlf-lib").unwrap();
             let bits = wave.hierarchy().signal("top.ascending").unwrap();

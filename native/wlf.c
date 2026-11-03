@@ -46,8 +46,8 @@ typedef struct {
     ondas_wlf_record out;
     size_t offset;
 } buffered_record;
-#define WLF_BATCH_RECORDS 256
-#define WLF_BATCH_BYTES (64 * 1024)
+#define WLF_BATCH_RECORDS 2048
+#define WLF_BATCH_BYTES (512 * 1024)
 struct ondas_wlf {
     WlfFileId file;
     WlfFileInfo info;

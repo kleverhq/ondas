@@ -972,7 +972,7 @@ fn wlf_multi_batch_resolution_switches_preserve_every_tick() {
     let _ = history
         .scan(
             &[clock],
-            TimeRange::closed(Time::from_ticks(17), Time::from_ticks(600)),
+            TimeRange::closed(Time::from_ticks(17), Time::from_ticks(4096)),
             |row| {
                 assert_eq!(std::thread::current().id(), caller);
                 if let ondas::ScanRef::Change {
@@ -995,7 +995,7 @@ fn wlf_multi_batch_resolution_switches_preserve_every_tick() {
             },
         )
         .unwrap();
-    let expected = (17..=600)
+    let expected = (17..=4096)
         .map(|tick| (tick, (tick % 2).to_string()))
         .collect::<Vec<_>>();
     assert_eq!(changes, expected);

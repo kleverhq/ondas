@@ -295,7 +295,7 @@ mod tests {
         let (reader, hierarchy, _) = Reader::open(&path, "error continuation".into()).unwrap();
         let bits = hierarchy.signal("top.ascending").unwrap();
         let text = hierarchy.signal("top.message").unwrap();
-        let signals = std::iter::repeat_n(bits, 256)
+        let signals = std::iter::repeat_n(bits, 2048)
             .chain(std::iter::once(text))
             .collect::<Vec<_>>();
         let _traversal = Traversal(reader.session.0);
@@ -319,7 +319,7 @@ mod tests {
             }
             eprintln!("batch={batches}, ticks={ticks:?}, error={:?}", batch.error);
             if batches == 1 {
-                assert_eq!(batch.records.len(), 257);
+                assert_eq!(batch.records.len(), 2049);
                 assert_eq!(ticks.keys().copied().collect::<Vec<_>>(), [0]);
             }
             if let Some(error) = batch.error {
@@ -452,17 +452,15 @@ mod tests {
                         ControlFlow::<()>::Continue(())
                     })
                     .unwrap();
-                if matches!(records, 1 | 64 | 1024) {
-                    let (count, bytes, pack) = worker::resources(id).unwrap();
-                    assert_eq!(count, 1);
-                    assert!(bytes <= 128 * 1024, "bounded completed-tick storage");
-                    assert!(pack);
-                }
+                let (count, bytes, pack) = worker::resources(id).unwrap();
+                assert_eq!(count, 1);
+                assert!(bytes <= 128 * 1024, "bounded completed-tick storage");
+                assert!(pack);
                 if finished {
                     break;
                 }
             }
-            assert!(records > 1024);
+            assert!(records > 2048);
             let (count, bytes, pack) = worker::resources(id).unwrap();
             assert_eq!(count, 1);
             assert!(bytes <= 128 * 1024, "bounded completed-tick storage");
