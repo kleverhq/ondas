@@ -240,6 +240,8 @@ using QueueItem = std::pair<long long, size_t>;
 struct Traversal {
     uint64_t end;
     std::vector<Selected> selected;
+    bool point_only = false;
+    std::unordered_map<uint64_t, size_t> point_positions;
     std::vector<std::unique_ptr<ByteCursor>> cursors;
     std::priority_queue<QueueItem, std::vector<QueueItem>, std::greater<QueueItem>> queue;
     bool pending = false;
@@ -777,13 +779,15 @@ extern "C" int ondas_wdb_enum_variant(void* opaque, size_t declaration, size_t v
     *bits = value.bits.c_str(); *label = value.label.c_str();
     return 0;
 }
-extern "C" int ondas_wdb_begin(void* opaque, const uint64_t* ids, size_t count, uint64_t start,
-                               uint64_t end, char* error, size_t cap) {
+static int begin(void* opaque, const uint64_t* ids, size_t count, uint64_t start,
+                 uint64_t end, bool point_only, char* error, size_t cap) {
     auto& reader = *static_cast<Reader*>(opaque);
     reader.traversal.reset();
     return protect(error, cap, [&] {
         auto traversal = std::make_unique<Traversal>();
         traversal->end = std::min(end, reader.meta.last);
+        traversal->point_only = point_only;
+        if (point_only) traversal->point_positions.reserve(count);
         IndexBatch batch(reader.index_manager);
         for (size_t i = 0; i < count; ++i) {
             auto& d = reader.declarations.at(ids[i]);
@@ -792,9 +796,14 @@ extern "C" int ondas_wdb_begin(void* opaque, const uint64_t* ids, size_t count, 
             if (d.address < 0 || !d.length) throw Unsupported("selected declaration has no qualified native extent");
             if (d.address > std::numeric_limits<long long>::max() - d.length) throw std::runtime_error("native extent overflow");
             auto& selected = traversal->selected.emplace_back(d);
+            if (point_only) traversal->point_positions.emplace(ids[i], i);
             batch.add(d.address, d.length, selected.trees);
         }
         batch.load();
+        if (point_only) {
+            reader.traversal = std::move(traversal);
+            return 0;
+        }
         std::map<void*, size_t, std::less<void*>> indices;
         for (size_t index = 0; index < traversal->selected.size(); ++index) {
             auto& selected = traversal->selected[index];
@@ -824,6 +833,14 @@ extern "C" int ondas_wdb_begin(void* opaque, const uint64_t* ids, size_t count, 
         return 0;
     });
 }
+extern "C" int ondas_wdb_begin(void* opaque, const uint64_t* ids, size_t count, uint64_t start,
+                               uint64_t end, char* error, size_t cap) {
+    return begin(opaque, ids, count, start, end, false, error, cap);
+}
+extern "C" int ondas_wdb_begin_points(void* opaque, const uint64_t* ids, size_t count,
+                                      char* error, size_t cap) {
+    return begin(opaque, ids, count, 0, 0, true, error, cap);
+}
 extern "C" int ondas_wdb_sample_bits(void* opaque, uint64_t id, uint64_t time, uint32_t lsb,
                                      uint32_t width, ondas_wdb_record* out, int* changed,
                                      char* error, size_t cap) {
@@ -832,10 +849,17 @@ extern "C" int ondas_wdb_sample_bits(void* opaque, uint64_t id, uint64_t time, u
     return protect(error, cap, [&] {
         if (!reader.traversal) throw std::runtime_error("native traversal is not active");
         auto& t = *reader.traversal;
-        auto found = std::find_if(t.selected.begin(), t.selected.end(), [&](const auto& s) {
-            return s.declaration->id == id;
-        });
-        if (found == t.selected.end()) throw std::runtime_error("point signal is not selected");
+        const Selected* found = nullptr;
+        if (t.point_only) {
+            auto position = t.point_positions.find(id);
+            if (position != t.point_positions.end()) found = &t.selected[position->second];
+        } else {
+            auto position = std::find_if(t.selected.begin(), t.selected.end(), [&](const auto& s) {
+                return s.declaration->id == id;
+            });
+            if (position != t.selected.end()) found = &*position;
+        }
+        if (!found) throw std::runtime_error("point signal is not selected");
         const auto& selected = *found;
         const auto& d = *selected.declaration;
         if (d.encoding != 1 || !width || uint64_t(lsb) + width > d.width)
