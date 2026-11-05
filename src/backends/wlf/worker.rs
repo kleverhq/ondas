@@ -570,6 +570,12 @@ fn point_states(
     time: Time,
 ) -> Result<Vec<Option<PointState>>> {
     let mut states: Vec<Option<PointState>> = vec![None; projections.len()];
+    // Group the projections by native selection so a record visits only its own
+    // slots, in their previous order.
+    let mut slots: Vec<Vec<usize>> = vec![Vec::new(); indices.len()];
+    for (slot, &(index, _)) in projections.iter().enumerate() {
+        slots[index].push(slot);
+    }
     begin_native(handle, indices, start.unwrap_or(Time::ZERO), time)?;
     let mut out = NativeRecord::default();
     let mut error = [0; 512];
@@ -595,10 +601,11 @@ fn point_states(
         let crate::ValueRef::Bits(bits) = record.value.as_ref() else {
             return Err(backend_error("WLF point requires bits"));
         };
-        for (slot, &(index, signal)) in projections.iter().enumerate() {
-            if index != record.selection {
-                continue;
-            }
+        let Some(bucket) = slots.get(record.selection) else {
+            continue;
+        };
+        for &slot in bucket {
+            let (_, signal) = projections[slot];
             let lsb = signal.lsb();
             let value = bits.slice(lsb + signal.width().unwrap() - 1, lsb);
             match &mut states[slot] {
@@ -666,19 +673,19 @@ pub(super) fn sample_bits(
                 })
                 .collect();
             let mut bases = Vec::new();
+            // Maps a native base index to its fallback entry; the first appearance
+            // keeps its position.
+            let mut base_of = vec![None; indices.len()];
             let mut fallback = Vec::new();
             let mut slots = Vec::new();
             for (slot, &(index, signal)) in projections.iter().enumerate() {
                 if samples[slot].is_some() {
                     continue;
                 }
-                let base = bases
-                    .iter()
-                    .position(|&previous| previous == index)
-                    .unwrap_or_else(|| {
-                        bases.push(index);
-                        bases.len() - 1
-                    });
+                let base = *base_of[index].get_or_insert_with(|| {
+                    bases.push(index);
+                    bases.len() - 1
+                });
                 fallback.push((base, signal));
                 slots.push(slot);
             }

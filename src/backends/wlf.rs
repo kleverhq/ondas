@@ -154,15 +154,15 @@ impl Reader {
         time: Time,
     ) -> Result<Vec<crate::Sample>> {
         let indices = bases.iter().map(|s| self.declarations[s.index()]).collect();
+        // Repeated bases share one slot; keep the first slot for a repeated base,
+        // as the previous linear scan did.
+        let mut slots: HashMap<usize, usize> = HashMap::new();
+        for (slot, base) in bases.iter().enumerate() {
+            slots.entry(base.index()).or_insert(slot);
+        }
         let projections = signals
             .iter()
-            .map(|&signal| {
-                let index = bases
-                    .iter()
-                    .position(|base| base.index() == signal.index())
-                    .unwrap();
-                (index, signal)
-            })
+            .map(|&signal| (slots[&signal.index()], signal))
             .collect();
         worker::sample_bits(self.session.0, indices, projections, time)
     }
