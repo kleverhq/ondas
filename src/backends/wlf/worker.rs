@@ -99,6 +99,14 @@ unsafe extern "C" {
         error: *mut c_char,
         cap: usize,
     ) -> c_int;
+    fn ondas_wlf_point_start(
+        reader: *mut c_void,
+        index: usize,
+        target: u64,
+        start: *mut u64,
+        error: *mut c_char,
+        cap: usize,
+    ) -> c_int;
     fn ondas_wlf_next(
         reader: *mut c_void,
         out: *mut NativeRecord,
@@ -829,13 +837,39 @@ pub(super) fn sample_bits(
                 .collect::<Vec<_>>();
             let target = time.min(file.last);
             const LOOKBACK: u64 = 32;
+            // One whole base can ask the SDK for a suffix start hint. The hint only
+            // chooses a candidate start; the point traversal below still proves
+            // values, change times and missing samples.
+            let hint = if target.ticks() > LOOKBACK
+                && indices.len() == 1
+                && projections.iter().all(|&(_, signal)| !signal.is_slice())
+            {
+                let mut start = 0;
+                let mut error = [0; 512];
+                // SAFETY: live worker-owned handle and writable call-local outputs.
+                let code = unsafe {
+                    ondas_wlf_point_start(
+                        handle.raw.as_ptr(),
+                        indices[0],
+                        target.ticks(),
+                        &mut start,
+                        error.as_mut_ptr(),
+                        error.len(),
+                    )
+                };
+                status(code, &error, "point start hint")?;
+                (code == 1).then(|| Time::from_ticks(start))
+            } else {
+                None
+            };
             let recent = if target.ticks() > LOOKBACK {
+                let start = hint.unwrap_or(Time::from_ticks(target.ticks() - LOOKBACK));
                 point_states(
                     handle,
                     &indices,
                     &encodings,
                     &projections,
-                    Some(Time::from_ticks(target.ticks() - LOOKBACK)),
+                    Some(start),
                     target,
                 )?
             } else {

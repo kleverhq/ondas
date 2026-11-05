@@ -22,6 +22,8 @@ The shim limits ordinary responses by record count and value bytes. Small stream
 
 Cold bit-only points share a short range read. This range might not prove a projection's change time. Unresolved projections then share one chronological pass. Constant projections can require the full prefix. Cold bit-only windows establish entering state before their start. Other cold queries, especially events, keep chronological traversal. Seeking can skip records without decoding or validating them. Reusing prepared selected state does not retain a history.
 
+A whole native base can use a reverse search to choose a suffix start. The search result is only a hint. Completed projected values still establish change times, and unresolved reads use the chronological path.
+
 ## Producer and formatter boundaries
 
 STARTLOG and ENDLOG are not event occurrences. Writer collapse settings can remove activity before reading. A logging resume does not establish hidden physical transitions. Stored persistent state can remain available across a logging gap. It does not describe unrecorded activity.

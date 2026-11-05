@@ -612,6 +612,59 @@ static WlfCallbackResponse before_tick(void *data, WlfTime64 tick, int delta) {
     }
     return WLF_CONTINUE_SCAN;
 }
+/* The SDK search needs a registered callback. The hint produces no records. */
+static WlfCallbackResponse point_hint_event(void *data, WlfCallbackReason reason) {
+    (void)data; (void)reason;
+    return WLF_CONTINUE_SCAN;
+}
+/* Report a suffix start hint for one whole bit base near target. The hint is not
+ * proof: callers still prove values, missing samples and change times with the
+ * existing point traversal and full-prefix fallback. Each call owns a local pack
+ * and value, destroyed before returning; no pointer or state survives the call.
+ * An unavailable search is an optional miss and returns 0 with an empty error
+ * buffer; only a cleanup failure returns -1 and preserves the first SDK cause. */
+int ondas_wlf_point_start(ondas_wlf *r, size_t index, uint64_t target, uint64_t *start, char *error, size_t cap) {
+    /* A 0 return promises an empty error buffer, including every optional miss. */
+    if (error && cap) error[0] = 0;
+    ondas_wlf_end(r);
+    if (r->file) setCurrentNamespace(r->file);
+    if (!start || index >= r->count) return 0;
+    declaration *d = &r->decls[index];
+    const WlfTime64 first = r->info.startTime, last = r->info.lastTime;
+    if (d->out.encoding != 1 || d->out.id < 0) return 0;
+    /* Strictly interior target; target + 1 stays within the recorded end. */
+    if (target <= (uint64_t)first || target >= (uint64_t)last) return 0;
+    WlfPackId pack = wlfPackCreate();
+    if (!pack) return 0;
+    WlfValueId value = wlfValueCreate(d->symbol);
+    int unavailable = 0, hint = 0, cleanup = 0;
+    char cause[512] = "";
+    WlfTime64 found_time = -1;
+    int found_delta = 0, found = 0;
+    WlfTime64 end = first;
+    if (!value) {
+        unavailable = 1; sdk_failure(cause, sizeof(cause), -1);
+    } else if (wlfAddSignalEventCB(pack, d->symbol, value, WLF_REQUEST_IMMEDIATE, point_hint_event, NULL) != WLF_OK) {
+        unavailable = 1; sdk_failure(cause, sizeof(cause), -1);
+    } else if (wlfSearchForSignalEvent(pack, d->symbol, value, (WlfTime64)(target + 1), WLF_LAST_DELTA, 2,
+                                       wlfSearchReverse | wlfSearchAnyEdge | wlfSearchNoDeltas,
+                                       &found_time, &found_delta, &found, &end) != WLF_OK) {
+        unavailable = 1; sdk_failure(cause, sizeof(cause), -1);
+    } else if (found >= 2 && found_time >= first && (uint64_t)found_time <= target) {
+        *start = (uint64_t)found_time > (uint64_t)first + 1 ? (uint64_t)found_time - 1 : (uint64_t)first;
+        hint = 1;
+    }
+    /* Cleanup must not replace the first SDK cause. */
+    if (wlfPackDestroy(pack) != WLF_OK) {
+        cleanup = 1; if (!cause[0]) sdk_failure(cause, sizeof(cause), -1);
+    }
+    if (value && wlfValueDestroy(value) != WLF_OK) {
+        cleanup = 1; if (!cause[0]) sdk_failure(cause, sizeof(cause), -1);
+    }
+    if (cleanup) return fail(error, cap, -1, cause);
+    if (unavailable) return 0;
+    return hint;
+}
 static int begin_impl(ondas_wlf *r, const size_t *indices, size_t count, uint64_t start, uint64_t end, char *error, size_t cap, int point) {
     ondas_wlf_end(r);
     r->start = start > (uint64_t)r->info.lastTime ? r->info.lastTime : (start > (uint64_t)r->info.startTime ? (WlfTime64)start : r->info.startTime);
