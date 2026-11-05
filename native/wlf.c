@@ -62,6 +62,7 @@ struct ondas_wlf {
     size_t record_bytes_len, record_bytes_capacity;
     WlfTime64 start, end, tick, next_tick;
     int finished, stopped, have_tick;
+    size_t pending_begin, pending_end;
     char failure[512];
 };
 static int initialized;
@@ -511,6 +512,13 @@ static WlfCallbackResponse change(void *data, WlfCallbackReason reason) {
     }
     if (tick < r->start || tick > r->end) return callback_failure(r, "invalid WLF callback time");
     if (r->have_tick && tick != r->tick) return callback_failure(r, "incomplete WLF tick boundary");
+    size_t index = (size_t)(s - r->selected);
+    if (!r->have_tick) {
+        r->pending_begin = index; r->pending_end = index + 1;
+    } else {
+        if (index < r->pending_begin) r->pending_begin = index;
+        if (index + 1 > r->pending_end) r->pending_end = index + 1;
+    }
     r->tick = tick; r->have_tick = 1;
     if (s->decl->out.encoding == 4) {
         if (reason == WLF_EVENT) {
@@ -536,7 +544,7 @@ static void *reserve_buffer(void *data, size_t *capacity, size_t needed, size_t 
 static int complete_tick(ondas_wlf *r) {
     if (!r->have_tick) return 1;
     size_t count = r->record_count, bytes = r->record_bytes_len;
-    for (size_t i = 0; i < r->selected_count; ++i) {
+    for (size_t i = r->pending_begin; i < r->pending_end; ++i) {
         selected *s = &r->selected[i];
         /* Deferred conversion joins this pass: no extra walk over the selection. */
         if (s->dirty) {
@@ -557,7 +565,7 @@ static int complete_tick(ondas_wlf *r) {
         if (!data) return 0;
         r->record_bytes = data;
     }
-    for (size_t i = 0; i < r->selected_count; ++i) {
+    for (size_t i = r->pending_begin; i < r->pending_end; ++i) {
         selected *s = &r->selected[i];
         if (!s->present) continue;
         buffered_record *record = &r->records[r->record_count++];
