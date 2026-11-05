@@ -44,5 +44,7 @@ int ondas_wlf_next(ondas_wlf *, ondas_wlf_record *, char *, size_t);
  * 2 is drained and finished. Does not advance the SDK or invalidate bytes. */
 int ondas_wlf_batch_end(ondas_wlf *);
 void ondas_wlf_end(ondas_wlf *);
+/* Private: release query resources and report whether the owner has no recorded failure. */
+int ondas_wlf_park(ondas_wlf *);
 void ondas_wlf_resources(ondas_wlf *, size_t *, size_t *, int *);
 #endif

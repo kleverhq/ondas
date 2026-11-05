@@ -1,11 +1,19 @@
 //! Keep every SDK object and call on one OS thread for the process lifetime.
 use std::{
+    cell::Cell,
     collections::HashMap,
-    ffi::{CStr, CString, c_char, c_int, c_void},
+    ffi::{CStr, CString, OsStr, c_char, c_int, c_void},
+    io::Read,
     ops::ControlFlow,
+    os::unix::{
+        ffi::OsStrExt,
+        fs::{MetadataExt, OpenOptionsExt},
+    },
     ptr::NonNull,
     sync::{OnceLock, mpsc},
 };
+
+use sha2::{Digest, Sha256};
 
 use super::backend_error;
 use crate::{
@@ -99,6 +107,7 @@ unsafe extern "C" {
     ) -> c_int;
     fn ondas_wlf_batch_end(reader: *mut c_void) -> c_int;
     fn ondas_wlf_end(reader: *mut c_void);
+    fn ondas_wlf_park(reader: *mut c_void) -> c_int;
     #[cfg(test)]
     fn ondas_wlf_resources(
         reader: *mut c_void,
@@ -195,9 +204,93 @@ impl Batch {
     }
 }
 
+// Lightweight identity of a regular file; coarse timestamps alone are not freshness proof.
+#[derive(Clone, PartialEq, Eq)]
+struct NativeMetadata {
+    dev: u64,
+    ino: u64,
+    size: u64,
+    mtime: i64,
+    mtime_nsec: i64,
+    ctime: i64,
+    ctime_nsec: i64,
+}
+// Full identity of a regular file, captured for the native open that created its owner.
+#[derive(Clone, PartialEq, Eq)]
+struct NativeIdentity {
+    metadata: NativeMetadata,
+    digest: [u8; 32],
+}
+fn metadata_key(meta: &std::fs::Metadata) -> Option<NativeMetadata> {
+    meta.file_type().is_file().then(|| NativeMetadata {
+        dev: meta.dev(),
+        ino: meta.ino(),
+        size: meta.size(),
+        mtime: meta.mtime(),
+        mtime_nsec: meta.mtime_nsec(),
+        ctime: meta.ctime(),
+        ctime_nsec: meta.ctime_nsec(),
+    })
+}
+// Metadata of a regular file, or an optional miss on any stat, access or type failure.
+fn file_metadata(path: &CString) -> Option<NativeMetadata> {
+    metadata_key(&std::fs::metadata(OsStr::from_bytes(path.as_bytes())).ok()?)
+}
+// Streamed content identity of a regular file. Any stat, access, type or IO failure is an
+// optional miss; the whole file is read once with a fixed buffer and no bytes are retained.
+// O_NONBLOCK keeps a replacement FIFO from blocking the optional fingerprint open.
+fn content_identity(path: &CString) -> Option<NativeIdentity> {
+    let before = file_metadata(path)?;
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(OsStr::from_bytes(path.as_bytes()))
+        .ok()?;
+    // The descriptor must still be the regular file named by the path metadata.
+    if metadata_key(&file.metadata().ok()?)? != before {
+        return None;
+    }
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    let mut remaining = before.size;
+    while remaining > 0 {
+        let want = remaining.min(buffer.len() as u64) as usize;
+        let read = file.read(&mut buffer[..want]).ok()?;
+        if read == 0 {
+            return None;
+        }
+        hasher.update(&buffer[..read]);
+        remaining -= read as u64;
+    }
+    // One extra byte proves that the content did not grow past the recorded size.
+    let mut extra = [0u8; 1];
+    if file.read(&mut extra).ok()? != 0 {
+        return None;
+    }
+    if metadata_key(&file.metadata().ok()?)? != before
+        || file_metadata(path) != Some(before.clone())
+    {
+        return None;
+    }
+    let mut digest = [0u8; 32];
+    digest.copy_from_slice(&hasher.finalize());
+    Some(NativeIdentity {
+        metadata: before,
+        digest,
+    })
+}
 // This type never leaves State on the worker thread; no Send/Sync assertion is needed.
 struct Handle {
     raw: NonNull<c_void>,
+    // Identity captured around the open that created this owner.
+    identity: Option<NativeIdentity>,
+    // Cleared permanently by any native or decode failure; a tainted owner is never parked.
+    reusable: Cell<bool>,
+}
+impl Handle {
+    fn taint(&self) {
+        self.reusable.set(false);
+    }
 }
 impl Drop for Handle {
     fn drop(&mut self) {
@@ -222,15 +315,23 @@ struct File {
     native: Option<Handle>,
     query: Option<Query>,
 }
+// One fully ended native owner, kept only while no logical File is live.
+struct Idle {
+    path: CString,
+    resolution: u32,
+    handle: Handle,
+}
 struct State {
     files: HashMap<u64, File>,
     next_id: u64,
     resolution: Option<u32>,
+    idle: Option<Idle>,
 }
 impl State {
     fn reset(&mut self) {
         // Header inspection can also select a process resolution in this SDK.
         // Suspend native owners before reading a new header, not just before open.
+        self.idle.take();
         for file in self.files.values_mut() {
             file.native.take();
         }
@@ -275,6 +376,7 @@ fn call<T: Send + 'static>(
                         files: HashMap::new(),
                         next_id: 0,
                         resolution: None,
+                        idle: None,
                     };
                     while let Ok(job) = receiver.recv() {
                         job(&mut state);
@@ -342,6 +444,11 @@ unsafe fn enum_strings(bits: *const c_char, label: *const c_char) -> Option<(Str
     }
 }
 fn open_handle(path: &CString, name: &CString, metadata_only: bool) -> Result<Handle> {
+    let before = if metadata_only {
+        None
+    } else {
+        file_metadata(path)
+    };
     let mut raw = std::ptr::null_mut();
     let mut error = [0; 512];
     // SAFETY: call-local owned strings and writable output buffers; shim retains no inputs.
@@ -364,8 +471,20 @@ fn open_handle(path: &CString, name: &CString, metadata_only: bool) -> Result<Ha
             "open"
         },
     )?;
+    let identity = if metadata_only {
+        None
+    } else {
+        // The identity must describe this actual open: metadata must agree across the native
+        // open and the streamed digest, and the pathname must still name the hashed file.
+        match (before, content_identity(path)) {
+            (Some(before), Some(hashed)) if before == hashed.metadata => Some(hashed),
+            _ => None,
+        }
+    };
     Ok(Handle {
         raw: NonNull::new(raw).ok_or_else(|| backend_error("null WLF reader"))?,
+        identity,
+        reusable: Cell::new(true),
     })
 }
 fn metadata(handle: &Handle, source_name: String) -> Result<Metadata> {
@@ -411,8 +530,29 @@ pub(super) fn open(path: CString, source_name: String) -> Result<Opened> {
             .ok_or_else(|| backend_error("WLF session identifier overflow"))?;
         state.next_id = id;
         let name = CString::new(format!("ondas-{id}")).unwrap();
+        // The idle owner is used only for the exact raw path, its full original identity and an
+        // unchanged resolution. Every other case drops it before header or open activity.
+        let reused = match state.idle.take() {
+            Some(idle) => {
+                // Cheap path, resolution, key and metadata checks happen before any whole-file hash.
+                let candidate = state.resolution == Some(idle.resolution)
+                    && idle.path.as_bytes() == path.as_bytes()
+                    && idle.handle.identity.as_ref().is_some_and(|saved| {
+                        file_metadata(&path).as_ref() == Some(&saved.metadata)
+                    });
+                if candidate && idle.handle.identity == content_identity(&path) {
+                    Some(idle)
+                } else {
+                    None
+                }
+            }
+            None => None,
+        };
         state.reset();
-        let handle = open_handle(&path, &name, false)?;
+        let handle = match reused {
+            Some(idle) => idle.handle,
+            None => open_handle(&path, &name, false)?,
+        };
         let mut meta = Meta::default();
         // SAFETY: live owner and correctly laid out output. Open reads the header.
         unsafe { ondas_wlf_metadata(handle.raw.as_ptr(), &mut meta) };
@@ -503,9 +643,29 @@ pub(super) fn open(path: CString, source_name: String) -> Result<Opened> {
         })
     })
 }
-pub(super) fn close(id: u64) {
+pub(super) fn close(id: u64, allow_idle: bool) {
     let _ = call(move |state| {
-        state.files.remove(&id);
+        if let Some(mut file) = state.files.remove(&id) {
+            // Keep one clean, identity-bound owner only for a fully validated logical Reader.
+            if allow_idle
+                && state.files.is_empty()
+                && let Some(handle) = file.native.take()
+            {
+                let parked = handle.identity.is_some()
+                    && handle.reusable.get()
+                    && state.resolution == Some(file.resolution)
+                    // SAFETY: sole worker-owned owner; park keeps the file and declarations.
+                    && unsafe { ondas_wlf_park(handle.raw.as_ptr()) } != 0;
+                if parked {
+                    state.idle = Some(Idle {
+                        path: file.path.clone(),
+                        resolution: file.resolution,
+                        handle,
+                    });
+                }
+                // Otherwise the handle is dropped here and closes completely.
+            }
+        }
         Ok(())
     });
 }
@@ -548,7 +708,7 @@ fn begin_native(
             error.len(),
         )
     };
-    status(code, &error, "begin read")
+    status(code, &error, "begin read").inspect_err(|_| handle.taint())
 }
 pub(super) fn begin(id: u64, indices: Vec<usize>, start: Time, end: Time) -> Result<()> {
     call(move |state| {
@@ -733,6 +893,9 @@ pub(super) fn sample_bits(
         })();
         // SAFETY: release partial or completed point resources on every Result path.
         unsafe { ondas_wlf_end(handle.raw.as_ptr()) };
+        if result.is_err() {
+            handle.taint();
+        }
         result
     })
 }
@@ -762,6 +925,7 @@ pub(super) fn next(id: u64) -> Result<Batch> {
                 )
             };
             if let Err(error) = status(code, &error, "read") {
+                handle.taint();
                 batch.error = Some(Failure::Read(error));
                 return Ok(batch);
             }
@@ -784,6 +948,7 @@ pub(super) fn next(id: u64) -> Result<Batch> {
                     batch.records.push(record);
                 }
                 Err(error) => {
+                    handle.taint();
                     // Keep the failed record's time so the consumer can finish
                     // an earlier tick before deciding between Break and error.
                     batch.error = Some(if out.selection < query.encodings.len() {

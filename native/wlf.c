@@ -400,6 +400,16 @@ void ondas_wlf_end(ondas_wlf *r) {
     free(r->record_bytes); r->record_bytes = NULL;
     r->record_bytes_len = r->record_bytes_capacity = 0;
 }
+/* Private lifecycle helper: release every query, selection, value and batch
+ * resource while keeping the open file and its declarations. It returns nonzero
+ * only when the owner has no recorded failure. */
+int ondas_wlf_park(ondas_wlf *r) {
+    int reusable = r->failure[0] == '\0';
+    ondas_wlf_end(r);
+    current_expr_contxt = NULL; current_expr_objtd = NULL;
+    if (namespace_guard) setCurrentNamespace(namespace_guard);
+    return reusable;
+}
 void ondas_wlf_close(ondas_wlf *r) {
     if (!r) return;
     ondas_wlf_end(r);

@@ -26,10 +26,14 @@ fn filename(path: &Path) -> Result<CString> {
 pub(crate) fn read_metadata(path: &Path, source_name: String) -> Result<Metadata> {
     worker::read_metadata(filename(path)?, source_name)
 }
-struct Session(u64);
+struct Session {
+    id: u64,
+    // Only a fully validated Reader may leave its native owner idle after this drop.
+    allow_idle: bool,
+}
 impl Drop for Session {
     fn drop(&mut self) {
-        worker::close(self.0);
+        worker::close(self.id, self.allow_idle && !std::thread::panicking());
     }
 }
 struct Traversal(u64);
@@ -45,7 +49,10 @@ pub(crate) struct Reader {
 impl Reader {
     pub(crate) fn open(path: &Path, source_name: String) -> Result<(Self, Hierarchy, Metadata)> {
         let opened = worker::open(filename(path)?, source_name)?;
-        let session = Session(opened.id);
+        let mut session = Session {
+            id: opened.id,
+            allow_idle: false,
+        };
         let mut scopes = Vec::new();
         let mut variables = Vec::new();
         let mut parents = HashMap::new();
@@ -138,6 +145,8 @@ impl Reader {
             }
         }
         let hierarchy = Hierarchy::new(scopes, variables, encodings);
+        // Declaration and hierarchy validation finished; only now may the owner go idle.
+        session.allow_idle = true;
         Ok((
             Self {
                 session,
@@ -164,7 +173,7 @@ impl Reader {
             .iter()
             .map(|&signal| (slots[&signal.index()], signal))
             .collect();
-        worker::sample_bits(self.session.0, indices, projections, time)
+        worker::sample_bits(self.session.id, indices, projections, time)
     }
     pub(crate) fn read<B>(
         &mut self,
@@ -184,14 +193,14 @@ impl Reader {
         if signals.is_empty() || start > end {
             return Ok(ControlFlow::Continue(()));
         }
-        let _traversal = Traversal(self.session.0);
+        let _traversal = Traversal(self.session.id);
         let indices = signals
             .iter()
             .map(|s| self.declarations[s.index()])
             .collect();
-        worker::begin(self.session.0, indices, start, end)?;
+        worker::begin(self.session.id, indices, start, end)?;
         loop {
-            let batch = worker::next(self.session.0)?;
+            let batch = worker::next(self.session.id)?;
             let finished = batch.finished;
             if let ControlFlow::Break(value) =
                 batch.visit(|selection, tick, value| match value {
@@ -298,9 +307,9 @@ mod tests {
         let signals = std::iter::repeat_n(bits, 2048)
             .chain(std::iter::once(text))
             .collect::<Vec<_>>();
-        let _traversal = Traversal(reader.session.0);
+        let _traversal = Traversal(reader.session.id);
         worker::begin(
-            reader.session.0,
+            reader.session.id,
             signals
                 .iter()
                 .map(|signal| reader.declarations[signal.index()])
@@ -311,7 +320,7 @@ mod tests {
         .unwrap();
         let mut batches = 0;
         loop {
-            let batch = worker::next(reader.session.0).unwrap();
+            let batch = worker::next(reader.session.id).unwrap();
             batches += 1;
             let mut ticks = std::collections::BTreeMap::new();
             for record in &batch.records {
@@ -344,9 +353,9 @@ mod tests {
         let mut signals = vec![hierarchy.signal("top.clock").unwrap()];
         signals.extend((0..64).map(|i| hierarchy.signal(&format!("top.word_{i:02}")).unwrap()));
         for _ in 0..2 {
-            let _traversal = Traversal(reader.session.0);
+            let _traversal = Traversal(reader.session.id);
             worker::begin(
-                reader.session.0,
+                reader.session.id,
                 signals
                     .iter()
                     .map(|signal| reader.declarations[signal.index()])
@@ -358,7 +367,7 @@ mod tests {
             let mut rows = vec![Vec::new(); signals.len()];
             let mut batches = 0;
             loop {
-                let batch = worker::next(reader.session.0).unwrap();
+                let batch = worker::next(reader.session.id).unwrap();
                 batches += 1;
                 let finished = batch.finished;
                 let _ = batch
@@ -431,7 +440,7 @@ mod tests {
             .join("fixtures/wlf/wlf0038-count4b-3-2-vsim/waveform.wlf");
         let (reader, hierarchy, _) = Reader::open(&path, "resources".into()).unwrap();
         let clock = hierarchy.signal("count4b.clk").unwrap();
-        let id = reader.session.0;
+        let id = reader.session.id;
         {
             let _guard = Traversal(id);
             worker::begin(
