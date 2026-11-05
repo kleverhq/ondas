@@ -4,7 +4,7 @@
 
 ## Header compatibility is not ABI qualification
 
-The shim uses exported interfaces absent from the SDK header. These include setCurrentNamespace and wlfFileOpenByMode. SV enum tables also need a qualified private descriptor layout. A public API version label does not prove compatibility with these interfaces. Check each selected headers/runtime pair with real data. Symbol lookup alone cannot establish descriptor semantics.
+The shim uses exported interfaces absent from the SDK header. These include setCurrentNamespace, wlfFileOpenByMode and wlfFileEnableCache. SV enum tables also need a qualified private descriptor layout. A public API version label does not prove compatibility with these interfaces. Check each selected headers/runtime pair with real data. Symbol lookup alone cannot establish descriptor semantics.
 
 The SDK must have no ELF SONAME. Its absolute library path becomes a dependency of the executable. Changing QUESTA_HOME after compilation does not switch runtimes. Missing native dependencies can prevent startup, also for another input format. The standalone consumer checks dependencies that Cargo's loader environment can hide.
 
@@ -16,7 +16,7 @@ Caller visitors execute outside the worker and need not be Send. A suspended log
 
 ## A batch boundary must be a tick boundary
 
-The shim limits ordinary responses by record count and value bytes. Small streaming selections use a smaller record quota for the first response. Later responses and point histories use the full quota. One complete tick can exceed both limits. Splitting that tick would publish provisional state or lose event multiplicity. Valid earlier ticks can precede a later conversion error. A visitor break before that error takes priority. SDK caches and caller-owned traces remain separate storage costs.
+The shim limits ordinary responses by record count and value bytes. Small streaming selections use a smaller record quota for the first response. Later responses and point histories use the full quota. One complete tick can exceed both limits. Splitting that tick would publish provisional state or lose event multiplicity. Valid earlier ticks can precede a later conversion error. A visitor break before that error takes priority. SDK caches and caller-owned traces remain separate storage costs. The reader requests a 64 MiB SDK block-cache budget for each native file owner. Other SDK allocations are separate.
 
 Cold bit-only points share a short range read. This range might not prove a projection's change time. Unresolved projections then share one chronological pass. Constant projections can require the full prefix. Cold bit-only windows establish entering state before their start. Other cold queries, especially events, keep chronological traversal. Seeking can skip records without decoding or validating them. Reusing prepared selected state does not retain a history.
 

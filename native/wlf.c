@@ -13,6 +13,7 @@
  * for reads and cleanup. These exports are absent from the SDK header. */
 extern WlfFileId setCurrentNamespace(WlfFileId file);
 extern WlfFileId wlfFileOpenByMode(char *path, char *name, int mode);
+extern int wlfFileEnableCache(WlfFileId file, int megabytes);
 extern void *current_expr_contxt, *current_expr_objtd;
 #define WLF_LITE_OPEN 7
 
@@ -48,6 +49,7 @@ typedef struct {
 } buffered_record;
 #define WLF_BATCH_RECORDS 2048
 #define WLF_BATCH_BYTES (512 * 1024)
+#define WLF_CACHE_MIB 64
 /* Small first streaming response; later requests use the full quota. */
 #define WLF_FIRST_BATCH_RECORDS 128
 struct ondas_wlf {
@@ -366,6 +368,9 @@ int ondas_wlf_open(const char *path, const char *name, int metadata_only, ondas_
             open_code = sdk_failure(error, cap, malformed ? -2 : -1);
         } else setCurrentNamespace(r->file);
         if (!r->file) { free(r); return open_code; }
+        /* Optional SDK block cache: a positive budget request, and a nonzero SDK
+         * result only means the cache is absent, so the read continues uncached. */
+        (void)wlfFileEnableCache(r->file, WLF_CACHE_MIB);
         WlfSymbolId root = wlfFileGetTopRegion(r->file);
         if (!root || walk(r, root, SIZE_MAX, 0, 1, NULL, 0, 0)) {
             ondas_wlf_close(r); return fail(error, cap, -1, "cannot read WLF declarations");
