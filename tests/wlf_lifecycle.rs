@@ -236,10 +236,10 @@ fn descriptors_under(root: &Path) -> Vec<(String, PathBuf)> {
     for entry in entries {
         let Ok(entry) = entry else { continue };
         let descriptor = entry.file_name().to_string_lossy().into_owned();
-        if let Ok(target) = fs::read_link(entry.path()) {
-            if target.starts_with(root) {
-                found.push((descriptor, target));
-            }
+        if let Ok(target) = fs::read_link(entry.path())
+            && target.starts_with(root)
+        {
+            found.push((descriptor, target));
         }
     }
     found.sort();
