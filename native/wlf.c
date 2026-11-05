@@ -40,7 +40,7 @@ typedef struct {
     uint8_t *data;
     size_t len;
     uint64_t real_bits, occurrences;
-    int present, have_value;
+    int present, have_value, dirty;
 } selected;
 typedef struct {
     ondas_wlf_record out;
@@ -420,8 +420,56 @@ static const uint8_t logic_digits[256] = {
     ['u'] = 'u', ['U'] = 'u', ['w'] = 'w', ['W'] = 'w',
     ['l'] = 'l', ['L'] = 'l', ['h'] = 'h', ['H'] = 'h',
 };
+/* Values that only the binary formatter decodes: plain reg/net/bit/byte values
+ * and VHDL logical enums. One logical change can reach this path as several
+ * immediate callbacks, and a record keeps only the value that is current at the
+ * end of its tick. This path therefore converts the retained value once, at the
+ * tick boundary, instead of once per callback. Values on the other paths keep
+ * their immediate conversion: strings use the symbolic formatter, and the enum,
+ * integer and real paths decode without a formatter call and without the
+ * normalizing comparison that this boundary needs. */
+static int deferred_bits(const selected *s) {
+    return s->decl->out.encoding == 1
+        && s->decl->datatype != wlfTypeVlogEnum
+        && s->decl->datatype != wlfTypeInteger
+        && !(s->decl->datatype == wlfTypeEnum && !s->decl->out.logic_domain);
+}
+/* Convert the retained value of a deferred selection and compare it with the
+ * digits of the previous tick. Returns 1 when the value changed, 0 when it did
+ * not, and -1 with the cause left in r->failure. */
+static int convert_deferred(selected *s) {
+    ondas_wlf *r = s->owner;
+    if (!wlfValueGetValue(s->value)) {
+        snprintf(r->failure, sizeof(r->failure), "%s", "missing WLF value buffer");
+        return -1;
+    }
+    const char *bits = wlfValueToString(s->value, WLF_RADIX_BINARY, (int)s->len + 128);
+    if (!bits || strlen(bits) != s->len) {
+        snprintf(r->failure, sizeof(r->failure), "%s", "invalid WLF bit width");
+        return -1;
+    }
+    int changed = !s->have_value;
+    if (changed || memcmp(s->data, bits, s->len) != 0) {
+        for (size_t i = 0; i < s->len; ++i) {
+            uint8_t digit = logic_digits[(unsigned char)bits[i]];
+            if (!digit) {
+                snprintf(r->failure, sizeof(r->failure), "%s", "invalid WLF logic digit");
+                return -1;
+            }
+            if (!changed && s->data[i] != digit) changed = 1;
+            s->data[i] = digit;
+        }
+    }
+    s->have_value = 1;
+    if (changed) s->present = 1;
+    return changed;
+}
 static WlfCallbackResponse store_value(selected *s) {
     ondas_wlf *r = s->owner;
+    if (deferred_bits(s)) {
+        s->dirty = 1;
+        return WLF_CONTINUE_SCAN;
+    }
     const void *value = wlfValueGetValue(s->value);
     if (!value) return callback_failure(r, "missing WLF value buffer");
     if (s->decl->out.encoding == 3) {
@@ -448,21 +496,6 @@ static WlfCallbackResponse store_value(selected *s) {
     else if (s->decl->datatype == wlfTypeInteger) {
         uint32_t bits; memcpy(&bits, value, 4);
         for (unsigned i = 0; i < 32; ++i) s->data[i] = (uint8_t)('0' + ((bits >> (31-i)) & 1));
-    } else {
-        const char *bits = wlfValueToString(s->value, WLF_RADIX_BINARY, (int)s->len + 128);
-        if (!bits || strlen(bits) != s->len) return callback_failure(r, "invalid WLF bit width");
-        int changed = !s->have_value;
-        if (changed || memcmp(s->data, bits, s->len) != 0) {
-            for (size_t i = 0; i < s->len; ++i) {
-                uint8_t digit = logic_digits[(unsigned char)bits[i]];
-                if (!digit) return callback_failure(r, "invalid WLF logic digit");
-                if (!changed && s->data[i] != digit) changed = 1;
-                s->data[i] = digit;
-            }
-        }
-        s->have_value = 1;
-        // Retained value validity survives a batch; pending tick state must not be cleared.
-        if (!changed) return WLF_CONTINUE_SCAN;
     }
     s->present = 1;
     return WLF_CONTINUE_SCAN;
@@ -505,6 +538,11 @@ static int complete_tick(ondas_wlf *r) {
     size_t count = r->record_count, bytes = r->record_bytes_len;
     for (size_t i = 0; i < r->selected_count; ++i) {
         selected *s = &r->selected[i];
+        /* Deferred conversion joins this pass: no extra walk over the selection. */
+        if (s->dirty) {
+            if (convert_deferred(s) < 0) return 0;
+            s->dirty = 0;
+        }
         if (!s->present) continue;
         if (count == SIZE_MAX || s->len > SIZE_MAX - bytes) return 0;
         ++count; bytes += s->len;
@@ -536,7 +574,12 @@ static WlfCallbackResponse before_tick(void *data, WlfTime64 tick, int delta) {
     (void)delta;
     ondas_wlf *r = data;
     if (r->have_tick && tick > r->tick) {
-        if (!complete_tick(r)) return callback_failure(r, "cannot buffer completed WLF tick");
+        if (!complete_tick(r)) {
+            /* Keep a conversion cause from the deferred pass; only add the generic one. */
+            if (!*r->failure)
+                snprintf(r->failure, sizeof(r->failure), "%s", "cannot buffer completed WLF tick");
+            return WLF_ABORT_SCAN;
+        }
         if (r->record_count >= WLF_BATCH_RECORDS || r->record_bytes_len >= WLF_BATCH_BYTES) {
             r->next_tick = tick; r->stopped = 1; return WLF_STOP_SCAN;
         }
@@ -588,7 +631,12 @@ int ondas_wlf_next(ondas_wlf *r, ondas_wlf_record *out, char *error, size_t cap)
         if (code != WLF_OK && !*r->failure) {
             sdk_error(r->failure, sizeof(r->failure));
         }
-        if (!*r->failure && !complete_tick(r)) snprintf(r->failure, sizeof(r->failure), "cannot buffer completed WLF tick");
+        if (!*r->failure) {
+            /* A deferred conversion can set the cause here; keep it and add the
+             * generic buffer message only when no cause exists yet. */
+            if (!complete_tick(r) && !*r->failure)
+                snprintf(r->failure, sizeof(r->failure), "%s", "cannot buffer completed WLF tick");
+        }
         if (r->stopped) {
             if (r->next_tick <= r->start) return fail(error, cap, -1, "WLF range made no progress");
             r->start = r->next_tick;
