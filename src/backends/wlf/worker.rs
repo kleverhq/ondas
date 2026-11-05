@@ -82,6 +82,15 @@ unsafe extern "C" {
         error: *mut c_char,
         cap: usize,
     ) -> c_int;
+    fn ondas_wlf_begin_point(
+        reader: *mut c_void,
+        indices: *const usize,
+        count: usize,
+        start: u64,
+        end: u64,
+        error: *mut c_char,
+        cap: usize,
+    ) -> c_int;
     fn ondas_wlf_next(
         reader: *mut c_void,
         out: *mut NativeRecord,
@@ -244,7 +253,7 @@ impl State {
         if file.native.is_none() {
             let handle = open_handle(&file.path, &file.name, false)?;
             if let Some(query) = &file.query {
-                begin_native(&handle, &query.indices, query.start, query.end)?;
+                begin_native(&handle, &query.indices, query.start, query.end, false)?;
             }
             file.native = Some(handle);
         }
@@ -512,11 +521,24 @@ pub(super) fn end(id: u64) {
         Ok(())
     });
 }
-fn begin_native(handle: &Handle, indices: &[usize], start: Time, end: Time) -> Result<()> {
+fn begin_native(
+    handle: &Handle,
+    indices: &[usize],
+    start: Time,
+    end: Time,
+    point: bool,
+) -> Result<()> {
     let mut error = [0; 512];
+    // A streaming query answers the first request with a smaller quota; point
+    // histories need the full quota from their first request.
+    let begin = if point {
+        ondas_wlf_begin_point
+    } else {
+        ondas_wlf_begin
+    };
     // SAFETY: owned call-local selection, copied and validated by the shim.
     let code = unsafe {
-        ondas_wlf_begin(
+        begin(
             handle.raw.as_ptr(),
             indices.as_ptr(),
             indices.len(),
@@ -541,7 +563,7 @@ pub(super) fn begin(id: u64, indices: Vec<usize>, start: Time, end: Time) -> Res
             })
             .collect::<Result<_>>()?;
         file.query = None;
-        begin_native(file.native.as_ref().unwrap(), &indices, start, end)?;
+        begin_native(file.native.as_ref().unwrap(), &indices, start, end, false)?;
         file.query = Some(Query {
             indices,
             encodings,
@@ -576,7 +598,7 @@ fn point_states(
     for (slot, &(index, _)) in projections.iter().enumerate() {
         slots[index].push(slot);
     }
-    begin_native(handle, indices, start.unwrap_or(Time::ZERO), time)?;
+    begin_native(handle, indices, start.unwrap_or(Time::ZERO), time, true)?;
     let mut out = NativeRecord::default();
     let mut error = [0; 512];
     loop {

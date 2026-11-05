@@ -16,7 +16,7 @@ Caller visitors execute outside the worker and need not be Send. A suspended log
 
 ## A batch boundary must be a tick boundary
 
-The shim limits ordinary responses by record count and value bytes. One complete tick can exceed both limits. Splitting that tick would publish provisional state or lose event multiplicity. Valid earlier ticks can precede a later conversion error. A visitor break before that error takes priority. SDK caches and caller-owned traces remain separate storage costs.
+The shim limits ordinary responses by record count and value bytes. Small streaming selections use a smaller record quota for the first response. Later responses and point histories use the full quota. One complete tick can exceed both limits. Splitting that tick would publish provisional state or lose event multiplicity. Valid earlier ticks can precede a later conversion error. A visitor break before that error takes priority. SDK caches and caller-owned traces remain separate storage costs.
 
 Cold bit-only points share a short range read. This range might not prove a projection's change time. Unresolved projections then share one chronological pass. Constant projections can require the full prefix. Cold bit-only windows establish entering state before their start. Other cold queries, especially events, keep chronological traversal. Seeking can skip records without decoding or validating them. Reusing prepared selected state does not retain a history.
 

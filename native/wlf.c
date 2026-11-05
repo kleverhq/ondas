@@ -48,6 +48,8 @@ typedef struct {
 } buffered_record;
 #define WLF_BATCH_RECORDS 2048
 #define WLF_BATCH_BYTES (512 * 1024)
+/* Small first streaming response; later requests use the full quota. */
+#define WLF_FIRST_BATCH_RECORDS 128
 struct ondas_wlf {
     WlfFileId file;
     WlfFileInfo info;
@@ -63,6 +65,7 @@ struct ondas_wlf {
     WlfTime64 start, end, tick, next_tick;
     int finished, stopped, have_tick;
     size_t pending_begin, pending_end;
+    size_t batch_records;
     char failure[512];
 };
 static int initialized;
@@ -588,18 +591,24 @@ static WlfCallbackResponse before_tick(void *data, WlfTime64 tick, int delta) {
                 snprintf(r->failure, sizeof(r->failure), "%s", "cannot buffer completed WLF tick");
             return WLF_ABORT_SCAN;
         }
-        if (r->record_count >= WLF_BATCH_RECORDS || r->record_bytes_len >= WLF_BATCH_BYTES) {
+        if (r->record_count >= r->batch_records || r->record_bytes_len >= WLF_BATCH_BYTES) {
             r->next_tick = tick; r->stopped = 1; return WLF_STOP_SCAN;
         }
     }
     return WLF_CONTINUE_SCAN;
 }
-int ondas_wlf_begin(ondas_wlf *r, const size_t *indices, size_t count, uint64_t start, uint64_t end, char *error, size_t cap) {
+static int begin_impl(ondas_wlf *r, const size_t *indices, size_t count, uint64_t start, uint64_t end, char *error, size_t cap, int point) {
     ondas_wlf_end(r);
     r->start = start > (uint64_t)r->info.lastTime ? r->info.lastTime : (start > (uint64_t)r->info.startTime ? (WlfTime64)start : r->info.startTime);
     r->end = end < (uint64_t)r->info.lastTime ? (WlfTime64)end : r->info.lastTime;
     r->finished = start > (uint64_t)r->info.lastTime || r->end < r->start || !count;
     r->failure[0] = 0; r->cursor = 0; r->have_tick = 0;
+    if (point || count >= WLF_BATCH_RECORDS / 2) r->batch_records = WLF_BATCH_RECORDS;
+    else {
+        size_t quota = count * 2;
+        if (quota < WLF_FIRST_BATCH_RECORDS) quota = WLF_FIRST_BATCH_RECORDS;
+        r->batch_records = quota;
+    }
     if (r->finished) return 0;
     r->selected = calloc(count, sizeof(*r->selected));
     if (!r->selected) return fail(error, cap, -1, "cannot allocate WLF selection");
@@ -622,6 +631,12 @@ int ondas_wlf_begin(ondas_wlf *r, const size_t *indices, size_t count, uint64_t 
     if (wlfAddPreTimeDeltaCB(r->pack, before_tick, NULL, r) != WLF_OK) return sdk_error(error, cap);
     return 0;
 }
+int ondas_wlf_begin(ondas_wlf *r, const size_t *indices, size_t count, uint64_t start, uint64_t end, char *error, size_t cap) {
+    return begin_impl(r, indices, count, start, end, error, cap, 0);
+}
+int ondas_wlf_begin_point(ondas_wlf *r, const size_t *indices, size_t count, uint64_t start, uint64_t end, char *error, size_t cap) {
+    return begin_impl(r, indices, count, start, end, error, cap, 1);
+}
 int ondas_wlf_next(ondas_wlf *r, ondas_wlf_record *out, char *error, size_t cap) {
     setCurrentNamespace(r->file);
     for (;;) {
@@ -633,6 +648,8 @@ int ondas_wlf_next(ondas_wlf *r, ondas_wlf_record *out, char *error, size_t cap)
         }
         if (*r->failure) return fail(error, cap, -1, r->failure);
         if (r->finished) return 0;
+        /* Grow only on a later request after a nonempty drained batch. */
+        if (r->record_count > 0) r->batch_records = WLF_BATCH_RECORDS;
         r->record_count = 0; r->record_bytes_len = 0; r->cursor = 0;
         r->have_tick = 0; r->stopped = 0;
         int code = wlfReadDataOverRange(r->pack, r->start, r->start == r->info.startTime ? r->info.startDelta : 0, r->end, WLF_LAST_DELTA, NULL, NULL, NULL);

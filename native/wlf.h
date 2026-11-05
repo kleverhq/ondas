@@ -37,6 +37,8 @@ void ondas_wlf_declaration(ondas_wlf *, size_t, ondas_wlf_decl *);
 size_t ondas_wlf_enum_count(ondas_wlf *, size_t);
 void ondas_wlf_enum_variant(ondas_wlf *, size_t, size_t, const char **, const char **);
 int ondas_wlf_begin(ondas_wlf *, const size_t *, size_t, uint64_t, uint64_t, char *, size_t);
+/* Point traversal: full record quota from the first response. */
+int ondas_wlf_begin_point(ondas_wlf *, const size_t *, size_t, uint64_t, uint64_t, char *, size_t);
 int ondas_wlf_next(ondas_wlf *, ondas_wlf_record *, char *, size_t);
 /* Owned completed-tick batch: 0 has records or an error, 1 is drained,
  * 2 is drained and finished. Does not advance the SDK or invalidate bytes. */
