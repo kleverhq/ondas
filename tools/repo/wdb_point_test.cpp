@@ -21,6 +21,18 @@ std::vector<Event> events(long long address) {
     if (address == 100000) return {};
     if (address == 100001) return {{4, 3}, {9, 7}};
     if (address == 100002) return {{0, 42}};
+    // Controlled two-chunk two-plane extent for the origin-fallback regression:
+    // chunk 0 = 100010..100017 (aval 100010..100013, bval 100014..100017), logical bits 0..31;
+    // chunk 1 = 100018..100025 (aval 100018..100021, bval 100022..100025), logical bits 32..63.
+    // Logical bit 0 is aval byte 0 bit 0 with bval byte 4 bit 0, so a projection of that bit
+    // covers chunk 0 only. Byte 100025 (bval bit 63) is first recorded at tick 5, i.e. outside
+    // the covered chunk, so the extent is incomplete before tick 5 while bit 0 already changed
+    // at tick 3. Expecting that difference is what makes the whole-extent origin guard matter.
+    if (address == 100010) return {{0, 0x01}, {3, 0x00}, {12, 0x01}};
+    if (address >= 100011 && address <= 100017) return {{0, 0x00}};
+    if (address == 100018) return {{0, 0x00}, {16, 0x01}};
+    if (address >= 100019 && address <= 100024) return {{0, 0x00}};
+    if (address == 100025) return {{5, 0x00}, {16, 0x80}};
     auto byte = static_cast<unsigned char>(address);
     return {{0, byte}, {4, static_cast<unsigned char>(byte ^ 1)},
             {9, static_cast<unsigned char>(byte ^ 3)}};
@@ -236,4 +248,44 @@ int main(int argc, char** argv) {
     assert(!reader.traversal && reader.histories.empty());
     assert(manager.removals == before_release + recreated);
 
+    // Origin fallback on the qualified two-plane layout, driven by an explicit history:
+    //   two chunks of 32 logical bits (8 stored bytes each), extent 100010..100025;
+    //   logical bit 0 lives in chunk 0 and is 1 at tick 0, 0 at tick 3, 1 at tick 12;
+    //   byte 100025 (bval bit 63, in chunk 1) is first recorded at tick 5 and set at tick 16;
+    //   byte 100018 (aval bit 32, also in chunk 1) is set at tick 16.
+    // A projection of bit 0 covers chunk 0 only, so the late byte and both unrelated changes are
+    // outside the compared bits. Before tick 5 the extent is incomplete, so a point read is
+    // Missing even though bit 0 already changed at tick 3, and the first complete state must not
+    // report that earlier change. A later real change at tick 12 and the unrelated ticks at 16
+    // then select 12 as the run start of the projected bit, while the full-width projection
+    // changes at 16. Expectations come from this history, not from the mask construction.
+    // The qualified two-plane decoder is compiled for the byte-index reader only, so the older
+    // reader keeps its previous path and this regression does not apply to it.
+    if constexpr (!ONDAS_WDB_BIT_INDEX) {
+        auto& d = reader.declarations[100];
+        d.address = 100010; d.length = 16; d.width = 64; d.encoding = 1; d.two_plane = true;
+        const uint64_t projected = 100;
+        assert(ondas_wdb_begin_points(&reader, &projected, 1, error, sizeof(error)) == 0);
+        for (uint64_t tick : {0, 1, 2, 3, 4}) assert(point(reader, projected, tick, 0, 1).status == 0);
+        for (uint64_t tick : {5, 7, 11}) {
+            auto slice = point(reader, projected, tick, 0, 1);
+            assert(slice.status == 1 && slice.changed == 0 && slice.tick == 5);
+            assert(slice.value == "0");
+        }
+        for (uint64_t tick : {12, 14, 15}) {
+            auto slice = point(reader, projected, tick, 0, 1);
+            assert(slice.status == 1 && slice.changed == 1 && slice.tick == 12);
+            assert(slice.value == "1");
+        }
+        for (uint64_t tick : {16, 18, 20}) {
+            auto slice = point(reader, projected, tick, 0, 1);
+            assert(slice.status == 1 && slice.changed == 1 && slice.tick == 12);
+            assert(slice.value == "1");
+        }
+        auto whole = point(reader, projected, 20, 0, 64);
+        assert(whole.status == 1 && whole.changed == 1 && whole.tick == 16);
+        assert(whole.value.size() == 64 && whole.value.front() == 'z' && whole.value.back() == '1');
+        ondas_wdb_end(&reader);
+        assert(!reader.traversal);
+    }
 }
