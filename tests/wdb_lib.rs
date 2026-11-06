@@ -1174,61 +1174,83 @@ fn wdb_warm_reopen_matches_fresh_owner_at_other_times_and_selections() {
 fn wdb_warm_session_sequence_matches_the_published_oracle() {
     use ondas::Sample;
     let path = fixture_path("wdb/wdb0311-partial-logging");
-    let Some(_) = wdb_compatibility::open(ondas::open(&path), &path) else {
-        return;
-    };
-    // Published oracle: recorded is 0 at 0 and 1, 1 from 4 onwards; hidden and unlogged are
-    // Missing at every tick. changed_at is None while the initial run holds and 4 afterwards.
-    let rows = [
-        (0, "0", None),
+    // The fixture window starts at tick 1. Ticks are the published oracle ticks; tick 0 is
+    // outside that window and stays covered by the trace/composition regression instead.
+    const WINDOW: [u64; 5] = [1, 4, 9, 15, 20];
+    const RECORDED: [(u64, &str, Option<u64>); 5] = [
         (1, "0", None),
         (4, "1", Some(4)),
         (9, "1", Some(4)),
+        (15, "1", Some(4)),
+        (20, "1", Some(4)),
     ];
-    let check = |wave: &mut ondas::Waveform, rows: &[(u64, &str, Option<u64>)]| {
+    fn check_recorded(wave: &mut ondas::Waveform) {
         let recorded = wave.hierarchy().signal("top.recorded").unwrap();
-        let hidden = wave.hierarchy().signal("top.hidden").unwrap();
-        let unlogged = wave.hierarchy().signal("top.unlogged").unwrap();
-        for (tick, expected, changed) in rows {
-            match wave.sample(recorded, Time::from_ticks(*tick)).unwrap() {
+        for (tick, expected, changed) in RECORDED {
+            match wave.sample(recorded, Time::from_ticks(tick)).unwrap() {
                 Sample::Value {
                     value: Value::Bits(bits),
                     changed_at,
                     ..
                 } => {
-                    assert_eq!(bits.as_ref().to_string(), *expected, "recorded at {tick}");
+                    assert_eq!(bits.as_ref().to_string(), expected, "recorded at {tick}");
                     assert_eq!(
                         changed_at.map(Time::ticks),
-                        *changed,
+                        changed,
                         "recorded changed_at at {tick}"
+                    );
+                    println!(
+                        "CHECK,signal=top.recorded,tick={tick},value={expected},changed_at={changed:?}"
                     );
                 }
                 other => panic!("recorded at {tick}: {other:?}"),
             }
-            assert!(matches!(
-                wave.sample(hidden, Time::from_ticks(*tick)).unwrap(),
-                Sample::Missing { .. }
-            ));
-            assert!(matches!(
-                wave.sample(unlogged, Time::from_ticks(*tick)).unwrap(),
-                Sample::Missing { .. }
-            ));
         }
-    };
-    // Cold session: full read set.
-    check(&mut ondas::open_with(&path, "wdb-lib").unwrap(), &rows);
-    // Warm session: earlier and later ticks after a park, then a subset and a disjoint selection.
-    {
-        let mut wave = ondas::open_with(&path, "wdb-lib").unwrap();
-        check(
-            &mut wave,
-            &[(20, "1", Some(4)), (4, "1", Some(4)), (0, "0", None)],
-        );
-        let recorded = wave.hierarchy().signal("top.recorded").unwrap();
-        assert!(matches!(
-            wave.sample(recorded, Time::from_ticks(4)).unwrap(),
-            Sample::Value { value: Value::Bits(_), changed_at: Some(time), .. } if time.ticks() == 4
-        ));
     }
-    check(&mut ondas::open_with(&path, "wdb-lib").unwrap(), &rows);
+    fn check_missing(wave: &mut ondas::Waveform, name: &str) {
+        let signal = wave.hierarchy().signal(name).unwrap();
+        for tick in WINDOW {
+            assert!(
+                matches!(
+                    wave.sample(signal, Time::from_ticks(tick)).unwrap(),
+                    Sample::Missing { .. }
+                ),
+                "{name} at {tick} is not Missing"
+            );
+            println!("CHECK,signal={name},tick={tick},missing");
+        }
+    }
+    // Each call is a separate logical session: it opens the unchanged file, selects only the
+    // listed bases, checks them against the published oracle, and drops (parks) the waveform.
+    fn session(path: &std::path::Path, phase: &str, names: &[&str]) {
+        println!("SESSION,phase={phase},bases={}", names.join("|"));
+        let mut wave = ondas::open_with(path, "wdb-lib").unwrap();
+        for name in names {
+            match *name {
+                "top.recorded" => check_recorded(&mut wave),
+                "top.hidden" | "top.unlogged" => check_missing(&mut wave, name),
+                other => panic!("unexpected fixture path {other}"),
+            }
+        }
+    }
+    const FULL: [&str; 3] = ["top.recorded", "top.hidden", "top.unlogged"];
+    const SUBSET: [&str; 1] = ["top.recorded"];
+    const DISJOINT: [&str; 2] = ["top.hidden", "top.unlogged"];
+    // Session 1: the compatibility-guarded first open with the full read set.
+    {
+        let mut wave = match wdb_compatibility::open(ondas::open(&path), &path) {
+            Some(wave) => wave,
+            None => return,
+        };
+        println!("SESSION,phase=full-first,bases={}", FULL.join("|"));
+        check_recorded(&mut wave);
+        check_missing(&mut wave, "top.hidden");
+        check_missing(&mut wave, "top.unlogged");
+    }
+    // Session 2: strict subset of the full read set.
+    session(&path, "subset", &SUBSET);
+    // Session 3: disjoint from the subset.
+    session(&path, "disjoint", &DISJOINT);
+    // Session 4: the original full read set again.
+    session(&path, "original-full", &FULL);
 }
