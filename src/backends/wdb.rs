@@ -85,6 +85,7 @@ unsafe extern "C" {
     ) -> c_int;
     fn ondas_wdb_validate_runtime(error: *mut c_char, cap: usize) -> c_int;
     fn ondas_wdb_release_indexes(reader: *mut c_void, error: *mut c_char, cap: usize) -> c_int;
+    fn ondas_wdb_prune_indexes(reader: *mut c_void, error: *mut c_char, cap: usize) -> c_int;
     fn ondas_wdb_close(reader: *mut c_void);
     fn ondas_wdb_metadata(reader: *mut c_void, out: *mut Meta);
     fn ondas_wdb_decl_count(reader: *mut c_void) -> usize;
@@ -251,6 +252,11 @@ unsafe impl Sync for Handle {}
 impl Drop for Handle {
     fn drop(&mut self) {
         let _lock = lock();
+        // A destroyed owner may still hold loaded histories from a parked or failed session.
+        // Release them best-effort; the close must run even when the release reports a failure.
+        let mut error = [0; 512];
+        // SAFETY: sole owner; the shim deletes only adapter-created SDK indexes.
+        unsafe { ondas_wdb_release_indexes(self.0.as_ptr(), error.as_mut_ptr(), error.len()) };
         // SAFETY: sole owner; the shim drops traversal state before the reader.
         unsafe { ondas_wdb_close(self.0.as_ptr()) };
     }
@@ -552,8 +558,13 @@ extern "C" fn release_idle_at_exit() {
         ..
     } = idle;
     let handle = std::mem::ManuallyDrop::new(handle);
-    // SAFETY: sole owner of the native reader, closed under the SDK lock like Handle::drop. The
-    // handle is never dropped afterwards, so no second close can run.
+    // Release retained histories best-effort; a failure must not skip the close. The handle is
+    // never dropped afterwards, so no second close can run.
+    let mut error = [0; 512];
+    // SAFETY: sole owner of the native reader, under the SDK lock; the shim deletes only
+    // adapter-created SDK indexes.
+    unsafe { ondas_wdb_release_indexes(handle.0.as_ptr(), error.as_mut_ptr(), error.len()) };
+    // SAFETY: sole owner of the native reader, closed under the SDK lock like Handle::drop.
     unsafe { ondas_wdb_close(handle.0.as_ptr()) };
     drop(presentation);
 }
@@ -615,9 +626,12 @@ impl Drop for Reader {
             // SAFETY: exclusive live owner; traversal goes before the indexes it references.
             unsafe { ondas_wdb_end(handle.0.as_ptr()) };
             let mut error = [0; 512];
-            // SAFETY: live owner; the shim deletes only adapter-created SDK indexes.
+            // Keep only the histories covered by this logical session's selected declarations.
+            // An empty read set keeps the previous cache. A failed prune falls back to a full
+            // release and refuses the park; the handle then closes through Handle::drop.
+            // SAFETY: live owner; the shim deletes only unused adapter-created SDK indexes.
             let code = unsafe {
-                ondas_wdb_release_indexes(handle.0.as_ptr(), error.as_mut_ptr(), error.len())
+                ondas_wdb_prune_indexes(handle.0.as_ptr(), error.as_mut_ptr(), error.len())
             };
             if code >= 0 {
                 let idle = Idle {
@@ -639,6 +653,12 @@ impl Drop for Reader {
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .replace(idle);
+            } else {
+                // Best-effort fallback: never leave a half-pruned owner for reuse.
+                // SAFETY: live owner; the shim deletes only adapter-created SDK indexes.
+                unsafe {
+                    ondas_wdb_release_indexes(handle.0.as_ptr(), error.as_mut_ptr(), error.len())
+                };
             }
         }
         drop(replaced);

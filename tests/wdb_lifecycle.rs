@@ -987,3 +987,46 @@ fn resource_usage() -> (usize, u64) {
         .unwrap_or(0);
     (descriptors, rss)
 }
+
+/// A parked owner with retained histories must be released by the normal-exit cleanup, even
+/// when an earlier logical open registered that cleanup before any history existed.
+#[test]
+#[ignore = "requires the selected reader and installed WDB fixtures; run just conformance-wdb"]
+fn wdb_normal_exit_releases_a_parked_owner_before_any_history() {
+    let fixture = fixture("wdb0301-opb-m");
+    if std::env::var_os("ONDAS_WDB_EXIT_CHILD").is_some() {
+        // First logical open has no history and registers the exit cleanup.
+        drop(open_native(&fixture));
+        // Second logical open creates a history and parks it; the process then exits normally.
+        let mut waveform = open_native(&fixture);
+        let signal = first_signal(&waveform);
+        let _ = waveform
+            .sample(signal, Time::from_ticks(5_000_000))
+            .unwrap();
+        drop(waveform);
+        return;
+    }
+    let root = TempRoot::new();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "wdb_normal_exit_releases_a_parked_owner_before_any_history",
+            "--ignored",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env("ONDAS_WDB_EXIT_CHILD", "1")
+        .env("TMPDIR", root.path())
+        .output()
+        .expect("run the exit child");
+    assert!(
+        output.status.success(),
+        "exit child failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        temp_entries(root.path()).is_empty(),
+        "normal exit left temporary files: {:?}",
+        temp_entries(root.path())
+    );
+}

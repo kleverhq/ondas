@@ -292,8 +292,13 @@ struct Reader {
     const void* common = nullptr;
     void* index_manager = nullptr;
     std::unique_ptr<Traversal> traversal;
-    // Adapter-created SDK history indexes of this owner, deleted when it becomes idle.
+    // Adapter-created SDK history indexes of this owner. A clean park prunes them to the
+    // last index-using session's declarations; the owner's destruction releases the rest.
     std::unordered_set<void*> histories;
+    // Declaration indices this logical session has selected for indexing. A clean park keeps
+    // only the histories covered by these declarations; no selected index keeps the previous
+    // cache. Sized lazily so controlled harnesses that build declarations without import work.
+    std::vector<uint64_t> session_used;
     explicit Reader(const char* path) : native(static_cast<SimBridge::WdbOpenMode>(1), true, path, path, {}, 0) {
         auto last = native.getLatestTime();
         if (last < 0 || last == std::numeric_limits<long long>::max())
@@ -718,9 +723,18 @@ void validate_runtime() {
     selected_library("_ZN9SimBridge10DataReader13getDataObjMgrEv", ONDAS_WDB_READER);
     selected_library("_ZNK9SimBridge15WdbCommonReader13getValueEventExRKSt6vectorIPNS_14WdbScalarBTreeESaIS3_EERNS_17WdbTimeByteValuesE", ONDAS_WDB_KERNEL);
 }
+void mark_used(Reader& reader, uint64_t id) {
+    const size_t word = static_cast<size_t>(id / 64);
+    if (word >= reader.session_used.size()) reader.session_used.resize(word + 1, 0);
+    reader.session_used[word] |= uint64_t(1) << (id % 64);
+}
+void clear_used(Reader& reader) {
+    std::fill(reader.session_used.begin(), reader.session_used.end(), uint64_t(0));
+}
 // Drops traversal state before deleting the history indexes that its cursors can reference.
 void release_histories(Reader& reader) {
     reader.traversal.reset();
+    clear_used(reader);
     if (reader.histories.empty()) return;
     // All symbols are resolved before the first deletion, so a missing symbol leaves no partially
     // deleted set behind.
@@ -920,6 +934,60 @@ extern "C" int ondas_wdb_release_indexes(void* opaque, char* error, size_t cap) 
         return 0;
     });
 }
+// Keeps only the adapter-created histories covered by this logical session's selected
+// declarations. An empty read set keeps the previous cache. All allocations and ABI lookups
+// happen before the deletion loop; a deleted tree is erased from the set before cleanup so a
+// partial failure cannot leave it for a second release.
+extern "C" int ondas_wdb_prune_indexes(void* opaque, char* error, size_t cap) {
+    return protect(error, cap, [&] {
+        auto& reader = *static_cast<Reader*>(opaque);
+        reader.traversal.reset();
+        if (reader.session_used.empty()) return 0;
+        std::vector<std::pair<long long, long long>> extents;
+        extents.reserve(64);
+        const size_t limit =
+            std::min<size_t>(reader.declarations.size(), reader.session_used.size() * 64);
+        for (size_t index = 0; index < limit; ++index) {
+            if (!(reader.session_used[index / 64] & (uint64_t(1) << (index % 64)))) continue;
+            const auto& d = reader.declarations[index];
+            if (d.scope || d.address < 0 || !d.length) continue;
+            extents.emplace_back(d.address, d.address + static_cast<long long>(d.length));
+        }
+        clear_used(reader);
+        if (extents.empty() || reader.histories.empty()) return 0;
+        std::sort(extents.begin(), extents.end());
+        size_t merged = 0;
+        for (size_t i = 0; i < extents.size(); ++i) {
+            if (merged && extents[i].first <= extents[merged - 1].second) {
+                extents[merged - 1].second = std::max(extents[merged - 1].second, extents[i].second);
+            } else {
+                extents[merged++] = extents[i];
+            }
+        }
+        extents.resize(merged);
+        const auto covered = [&](long long address) {
+            auto it = std::upper_bound(extents.begin(), extents.end(), address,
+                [](long long value, const std::pair<long long, long long>& extent) {
+                    return value < extent.first;
+                });
+            if (it == extents.begin()) return false;
+            --it;
+            return address < it->second;
+        };
+        // Resolve the deletion ABI and its scratch before the first deletion.
+        HistoryCleanup cleanup(reader.index_manager);
+        for (auto it = reader.histories.begin(); it != reader.histories.end();) {
+            void* tree = *it;
+            if (covered(cleanup.abi.address(tree))) {
+                ++it;
+                continue;
+            }
+            it = reader.histories.erase(it);
+            cleanup(tree);
+        }
+        return 0;
+    });
+}
 extern "C" void ondas_wdb_close(void* opaque) { delete static_cast<Reader*>(opaque); }
 extern "C" void ondas_wdb_metadata(void* opaque, ondas_wdb_meta* out) { *out = static_cast<Reader*>(opaque)->meta; }
 extern "C" size_t ondas_wdb_decl_count(void* opaque) { return static_cast<Reader*>(opaque)->declarations.size(); }
@@ -964,6 +1032,9 @@ static int begin(void* opaque, const uint64_t* ids, size_t count, uint64_t start
             if (d.address > std::numeric_limits<long long>::max() - d.length) throw std::runtime_error("native extent overflow");
             auto& selected = traversal->selected.emplace_back(d);
             if (point_only) traversal->point_positions.emplace(ids[i], i);
+            // Every validated id is part of this logical session's read set, including ids
+            // whose trees already exist. Aliases share an id; overlapping ids keep both.
+            mark_used(reader, ids[i]);
             batch.add(d.address, d.length, selected.trees);
         }
         batch.load();

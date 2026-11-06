@@ -1046,3 +1046,125 @@ fn wdb_same_tick_byte_updates_keep_final_values_and_candidate_ticks() {
         .unwrap();
     assert!(candidates.contains(&5_560_000), "{candidates:?}");
 }
+
+#[test]
+#[ignore = "requires the selected reader and installed WDB fixtures; run just conformance-wdb"]
+fn wdb_warm_reopen_matches_fresh_owner_at_other_times_and_selections() {
+    use ondas::HierarchyPath;
+    use std::path::Path;
+
+    fn render(sample: Sample) -> String {
+        match sample {
+            Sample::Missing { .. } => "missing".into(),
+            Sample::Value {
+                value: Value::Bits(bits),
+                changed_at,
+                ..
+            } => format!("{}@{:?}", bits.as_ref(), changed_at.map(Time::ticks)),
+            Sample::Value { changed_at, .. } => format!("other@{:?}", changed_at.map(Time::ticks)),
+            other => format!("{other:?}"),
+        }
+    }
+    type Query<'a> = (&'a str, u64);
+    type SliceQuery<'a> = (&'a str, u32, u32, u64);
+    fn observe(path: &Path, queries: &[Query<'_>], slices: &[SliceQuery<'_>]) -> Vec<String> {
+        let mut wave = ondas::open_with(path, "wdb-lib").unwrap();
+        let mut rows = Vec::new();
+        for (name, tick) in queries {
+            let signal = wave.hierarchy().signal(name).unwrap();
+            rows.push(format!(
+                "{name}@{tick}={}",
+                render(wave.sample(signal, Time::from_ticks(*tick)).unwrap())
+            ));
+        }
+        for (name, msb, lsb, tick) in slices {
+            let base = wave
+                .hierarchy()
+                .signal_path(&HierarchyPath::parse(name).unwrap())
+                .unwrap();
+            let signal = base.slice(*msb, *lsb).unwrap();
+            rows.push(format!(
+                "{name}[{msb}:{lsb}]@{tick}={}",
+                render(wave.sample(signal, Time::from_ticks(*tick)).unwrap())
+            ));
+        }
+        rows
+    }
+
+    let root = std::env::temp_dir().join(format!(
+        "ondas-wdb-warm-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(root.clone());
+
+    for fixture in ["wdb/wdb0185-adders-io", "wdb/wdb0311-partial-logging"] {
+        let source = fixture_path(fixture);
+        let warm = root.join("warm.wdb");
+        let fresh = root.join("fresh.wdb");
+        std::fs::copy(&source, &warm).unwrap();
+        std::fs::copy(&source, &fresh).unwrap();
+        let (cold_queries, warm_queries, warm_slices): (Vec<Query>, Vec<Query>, Vec<SliceQuery>) =
+            if fixture.contains("adders") {
+                (
+                    vec![
+                        ("apatb_adders_io_top.in1", 0),
+                        ("apatb_adders_io_top.in1", 120_000),
+                    ],
+                    vec![
+                        ("apatb_adders_io_top.in1", 40_000),
+                        ("apatb_adders_io_top.in1", 300_000),
+                        ("apatb_adders_io_top.in2", 120_000),
+                    ],
+                    vec![
+                        ("apatb_adders_io_top.in1", 15, 0, 200_000),
+                        ("apatb_adders_io_top.in1", 31, 16, 80_000),
+                    ],
+                )
+            } else {
+                (
+                    vec![("top.recorded", 0), ("top.hidden", 9)],
+                    vec![
+                        ("top.recorded", 1),
+                        ("top.recorded", 4),
+                        ("top.recorded", 20),
+                        ("top.hidden", 0),
+                        ("top.hidden", 20),
+                        ("top.unlogged", 9),
+                    ],
+                    vec![],
+                )
+            };
+        std::mem::drop(observe(&warm, &cold_queries, &[]));
+        let warm_rows = observe(&warm, &warm_queries, &warm_slices);
+        let fresh_rows = observe(&fresh, &warm_queries, &warm_slices);
+        assert_eq!(
+            warm_rows, fresh_rows,
+            "{fixture}: warm reopen differs from a fresh owner"
+        );
+    }
+
+    // A stale signal from the cold logical open must not observe the warm reopen.
+    let source = fixture_path("wdb/wdb0185-adders-io");
+    let warm = root.join("stale.wdb");
+    std::fs::copy(&source, &warm).unwrap();
+    let stale = {
+        let wave = ondas::open_with(&warm, "wdb-lib").unwrap();
+        wave.hierarchy().signal("apatb_adders_io_top.in1").unwrap()
+    };
+    let mut wave = ondas::open_with(&warm, "wdb-lib").unwrap();
+    assert!(matches!(
+        wave.sample(stale, Time::from_ticks(0)),
+        Err(Error::InvalidSignal { .. })
+    ));
+}

@@ -74,8 +74,12 @@ installed `rdi` or `xv` reader libraries without a separate setting. A confirmed
 newer embedded DBG format returns [`Error::UnsupportedFeature`].
 
 First access to selected stored bytes builds their SDK history indexes, including
-times after the query end. These indexes remain until the waveform is dropped.
-A point or early stop can therefore pay the full selected-history loading cost.
+times after the query end. A native owner may keep the loaded histories of the last
+logical session that used indexes, so a later logical open of the same unchanged
+file can reuse them. These indexes live until the owner is dropped, evicted or the
+process exits, and they keep SDK memory and temporary backing files while they are
+retained. A point or early stop can therefore pay the full selected-history loading
+cost in a new owner.
 Later bit points and range reads with an established entering state can seek.
 This includes compositions whose intermediate values are whole copies of one
 source, joined or sliced at source-width boundaries. Other compositions can

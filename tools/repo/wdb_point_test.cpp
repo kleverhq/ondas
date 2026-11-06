@@ -13,6 +13,7 @@ struct Tree { long long address; unsigned bit; bool loaded = false; std::vector<
 struct Manager {
     std::map<std::pair<long long, unsigned>, std::unique_ptr<Tree>> trees;
     size_t scans = 0, finds = 0, drops = 0, removals = 0;
+    size_t fail_remove_after = std::numeric_limits<size_t>::max();
     bool fail_scan = false, bad_raw = false, missing_delete = false;
 };
 Manager* active = nullptr;
@@ -57,10 +58,12 @@ long long tree_address(const void* tree) { return static_cast<const Tree*>(tree)
 unsigned tree_bit(const void* tree) { return static_cast<const Tree*>(tree)->bit; }
 void remove_bytes(void* opaque, long long address, long long length) {
     auto& m = *static_cast<Manager*>(opaque);
+    if (m.removals >= m.fail_remove_after) throw std::runtime_error("controlled delete failure");
     for (long long i = 0; i < length; ++i) m.removals += m.trees.erase({address + i, 0});
 }
 void remove_bits(void* opaque, const std::vector<AddressBitPair>& pairs) {
     auto& m = *static_cast<Manager*>(opaque);
+    if (m.removals >= m.fail_remove_after) throw std::runtime_error("controlled delete failure");
     for (auto p : pairs) m.removals += m.trees.erase({p.address, p.bit});
 }
 void scan(void* opaque, const std::vector<void*>& created, void*) {
@@ -247,6 +250,71 @@ int main(int argc, char** argv) {
     assert(ondas_wdb_release_indexes(&reader, error, sizeof(error)) == 0);
     assert(!reader.traversal && reader.histories.empty());
     assert(manager.removals == before_release + recreated);
+
+    // Session read-set pruning: a clean park keeps only the histories covered by the
+    // declarations the last index-using session selected; a session without a selection keeps
+    // the previous cache; reused and alias/overlap trees stay in the read set by extent.
+    {
+        const std::vector<uint64_t> first{1, 4, 10006};
+        assert(ondas_wdb_begin_points(&reader, first.data(), first.size(), error, sizeof(error)) == 0);
+        ondas_wdb_end(&reader);
+        const auto first_owned = reader.histories.size();
+        assert(first_owned == first.size() * indexes_per_byte);
+        auto before = manager.removals;
+        assert(ondas_wdb_prune_indexes(&reader, error, sizeof(error)) == 0);
+        assert(manager.removals == before && reader.histories.size() == first_owned);
+        const std::vector<uint64_t> second{5};
+        assert(ondas_wdb_begin_points(&reader, second.data(), second.size(), error, sizeof(error)) == 0);
+        ondas_wdb_end(&reader);
+        assert(reader.histories.size() == first_owned + second.size() * indexes_per_byte);
+        assert(ondas_wdb_prune_indexes(&reader, error, sizeof(error)) == 0);
+        assert(reader.histories.size() == second.size() * indexes_per_byte);
+        assert(manager.removals == before + first_owned);
+        before = manager.removals;
+        assert(ondas_wdb_begin_points(&reader, second.data(), second.size(), error, sizeof(error)) == 0);
+        ondas_wdb_end(&reader);
+        assert(ondas_wdb_prune_indexes(&reader, error, sizeof(error)) == 0);
+        assert(reader.histories.size() == second.size() * indexes_per_byte);
+        assert(manager.removals == before);
+        const std::vector<uint64_t> aliases{4, 6};
+        assert(ondas_wdb_begin_points(&reader, aliases.data(), aliases.size(), error, sizeof(error)) == 0);
+        ondas_wdb_end(&reader);
+        assert(ondas_wdb_prune_indexes(&reader, error, sizeof(error)) == 0);
+        const auto alias_owned = reader.histories.size();
+        assert(alias_owned == indexes_per_byte);
+        const std::vector<uint64_t> shared{6};
+        assert(ondas_wdb_begin_points(&reader, shared.data(), shared.size(), error, sizeof(error)) == 0);
+        ondas_wdb_end(&reader);
+        assert(ondas_wdb_prune_indexes(&reader, error, sizeof(error)) == 0);
+        assert(reader.histories.size() == alias_owned);
+        auto& overlapping = reader.declarations[7];
+        overlapping.address = 100001;
+        overlapping.length = 2;
+        overlapping.width = 16;
+        overlapping.encoding = 1;
+        const std::vector<uint64_t> overlap{7};
+        assert(ondas_wdb_begin_points(&reader, overlap.data(), overlap.size(), error, sizeof(error)) == 0);
+        ondas_wdb_end(&reader);
+        assert(ondas_wdb_prune_indexes(&reader, error, sizeof(error)) == 0);
+        assert(reader.histories.size() == 2 * indexes_per_byte);
+        // Partial prune failure: the failing tree is erased before its cleanup throws, so a
+        // later full release deletes the remaining trees and never the erased one twice.
+        const std::vector<uint64_t> absent{3};
+        assert(ondas_wdb_begin_points(&reader, absent.data(), absent.size(), error, sizeof(error)) == 0);
+        ondas_wdb_end(&reader);
+        before = manager.removals;
+        manager.fail_remove_after = before;
+        assert(ondas_wdb_prune_indexes(&reader, error, sizeof(error)) == -1);
+        const auto partial = reader.histories.size();
+        assert(partial > indexes_per_byte && partial < 3 * indexes_per_byte);
+        manager.fail_remove_after = std::numeric_limits<size_t>::max();
+        assert(ondas_wdb_release_indexes(&reader, error, sizeof(error)) == 0);
+        assert(reader.histories.empty());
+        assert(manager.removals == before + partial);
+        before = manager.removals;
+        assert(ondas_wdb_prune_indexes(&reader, error, sizeof(error)) == 0);
+        assert(manager.removals == before);
+    }
 
     // Origin fallback on the qualified two-plane layout, driven by an explicit history:
     //   two chunks of 32 logical bits (8 stored bytes each), extent 100010..100025;
