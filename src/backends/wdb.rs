@@ -85,7 +85,6 @@ unsafe extern "C" {
     ) -> c_int;
     fn ondas_wdb_validate_runtime(error: *mut c_char, cap: usize) -> c_int;
     fn ondas_wdb_release_indexes(reader: *mut c_void, error: *mut c_char, cap: usize) -> c_int;
-    fn ondas_wdb_prune_indexes(reader: *mut c_void, error: *mut c_char, cap: usize) -> c_int;
     fn ondas_wdb_close(reader: *mut c_void);
     fn ondas_wdb_metadata(reader: *mut c_void, out: *mut Meta);
     fn ondas_wdb_decl_count(reader: *mut c_void) -> usize;
@@ -252,8 +251,9 @@ unsafe impl Sync for Handle {}
 impl Drop for Handle {
     fn drop(&mut self) {
         let _lock = lock();
-        // A destroyed owner may still hold loaded histories from a parked or failed session.
-        // Release them best-effort; the close must run even when the release reports a failure.
+        // A destroyed owner may still hold loaded histories when its session was tainted, unwound
+        // or could not park. Release them best-effort; the close must run even when the release
+        // reports a failure.
         let mut error = [0; 512];
         // SAFETY: sole owner; the shim deletes only adapter-created SDK indexes.
         unsafe { ondas_wdb_release_indexes(self.0.as_ptr(), error.as_mut_ptr(), error.len()) };
@@ -558,8 +558,8 @@ extern "C" fn release_idle_at_exit() {
         ..
     } = idle;
     let handle = std::mem::ManuallyDrop::new(handle);
-    // Release retained histories best-effort; a failure must not skip the close. The handle is
-    // never dropped afterwards, so no second close can run.
+    // Release any indexes this owner still holds before the close; a failure must not skip it. The
+    // handle is never dropped afterwards, so no second close can run.
     let mut error = [0; 512];
     // SAFETY: sole owner of the native reader, under the SDK lock; the shim deletes only
     // adapter-created SDK indexes.
@@ -626,12 +626,12 @@ impl Drop for Reader {
             // SAFETY: exclusive live owner; traversal goes before the indexes it references.
             unsafe { ondas_wdb_end(handle.0.as_ptr()) };
             let mut error = [0; 512];
-            // Keep only the histories covered by this logical session's selected declarations.
-            // An empty read set keeps the previous cache. A failed prune falls back to a full
-            // release and refuses the park; the handle then closes through Handle::drop.
-            // SAFETY: live owner; the shim deletes only unused adapter-created SDK indexes.
+            // The documented lifetime ends with this waveform: release every SDK history index
+            // before the clean owner can wait for another logical open. A failed release keeps the
+            // owner out of the idle slot, so the ordinary close path handles it instead.
+            // SAFETY: live owner; the shim deletes only adapter-created SDK indexes.
             let code = unsafe {
-                ondas_wdb_prune_indexes(handle.0.as_ptr(), error.as_mut_ptr(), error.len())
+                ondas_wdb_release_indexes(handle.0.as_ptr(), error.as_mut_ptr(), error.len())
             };
             if code >= 0 {
                 let idle = Idle {
@@ -653,12 +653,6 @@ impl Drop for Reader {
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .replace(idle);
-            } else {
-                // Best-effort fallback: never leave a half-pruned owner for reuse.
-                // SAFETY: live owner; the shim deletes only adapter-created SDK indexes.
-                unsafe {
-                    ondas_wdb_release_indexes(handle.0.as_ptr(), error.as_mut_ptr(), error.len())
-                };
             }
         }
         drop(replaced);
@@ -1125,6 +1119,91 @@ fn declaration_name(mut name: String, syntax: u32, base_len: usize) -> Result<(S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    unsafe extern "C" {
+        fn ondas_wdb_index_count(reader: *mut c_void) -> usize;
+    }
+
+    fn first_queryable(wave: &crate::Waveform) -> crate::Signal {
+        wave.hierarchy()
+            .variables()
+            .filter_map(|variable| variable.signal())
+            .find(|signal| !matches!(signal.encoding(), crate::Encoding::Unsupported))
+            .expect("published fixture must expose a queryable signal")
+    }
+
+    fn scan_once(wave: &mut crate::Waveform) {
+        let signal = first_queryable(wave);
+        let outcome = wave
+            .scan(&[signal], crate::TimeRange::all(), |_| {
+                std::ops::ControlFlow::<()>::Continue(())
+            })
+            .expect("scan published fixture");
+        assert!(outcome.is_continue());
+    }
+
+    /// SDK history indexes tracked by the live WDB owner of this waveform.
+    fn live_indexes(wave: &crate::Waveform) -> usize {
+        let crate::backends::Reader::Wdb(reader) = &wave.reader else {
+            panic!("expected a wdb-lib waveform");
+        };
+        let handle = reader.handle.as_ref().expect("live WDB owner");
+        let _lock = lock();
+        // SAFETY: the live owner is locked and outlives this call.
+        unsafe { ondas_wdb_index_count(handle.0.as_ptr()) }
+    }
+
+    /// SDK history indexes kept by the parked owner, if any. Takes the adapter lock first, in the
+    /// same order as every park, eviction and exit path.
+    fn idle_indexes() -> Option<usize> {
+        let _lock = lock();
+        let idle = IDLE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let idle = idle.as_ref()?;
+        // SAFETY: the parked owner is alive under the SDK and idle locks.
+        Some(unsafe { ondas_wdb_index_count(idle.handle.0.as_ptr()) })
+    }
+
+    /// The released contract ends SDK history indexes with `Waveform::drop`. A parked owner that
+    /// keeps them fails here, and the live counts keep the check from passing vacuously.
+    #[test]
+    #[ignore = "requires the selected WDB reader and installed OPB fixtures; run just conformance-wdb"]
+    fn wdb_drop_releases_every_history_index() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures/wdb/wdb0301-opb-m/waveform.wdb");
+        assert!(
+            path.is_file(),
+            "missing published fixture {}",
+            path.display()
+        );
+
+        let mut wave = crate::open_with(&path, BACKEND).expect("open published WDB fixture");
+        scan_once(&mut wave);
+        assert!(
+            live_indexes(&wave) > 0,
+            "the query built no SDK history index"
+        );
+        drop(wave);
+        assert_eq!(
+            idle_indexes(),
+            Some(0),
+            "Drop parked retained SDK history indexes"
+        );
+
+        // The reopen reuses the idle owner, so its first access must build the histories again.
+        let mut wave = crate::open_with(&path, BACKEND).expect("reopen published WDB fixture");
+        scan_once(&mut wave);
+        assert!(
+            live_indexes(&wave) > 0,
+            "the reused owner built no fresh SDK history index"
+        );
+        drop(wave);
+        assert_eq!(
+            idle_indexes(),
+            Some(0),
+            "the second Drop parked retained SDK history indexes"
+        );
+        evict_idle();
+    }
 
     fn container(version: &[u8; 3]) -> Vec<u8> {
         let mut bytes = vec![0; 640];

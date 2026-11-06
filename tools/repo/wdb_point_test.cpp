@@ -225,8 +225,9 @@ int main(int argc, char** argv) {
     ondas_wdb_end(&reader); ondas_wdb_end(&reader);
     assert(point(reader, fresh, 0).status == -1);
 
-    // Owner-level index accounting: park deletes every adapter-created SDK index exactly once,
-    // clears the traversal first, and a second release cannot delete anything again.
+    // Logical-close accounting: every close releases all adapter-created SDK indexes exactly
+    // once, clears the traversal first, and a later logical session creates and scans those
+    // indexes again instead of reusing loaded trees. Repeating the close leaves nothing behind.
     assert(ondas_wdb_begin_points(&reader, ids.data(), ids.size(), error, sizeof(error)) == 0);
     assert(ondas_wdb_begin(&reader, &fresh, 1, 0, 100, error, sizeof(error)) == 0);
     ondas_wdb_end(&reader);
@@ -251,69 +252,49 @@ int main(int argc, char** argv) {
     assert(!reader.traversal && reader.histories.empty());
     assert(manager.removals == before_release + recreated);
 
-    // Session read-set pruning: a clean park keeps only the histories covered by the
-    // declarations the last index-using session selected; a session without a selection keeps
-    // the previous cache; reused and alias/overlap trees stay in the read set by extent.
+    // Close/reopen cycles that mirror logical sessions over one retained owner: full read set,
+    // subset, disjoint, no query, then the full set again. Each close releases every index and
+    // the next session has to create and scan its trees again; a no-query session leaves nothing.
     {
-        const std::vector<uint64_t> first{1, 4, 10006};
-        assert(ondas_wdb_begin_points(&reader, first.data(), first.size(), error, sizeof(error)) == 0);
+        const std::vector<std::vector<uint64_t>> sessions{{1, 4, 10006}, {1}, {4, 6}, {}, {1, 4, 10006}};
+        for (const auto& selected : sessions) {
+            auto scans_before = manager.scans;
+            if (!selected.empty()) {
+                assert(ondas_wdb_begin_points(&reader, selected.data(), selected.size(), error, sizeof(error)) == 0);
+                assert(manager.scans > scans_before);
+            }
+            ondas_wdb_end(&reader);
+            const auto session_owned = reader.histories.size();
+            assert(!reader.traversal);
+            assert(selected.empty() == (session_owned == 0));
+            auto before_close = manager.removals;
+            assert(ondas_wdb_release_indexes(&reader, error, sizeof(error)) == 0);
+            assert(reader.histories.empty());
+            assert(manager.removals == before_close + session_owned);
+        }
+    }
+
+    // Partial delete failure: the failing tree is erased from tracking before its cleanup
+    // throws, so a later full release deletes only the rest and never that tree twice. The
+    // adapter refuses to park such an owner; the Rust close path retries release and closes it.
+    {
+        const std::vector<uint64_t> selected{1, 4, 10006};
+        assert(ondas_wdb_begin_points(&reader, selected.data(), selected.size(), error, sizeof(error)) == 0);
         ondas_wdb_end(&reader);
-        const auto first_owned = reader.histories.size();
-        assert(first_owned == first.size() * indexes_per_byte);
+        const auto owned = reader.histories.size();
+        assert(owned > 1);
         auto before = manager.removals;
-        assert(ondas_wdb_prune_indexes(&reader, error, sizeof(error)) == 0);
-        assert(manager.removals == before && reader.histories.size() == first_owned);
-        const std::vector<uint64_t> second{5};
-        assert(ondas_wdb_begin_points(&reader, second.data(), second.size(), error, sizeof(error)) == 0);
-        ondas_wdb_end(&reader);
-        assert(reader.histories.size() == first_owned + second.size() * indexes_per_byte);
-        assert(ondas_wdb_prune_indexes(&reader, error, sizeof(error)) == 0);
-        assert(reader.histories.size() == second.size() * indexes_per_byte);
-        assert(manager.removals == before + first_owned);
-        before = manager.removals;
-        assert(ondas_wdb_begin_points(&reader, second.data(), second.size(), error, sizeof(error)) == 0);
-        ondas_wdb_end(&reader);
-        assert(ondas_wdb_prune_indexes(&reader, error, sizeof(error)) == 0);
-        assert(reader.histories.size() == second.size() * indexes_per_byte);
-        assert(manager.removals == before);
-        const std::vector<uint64_t> aliases{4, 6};
-        assert(ondas_wdb_begin_points(&reader, aliases.data(), aliases.size(), error, sizeof(error)) == 0);
-        ondas_wdb_end(&reader);
-        assert(ondas_wdb_prune_indexes(&reader, error, sizeof(error)) == 0);
-        const auto alias_owned = reader.histories.size();
-        assert(alias_owned == indexes_per_byte);
-        const std::vector<uint64_t> shared{6};
-        assert(ondas_wdb_begin_points(&reader, shared.data(), shared.size(), error, sizeof(error)) == 0);
-        ondas_wdb_end(&reader);
-        assert(ondas_wdb_prune_indexes(&reader, error, sizeof(error)) == 0);
-        assert(reader.histories.size() == alias_owned);
-        auto& overlapping = reader.declarations[7];
-        overlapping.address = 100001;
-        overlapping.length = 2;
-        overlapping.width = 16;
-        overlapping.encoding = 1;
-        const std::vector<uint64_t> overlap{7};
-        assert(ondas_wdb_begin_points(&reader, overlap.data(), overlap.size(), error, sizeof(error)) == 0);
-        ondas_wdb_end(&reader);
-        assert(ondas_wdb_prune_indexes(&reader, error, sizeof(error)) == 0);
-        assert(reader.histories.size() == 2 * indexes_per_byte);
-        // Partial prune failure: the failing tree is erased before its cleanup throws, so a
-        // later full release deletes the remaining trees and never the erased one twice.
-        const std::vector<uint64_t> absent{3};
-        assert(ondas_wdb_begin_points(&reader, absent.data(), absent.size(), error, sizeof(error)) == 0);
-        ondas_wdb_end(&reader);
-        before = manager.removals;
-        manager.fail_remove_after = before;
-        assert(ondas_wdb_prune_indexes(&reader, error, sizeof(error)) == -1);
-        const auto partial = reader.histories.size();
-        assert(partial > indexes_per_byte && partial < 3 * indexes_per_byte);
+        manager.fail_remove_after = before + 1;
+        assert(ondas_wdb_release_indexes(&reader, error, sizeof(error)) == -1);
+        assert(!reader.traversal);
+        const auto remaining = reader.histories.size();
+        assert(remaining >= 1 && remaining < owned);
+        assert(manager.removals == before + 1);
         manager.fail_remove_after = std::numeric_limits<size_t>::max();
+        before = manager.removals;
         assert(ondas_wdb_release_indexes(&reader, error, sizeof(error)) == 0);
         assert(reader.histories.empty());
-        assert(manager.removals == before + partial);
-        before = manager.removals;
-        assert(ondas_wdb_prune_indexes(&reader, error, sizeof(error)) == 0);
-        assert(manager.removals == before);
+        assert(manager.removals == before + remaining);
     }
 
     // Origin fallback on the qualified two-plane layout, driven by an explicit history:

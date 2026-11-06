@@ -8,8 +8,9 @@
 //!
 //! Retained descriptors are the observable for the retained-owner policy: a clean logical close
 //! keeps at most one idle owner, while a metadata-only request, a changed path, a failed
-//! identity or an unwinding caller must release it. The second ignored test reports cold-miss,
-//! warm-hit, descriptor and RSS behaviour; it asserts only invariants, not speed.
+//! identity or an unwinding caller must release it. Every clean close releases that session's
+//! SDK history indexes before the owner waits. The second ignored test reports cold-miss,
+//! reused-owner, descriptor and RSS behaviour; it asserts only invariants, not speed.
 //!
 //! The published fixtures are small declared-value recordings; other encodings, events and
 //! resolution switches remain covered by the existing conformance suite.
@@ -919,7 +920,9 @@ fn wdb_decode_error_keeps_the_owner_unparked() {
     );
 }
 
-/// Cold-miss, warm-hit, descriptor and RSS behaviour. Prints measurements; asserts invariants.
+/// Cold-miss, reused-owner, descriptor and RSS behaviour. Prints measurements; asserts
+/// invariants. Each close releases the session's SDK histories, so a reopened owner pays the
+/// selected-history loading cost again.
 #[test]
 #[ignore = "requires the selected reader and installed WDB fixtures; run just conformance-wdb"]
 fn wdb_reuse_resource_behaviour() {
@@ -933,7 +936,7 @@ fn wdb_reuse_resource_behaviour() {
         let _waveform = open_native(&path);
         started.elapsed()
     };
-    let warm = {
+    let reused = {
         let started = Instant::now();
         let _waveform = open_native(&path);
         started.elapsed()
@@ -952,7 +955,7 @@ fn wdb_reuse_resource_behaviour() {
     }
     let (fd_after, rss_after) = resource_usage();
     eprintln!(
-        "wdb reuse resources: cold={cold:?} warm={warm:?} fds {fd_before}->{fd_after} rss_kib {rss_before}->{rss_after}"
+        "wdb reuse resources: cold={cold:?} reused={reused:?} fds {fd_before}->{fd_after} rss_kib {rss_before}->{rss_after}"
     );
 
     // A retained owner is one owner, not a resource ceiling: descriptors must not grow per
@@ -988,11 +991,11 @@ fn resource_usage() -> (usize, u64) {
     (descriptors, rss)
 }
 
-/// A parked owner with retained histories must be released by the normal-exit cleanup, even
-/// when an earlier logical open registered that cleanup before any history existed.
+/// A parked owner must be released by the normal-exit cleanup, even when an earlier logical open
+/// registered that cleanup before any history existed.
 #[test]
 #[ignore = "requires the selected reader and installed WDB fixtures; run just conformance-wdb"]
-fn wdb_normal_exit_releases_a_parked_owner_before_any_history() {
+fn wdb_normal_exit_releases_a_parked_owner() {
     let fixture = fixture("wdb0301-opb-m");
     if std::env::var_os("ONDAS_WDB_EXIT_CHILD").is_some() {
         // First logical open has no history and registers the exit cleanup.
@@ -1010,7 +1013,7 @@ fn wdb_normal_exit_releases_a_parked_owner_before_any_history() {
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
-            "wdb_normal_exit_releases_a_parked_owner_before_any_history",
+            "wdb_normal_exit_releases_a_parked_owner",
             "--ignored",
             "--nocapture",
             "--test-threads=1",
@@ -1079,12 +1082,13 @@ fn report_resource(fixture: &str, phase: &str, elapsed: Option<Instant>, peak: b
     );
 }
 
-/// Warm/cold resource control at a substantial 10 000-signal read set. Counters are measured by
-/// the private native probe; this test measures the actual Rust consumer (resident set, fds,
-/// SDK temporary backing files) and the normal-exit cleanup in an isolated TMPDIR.
+/// Cold, reused-owner and read-set resource control at a substantial 10 000-signal read set.
+/// Counters are measured by the private native probe; this test measures the actual Rust
+/// consumer (resident set, fds, SDK temporary backing files) and the normal-exit cleanup in an
+/// isolated TMPDIR. Every close releases the session indexes, so each reopen builds them again.
 #[test]
 #[ignore = "requires the selected reader and installed WDB fixtures; run just conformance-wdb"]
-fn wdb_warm_readset_resources_at_k10000() {
+fn wdb_readset_resources_at_k10000() {
     if std::env::var_os("ONDAS_WDB_RESOURCE_CHILD").is_some() {
         for name in ["wdb0301-opb-m", "wdb0302-opb-l"] {
             let path = fixture(name);
@@ -1113,17 +1117,17 @@ fn wdb_warm_readset_resources_at_k10000() {
             let started = Instant::now();
             let rows = wave.samples(&signals, late).unwrap();
             assert_eq!(rows.len(), 10_000);
-            report_resource(name, "warm-hit", Some(started), false);
+            report_resource(name, "reuse-hit", Some(started), false);
             let mut selection = wave.select(&signals).unwrap();
             let started = Instant::now();
             let _ = selection.samples(tick).unwrap();
             report_resource(name, "live-repeat", Some(started), false);
             drop(selection);
             drop(wave);
-            report_resource(name, "warm-park", None, false);
+            report_resource(name, "reuse-park", None, false);
 
-            // A full disjoint bank: the retained regular64 histories coexist with the new
-            // staggered64 histories until the park prune.
+            // A full disjoint bank: the previous session released its histories, so this one
+            // creates and loads its own staggered64 histories.
             let mut wave = open_native(&path);
             let other = resolve_paths(&wave, &staggered);
             let started = Instant::now();
@@ -1153,7 +1157,7 @@ fn wdb_warm_readset_resources_at_k10000() {
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
-            "wdb_warm_readset_resources_at_k10000",
+            "wdb_readset_resources_at_k10000",
             "--ignored",
             "--nocapture",
             "--test-threads=1",

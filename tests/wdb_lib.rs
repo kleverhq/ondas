@@ -1049,7 +1049,7 @@ fn wdb_same_tick_byte_updates_keep_final_values_and_candidate_ticks() {
 
 #[test]
 #[ignore = "requires the selected reader and installed WDB fixtures; run just conformance-wdb"]
-fn wdb_warm_reopen_matches_fresh_owner_at_other_times_and_selections() {
+fn wdb_reused_owner_reopen_matches_fresh_owner_at_other_times_and_selections() {
     use ondas::HierarchyPath;
     use std::path::Path;
 
@@ -1092,7 +1092,7 @@ fn wdb_warm_reopen_matches_fresh_owner_at_other_times_and_selections() {
     }
 
     let root = std::env::temp_dir().join(format!(
-        "ondas-wdb-warm-{}-{}",
+        "ondas-wdb-reopen-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1110,59 +1110,62 @@ fn wdb_warm_reopen_matches_fresh_owner_at_other_times_and_selections() {
 
     for fixture in ["wdb/wdb0185-adders-io", "wdb/wdb0311-partial-logging"] {
         let source = fixture_path(fixture);
-        let warm = root.join("warm.wdb");
+        let reused = root.join("reused.wdb");
         let fresh = root.join("fresh.wdb");
-        std::fs::copy(&source, &warm).unwrap();
+        std::fs::copy(&source, &reused).unwrap();
         std::fs::copy(&source, &fresh).unwrap();
-        let (cold_queries, warm_queries, warm_slices): (Vec<Query>, Vec<Query>, Vec<SliceQuery>) =
-            if fixture.contains("adders") {
-                (
-                    vec![
-                        ("apatb_adders_io_top.in1", 0),
-                        ("apatb_adders_io_top.in1", 120_000),
-                    ],
-                    vec![
-                        ("apatb_adders_io_top.in1", 40_000),
-                        ("apatb_adders_io_top.in1", 300_000),
-                        ("apatb_adders_io_top.in2", 120_000),
-                    ],
-                    vec![
-                        ("apatb_adders_io_top.in1", 15, 0, 200_000),
-                        ("apatb_adders_io_top.in1", 31, 16, 80_000),
-                    ],
-                )
-            } else {
-                (
-                    vec![("top.recorded", 0), ("top.hidden", 9)],
-                    vec![
-                        ("top.recorded", 1),
-                        ("top.recorded", 4),
-                        ("top.recorded", 20),
-                        ("top.hidden", 0),
-                        ("top.hidden", 20),
-                        ("top.unlogged", 9),
-                    ],
-                    vec![],
-                )
-            };
-        std::mem::drop(observe(&warm, &cold_queries, &[]));
-        let warm_rows = observe(&warm, &warm_queries, &warm_slices);
-        let fresh_rows = observe(&fresh, &warm_queries, &warm_slices);
+        let (cold_queries, reused_queries, reused_slices): (
+            Vec<Query>,
+            Vec<Query>,
+            Vec<SliceQuery>,
+        ) = if fixture.contains("adders") {
+            (
+                vec![
+                    ("apatb_adders_io_top.in1", 0),
+                    ("apatb_adders_io_top.in1", 120_000),
+                ],
+                vec![
+                    ("apatb_adders_io_top.in1", 40_000),
+                    ("apatb_adders_io_top.in1", 300_000),
+                    ("apatb_adders_io_top.in2", 120_000),
+                ],
+                vec![
+                    ("apatb_adders_io_top.in1", 15, 0, 200_000),
+                    ("apatb_adders_io_top.in1", 31, 16, 80_000),
+                ],
+            )
+        } else {
+            (
+                vec![("top.recorded", 0), ("top.hidden", 9)],
+                vec![
+                    ("top.recorded", 1),
+                    ("top.recorded", 4),
+                    ("top.recorded", 20),
+                    ("top.hidden", 0),
+                    ("top.hidden", 20),
+                    ("top.unlogged", 9),
+                ],
+                vec![],
+            )
+        };
+        std::mem::drop(observe(&reused, &cold_queries, &[]));
+        let reused_rows = observe(&reused, &reused_queries, &reused_slices);
+        let fresh_rows = observe(&fresh, &reused_queries, &reused_slices);
         assert_eq!(
-            warm_rows, fresh_rows,
-            "{fixture}: warm reopen differs from a fresh owner"
+            reused_rows, fresh_rows,
+            "{fixture}: reused-owner reopen differs from a fresh owner"
         );
     }
 
-    // A stale signal from the cold logical open must not observe the warm reopen.
+    // A stale signal from the cold logical open must not observe the reopened owner.
     let source = fixture_path("wdb/wdb0185-adders-io");
-    let warm = root.join("stale.wdb");
-    std::fs::copy(&source, &warm).unwrap();
+    let path = root.join("stale.wdb");
+    std::fs::copy(&source, &path).unwrap();
     let stale = {
-        let wave = ondas::open_with(&warm, "wdb-lib").unwrap();
+        let wave = ondas::open_with(&path, "wdb-lib").unwrap();
         wave.hierarchy().signal("apatb_adders_io_top.in1").unwrap()
     };
-    let mut wave = ondas::open_with(&warm, "wdb-lib").unwrap();
+    let mut wave = ondas::open_with(&path, "wdb-lib").unwrap();
     assert!(matches!(
         wave.sample(stale, Time::from_ticks(0)),
         Err(Error::InvalidSignal { .. })
@@ -1171,7 +1174,7 @@ fn wdb_warm_reopen_matches_fresh_owner_at_other_times_and_selections() {
 
 #[test]
 #[ignore = "requires the selected reader and installed WDB fixtures; run just conformance-wdb"]
-fn wdb_warm_session_sequence_matches_the_published_oracle() {
+fn wdb_session_sequence_matches_the_published_oracle() {
     use ondas::Sample;
     let path = fixture_path("wdb/wdb0311-partial-logging");
     // The fixture window starts at tick 1. Ticks are the published oracle ticks; tick 0 is

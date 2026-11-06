@@ -74,14 +74,15 @@ installed `rdi` or `xv` reader libraries without a separate setting. A confirmed
 newer embedded DBG format returns [`Error::UnsupportedFeature`].
 
 First access to selected stored bytes builds their SDK history indexes, including
-times after the query end. A native owner may keep the loaded histories of the last
-logical session that used indexes, so a later logical open of the same unchanged
-file can reuse them. Histories that a later index-using session does not select are
-deleted at its park; the remaining histories stay until eviction, drop or a
-best-effort normal exit while the SDK and owner locks are uncontended. A session
-that selects no index keeps the previous histories. Retained histories keep SDK
-memory and temporary backing files. A point or early stop can therefore pay the full
-selected-history loading cost in a new owner.
+times after the query end. Every waveform drop releases those indexes. A native owner
+may outlive the logical session and keep its imported declarations, so a later
+logical open of the same unchanged file reuses them without importing again; its
+histories are built again on first access. A point or early stop can therefore pay the
+full selected-history loading cost in a reuse hit. One closed owner may wait, keeping
+the native reader descriptor and the copied declarations. Deleting the indexes does not
+by itself reclaim the storage that the SDK keeps for that idle reader. A different
+path, a metadata-only request or a failed identity destroys it, and a normal exit
+destroys it best-effort while the SDK and owner locks are uncontended.
 Later bit points and range reads with an established entering state can seek.
 This includes compositions whose intermediate values are whole copies of one
 source, joined or sliced at source-width boundaries. Other compositions can

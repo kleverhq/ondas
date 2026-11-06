@@ -4,6 +4,11 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+### Changed
+
+- WDB reopens of an unchanged file reuse one validated native reader and its immutable declarations instead of importing again. Reuse requires the exact path and full file identity, whose digest every ordinary open pays, repeats the container and reader guards, creates a fresh hierarchy identity and releases every adapter-created history index at each waveform drop. A later logical open builds and loads its histories again on first access. One closed owner may wait, keeping the native reader descriptor and the copied declarations; the SDK may keep its own backing storage for that reader, which index deletion does not by itself reclaim. A different path, a metadata-only request, a failed identity or a failed release destroys it, and normal exit destroys it best-effort while the SDK and owner locks are uncontended. A native or decode error, and an unwind through the backend while it reads native state, keep that reader's owner unparkable until it is dropped; a panic in a late callback over already completed native results does not.
+- WDB decodes the qualified packed `logic` and `reg` array storage from its two stored planes instead of the vendor formatter, and proves a slice's `changed_at` by comparing only the stored bits that slice depends on when the whole extent is recorded from tick zero. Other layouts keep the previous paths.
+
 ## [2.0.0] - 2026-10-30
 
 ### Breaking changes
@@ -25,9 +30,7 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ### Changed
 
-- WDB reopens of an unchanged file reuse one validated native reader and its immutable declarations instead of importing again. Reuse requires the exact path and full file identity, whose digest every ordinary open pays, repeats the container and reader guards, creates a fresh hierarchy identity and prunes the adapter-created history indexes to the declarations of the last logical session that used indexes. A new native owner still pays the full history load; a clean park can keep the loaded histories of that session, so a later logical open can be warm. A session without index use keeps the previous histories; eviction releases them, and normal exit releases them best-effort while the SDK and owner locks are uncontended (a busy exit skips that cleanup). Retained histories may keep the SDK temporary backing file. One closed owner may wait; a different path, a metadata-only request or a failed identity destroys it. A native or decode error, and an unwind through the backend while it reads native state, keep that reader's owner unparkable until it is dropped; a panic in a late callback over already completed native results does not.
 - SHM delivers completed ticks with bounded adapter buffers and stops traversal after bounded read-ahead. SDK history storage and total memory use have separate costs.
-- WDB decodes the qualified packed `logic` and `reg` array storage from its two stored planes instead of the vendor formatter, and proves a slice's `changed_at` by comparing only the stored bits that slice depends on when the whole extent is recorded from tick zero. Other layouts keep the previous paths.
 - Improve WDB reads, hierarchy lookup and traversal, and bit value formatting.
 - Disable FSDB SDK messages to stdout; stderr remains visible. Consumers that need diagnostic or crash isolation must use a process boundary.
 - Replace format-specific benchmarks with the verified OPB runner and quick checks.
