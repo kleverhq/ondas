@@ -14,7 +14,7 @@ use std::{
     path::Path,
     ptr::NonNull,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, Once,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -521,6 +521,35 @@ fn take_idle(path: &[u8], identity: &NativeIdentity) -> Option<Idle> {
 pub(crate) fn release_idle() {
     evict_idle();
 }
+// Registers a normal-exit cleanup for a parked owner. A static is never dropped by the Rust
+// runtime, so without this the native reader and the vendor temporary backing file would outlive a
+// normal process exit, unlike a reader that is dropped inside the process.
+static IDLE_CLEANUP: Once = Once::new();
+fn register_idle_cleanup() {
+    IDLE_CLEANUP.call_once(|| {
+        // SAFETY: the handler never unwinds and never blocks on the SDK mutex.
+        unsafe { libc::atexit(release_idle_at_exit) };
+    });
+}
+extern "C" fn release_idle_at_exit() {
+    // Another thread may still be using the SDK while the process exits: skip instead of blocking.
+    let Ok(_lock) = SDK.try_lock() else {
+        return;
+    };
+    let Some(idle) = IDLE.try_lock().ok().and_then(|mut slot| slot.take()) else {
+        return;
+    };
+    let Idle {
+        handle,
+        presentation,
+        ..
+    } = idle;
+    let handle = std::mem::ManuallyDrop::new(handle);
+    // SAFETY: sole owner of the native reader, closed under the SDK lock like Handle::drop. The
+    // handle is never dropped afterwards, so no second close can run.
+    unsafe { ondas_wdb_close(handle.0.as_ptr()) };
+    drop(presentation);
+}
 // Destroys the idle owner before any SDK activity. The handle is dropped after the lock.
 fn evict_idle() {
     let stale = {
@@ -596,6 +625,8 @@ impl Drop for Reader {
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .replace(idle);
+                // The parked owner must not outlive a normal process exit.
+                register_idle_cleanup();
             }
         }
         drop(replaced);

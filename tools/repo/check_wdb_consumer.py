@@ -74,11 +74,14 @@ def main():
         env["CARGO_TARGET_DIR"] = str(crate / "target")
         subprocess.run(["cargo", "build", "--offline", "--manifest-path", str(crate / "Cargo.toml")],
                        env=env, check=True)
-        # Supply the selected SDK explicitly; inherit no Cargo-added loader paths.
+        # Supply the selected SDK explicitly; inherit no Cargo-added loader paths. An isolated
+        # TMPDIR makes the vendor backing file of this process observable after a normal exit.
         env["LD_LIBRARY_PATH"] = str(sdk / "lib/lnx64.o")
         env["RDI_DATADIR"] = str(sdk / "data")
         env.pop("XILINX_VIVADO", None)
         env.pop("XILINX_VIVADO_HOMES", None)
+        temp_scope = Path(tempfile.mkdtemp(prefix="wdb-consumer-tmp-", dir=scratch))
+        env["TMPDIR"] = str(temp_scope)
         result = subprocess.run(
             [str(crate / "target/debug/ondas-wdb-consumer"), str(fixture)],
             env=env, cwd=crate, capture_output=True, text=True, timeout=30,
@@ -87,6 +90,11 @@ def main():
             print(result.stderr, end="")
         result.check_returncode()
         assert result.stdout == "compatible WDB queries passed\n", result.stdout
+        # A normal single-thread exit must release a parked reader exactly like a reader that is
+        # dropped inside the process: no vendor backing file is left behind.
+        leftovers = sorted(entry.name for entry in temp_scope.iterdir())
+        assert not leftovers, f"normal exit left vendor temporary files behind: {leftovers}"
+        shutil.rmtree(temp_scope)
         env["RDI_DATADIR"] = str(crate / "absent-data")
         newer = (ROOT / "fixtures/wdb/wdb0002-reg-test-behav/waveform.wdb").resolve(strict=True)
         guard = subprocess.run(
