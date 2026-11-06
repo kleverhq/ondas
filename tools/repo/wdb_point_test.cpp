@@ -13,7 +13,7 @@ struct Tree { long long address; unsigned bit; bool loaded = false; std::vector<
 struct Manager {
     std::map<std::pair<long long, unsigned>, std::unique_ptr<Tree>> trees;
     size_t scans = 0, finds = 0, drops = 0, removals = 0;
-    bool fail_scan = false, bad_raw = false;
+    bool fail_scan = false, bad_raw = false, missing_delete = false;
 };
 Manager* active = nullptr;
 struct Iterator { void** vtable; Tree* tree; size_t position; long long end; };
@@ -121,7 +121,9 @@ static void* test_symbol(void*, const char* name) {
 #define MATCH(part, function) if (s.find(part) != std::string::npos) return reinterpret_cast<void*>(function)
     MATCH("getOrCreateByteBTrees", create_bytes); MATCH("getOrCreateBitBTrees", create_bits);
     MATCH("getAddressEv", tree_address); MATCH("getBitPositionEv", tree_bit);
-    MATCH("deleteByteBTrees", remove_bytes); MATCH("deleteBitBTrees", remove_bits);
+    if (!active->missing_delete) {
+        MATCH("deleteByteBTrees", remove_bytes); MATCH("deleteBitBTrees", remove_bits);
+    }
     MATCH("scanWdbDatabase", scan); MATCH("getValueEvent", raw);
     MATCH("findExxxx", find); MATCH("IteratorcvbEv", present);
     MATCH("IteratordeEv", current); MATCH("IteratorppEv", advance);
@@ -140,9 +142,26 @@ void DataConversion::formatRawMemory(const BitIndex<const unsigned char*>& bytes
 }
 }
 
-int main() {
+int main(int argc, char** argv) {
     Manager manager; active = &manager; Reader reader("controlled"); SimBridge::DataConversion conversion;
     reader.index_manager = &manager; reader.common = &manager; reader.conversion = &conversion;
+    // Early fault mode: the deletion ABI is unavailable for this process, so the first index
+    // preparation must fail before any native tree exists. Nothing is created and no rollback
+    // runs while an exception unwinds.
+    if (argc > 1 && std::string(argv[1]) == "missing-delete") {
+        manager.missing_delete = true;
+        reader.declarations.resize(10007);
+        for (size_t i = 0; i < reader.declarations.size(); ++i) {
+            auto& d = reader.declarations[i]; d.id = i; d.address = i; d.length = 1; d.width = 8; d.encoding = 1;
+        }
+        const uint64_t id = 31; char fault_error[256]{};
+        assert(ondas_wdb_begin_points(&reader, &id, 1, fault_error, sizeof(fault_error)) == -4);
+        assert(!reader.traversal);
+        assert(reader.histories.empty());
+        assert(manager.trees.empty());
+        assert(manager.removals == 0);
+        return 0;
+    }
     reader.declarations.resize(10007);
     for (size_t i = 0; i < reader.declarations.size(); ++i) {
         auto& d = reader.declarations[i]; d.id = i; d.address = i; d.length = 1; d.width = 8; d.encoding = 1;
@@ -216,4 +235,5 @@ int main() {
     assert(ondas_wdb_release_indexes(&reader, error, sizeof(error)) == 0);
     assert(!reader.traversal && reader.histories.empty());
     assert(manager.removals == before_release + recreated);
+
 }

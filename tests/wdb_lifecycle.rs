@@ -439,10 +439,20 @@ fn wdb_sequential_open_lifecycle_over_published_fixtures() {
     eprintln!("PHASE 7");
     // Phase 7: a previously opened path that disappears must not return a cached success.
     assert_eq!(snapshot(&path), reference_a, "prefill before deletion");
+    assert_eq!(
+        descriptors_under(root.path()).len(),
+        1,
+        "prefill the idle owner before deleting its file"
+    );
     fs::remove_file(&path).expect("delete the previously opened temporary file");
     assert!(
         ondas::open_with(&path, BACKEND).is_err(),
         "a deleted path must stay an error"
+    );
+    assert!(
+        descriptors_under(root.path()).is_empty(),
+        "a failed preflight must release the idle owner: {:?}",
+        descriptors_under(root.path())
     );
     fs::copy(&fixture_a, &path).expect("recreate published fixture A at the same path");
     assert_eq!(snapshot(&path), reference_a, "recreated copy");
@@ -450,6 +460,11 @@ fn wdb_sequential_open_lifecycle_over_published_fixtures() {
     assert!(
         ondas::open_with(&link, BACKEND).is_err(),
         "a dangling symlink must stay an error"
+    );
+    assert!(
+        descriptors_under(root.path()).is_empty(),
+        "a dangling-symlink failure must release the idle owner: {:?}",
+        descriptors_under(root.path())
     );
 
     eprintln!("PHASE 8");
@@ -545,6 +560,83 @@ fn wdb_sequential_open_lifecycle_over_published_fixtures() {
     );
     // The last logical close keeps at most one idle owner and drops the descriptor with it.
     drop(root);
+}
+
+/// A read or decode failure and a caller-caught panic must both keep the owner unparked.
+#[test]
+#[ignore = "requires the selected reader and installed WDB fixtures; run just conformance-wdb"]
+fn wdb_failed_reads_and_caught_panics_keep_the_owner_unparked() {
+    let fixture_strings = fixture("wdb0317-vhdl-strings-ports");
+    let root = TempRoot::new();
+    let path = root.file("strings.wdb");
+    fs::copy(&fixture_strings, &path).expect("copy published fixture");
+    // A clean lifetime first, so the failure below runs over a retained owner.
+    {
+        let mut waveform = open_native(&path);
+        let good = waveform.hierarchy().signal("top.message").unwrap();
+        assert!(waveform.sample(good, Time::from_ticks(9000)).is_ok());
+    }
+    assert_eq!(
+        descriptors_under(root.path()).len(),
+        1,
+        "prefill the idle owner before the failing lifetimes"
+    );
+
+    // Phase A: a decode error (a non-ASCII recorded string) taints reuse only; the same reader
+    // still serves other histories and the owner is not parked by an ordinary drop.
+    {
+        let mut waveform = open_native(&path);
+        let bad = waveform.hierarchy().signal("top.non_ascii").unwrap();
+        assert!(
+            matches!(
+                waveform.trace(bad, TimeRange::all()),
+                Err(ondas::Error::NonAsciiString { .. })
+            ),
+            "the published non-ASCII string must produce a decode error"
+        );
+        let good = waveform.hierarchy().signal("top.message").unwrap();
+        assert!(
+            waveform.sample(good, Time::from_ticks(9000)).is_ok(),
+            "a decode failure must not break other histories of the live reader"
+        );
+    }
+    assert!(
+        descriptors_under(root.path()).is_empty(),
+        "a decode error must keep the owner unparked: {:?}",
+        descriptors_under(root.path())
+    );
+
+    // Phase B: the caller catches a visitor panic, keeps the waveform and drops it later, when the
+    // thread is no longer unwinding. The traversal is cleared during the unwind and the owner must
+    // still stay unparked.
+    {
+        let mut waveform = open_native(&path);
+        let signals = vec![first_signal(&waveform)];
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = waveform.scan(
+                &signals,
+                TimeRange::all(),
+                |_| -> std::ops::ControlFlow<()> { std::panic::panic_any(VisitorSentinel) },
+            );
+        }));
+        assert!(caught.is_err(), "the visitor panic must unwind");
+        let good = waveform.hierarchy().signal("top.message").unwrap();
+        assert!(
+            waveform.sample(good, Time::from_ticks(9000)).is_ok(),
+            "the native traversal must be cleared during the unwind"
+        );
+    }
+    assert!(
+        descriptors_under(root.path()).is_empty(),
+        "a caught panic must stay unparked after a later ordinary drop: {:?}",
+        descriptors_under(root.path())
+    );
+    let mut waveform = open_native(&path);
+    let good = waveform.hierarchy().signal("top.message").unwrap();
+    assert!(
+        waveform.sample(good, Time::from_ticks(9000)).is_ok(),
+        "a clean open after the failures still works"
+    );
 }
 
 /// Cold-miss, warm-hit, descriptor and RSS behaviour. Prints measurements; asserts invariants.

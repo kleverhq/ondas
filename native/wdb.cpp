@@ -130,51 +130,65 @@ static_assert(sizeof(ByteValue) == 8 && sizeof(TimeByteValue) == 16 && sizeof(Ti
 constexpr size_t indexes_per_byte = ONDAS_WDB_BIT_INDEX ? 8 : 1;
 struct AddressBitPair { long long address; unsigned bit; };
 static_assert(sizeof(AddressBitPair) == 16);
-// One adapter-created SDK history index. ``address``/``bit`` are read from the tree so
-// deletion never depends on a cached copy of the key.
-long long history_address(const void* tree) {
-    static auto address = symbol<long long(*)(const void*)>(
-        "_ZNK9SimBridge14WdbScalarBTree10getAddressEv");
-    return address(tree);
+// Index identity and deletion entry points. Resolving them allocates nothing per call and, once
+// resolved, cannot throw; the first call must therefore happen before any native tree exists.
+struct HistoryAbi {
+    long long (*address)(const void*);
+    unsigned (*bit)(const void*);
+    void (*remove_bytes)(void*, long long, long long);
+    void (*remove_bits)(void*, const std::vector<AddressBitPair>&);
+};
+HistoryAbi& history_abi() {
+    static HistoryAbi abi{
+        symbol<long long(*)(const void*)>("_ZNK9SimBridge14WdbScalarBTree10getAddressEv"),
+        ONDAS_WDB_BIT_INDEX ? symbol<unsigned(*)(const void*)>(
+            "_ZNK9SimBridge14WdbScalarBTree14getBitPositionEv") : nullptr,
+        symbol<void(*)(void*, long long, long long)>(
+            "_ZN9SimBridge22WdbAddressBTreeManager16deleteByteBTreesExx"),
+        ONDAS_WDB_BIT_INDEX ? symbol<void(*)(void*, const std::vector<AddressBitPair>&)>(
+            "_ZN9SimBridge22WdbAddressBTreeManager15deleteBitBTreesERKSt6vectorINS_17WdbAddressBitPairESaIS2_EE") : nullptr,
+    };
+    return abi;
 }
-unsigned history_bit(const void* tree) {
-    static auto bit = ONDAS_WDB_BIT_INDEX ? symbol<unsigned(*)(const void*)>(
-        "_ZNK9SimBridge14WdbScalarBTree14getBitPositionEv") : nullptr;
-    return ONDAS_WDB_BIT_INDEX ? bit(tree) : 0;
-}
-// Deletes exactly one SDK history index through the documented manager API.
-void delete_history(void* manager, const void* tree) {
-    if constexpr (ONDAS_WDB_BIT_INDEX) {
-        static auto remove = symbol<void(*)(void*, const std::vector<AddressBitPair>&)>(
-            "_ZN9SimBridge22WdbAddressBTreeManager15deleteBitBTreesERKSt6vectorINS_17WdbAddressBitPairESaIS2_EE");
-        std::vector<AddressBitPair> one{{history_address(tree), history_bit(tree)}};
-        remove(manager, one);
-    } else {
-        static auto remove = symbol<void(*)(void*, long long, long long)>(
-            "_ZN9SimBridge22WdbAddressBTreeManager16deleteByteBTreesExx");
-        remove(manager, history_address(tree), 1);
-    }
-}
-struct IndexBatch {
+// Deletes adapter-created SDK history indexes. The ABI is already resolved and the bit scratch
+// vector is allocated at construction, so deleting one index allocates nothing and never looks up
+// a symbol; this keeps an IndexBatch rollback safe while an exception is already unwinding.
+struct HistoryCleanup {
     void* manager;
+    HistoryAbi& abi;
+    std::vector<AddressBitPair> scratch;
+    explicit HistoryCleanup(void* source)
+        : manager(source), abi(history_abi()), scratch(ONDAS_WDB_BIT_INDEX ? 1 : 0) {}
+    void operator()(const void* tree) {
+        if constexpr (ONDAS_WDB_BIT_INDEX) {
+            scratch[0] = {abi.address(tree), abi.bit(tree)};
+            abi.remove_bits(manager, scratch);
+        } else {
+            abi.remove_bytes(manager, abi.address(tree), 1);
+        }
+    }
+};
+struct IndexBatch {
+    HistoryCleanup& cleanup;
     // Indexes this owner has already loaded successfully.
     std::unordered_set<void*>& owned;
     std::vector<void*> created;
     bool committed = false;
-    IndexBatch(void* source, std::unordered_set<void*>& owner_indexes)
-        : manager(source), owned(owner_indexes) {}
+    IndexBatch(HistoryCleanup& prepared, std::unordered_set<void*>& owner_indexes)
+        : cleanup(prepared), owned(owner_indexes) {}
     void deduplicate() {
         std::sort(created.begin(), created.end(), std::less<void*>{});
         created.erase(std::unique(created.begin(), created.end()), created.end());
     }
     ~IndexBatch() {
         // A failed scan must not leave a partial SDK index available for reuse. Rollback also
-        // forgets the deleted trees so park cannot delete them a second time.
+        // forgets the deleted trees so park cannot delete them a second time. The cleanup object
+        // was constructed before any tree existed, so this path cannot allocate or throw.
         if (!committed) {
             deduplicate();
             for (auto tree : created) {
                 owned.erase(tree);
-                delete_history(manager, tree);
+                cleanup(tree);
             }
         }
     }
@@ -186,17 +200,17 @@ struct IndexBatch {
             pairs.reserve(size_t(length) * indexes_per_byte);
             for (unsigned byte = 0; byte < length; ++byte)
                 for (unsigned bit = 0; bit < 8; ++bit) pairs.push_back({address + byte, bit});
-            create(manager, pairs, trees, created);
+            create(cleanup.manager, pairs, trees, created);
         } else {
             static auto create = symbol<void(*)(void*, long long, long long, std::vector<void*>&, std::vector<void*>&)>(
                 "_ZN9SimBridge22WdbAddressBTreeManager21getOrCreateByteBTreesExxRSt6vectorIPNS_14WdbScalarBTreeESaIS3_EES6_");
-            create(manager, address, length, trees, created);
+            create(cleanup.manager, address, length, trees, created);
         }
         if (trees.size() != size_t(length) * indexes_per_byte)
             throw std::runtime_error("native index width disagrees with extent");
         if constexpr (ONDAS_WDB_BIT_INDEX) {
             for (size_t i = 0; i < trees.size(); ++i)
-                if (history_address(trees[i]) != address + static_cast<long long>(i / 8) || history_bit(trees[i]) != i % 8)
+                if (cleanup.abi.address(trees[i]) != address + static_cast<long long>(i / 8) || cleanup.abi.bit(trees[i]) != i % 8)
                     throw std::runtime_error("native bit index order disagrees with extent");
         }
     }
@@ -204,7 +218,7 @@ struct IndexBatch {
         deduplicate();
         static auto scan = symbol<void(*)(void*, const std::vector<void*>&, void*)>(
             "_ZN9SimBridge22WdbAddressBTreeManager15scanWdbDatabaseERKSt6vectorIPNS_14WdbScalarBTreeESaIS3_EEPN4ISIM10IGuiStatusE");
-        if (!created.empty()) scan(manager, created, nullptr);
+        if (!created.empty()) scan(cleanup.manager, created, nullptr);
         owned.insert(created.begin(), created.end());
         committed = true;
     }
@@ -610,11 +624,18 @@ void validate_runtime() {
 // Drops traversal state before deleting the history indexes that its cursors can reference.
 void release_histories(Reader& reader) {
     reader.traversal.reset();
+    if (reader.histories.empty()) return;
+    // All symbols are resolved before the first deletion, so a missing symbol leaves no partially
+    // deleted set behind.
+    HistoryCleanup cleanup(reader.index_manager);
     while (!reader.histories.empty()) {
         auto tree = *reader.histories.begin();
         reader.histories.erase(reader.histories.begin());
-        delete_history(reader.index_manager, tree);
+        cleanup(tree);
     }
+    // Release the adapter's tracking capacity after all recorded indexes are gone. This says
+    // nothing about SDK or allocator memory, which the resource observations report separately.
+    std::unordered_set<void*>().swap(reader.histories);
 }
 void import(Reader& reader) {
     auto manager = reader.native.getDataObjMgr();
@@ -828,9 +849,12 @@ static int begin(void* opaque, const uint64_t* ids, size_t count, uint64_t start
     auto& reader = *static_cast<Reader*>(opaque);
     reader.traversal.reset();
     return protect(error, cap, [&] {
-        // The batch is declared before the traversal so an exception destroys cursors before
-        // the indexes they reference, and a failed batch rollback can never run under cursors.
-        IndexBatch batch(reader.index_manager, reader.histories);
+        // Cleanup and its rollback scratch are prepared before any native tree exists, so a
+        // missing ABI symbol fails here instead of during an unwinding rollback. The batch is
+        // declared before the traversal so an exception destroys cursors before the indexes they
+        // reference.
+        HistoryCleanup cleanup(reader.index_manager);
+        IndexBatch batch(cleanup, reader.histories);
         auto traversal = std::make_unique<Traversal>();
         traversal->end = std::min(end, reader.meta.last);
         traversal->point_only = point_only;

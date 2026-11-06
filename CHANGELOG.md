@@ -25,6 +25,7 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ### Changed
 
+- WDB reopens of an unchanged file reuse one validated native reader and its immutable declarations instead of importing again. Reuse requires the exact path and full file identity, repeats the container and reader guards, creates a fresh hierarchy identity and releases the adapter-created history indexes, so a reopen starts from a fresh index state. One closed owner may wait; another path, a metadata-only request, a failed identity or an error releases it.
 - SHM delivers completed ticks with bounded adapter buffers and stops traversal after bounded read-ahead. SDK history storage and total memory use have separate costs.
 - Improve WDB reads, hierarchy lookup and traversal, and bit value formatting.
 - Disable FSDB SDK messages to stdout; stderr remains visible. Consumers that need diagnostic or crash isolation must use a process boundary.

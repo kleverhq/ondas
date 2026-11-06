@@ -97,6 +97,13 @@ of an error. The cause remains unresolved between recording and reading. Success
 constant values and enum tables do not qualify changing unsigned 129-bit values.
 Reads preserve the common completed-tick semantics. Vendor calls are serialized; user callbacks run
 after the lock is released.
+Opening a WDB file imports every native declaration and usually costs more than another format
+containing only logged declarations. A sequential reopen of an unchanged file reuses one validated
+owner instead of importing again: it hashes the whole file, repeats the container and reader guards,
+and creates a fresh hierarchy identity, so handles from the earlier open are rejected. That hash is
+a full file read per reopen. Only one closed owner waits, any other path or a failed identity
+releases it, and a live reader keeps its own native indexes until it is dropped or parked. A
+concurrent writer is not promised an atomic snapshot.
 
 ```no_run
 # #[cfg(feature = "wdb-lib")]

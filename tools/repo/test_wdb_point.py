@@ -21,3 +21,5 @@ class WdbPointTests(unittest.TestCase):
                         "-Wl,--gc-sections", "-ldl", "-o", str(executable),
                     ], check=True)
                     subprocess.run([str(executable)], check=True)
+                    # A fresh process without the deletion ABI must fail before creating trees.
+                    subprocess.run([str(executable), "missing-delete"], check=True)

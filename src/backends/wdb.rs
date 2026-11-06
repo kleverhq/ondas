@@ -14,7 +14,7 @@ use std::{
     path::Path,
     ptr::NonNull,
     sync::{
-        Mutex,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -137,21 +137,6 @@ fn backend_error(message: impl Into<String>) -> Error {
         backend: BACKEND.into(),
         operation: "decode",
         message: message.into(),
-    }
-}
-// Any native failure makes this logical owner unusable for reuse.
-fn status_reusable(
-    reusable: &AtomicBool,
-    code: c_int,
-    error: &[c_char; 512],
-    operation: &'static str,
-) -> Result<()> {
-    match status(code, error, operation) {
-        Ok(()) => Ok(()),
-        Err(error) => {
-            reusable.store(false, Ordering::Relaxed);
-            Err(error)
-        }
     }
 }
 fn status(code: c_int, error: &[c_char; 512], operation: &'static str) -> Result<()> {
@@ -303,6 +288,31 @@ fn preflight(path: &Path, operation: &'static str) -> Result<(CString, std::fs::
     })?;
     Ok((path, file, length))
 }
+// A failed preflight must not keep an idle owner alive for the old path: the caller may have
+// truncated, replaced or deleted the file. The original error is returned unchanged.
+fn preflight_evicting(
+    path: &Path,
+    operation: &'static str,
+) -> Result<(CString, std::fs::File, u64)> {
+    match preflight(path, operation) {
+        Ok(opened) => Ok(opened),
+        Err(error) => {
+            evict_idle();
+            Err(error)
+        }
+    }
+}
+// The identity frame must still describe the file after the native open that an owner is bound to.
+fn identity_holds(path: &[u8], file: &std::fs::File, identity: &NativeIdentity) -> bool {
+    let Some(from_path) = file_metadata(path) else {
+        return false;
+    };
+    let Ok(from_descriptor) = file.metadata() else {
+        return false;
+    };
+    from_path == identity.metadata
+        && metadata_key(&from_descriptor) == Some(identity.metadata.clone())
+}
 // SDK selection guards without creating a reader; used when a retained owner is reused.
 fn validate_runtime() -> Result<()> {
     let mut error = [0; 512];
@@ -391,7 +401,7 @@ fn metadata(meta: Meta, source_name: String) -> Result<Metadata> {
     })
 }
 pub(crate) fn read_metadata(path: &Path, name: String) -> Result<Metadata> {
-    let (path, mut file, length) = preflight(path, "read metadata")?;
+    let (path, mut file, length) = preflight_evicting(path, "read metadata")?;
     evict_idle();
     let handle = native_open(&path, true, &mut file, length)?;
     let mut meta = Meta::default();
@@ -506,6 +516,11 @@ fn take_idle(path: &[u8], identity: &NativeIdentity) -> Option<Idle> {
         None
     }
 }
+// Releases the retained owner. The public layer calls this when a request fails before the WDB
+// adapter is entered, for example for a missing, unreadable or unrecognised path.
+pub(crate) fn release_idle() {
+    evict_idle();
+}
 // Destroys the idle owner before any SDK activity. The handle is dropped after the lock.
 fn evict_idle() {
     let stale = {
@@ -526,7 +541,18 @@ pub(crate) struct Reader {
     meta: Meta,
     path: Vec<u8>,
     identity: Option<NativeIdentity>,
-    reusable: AtomicBool,
+    // Cleared permanently by any read or decode failure, including a caller-caught panic.
+    tainted: Arc<AtomicBool>,
+}
+// Marks the owner unparkable if the operation unwinds, even when the caller catches the panic and
+// drops the waveform later, outside the unwind.
+struct TaintOnUnwind(Arc<AtomicBool>);
+impl Drop for TaintOnUnwind {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.0.store(true, Ordering::Relaxed);
+        }
+    }
 }
 impl Drop for Reader {
     fn drop(&mut self) {
@@ -537,7 +563,7 @@ impl Drop for Reader {
             return;
         };
         // A tainted or unwinding logical reader never becomes the idle owner.
-        if !self.reusable.load(Ordering::Relaxed) || std::thread::panicking() {
+        if self.tainted.load(Ordering::Relaxed) || std::thread::panicking() {
             return;
         }
         let mut replaced = None;
@@ -577,7 +603,7 @@ impl Drop for Reader {
 }
 impl Reader {
     pub(crate) fn open(path: &Path, name: String) -> Result<(Self, Hierarchy, Metadata)> {
-        let (path, mut file, length) = preflight(path, "open")?;
+        let (path, mut file, length) = preflight_evicting(path, "open")?;
         let path_bytes = path.as_bytes().to_vec();
         let identity = content_identity(&path_bytes);
         let hit = match identity.as_ref() {
@@ -599,6 +625,9 @@ impl Reader {
                 (handle, presentation)
             }
         };
+        // The file must still match the frame captured before the identity and the native open.
+        // A mismatch only makes the owner non-reusable; it does not hide the successful open.
+        let identity = identity.filter(|identity| identity_holds(&path_bytes, &file, identity));
         Self::retained(handle, presentation, path_bytes, identity, name)
     }
 
@@ -628,7 +657,7 @@ impl Reader {
                 meta,
                 path,
                 identity,
-                reusable: AtomicBool::new(true),
+                tainted: Arc::new(AtomicBool::new(false)),
             },
             hierarchy.reopened(),
             metadata,
@@ -781,7 +810,27 @@ fn build_presentation(handle: &Handle) -> Result<Presentation> {
     }
 }
 impl Reader {
+    // Any error from a read or decode keeps the owner unparkable for the rest of the session, and
+    // an unwinding operation does the same even if the caller catches the panic. A clean return,
+    // including a deliberate stop, leaves it parkable.
+    fn attempt<T>(&mut self, run: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        let guard = TaintOnUnwind(Arc::clone(&self.tainted));
+        let result = run(self);
+        if result.is_err() {
+            self.tainted.store(true, Ordering::Relaxed);
+        }
+        drop(guard);
+        result
+    }
     pub(crate) fn sample_bits(
+        &mut self,
+        bases: &[Signal],
+        signals: &[Signal],
+        time: Time,
+    ) -> Result<Vec<crate::Sample>> {
+        self.attempt(|reader| reader.sample_bits_inner(bases, signals, time))
+    }
+    fn sample_bits_inner(
         &mut self,
         bases: &[Signal],
         signals: &[Signal],
@@ -808,7 +857,7 @@ impl Reader {
                 error.len(),
             )
         };
-        status_reusable(&self.reusable, code, &error, "begin read")?;
+        status(code, &error, "begin read")?;
         let mut samples = Vec::with_capacity(signals.len());
         for &signal in signals {
             let width = signal
@@ -831,7 +880,7 @@ impl Reader {
                     error.len(),
                 )
             };
-            status_reusable(&self.reusable, code, &error, "sample")?;
+            status(code, &error, "sample")?;
             samples.push(if code == 0 {
                 crate::Sample::Missing { signal }
             } else {
@@ -870,6 +919,15 @@ impl Reader {
         signals: &[Signal],
         start: Time,
         end: Time,
+        visitor: impl for<'v> FnMut(usize, Time, ValueRef<'v>) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>> {
+        self.attempt(|reader| reader.read_from_inner(signals, start, end, visitor))
+    }
+    fn read_from_inner<B>(
+        &mut self,
+        signals: &[Signal],
+        start: Time,
+        end: Time,
         mut visitor: impl for<'v> FnMut(usize, Time, ValueRef<'v>) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>> {
         if signals.is_empty() || start > end {
@@ -899,7 +957,7 @@ impl Reader {
                     error.len(),
                 )
             };
-            status_reusable(&self.reusable, code, &error, "begin read")?;
+            status(code, &error, "begin read")?;
         }
         let mut bytes = Vec::new();
         let mut previous = 0;
@@ -917,7 +975,7 @@ impl Reader {
                         error.len(),
                     )
                 };
-                status_reusable(&self.reusable, code, &error, "read")?;
+                status(code, &error, "read")?;
                 if code == 0 {
                     break;
                 }

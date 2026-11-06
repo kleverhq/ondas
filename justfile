@@ -84,6 +84,7 @@ conformance-wdb: _inside
 _conformance-wdb: _inside
     cargo test --locked --profile conformance --features wdb-lib --test conformance wdb_ -- --ignored --nocapture --test-threads=1
     cargo test --locked --profile conformance --features wdb-lib --test wdb_lib -- --ignored --nocapture --test-threads=1
+    cargo test --locked --profile conformance --features wdb-lib --test wdb_lifecycle -- --ignored --nocapture --test-threads=1
     cargo test --locked --profile conformance --features wdb-lib --lib wdb_ -- --ignored --nocapture --test-threads=1
 
 # Validate each SDK in XCELIUM_HOMES, or the single XCELIUM_HOME.
