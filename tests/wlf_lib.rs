@@ -399,6 +399,106 @@ fn wlf_point_fallback_remaps_reordered_shared_bases() {
 }
 
 #[test]
+#[ignore = "requires Questa and installed fixtures; run just conformance-wlf"]
+fn wlf_cold_bits_keep_pending_ticks_and_missing() {
+    let mut wave = ondas::open_with(path("wlf0070-typed-deltas-aliases"), "wlf-lib").unwrap();
+    let bus = wave.hierarchy().signal("top.bus").unwrap();
+    let trace = wave
+        .trace(bus, TimeRange::closed(Time::ZERO, Time::from_ticks(15)))
+        .unwrap();
+    let rows = trace
+        .changes()
+        .iter()
+        .map(|change| {
+            let ondas::ValueRef::Bits(value) = change.value() else {
+                panic!("expected Bits");
+            };
+            (change.time().ticks(), value.to_string())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rows,
+        [(0, "000000000"), (7, "000000101"), (11, "000000000")]
+            .map(|(tick, value)| (tick, value.to_owned()))
+    );
+    let mut cold = ondas::open_with(path("wlf0070-typed-deltas-aliases"), "wlf-lib").unwrap();
+    let bus = cold.hierarchy().signal("top.bus").unwrap();
+    let window = cold
+        .trace(
+            bus,
+            TimeRange::closed(Time::from_ticks(8), Time::from_ticks(12)),
+        )
+        .unwrap();
+    let initial = window.initial().expect("cold entering state");
+    let ondas::ValueRef::Bits(value) = initial.value() else {
+        panic!("expected Bits");
+    };
+    assert_eq!(value.to_string(), "000000101");
+    assert_eq!(initial.changed_at(), Some(Time::from_ticks(7)));
+    assert_eq!(window.changes().len(), 1);
+    assert_eq!(window.changes()[0].time(), Time::from_ticks(11));
+
+    let mut delayed = ondas::open_with(path("wlf0073-delayed-logging"), "wlf-lib").unwrap();
+    let signal = delayed.hierarchy().signal("top.delayed").unwrap();
+    for tick in [0, 4] {
+        assert!(matches!(
+            delayed.sample(signal, Time::from_ticks(tick)).unwrap(),
+            Sample::Missing { .. }
+        ));
+    }
+    for (tick, expected, at) in [
+        (5, "1", None),
+        (7, "0", Some(7)),
+        (8, "0", Some(7)),
+        (10, "0", Some(7)),
+        (12, "1", Some(12)),
+        (15, "0", Some(15)),
+    ] {
+        let Sample::Value {
+            value: Value::Bits(value),
+            changed_at,
+            ..
+        } = delayed.sample(signal, Time::from_ticks(tick)).unwrap()
+        else {
+            panic!("expected recorded Bits");
+        };
+        assert_eq!(value.as_ref().to_string(), expected);
+        assert_eq!(changed_at, at.map(Time::from_ticks));
+    }
+}
+
+#[test]
+#[ignore = "requires Questa and installed fixtures; run just conformance-wlf"]
+fn wlf_retained_bits_do_not_hide_late_string_errors_or_breaks() {
+    let mut wave = ondas::open_with(path("wlf0072-strings-and-names"), "wlf-lib").unwrap();
+    let bits = wave.hierarchy().signal("top.ascending").unwrap();
+    let text = wave.hierarchy().signal("top.message").unwrap();
+    let range = TimeRange::closed(Time::ZERO, Time::from_ticks(7));
+    assert_eq!(
+        wave.scan(&[bits, text], range, |_| ControlFlow::Break(17))
+            .unwrap(),
+        ControlFlow::Break(17)
+    );
+    assert_eq!(
+        wave.scan(&[bits, text], range, |record| {
+            if matches!(record, ondas::ScanRef::Change { signal, time, .. }
+                if signal == text && time == Time::from_ticks(3))
+            {
+                ControlFlow::Break(23)
+            } else {
+                ControlFlow::Continue(())
+            }
+        })
+        .unwrap(),
+        ControlFlow::Break(23)
+    );
+    assert!(matches!(
+        wave.scan(&[bits, text], range, |_| ControlFlow::<()>::Continue(())),
+        Err(Error::NonAsciiString { format: Format::Wlf, time, .. }) if time == Time::from_ticks(4)
+    ));
+}
+
+#[test]
 #[ignore = "requires Questa and installed one-bit range fixture"]
 fn wlf_one_bit_declaration_ranges() {
     let mut wave = ondas::open_with(path("wlf0081-single-bit-ranges"), "wlf-lib").unwrap();
@@ -872,7 +972,7 @@ fn wlf_multi_batch_resolution_switches_preserve_every_tick() {
     let _ = history
         .scan(
             &[clock],
-            TimeRange::closed(Time::from_ticks(17), Time::from_ticks(600)),
+            TimeRange::closed(Time::from_ticks(17), Time::from_ticks(4096)),
             |row| {
                 assert_eq!(std::thread::current().id(), caller);
                 if let ondas::ScanRef::Change {
@@ -895,7 +995,7 @@ fn wlf_multi_batch_resolution_switches_preserve_every_tick() {
             },
         )
         .unwrap();
-    let expected = (17..=600)
+    let expected = (17..=4096)
         .map(|tick| (tick, (tick % 2).to_string()))
         .collect::<Vec<_>>();
     assert_eq!(changes, expected);

@@ -26,10 +26,14 @@ fn filename(path: &Path) -> Result<CString> {
 pub(crate) fn read_metadata(path: &Path, source_name: String) -> Result<Metadata> {
     worker::read_metadata(filename(path)?, source_name)
 }
-struct Session(u64);
+struct Session {
+    id: u64,
+    // Only a fully validated Reader may leave its native owner idle after this drop.
+    allow_idle: bool,
+}
 impl Drop for Session {
     fn drop(&mut self) {
-        worker::close(self.0);
+        worker::close(self.id, self.allow_idle && !std::thread::panicking());
     }
 }
 struct Traversal(u64);
@@ -45,7 +49,10 @@ pub(crate) struct Reader {
 impl Reader {
     pub(crate) fn open(path: &Path, source_name: String) -> Result<(Self, Hierarchy, Metadata)> {
         let opened = worker::open(filename(path)?, source_name)?;
-        let session = Session(opened.id);
+        let mut session = Session {
+            id: opened.id,
+            allow_idle: false,
+        };
         let mut scopes = Vec::new();
         let mut variables = Vec::new();
         let mut parents = HashMap::new();
@@ -138,6 +145,8 @@ impl Reader {
             }
         }
         let hierarchy = Hierarchy::new(scopes, variables, encodings);
+        // Declaration and hierarchy validation finished; only now may the owner go idle.
+        session.allow_idle = true;
         Ok((
             Self {
                 session,
@@ -154,23 +163,23 @@ impl Reader {
         time: Time,
     ) -> Result<Vec<crate::Sample>> {
         let indices = bases.iter().map(|s| self.declarations[s.index()]).collect();
+        // Repeated bases share one slot; keep the first slot for a repeated base,
+        // as the previous linear scan did.
+        let mut slots: HashMap<usize, usize> = HashMap::new();
+        for (slot, base) in bases.iter().enumerate() {
+            slots.entry(base.index()).or_insert(slot);
+        }
         let projections = signals
             .iter()
-            .map(|&signal| {
-                let index = bases
-                    .iter()
-                    .position(|base| base.index() == signal.index())
-                    .unwrap();
-                (index, signal)
-            })
+            .map(|&signal| (slots[&signal.index()], signal))
             .collect();
-        worker::sample_bits(self.session.0, indices, projections, time)
+        worker::sample_bits(self.session.id, indices, projections, time)
     }
     pub(crate) fn read<B>(
         &mut self,
         signals: &[Signal],
         end: Time,
-        visitor: impl for<'v> FnMut(usize, Time, ValueRef<'v>) -> ControlFlow<B>,
+        visitor: impl for<'v> FnMut(usize, Time, Result<ValueRef<'v>>) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>> {
         self.read_from(signals, Time::ZERO, end, visitor)
     }
@@ -179,27 +188,26 @@ impl Reader {
         signals: &[Signal],
         start: Time,
         end: Time,
-        mut visitor: impl for<'v> FnMut(usize, Time, ValueRef<'v>) -> ControlFlow<B>,
+        mut visitor: impl for<'v> FnMut(usize, Time, Result<ValueRef<'v>>) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>> {
         if signals.is_empty() || start > end {
             return Ok(ControlFlow::Continue(()));
         }
-        let _traversal = Traversal(self.session.0);
+        let _traversal = Traversal(self.session.id);
         let indices = signals
             .iter()
             .map(|s| self.declarations[s.index()])
             .collect();
-        worker::begin(self.session.0, indices, start, end)?;
+        worker::begin(self.session.id, indices, start, end)?;
         loop {
-            let batch = worker::next(self.session.0)?;
+            let batch = worker::next(self.session.id)?;
             let finished = batch.finished;
-            if let ControlFlow::Break(value) = batch.visit(|record| {
-                visitor(
-                    signals[record.selection].index(),
-                    record.tick,
-                    record.value.as_ref(),
-                )
-            })? {
+            if let ControlFlow::Break(value) =
+                batch.visit(|selection, tick, value| match value {
+                    Ok(value) => visitor(signals[selection].index(), tick, Ok(value.as_ref())),
+                    Err(error) => visitor(signals[selection].index(), tick, Err(error)),
+                })?
+            {
                 return Ok(ControlFlow::Break(value));
             }
             if finished {
@@ -289,6 +297,108 @@ mod tests {
     }
     use crate::{Sample, Value};
     #[test]
+    #[ignore = "requires Questa and installed string fixture; run just conformance-wlf"]
+    fn wlf_late_string_error_crosses_native_continuation() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures/wlf/wlf0072-strings-and-names/waveform.wlf");
+        let (reader, hierarchy, _) = Reader::open(&path, "error continuation".into()).unwrap();
+        let bits = hierarchy.signal("top.ascending").unwrap();
+        let text = hierarchy.signal("top.message").unwrap();
+        let signals = std::iter::repeat_n(bits, 2048)
+            .chain(std::iter::once(text))
+            .collect::<Vec<_>>();
+        let _traversal = Traversal(reader.session.id);
+        worker::begin(
+            reader.session.id,
+            signals
+                .iter()
+                .map(|signal| reader.declarations[signal.index()])
+                .collect(),
+            Time::ZERO,
+            Time::from_ticks(7),
+        )
+        .unwrap();
+        let mut batches = 0;
+        loop {
+            let batch = worker::next(reader.session.id).unwrap();
+            batches += 1;
+            let mut ticks = std::collections::BTreeMap::new();
+            for record in &batch.records {
+                *ticks.entry(record.tick.ticks()).or_insert(0) += 1;
+            }
+            eprintln!("batch={batches}, ticks={ticks:?}, error={:?}", batch.error);
+            if batches == 1 {
+                assert_eq!(batch.records.len(), 2049);
+                assert_eq!(ticks.keys().copied().collect::<Vec<_>>(), [0]);
+            }
+            if let Some(error) = batch.error {
+                assert!(matches!(
+                    error,
+                    worker::Failure::Decode { error: Error::NonAsciiString { format: crate::Format::Wlf, time, .. }, .. }
+                        if time == Time::from_ticks(4)
+                ));
+                break;
+            }
+            assert!(!batch.finished, "the selected invalid String must fail");
+        }
+        assert!(batches > 1, "exercise real native continuation");
+    }
+
+    #[test]
+    #[ignore = "requires Questa and installed history fixture; run just conformance-wlf"]
+    fn wlf_batch_continuations_keep_cold_values_and_sparse_updates() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures/wlf/wlf0075-history-long/waveform.wlf");
+        let (reader, hierarchy, _) = Reader::open(&path, "continuations".into()).unwrap();
+        let mut signals = vec![hierarchy.signal("top.clock").unwrap()];
+        signals.extend((0..64).map(|i| hierarchy.signal(&format!("top.word_{i:02}")).unwrap()));
+        for _ in 0..2 {
+            let _traversal = Traversal(reader.session.id);
+            worker::begin(
+                reader.session.id,
+                signals
+                    .iter()
+                    .map(|signal| reader.declarations[signal.index()])
+                    .collect(),
+                Time::ZERO,
+                Time::from_ticks(600),
+            )
+            .unwrap();
+            let mut rows = vec![Vec::new(); signals.len()];
+            let mut batches = 0;
+            loop {
+                let batch = worker::next(reader.session.id).unwrap();
+                batches += 1;
+                let finished = batch.finished;
+                let _ = batch
+                    .visit(|selection, tick, value| {
+                        let Value::Bits(value) = value.unwrap() else {
+                            panic!("expected Bits");
+                        };
+                        rows[selection].push((tick.ticks(), value.as_ref().to_string()));
+                        ControlFlow::<()>::Continue(())
+                    })
+                    .unwrap();
+                if finished {
+                    break;
+                }
+            }
+            assert!(batches > 1, "exercise native continuation boundaries");
+            let clock = (0..=600)
+                .map(|tick| (tick, (tick % 2).to_string()))
+                .collect::<Vec<_>>();
+            assert_eq!(rows[0], clock);
+            for (index, row) in rows[1..].iter().enumerate() {
+                let expected = (0..=600)
+                    .step_by(16)
+                    .map(|tick| (tick, format!("{:032b}", tick / 16 + index as u64)))
+                    .collect::<Vec<_>>();
+                assert_eq!(*row, expected, "word {index}");
+            }
+        }
+    }
+
+    #[test]
     #[ignore = "requires Questa and installed fixtures"]
     fn wlf_counter_boundaries() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -330,7 +440,7 @@ mod tests {
             .join("fixtures/wlf/wlf0038-count4b-3-2-vsim/waveform.wlf");
         let (reader, hierarchy, _) = Reader::open(&path, "resources".into()).unwrap();
         let clock = hierarchy.signal("count4b.clk").unwrap();
-        let id = reader.session.0;
+        let id = reader.session.id;
         {
             let _guard = Traversal(id);
             worker::begin(
@@ -345,22 +455,21 @@ mod tests {
                 let batch = worker::next(id).unwrap();
                 let finished = batch.finished;
                 let _ = batch
-                    .visit(|_| {
+                    .visit(|_, _, value| {
+                        assert!(value.is_ok());
                         records += 1;
                         ControlFlow::<()>::Continue(())
                     })
                     .unwrap();
-                if matches!(records, 1 | 64 | 1024) {
-                    let (count, bytes, pack) = worker::resources(id).unwrap();
-                    assert_eq!(count, 1);
-                    assert!(bytes <= 128 * 1024, "bounded completed-tick storage");
-                    assert!(pack);
-                }
+                let (count, bytes, pack) = worker::resources(id).unwrap();
+                assert_eq!(count, 1);
+                assert!(bytes <= 128 * 1024, "bounded completed-tick storage");
+                assert!(pack);
                 if finished {
                     break;
                 }
             }
-            assert!(records > 1024);
+            assert!(records > 2048);
             let (count, bytes, pack) = worker::resources(id).unwrap();
             assert_eq!(count, 1);
             assert!(bytes <= 128 * 1024, "bounded completed-tick storage");

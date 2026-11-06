@@ -78,9 +78,7 @@ impl Reader {
             #[cfg(feature = "shm-lib")]
             Self::Shm(reader) => reader.read(signals, end, visitor),
             #[cfg(feature = "wlf-lib")]
-            Self::Wlf(reader) => reader.read(signals, end, |index, time, value| {
-                visitor(index, time, Ok(value))
-            }),
+            Self::Wlf(reader) => reader.read(signals, end, visitor),
             #[cfg(feature = "wdb-lib")]
             Self::Wdb(reader) => reader.read(signals, end, |index, time, value| {
                 visitor(index, time, Ok(value))

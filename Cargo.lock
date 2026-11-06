@@ -346,6 +346,7 @@ dependencies = [
  "cc",
  "criterion",
  "fst-reader",
+ "libc",
  "serde_json",
  "sha2",
  "thiserror",

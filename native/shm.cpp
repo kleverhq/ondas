@@ -602,8 +602,12 @@ struct History {
                     if (!advance(cursor, current, end)) { done = true; break; }
                     current = current_time(cursor);
                 } catch (const std::exception &failure) {
-                    head = {declaration.descriptor.id, tick, current.sequence,
-                            declaration.descriptor.encoding, true, failure.what()};
+                    {
+                        Record failed{declaration.descriptor.id, tick, current.sequence,
+                                      declaration.descriptor.encoding, true, failure.what()};
+                        account(&failed);
+                        head = std::move(failed);
+                    }
                     ready = true; done = true;
                     account(nullptr);
                     break;
@@ -632,6 +636,7 @@ struct Stream {
     bool started = false, activated = false, first_batch = true;
     Record output{};
     std::uint64_t queued_payload = 0;
+    std::uint64_t head_payload = 0;
 
     Stream(const std::string &path, const std::vector<Declaration> &imported,
            const std::vector<SourceNode> &nodes, ondas_shm_work &work,
@@ -640,7 +645,10 @@ struct Stream {
         : path(path), imported(imported), nodes(nodes), work(work),
           ids(ids, ids + count), from(from), end(end), resume(resume), histories(count) {
         heap.reserve(count);
-        for (auto &history : histories) history.available = resume;
+        for (auto &history : histories) {
+            history.available = resume;
+            head_payload += history.head.data.capacity();
+        }
     }
     void suspend() {
         cursors.clear();
@@ -652,19 +660,30 @@ struct Stream {
     bool later(size_t a, size_t b) const { return before(histories[b].head, histories[a].head); }
     void fill(size_t index) {
         auto &h = histories[index];
-        if (!h.done) h.fill(declarations[index], *cursors[index], end, work,
-                            [this](const Record *record) { account(record); });
+        if (!h.done) {
+            struct HeadPayload {
+                std::uint64_t &total;
+                const Record &head;
+                std::uint64_t others;
+                void refresh() const noexcept { total = others + head.data.capacity(); }
+                ~HeadPayload() { refresh(); }
+            } payload{head_payload, h.head, head_payload - h.head.data.capacity()};
+            h.fill(declarations[index], *cursors[index], end, work,
+                   [this, &payload](const Record *record) { payload.refresh(); account(record); });
+        }
         if (h.ready) {
             heap.push_back(index);
             std::push_heap(heap.begin(), heap.end(), [this](size_t a, size_t b) { return later(a, b); });
         }
     }
     void account(const Record *transient = nullptr) {
-        std::uint64_t payload = queued_payload + output.data.capacity();
-        for (const auto &h : histories) payload += h.head.data.capacity();
+        std::uint64_t payload = queued_payload + output.data.capacity() + head_payload;
         if (transient) payload += transient->data.capacity();
         work.pending_records = std::max<std::uint64_t>(work.pending_records, histories.capacity() + 2);
         work.pending_payload = std::max(work.pending_payload, payload);
+#ifdef ONDAS_SHM_TEST_ACCOUNT
+        ONDAS_SHM_TEST_ACCOUNT(*this, transient);
+#endif
     }
     const Record *next() {
         if (!started || (refill != root_node && !histories[refill].done)) activate();
@@ -676,8 +695,10 @@ struct Stream {
         if (heap.empty()) return nullptr;
         std::pop_heap(heap.begin(), heap.end(), [this](size_t a, size_t b) { return later(a, b); });
         const auto index = heap.back(); heap.pop_back();
+        const auto old_capacity = histories[index].head.data.capacity();
         output = std::move(histories[index].head);
         histories[index].head = {};
+        head_payload = head_payload - old_capacity + histories[index].head.data.capacity();
         histories[index].ready = false;
         refill = index;
         account();
@@ -877,6 +898,8 @@ extern "C" int ondas_shm_next(ondas_shm *reader, ondas_shm_record *out, char *er
             const size_t batch_records = reader->stream->first_batch ? 64 : 1024;
             reader->stream->first_batch = false;
             reader->batch.reserve(batch_records);
+            reader->work.pending_records = std::max<std::uint64_t>(reader->work.pending_records,
+                reader->stream->histories.capacity() + reader->batch.capacity() + 2);
             while (reader->batch.size() < batch_records) {
                 const auto *next = reader->stream->next();
                 if (!next) break;
@@ -887,8 +910,6 @@ extern "C" int ondas_shm_next(ondas_shm *reader, ondas_shm_record *out, char *er
                 reader->stream->account();
                 if (failed || reader->stream->queued_payload >= batch_payload) break;
             }
-            reader->work.pending_records = std::max<std::uint64_t>(reader->work.pending_records,
-                reader->stream->histories.capacity() + reader->batch.capacity() + 2);
         }
         if (reader->position == reader->batch.size()) return 0;
         const auto *record = &reader->batch[reader->position++];

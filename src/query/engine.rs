@@ -1510,7 +1510,7 @@ impl<'w> Selection<'w> {
                 let cacheable = !self.bases.iter().any(|s| s.encoding() == Encoding::Event);
                 reader.read_from(&self.bases, from, end, |base, time, value| {
                     consume(
-                        Some((base, Ok(value))),
+                        Some((base, value)),
                         time,
                         cacheable.then_some(Position::Wlf(time)),
                     )

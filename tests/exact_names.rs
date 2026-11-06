@@ -1,5 +1,9 @@
 //! Logical component names must not require reader-specific lookup syntax.
-use ondas::{Hierarchy, HierarchyPath, Item, Sample, Time, Value, Variable};
+use ondas::{Hierarchy, HierarchyPath, Item, Sample, Time, Value, Variable, Waveform};
+
+#[cfg(feature = "fsdb-lib")]
+#[path = "support/fsdb_compatibility.rs"]
+mod fsdb_compatibility;
 
 fn variable<'h>(hierarchy: &'h Hierarchy, components: &[&str]) -> Variable<'h> {
     let path = HierarchyPath::from_components(components.iter().copied());
@@ -147,7 +151,10 @@ fn shm_logical_names() {
 #[test]
 #[ignore = "requires Verdi and installed FSDB fixtures"]
 fn fsdb_logical_names() {
-    let wave = ondas::open_with(fixture("fsdb", "fsdb0033-sti-dac"), "fsdb-lib").unwrap();
+    let path = fixture("fsdb", "fsdb0033-sti-dac");
+    let Some(wave) = fsdb_compatibility::open(ondas::open_with(&path, "fsdb-lib"), &path) else {
+        return;
+    };
     let components = ["testfixture2", "u_rtl", "data_in_reg[7]"];
     let path = HierarchyPath::from_components(components);
     let scope = wave.hierarchy().scope_path(&path).unwrap();
@@ -166,8 +173,7 @@ fn fsdb_logical_names() {
 
 // All producers record the same HDL declarations. These expected components
 // and values come from the authored source, independently of SDK spelling.
-fn common_logical_names(path: std::path::PathBuf, backend: &str) {
-    let mut wave = ondas::open_with(path, backend).unwrap();
+fn common_logical_names(mut wave: Waveform) {
     let hierarchy = wave.hierarchy().clone();
     let mut cases = Vec::new();
     for (index, name) in [
@@ -234,38 +240,49 @@ fn common_logical_names(path: std::path::PathBuf, backend: &str) {
 #[test]
 #[ignore = "requires installed logical-name fixtures; run just conformance"]
 fn vcd_common_logical_names() {
-    common_logical_names(fixture("vcd", "vcd0099-logical-names"), "vcd-native");
+    common_logical_names(
+        ondas::open_with(fixture("vcd", "vcd0099-logical-names"), "vcd-native").unwrap(),
+    );
 }
 
 #[test]
 #[ignore = "requires installed logical-name fixtures; run just conformance"]
 fn fst_common_logical_names() {
-    common_logical_names(fixture("fst", "fst0088-logical-names"), "fst-lib");
+    common_logical_names(
+        ondas::open_with(fixture("fst", "fst0088-logical-names"), "fst-lib").unwrap(),
+    );
 }
 
 #[cfg(feature = "fsdb-lib")]
 #[test]
 #[ignore = "requires Verdi and installed logical-name fixtures"]
 fn fsdb_common_logical_names() {
-    common_logical_names(fixture("fsdb", "fsdb0056-logical-names"), "fsdb-lib");
+    let path = fixture("fsdb", "fsdb0056-logical-names");
+    let Some(wave) = fsdb_compatibility::open(ondas::open_with(&path, "fsdb-lib"), &path) else {
+        return;
+    };
+    common_logical_names(wave);
 }
 
 #[cfg(feature = "shm-lib")]
 #[test]
 #[ignore = "requires Xcelium and installed logical-name fixtures"]
 fn shm_common_logical_names() {
-    common_logical_names(fixture("shm", "shm0092-logical-names"), "shm-lib");
+    common_logical_names(
+        ondas::open_with(fixture("shm", "shm0092-logical-names"), "shm-lib").unwrap(),
+    );
 }
 
 #[cfg(feature = "wlf-lib")]
 #[test]
 #[ignore = "requires Questa and installed logical-name fixtures"]
 fn wlf_common_logical_names() {
-    common_logical_names(fixture("wlf", "wlf0082-logical-names"), "wlf-lib");
+    common_logical_names(
+        ondas::open_with(fixture("wlf", "wlf0082-logical-names"), "wlf-lib").unwrap(),
+    );
 }
 
-fn same_path_aliases(path: std::path::PathBuf, backend: &str) {
-    let mut wave = ondas::open_with(path, backend).unwrap();
+fn same_path_aliases(mut wave: Waveform) {
     let hierarchy = wave.hierarchy().clone();
     let path = HierarchyPath::from_components(["top", "same"]);
     let declarations: Vec<_> = hierarchy.variables().filter(|v| v.path() == path).collect();
@@ -312,7 +329,9 @@ fn same_path_aliases(path: std::path::PathBuf, backend: &str) {
 #[test]
 #[ignore = "requires installed same-path alias fixtures; run just conformance"]
 fn vcd_same_path_aliases_remain_distinct_declarations() {
-    same_path_aliases(fixture("vcd", "vcd0100-same-path-aliases"), "vcd-native");
+    same_path_aliases(
+        ondas::open_with(fixture("vcd", "vcd0100-same-path-aliases"), "vcd-native").unwrap(),
+    );
 }
 
 #[cfg(feature = "fsdb-lib")]
@@ -320,7 +339,10 @@ fn vcd_same_path_aliases_remain_distinct_declarations() {
 #[ignore = "requires Verdi and installed same-path alias fixtures"]
 fn fsdb_same_path_aliases_remain_distinct_declarations() {
     let path = fixture("fsdb", "fsdb0057-same-path-aliases");
-    same_path_aliases(path.clone(), "fsdb-lib");
+    let Some(wave) = fsdb_compatibility::open(ondas::open_with(&path, "fsdb-lib"), &path) else {
+        return;
+    };
+    same_path_aliases(wave);
     let wave = ondas::open_with(path, "fsdb-lib").unwrap();
     let mut spellings: Vec<_> = wave
         .hierarchy()

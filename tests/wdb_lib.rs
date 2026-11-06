@@ -193,6 +193,74 @@ fn wdb_lifecycle_stop_panic_and_reentrant_visitors() {
 
 #[test]
 #[ignore = "requires the selected WDB reader and installed enum fixture"]
+fn wdb_cold_point_requests_match_range_observations() {
+    let t = Time::from_ticks;
+    let signals = |wave: &mut ondas::Waveform| {
+        let base = wave.hierarchy().signal("top.sparse8").unwrap();
+        let alias = wave.hierarchy().signal("top.array_values[0]").unwrap();
+        let bit = base.slice(1, 1).unwrap();
+        let constant = base.slice(7, 6).unwrap();
+        vec![alias, bit, base, constant, alias, base]
+    };
+    let mut reference = ondas::open_with(fixture(), "wdb-lib").unwrap();
+    let oracle_signals = signals(&mut reference);
+    let oracle = reference.traces(&oracle_signals, TimeRange::all()).unwrap();
+    for tick in [0, 3, 4, 8, 9, 15, 97, u64::MAX] {
+        let mut wave = ondas::open_with(fixture(), "wdb-lib").unwrap();
+        let selected = signals(&mut wave);
+        assert!(wave.samples(&[], t(tick)).unwrap().is_empty());
+        for (index, time) in [tick, 9, 0, tick].into_iter().enumerate() {
+            if index == 3 {
+                let range = wave.traces(&selected, TimeRange::all()).unwrap();
+                let changes = |trace: &ondas::Trace| {
+                    trace
+                        .changes()
+                        .iter()
+                        .map(|change| {
+                            let ondas::ValueRef::Bits(bits) = change.value() else {
+                                panic!("expected bit range");
+                            };
+                            (change.time(), bits.to_string())
+                        })
+                        .collect::<Vec<_>>()
+                };
+                for (actual, expected) in range.iter().zip(&oracle) {
+                    assert_eq!(changes(actual), changes(expected));
+                }
+            }
+            let samples = wave.samples(&selected, t(time)).unwrap();
+            assert_eq!(samples.len(), selected.len());
+            for ((sample, signal), trace) in samples.iter().zip(&selected).zip(&oracle) {
+                let expected = trace
+                    .changes()
+                    .iter()
+                    .rev()
+                    .find(|change| change.time() <= t(time))
+                    .unwrap();
+                let Sample::Value {
+                    signal: actual,
+                    value: Value::Bits(value),
+                    changed_at,
+                } = sample
+                else {
+                    panic!("expected recorded bits");
+                };
+                let ondas::ValueRef::Bits(expected_value) = expected.value() else {
+                    panic!("expected bit oracle");
+                };
+                assert_eq!(actual, signal);
+                assert_eq!(value.as_ref().to_string(), expected_value.to_string());
+                assert_eq!(
+                    *changed_at,
+                    (expected.time() != Time::ZERO).then_some(expected.time())
+                );
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires the selected WDB reader and installed enum fixture"]
 fn wdb_point_projections_keep_normalized_times_after_seek_and_stop() {
     let path = fixture();
     let Some(mut wave) = wdb_compatibility::open(ondas::open_with(&path, "wdb-lib"), &path) else {

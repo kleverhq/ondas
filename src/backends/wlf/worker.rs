@@ -1,11 +1,19 @@
 //! Keep every SDK object and call on one OS thread for the process lifetime.
 use std::{
+    cell::Cell,
     collections::HashMap,
-    ffi::{CStr, CString, c_char, c_int, c_void},
+    ffi::{CStr, CString, OsStr, c_char, c_int, c_void},
+    io::Read,
     ops::ControlFlow,
+    os::unix::{
+        ffi::OsStrExt,
+        fs::{MetadataExt, OpenOptionsExt},
+    },
     ptr::NonNull,
     sync::{OnceLock, mpsc},
 };
+
+use sha2::{Digest, Sha256};
 
 use super::backend_error;
 use crate::{
@@ -82,6 +90,23 @@ unsafe extern "C" {
         error: *mut c_char,
         cap: usize,
     ) -> c_int;
+    fn ondas_wlf_begin_point(
+        reader: *mut c_void,
+        indices: *const usize,
+        count: usize,
+        start: u64,
+        end: u64,
+        error: *mut c_char,
+        cap: usize,
+    ) -> c_int;
+    fn ondas_wlf_point_start(
+        reader: *mut c_void,
+        index: usize,
+        target: u64,
+        start: *mut u64,
+        error: *mut c_char,
+        cap: usize,
+    ) -> c_int;
     fn ondas_wlf_next(
         reader: *mut c_void,
         out: *mut NativeRecord,
@@ -90,6 +115,7 @@ unsafe extern "C" {
     ) -> c_int;
     fn ondas_wlf_batch_end(reader: *mut c_void) -> c_int;
     fn ondas_wlf_end(reader: *mut c_void);
+    fn ondas_wlf_park(reader: *mut c_void) -> c_int;
     #[cfg(test)]
     fn ondas_wlf_resources(
         reader: *mut c_void,
@@ -139,32 +165,140 @@ pub(super) struct Record {
     pub tick: Time,
     pub value: Value,
 }
+#[derive(Debug)]
+pub(super) enum Failure {
+    Read(Error),
+    Decode {
+        selection: usize,
+        tick: Time,
+        error: Error,
+    },
+}
 #[derive(Default)]
 pub(super) struct Batch {
     pub records: Vec<Record>,
     pub finished: bool,
-    pub error: Option<Error>,
+    pub error: Option<Failure>,
 }
 impl Batch {
     pub fn visit<B>(
         self,
-        mut visitor: impl FnMut(Record) -> ControlFlow<B>,
+        mut visitor: impl FnMut(usize, Time, Result<Value>) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>> {
         for record in self.records {
-            if let ControlFlow::Break(value) = visitor(record) {
+            if let ControlFlow::Break(value) =
+                visitor(record.selection, record.tick, Ok(record.value))
+            {
                 return Ok(ControlFlow::Break(value));
             }
         }
-        if let Some(error) = self.error {
-            return Err(error);
+        match self.error {
+            Some(Failure::Read(error)) => return Err(error),
+            Some(Failure::Decode {
+                selection,
+                tick,
+                error,
+            }) => {
+                if let ControlFlow::Break(value) = visitor(selection, tick, Err(error)) {
+                    return Ok(ControlFlow::Break(value));
+                }
+                return Err(backend_error(
+                    "WLF visitor continued after a decoding failure",
+                ));
+            }
+            None => (),
         }
         Ok(ControlFlow::Continue(()))
     }
 }
 
+// Lightweight identity of a regular file; coarse timestamps alone are not freshness proof.
+#[derive(Clone, PartialEq, Eq)]
+struct NativeMetadata {
+    dev: u64,
+    ino: u64,
+    size: u64,
+    mtime: i64,
+    mtime_nsec: i64,
+    ctime: i64,
+    ctime_nsec: i64,
+}
+// Full identity of a regular file, captured for the native open that created its owner.
+#[derive(Clone, PartialEq, Eq)]
+struct NativeIdentity {
+    metadata: NativeMetadata,
+    digest: [u8; 32],
+}
+fn metadata_key(meta: &std::fs::Metadata) -> Option<NativeMetadata> {
+    meta.file_type().is_file().then(|| NativeMetadata {
+        dev: meta.dev(),
+        ino: meta.ino(),
+        size: meta.size(),
+        mtime: meta.mtime(),
+        mtime_nsec: meta.mtime_nsec(),
+        ctime: meta.ctime(),
+        ctime_nsec: meta.ctime_nsec(),
+    })
+}
+// Metadata of a regular file, or an optional miss on any stat, access or type failure.
+fn file_metadata(path: &CString) -> Option<NativeMetadata> {
+    metadata_key(&std::fs::metadata(OsStr::from_bytes(path.as_bytes())).ok()?)
+}
+// Streamed content identity of a regular file. Any stat, access, type or IO failure is an
+// optional miss; the whole file is read once with a fixed buffer and no bytes are retained.
+// O_NONBLOCK keeps a replacement FIFO from blocking the optional fingerprint open.
+fn content_identity(path: &CString) -> Option<NativeIdentity> {
+    let before = file_metadata(path)?;
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(OsStr::from_bytes(path.as_bytes()))
+        .ok()?;
+    // The descriptor must still be the regular file named by the path metadata.
+    if metadata_key(&file.metadata().ok()?)? != before {
+        return None;
+    }
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    let mut remaining = before.size;
+    while remaining > 0 {
+        let want = remaining.min(buffer.len() as u64) as usize;
+        let read = file.read(&mut buffer[..want]).ok()?;
+        if read == 0 {
+            return None;
+        }
+        hasher.update(&buffer[..read]);
+        remaining -= read as u64;
+    }
+    // One extra byte proves that the content did not grow past the recorded size.
+    let mut extra = [0u8; 1];
+    if file.read(&mut extra).ok()? != 0 {
+        return None;
+    }
+    if metadata_key(&file.metadata().ok()?)? != before
+        || file_metadata(path) != Some(before.clone())
+    {
+        return None;
+    }
+    let mut digest = [0u8; 32];
+    digest.copy_from_slice(&hasher.finalize());
+    Some(NativeIdentity {
+        metadata: before,
+        digest,
+    })
+}
 // This type never leaves State on the worker thread; no Send/Sync assertion is needed.
 struct Handle {
     raw: NonNull<c_void>,
+    // Identity captured around the open that created this owner.
+    identity: Option<NativeIdentity>,
+    // Cleared permanently by any native or decode failure; a tainted owner is never parked.
+    reusable: Cell<bool>,
+}
+impl Handle {
+    fn taint(&self) {
+        self.reusable.set(false);
+    }
 }
 impl Drop for Handle {
     fn drop(&mut self) {
@@ -189,15 +323,23 @@ struct File {
     native: Option<Handle>,
     query: Option<Query>,
 }
+// One fully ended native owner, kept only while no logical File is live.
+struct Idle {
+    path: CString,
+    resolution: u32,
+    handle: Handle,
+}
 struct State {
     files: HashMap<u64, File>,
     next_id: u64,
     resolution: Option<u32>,
+    idle: Option<Idle>,
 }
 impl State {
     fn reset(&mut self) {
         // Header inspection can also select a process resolution in this SDK.
         // Suspend native owners before reading a new header, not just before open.
+        self.idle.take();
         for file in self.files.values_mut() {
             file.native.take();
         }
@@ -220,7 +362,7 @@ impl State {
         if file.native.is_none() {
             let handle = open_handle(&file.path, &file.name, false)?;
             if let Some(query) = &file.query {
-                begin_native(&handle, &query.indices, query.start, query.end)?;
+                begin_native(&handle, &query.indices, query.start, query.end, false)?;
             }
             file.native = Some(handle);
         }
@@ -242,6 +384,7 @@ fn call<T: Send + 'static>(
                         files: HashMap::new(),
                         next_id: 0,
                         resolution: None,
+                        idle: None,
                     };
                     while let Ok(job) = receiver.recv() {
                         job(&mut state);
@@ -309,6 +452,11 @@ unsafe fn enum_strings(bits: *const c_char, label: *const c_char) -> Option<(Str
     }
 }
 fn open_handle(path: &CString, name: &CString, metadata_only: bool) -> Result<Handle> {
+    let before = if metadata_only {
+        None
+    } else {
+        file_metadata(path)
+    };
     let mut raw = std::ptr::null_mut();
     let mut error = [0; 512];
     // SAFETY: call-local owned strings and writable output buffers; shim retains no inputs.
@@ -331,8 +479,20 @@ fn open_handle(path: &CString, name: &CString, metadata_only: bool) -> Result<Ha
             "open"
         },
     )?;
+    let identity = if metadata_only {
+        None
+    } else {
+        // The identity must describe this actual open: metadata must agree across the native
+        // open and the streamed digest, and the pathname must still name the hashed file.
+        match (before, content_identity(path)) {
+            (Some(before), Some(hashed)) if before == hashed.metadata => Some(hashed),
+            _ => None,
+        }
+    };
     Ok(Handle {
         raw: NonNull::new(raw).ok_or_else(|| backend_error("null WLF reader"))?,
+        identity,
+        reusable: Cell::new(true),
     })
 }
 fn metadata(handle: &Handle, source_name: String) -> Result<Metadata> {
@@ -378,8 +538,29 @@ pub(super) fn open(path: CString, source_name: String) -> Result<Opened> {
             .ok_or_else(|| backend_error("WLF session identifier overflow"))?;
         state.next_id = id;
         let name = CString::new(format!("ondas-{id}")).unwrap();
+        // The idle owner is used only for the exact raw path, its full original identity and an
+        // unchanged resolution. Every other case drops it before header or open activity.
+        let reused = match state.idle.take() {
+            Some(idle) => {
+                // Cheap path, resolution, key and metadata checks happen before any whole-file hash.
+                let candidate = state.resolution == Some(idle.resolution)
+                    && idle.path.as_bytes() == path.as_bytes()
+                    && idle.handle.identity.as_ref().is_some_and(|saved| {
+                        file_metadata(&path).as_ref() == Some(&saved.metadata)
+                    });
+                if candidate && idle.handle.identity == content_identity(&path) {
+                    Some(idle)
+                } else {
+                    None
+                }
+            }
+            None => None,
+        };
         state.reset();
-        let handle = open_handle(&path, &name, false)?;
+        let handle = match reused {
+            Some(idle) => idle.handle,
+            None => open_handle(&path, &name, false)?,
+        };
         let mut meta = Meta::default();
         // SAFETY: live owner and correctly laid out output. Open reads the header.
         unsafe { ondas_wlf_metadata(handle.raw.as_ptr(), &mut meta) };
@@ -470,9 +651,29 @@ pub(super) fn open(path: CString, source_name: String) -> Result<Opened> {
         })
     })
 }
-pub(super) fn close(id: u64) {
+pub(super) fn close(id: u64, allow_idle: bool) {
     let _ = call(move |state| {
-        state.files.remove(&id);
+        if let Some(mut file) = state.files.remove(&id) {
+            // Keep one clean, identity-bound owner only for a fully validated logical Reader.
+            if allow_idle
+                && state.files.is_empty()
+                && let Some(handle) = file.native.take()
+            {
+                let parked = handle.identity.is_some()
+                    && handle.reusable.get()
+                    && state.resolution == Some(file.resolution)
+                    // SAFETY: sole worker-owned owner; park keeps the file and declarations.
+                    && unsafe { ondas_wlf_park(handle.raw.as_ptr()) } != 0;
+                if parked {
+                    state.idle = Some(Idle {
+                        path: file.path.clone(),
+                        resolution: file.resolution,
+                        handle,
+                    });
+                }
+                // Otherwise the handle is dropped here and closes completely.
+            }
+        }
         Ok(())
     });
 }
@@ -488,11 +689,24 @@ pub(super) fn end(id: u64) {
         Ok(())
     });
 }
-fn begin_native(handle: &Handle, indices: &[usize], start: Time, end: Time) -> Result<()> {
+fn begin_native(
+    handle: &Handle,
+    indices: &[usize],
+    start: Time,
+    end: Time,
+    point: bool,
+) -> Result<()> {
     let mut error = [0; 512];
+    // A streaming query answers the first request with a smaller quota; point
+    // histories need the full quota from their first request.
+    let begin = if point {
+        ondas_wlf_begin_point
+    } else {
+        ondas_wlf_begin
+    };
     // SAFETY: owned call-local selection, copied and validated by the shim.
     let code = unsafe {
-        ondas_wlf_begin(
+        begin(
             handle.raw.as_ptr(),
             indices.as_ptr(),
             indices.len(),
@@ -502,7 +716,7 @@ fn begin_native(handle: &Handle, indices: &[usize], start: Time, end: Time) -> R
             error.len(),
         )
     };
-    status(code, &error, "begin read")
+    status(code, &error, "begin read").inspect_err(|_| handle.taint())
 }
 pub(super) fn begin(id: u64, indices: Vec<usize>, start: Time, end: Time) -> Result<()> {
     call(move |state| {
@@ -517,7 +731,7 @@ pub(super) fn begin(id: u64, indices: Vec<usize>, start: Time, end: Time) -> Res
             })
             .collect::<Result<_>>()?;
         file.query = None;
-        begin_native(file.native.as_ref().unwrap(), &indices, start, end)?;
+        begin_native(file.native.as_ref().unwrap(), &indices, start, end, false)?;
         file.query = Some(Query {
             indices,
             encodings,
@@ -546,7 +760,13 @@ fn point_states(
     time: Time,
 ) -> Result<Vec<Option<PointState>>> {
     let mut states: Vec<Option<PointState>> = vec![None; projections.len()];
-    begin_native(handle, indices, start.unwrap_or(Time::ZERO), time)?;
+    // Group the projections by native selection so a record visits only its own
+    // slots, in their previous order.
+    let mut slots: Vec<Vec<usize>> = vec![Vec::new(); indices.len()];
+    for (slot, &(index, _)) in projections.iter().enumerate() {
+        slots[index].push(slot);
+    }
+    begin_native(handle, indices, start.unwrap_or(Time::ZERO), time, true)?;
     let mut out = NativeRecord::default();
     let mut error = [0; 512];
     loop {
@@ -571,10 +791,11 @@ fn point_states(
         let crate::ValueRef::Bits(bits) = record.value.as_ref() else {
             return Err(backend_error("WLF point requires bits"));
         };
-        for (slot, &(index, signal)) in projections.iter().enumerate() {
-            if index != record.selection {
-                continue;
-            }
+        let Some(bucket) = slots.get(record.selection) else {
+            continue;
+        };
+        for &slot in bucket {
+            let (_, signal) = projections[slot];
             let lsb = signal.lsb();
             let value = bits.slice(lsb + signal.width().unwrap() - 1, lsb);
             match &mut states[slot] {
@@ -616,13 +837,39 @@ pub(super) fn sample_bits(
                 .collect::<Vec<_>>();
             let target = time.min(file.last);
             const LOOKBACK: u64 = 32;
+            // One whole base can ask the SDK for a suffix start hint. The hint only
+            // chooses a candidate start; the point traversal below still proves
+            // values, change times and missing samples.
+            let hint = if target.ticks() > LOOKBACK
+                && indices.len() == 1
+                && projections.iter().all(|&(_, signal)| !signal.is_slice())
+            {
+                let mut start = 0;
+                let mut error = [0; 512];
+                // SAFETY: live worker-owned handle and writable call-local outputs.
+                let code = unsafe {
+                    ondas_wlf_point_start(
+                        handle.raw.as_ptr(),
+                        indices[0],
+                        target.ticks(),
+                        &mut start,
+                        error.as_mut_ptr(),
+                        error.len(),
+                    )
+                };
+                status(code, &error, "point start hint")?;
+                (code == 1).then(|| Time::from_ticks(start))
+            } else {
+                None
+            };
             let recent = if target.ticks() > LOOKBACK {
+                let start = hint.unwrap_or(Time::from_ticks(target.ticks() - LOOKBACK));
                 point_states(
                     handle,
                     &indices,
                     &encodings,
                     &projections,
-                    Some(Time::from_ticks(target.ticks() - LOOKBACK)),
+                    Some(start),
                     target,
                 )?
             } else {
@@ -642,19 +889,19 @@ pub(super) fn sample_bits(
                 })
                 .collect();
             let mut bases = Vec::new();
+            // Maps a native base index to its fallback entry; the first appearance
+            // keeps its position.
+            let mut base_of = vec![None; indices.len()];
             let mut fallback = Vec::new();
             let mut slots = Vec::new();
             for (slot, &(index, signal)) in projections.iter().enumerate() {
                 if samples[slot].is_some() {
                     continue;
                 }
-                let base = bases
-                    .iter()
-                    .position(|&previous| previous == index)
-                    .unwrap_or_else(|| {
-                        bases.push(index);
-                        bases.len() - 1
-                    });
+                let base = *base_of[index].get_or_insert_with(|| {
+                    bases.push(index);
+                    bases.len() - 1
+                });
                 fallback.push((base, signal));
                 slots.push(slot);
             }
@@ -680,6 +927,9 @@ pub(super) fn sample_bits(
         })();
         // SAFETY: release partial or completed point resources on every Result path.
         unsafe { ondas_wlf_end(handle.raw.as_ptr()) };
+        if result.is_err() {
+            handle.taint();
+        }
         result
     })
 }
@@ -709,7 +959,8 @@ pub(super) fn next(id: u64) -> Result<Batch> {
                 )
             };
             if let Err(error) = status(code, &error, "read") {
-                batch.error = Some(error);
+                handle.taint();
+                batch.error = Some(Failure::Read(error));
                 return Ok(batch);
             }
             if code == 0 {
@@ -731,9 +982,18 @@ pub(super) fn next(id: u64) -> Result<Batch> {
                     batch.records.push(record);
                 }
                 Err(error) => {
-                    // A later conversion failure must not erase the prefix or
-                    // override an earlier caller Break.
-                    batch.error = Some(error);
+                    handle.taint();
+                    // Keep the failed record's time so the consumer can finish
+                    // an earlier tick before deciding between Break and error.
+                    batch.error = Some(if out.selection < query.encodings.len() {
+                        Failure::Decode {
+                            selection: out.selection,
+                            tick: Time::from_ticks(out.tick),
+                            error,
+                        }
+                    } else {
+                        Failure::Read(error)
+                    });
                     return Ok(batch);
                 }
             }
@@ -847,15 +1107,18 @@ mod tests {
                     value: Value::Real(2.0),
                 },
             ],
-            error: Some(backend_error("later value conversion failed")),
+            error: Some(Failure::Read(backend_error(
+                "later value conversion failed",
+            ))),
             finished: false,
         }
     }
     #[test]
     fn wlf_batch_keeps_successful_prefix_before_error() {
         let mut ticks = Vec::new();
-        let result = failed_batch().visit(|record| {
-            ticks.push(record.tick.ticks());
+        let result = failed_batch().visit(|_, tick, value| {
+            assert!(value.is_ok());
+            ticks.push(tick.ticks());
             ControlFlow::<()>::Continue(())
         });
         assert!(matches!(result, Err(Error::Backend { .. })));
@@ -863,8 +1126,68 @@ mod tests {
     }
     #[test]
     fn wlf_batch_caller_break_wins_over_deferred_error() {
-        let result = failed_batch().visit(|_| ControlFlow::Break(std::rc::Rc::new("stop")));
+        let result = failed_batch().visit(|_, _, _| ControlFlow::Break(std::rc::Rc::new("stop")));
         assert_eq!(*result.unwrap().break_value().unwrap(), "stop");
+    }
+    #[test]
+    fn wlf_batch_timed_failure_keeps_exact_location_and_successful_prefix() {
+        for failed_tick in [0, 1, 2] {
+            let mut batch = failed_batch();
+            batch
+                .records
+                .retain(|record| record.tick.ticks() <= failed_tick);
+            if failed_tick == 0 {
+                batch.records.clear();
+            }
+            batch.error = Some(Failure::Decode {
+                selection: 7,
+                tick: Time::from_ticks(failed_tick),
+                error: backend_error("sentinel"),
+            });
+            let mut prefix = Vec::new();
+            let result = batch
+                .visit(|selection, tick, value| match value {
+                    Ok(_) => {
+                        prefix.push(tick.ticks());
+                        ControlFlow::Continue(())
+                    }
+                    Err(error) => {
+                        assert_eq!(selection, 7);
+                        assert_eq!(tick, Time::from_ticks(failed_tick));
+                        ControlFlow::Break(error)
+                    }
+                })
+                .unwrap();
+            assert!(
+                matches!(result, ControlFlow::Break(Error::Backend { message, .. }) if message == "sentinel")
+            );
+            assert_eq!(prefix, if failed_tick == 0 { vec![] } else { vec![0, 1] });
+        }
+    }
+    #[test]
+    fn wlf_batch_timed_failure_cannot_be_ignored_or_override_break() {
+        for stop in [false, true] {
+            let mut batch = failed_batch();
+            batch.error = Some(Failure::Decode {
+                selection: 0,
+                tick: Time::from_ticks(2),
+                error: backend_error("later failure"),
+            });
+            let result = batch.visit(|_, _, _| {
+                if stop {
+                    ControlFlow::Break(17)
+                } else {
+                    ControlFlow::Continue(())
+                }
+            });
+            if stop {
+                assert_eq!(result.unwrap(), ControlFlow::Break(17));
+            } else {
+                assert!(
+                    matches!(result, Err(Error::Backend { message, .. }) if message == "WLF visitor continued after a decoding failure")
+                );
+            }
+        }
     }
     #[test]
     fn wlf_private_abi_layouts() {

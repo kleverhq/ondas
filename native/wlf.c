@@ -13,6 +13,7 @@
  * for reads and cleanup. These exports are absent from the SDK header. */
 extern WlfFileId setCurrentNamespace(WlfFileId file);
 extern WlfFileId wlfFileOpenByMode(char *path, char *name, int mode);
+extern int wlfFileEnableCache(WlfFileId file, int megabytes);
 extern void *current_expr_contxt, *current_expr_objtd;
 #define WLF_LITE_OPEN 7
 
@@ -40,14 +41,17 @@ typedef struct {
     uint8_t *data;
     size_t len;
     uint64_t real_bits, occurrences;
-    int present;
+    int present, have_value, dirty;
 } selected;
 typedef struct {
     ondas_wlf_record out;
     size_t offset;
 } buffered_record;
-#define WLF_BATCH_RECORDS 256
-#define WLF_BATCH_BYTES (64 * 1024)
+#define WLF_BATCH_RECORDS 2048
+#define WLF_BATCH_BYTES (512 * 1024)
+#define WLF_CACHE_MIB 64
+/* Small first streaming response; later requests use the full quota. */
+#define WLF_FIRST_BATCH_RECORDS 128
 struct ondas_wlf {
     WlfFileId file;
     WlfFileInfo info;
@@ -62,6 +66,8 @@ struct ondas_wlf {
     size_t record_bytes_len, record_bytes_capacity;
     WlfTime64 start, end, tick, next_tick;
     int finished, stopped, have_tick;
+    size_t pending_begin, pending_end;
+    size_t batch_records;
     char failure[512];
 };
 static int initialized;
@@ -362,6 +368,9 @@ int ondas_wlf_open(const char *path, const char *name, int metadata_only, ondas_
             open_code = sdk_failure(error, cap, malformed ? -2 : -1);
         } else setCurrentNamespace(r->file);
         if (!r->file) { free(r); return open_code; }
+        /* Optional SDK block cache: a positive budget request, and a nonzero SDK
+         * result only means the cache is absent, so the read continues uncached. */
+        (void)wlfFileEnableCache(r->file, WLF_CACHE_MIB);
         WlfSymbolId root = wlfFileGetTopRegion(r->file);
         if (!root || walk(r, root, SIZE_MAX, 0, 1, NULL, 0, 0)) {
             ondas_wlf_close(r); return fail(error, cap, -1, "cannot read WLF declarations");
@@ -390,6 +399,16 @@ void ondas_wlf_end(ondas_wlf *r) {
     free(r->records); r->records = NULL; r->record_count = r->record_capacity = 0;
     free(r->record_bytes); r->record_bytes = NULL;
     r->record_bytes_len = r->record_bytes_capacity = 0;
+}
+/* Private lifecycle helper: release every query, selection, value and batch
+ * resource while keeping the open file and its declarations. It returns nonzero
+ * only when the owner has no recorded failure. */
+int ondas_wlf_park(ondas_wlf *r) {
+    int reusable = r->failure[0] == '\0';
+    ondas_wlf_end(r);
+    current_expr_contxt = NULL; current_expr_objtd = NULL;
+    if (namespace_guard) setCurrentNamespace(namespace_guard);
+    return reusable;
 }
 void ondas_wlf_close(ondas_wlf *r) {
     if (!r) return;
@@ -420,8 +439,56 @@ static const uint8_t logic_digits[256] = {
     ['u'] = 'u', ['U'] = 'u', ['w'] = 'w', ['W'] = 'w',
     ['l'] = 'l', ['L'] = 'l', ['h'] = 'h', ['H'] = 'h',
 };
+/* Values that only the binary formatter decodes: plain reg/net/bit/byte values
+ * and VHDL logical enums. One logical change can reach this path as several
+ * immediate callbacks, and a record keeps only the value that is current at the
+ * end of its tick. This path therefore converts the retained value once, at the
+ * tick boundary, instead of once per callback. Values on the other paths keep
+ * their immediate conversion: strings use the symbolic formatter, and the enum,
+ * integer and real paths decode without a formatter call and without the
+ * normalizing comparison that this boundary needs. */
+static int deferred_bits(const selected *s) {
+    return s->decl->out.encoding == 1
+        && s->decl->datatype != wlfTypeVlogEnum
+        && s->decl->datatype != wlfTypeInteger
+        && !(s->decl->datatype == wlfTypeEnum && !s->decl->out.logic_domain);
+}
+/* Convert the retained value of a deferred selection and compare it with the
+ * digits of the previous tick. Returns 1 when the value changed, 0 when it did
+ * not, and -1 with the cause left in r->failure. */
+static int convert_deferred(selected *s) {
+    ondas_wlf *r = s->owner;
+    if (!wlfValueGetValue(s->value)) {
+        snprintf(r->failure, sizeof(r->failure), "%s", "missing WLF value buffer");
+        return -1;
+    }
+    const char *bits = wlfValueToString(s->value, WLF_RADIX_BINARY, (int)s->len + 128);
+    if (!bits || strlen(bits) != s->len) {
+        snprintf(r->failure, sizeof(r->failure), "%s", "invalid WLF bit width");
+        return -1;
+    }
+    int changed = !s->have_value;
+    if (changed || memcmp(s->data, bits, s->len) != 0) {
+        for (size_t i = 0; i < s->len; ++i) {
+            uint8_t digit = logic_digits[(unsigned char)bits[i]];
+            if (!digit) {
+                snprintf(r->failure, sizeof(r->failure), "%s", "invalid WLF logic digit");
+                return -1;
+            }
+            if (!changed && s->data[i] != digit) changed = 1;
+            s->data[i] = digit;
+        }
+    }
+    s->have_value = 1;
+    if (changed) s->present = 1;
+    return changed;
+}
 static WlfCallbackResponse store_value(selected *s) {
     ondas_wlf *r = s->owner;
+    if (deferred_bits(s)) {
+        s->dirty = 1;
+        return WLF_CONTINUE_SCAN;
+    }
     const void *value = wlfValueGetValue(s->value);
     if (!value) return callback_failure(r, "missing WLF value buffer");
     if (s->decl->out.encoding == 3) {
@@ -448,16 +515,6 @@ static WlfCallbackResponse store_value(selected *s) {
     else if (s->decl->datatype == wlfTypeInteger) {
         uint32_t bits; memcpy(&bits, value, 4);
         for (unsigned i = 0; i < 32; ++i) s->data[i] = (uint8_t)('0' + ((bits >> (31-i)) & 1));
-    } else {
-        const char *bits = wlfValueToString(s->value, WLF_RADIX_BINARY, (int)s->len + 128);
-        if (!bits || strlen(bits) != s->len) return callback_failure(r, "invalid WLF bit width");
-        if (!s->present || memcmp(s->data, bits, s->len) != 0) {
-            for (size_t i = 0; i < s->len; ++i) {
-                uint8_t digit = logic_digits[(unsigned char)bits[i]];
-                if (!digit) return callback_failure(r, "invalid WLF logic digit");
-                s->data[i] = digit;
-            }
-        }
     }
     s->present = 1;
     return WLF_CONTINUE_SCAN;
@@ -473,6 +530,13 @@ static WlfCallbackResponse change(void *data, WlfCallbackReason reason) {
     }
     if (tick < r->start || tick > r->end) return callback_failure(r, "invalid WLF callback time");
     if (r->have_tick && tick != r->tick) return callback_failure(r, "incomplete WLF tick boundary");
+    size_t index = (size_t)(s - r->selected);
+    if (!r->have_tick) {
+        r->pending_begin = index; r->pending_end = index + 1;
+    } else {
+        if (index < r->pending_begin) r->pending_begin = index;
+        if (index + 1 > r->pending_end) r->pending_end = index + 1;
+    }
     r->tick = tick; r->have_tick = 1;
     if (s->decl->out.encoding == 4) {
         if (reason == WLF_EVENT) {
@@ -498,8 +562,13 @@ static void *reserve_buffer(void *data, size_t *capacity, size_t needed, size_t 
 static int complete_tick(ondas_wlf *r) {
     if (!r->have_tick) return 1;
     size_t count = r->record_count, bytes = r->record_bytes_len;
-    for (size_t i = 0; i < r->selected_count; ++i) {
+    for (size_t i = r->pending_begin; i < r->pending_end; ++i) {
         selected *s = &r->selected[i];
+        /* Deferred conversion joins this pass: no extra walk over the selection. */
+        if (s->dirty) {
+            if (convert_deferred(s) < 0) return 0;
+            s->dirty = 0;
+        }
         if (!s->present) continue;
         if (count == SIZE_MAX || s->len > SIZE_MAX - bytes) return 0;
         ++count; bytes += s->len;
@@ -514,7 +583,7 @@ static int complete_tick(ondas_wlf *r) {
         if (!data) return 0;
         r->record_bytes = data;
     }
-    for (size_t i = 0; i < r->selected_count; ++i) {
+    for (size_t i = r->pending_begin; i < r->pending_end; ++i) {
         selected *s = &r->selected[i];
         if (!s->present) continue;
         buffered_record *record = &r->records[r->record_count++];
@@ -531,19 +600,83 @@ static WlfCallbackResponse before_tick(void *data, WlfTime64 tick, int delta) {
     (void)delta;
     ondas_wlf *r = data;
     if (r->have_tick && tick > r->tick) {
-        if (!complete_tick(r)) return callback_failure(r, "cannot buffer completed WLF tick");
-        if (r->record_count >= WLF_BATCH_RECORDS || r->record_bytes_len >= WLF_BATCH_BYTES) {
+        if (!complete_tick(r)) {
+            /* Keep a conversion cause from the deferred pass; only add the generic one. */
+            if (!*r->failure)
+                snprintf(r->failure, sizeof(r->failure), "%s", "cannot buffer completed WLF tick");
+            return WLF_ABORT_SCAN;
+        }
+        if (r->record_count >= r->batch_records || r->record_bytes_len >= WLF_BATCH_BYTES) {
             r->next_tick = tick; r->stopped = 1; return WLF_STOP_SCAN;
         }
     }
     return WLF_CONTINUE_SCAN;
 }
-int ondas_wlf_begin(ondas_wlf *r, const size_t *indices, size_t count, uint64_t start, uint64_t end, char *error, size_t cap) {
+/* The SDK search needs a registered callback. The hint produces no records. */
+static WlfCallbackResponse point_hint_event(void *data, WlfCallbackReason reason) {
+    (void)data; (void)reason;
+    return WLF_CONTINUE_SCAN;
+}
+/* Report a suffix start hint for one whole bit base near target. The hint is not
+ * proof: callers still prove values, missing samples and change times with the
+ * existing point traversal and full-prefix fallback. Each call owns a local pack
+ * and value, destroyed before returning; no pointer or state survives the call.
+ * An unavailable search is an optional miss and returns 0 with an empty error
+ * buffer; only a cleanup failure returns -1 and preserves the first SDK cause. */
+int ondas_wlf_point_start(ondas_wlf *r, size_t index, uint64_t target, uint64_t *start, char *error, size_t cap) {
+    /* A 0 return promises an empty error buffer, including every optional miss. */
+    if (error && cap) error[0] = 0;
+    ondas_wlf_end(r);
+    if (r->file) setCurrentNamespace(r->file);
+    if (!start || index >= r->count) return 0;
+    declaration *d = &r->decls[index];
+    const WlfTime64 first = r->info.startTime, last = r->info.lastTime;
+    if (d->out.encoding != 1 || d->out.id < 0) return 0;
+    /* Strictly interior target; target + 1 stays within the recorded end. */
+    if (target <= (uint64_t)first || target >= (uint64_t)last) return 0;
+    WlfPackId pack = wlfPackCreate();
+    if (!pack) return 0;
+    WlfValueId value = wlfValueCreate(d->symbol);
+    int unavailable = 0, hint = 0, cleanup = 0;
+    char cause[512] = "";
+    WlfTime64 found_time = -1;
+    int found_delta = 0, found = 0;
+    WlfTime64 end = first;
+    if (!value) {
+        unavailable = 1; sdk_failure(cause, sizeof(cause), -1);
+    } else if (wlfAddSignalEventCB(pack, d->symbol, value, WLF_REQUEST_IMMEDIATE, point_hint_event, NULL) != WLF_OK) {
+        unavailable = 1; sdk_failure(cause, sizeof(cause), -1);
+    } else if (wlfSearchForSignalEvent(pack, d->symbol, value, (WlfTime64)(target + 1), WLF_LAST_DELTA, 2,
+                                       wlfSearchReverse | wlfSearchAnyEdge | wlfSearchNoDeltas,
+                                       &found_time, &found_delta, &found, &end) != WLF_OK) {
+        unavailable = 1; sdk_failure(cause, sizeof(cause), -1);
+    } else if (found >= 2 && found_time >= first && (uint64_t)found_time <= target) {
+        *start = (uint64_t)found_time > (uint64_t)first + 1 ? (uint64_t)found_time - 1 : (uint64_t)first;
+        hint = 1;
+    }
+    /* Cleanup must not replace the first SDK cause. */
+    if (wlfPackDestroy(pack) != WLF_OK) {
+        cleanup = 1; if (!cause[0]) sdk_failure(cause, sizeof(cause), -1);
+    }
+    if (value && wlfValueDestroy(value) != WLF_OK) {
+        cleanup = 1; if (!cause[0]) sdk_failure(cause, sizeof(cause), -1);
+    }
+    if (cleanup) return fail(error, cap, -1, cause);
+    if (unavailable) return 0;
+    return hint;
+}
+static int begin_impl(ondas_wlf *r, const size_t *indices, size_t count, uint64_t start, uint64_t end, char *error, size_t cap, int point) {
     ondas_wlf_end(r);
     r->start = start > (uint64_t)r->info.lastTime ? r->info.lastTime : (start > (uint64_t)r->info.startTime ? (WlfTime64)start : r->info.startTime);
     r->end = end < (uint64_t)r->info.lastTime ? (WlfTime64)end : r->info.lastTime;
     r->finished = start > (uint64_t)r->info.lastTime || r->end < r->start || !count;
     r->failure[0] = 0; r->cursor = 0; r->have_tick = 0;
+    if (point || count >= WLF_BATCH_RECORDS / 2) r->batch_records = WLF_BATCH_RECORDS;
+    else {
+        size_t quota = count * 2;
+        if (quota < WLF_FIRST_BATCH_RECORDS) quota = WLF_FIRST_BATCH_RECORDS;
+        r->batch_records = quota;
+    }
     if (r->finished) return 0;
     r->selected = calloc(count, sizeof(*r->selected));
     if (!r->selected) return fail(error, cap, -1, "cannot allocate WLF selection");
@@ -566,6 +699,12 @@ int ondas_wlf_begin(ondas_wlf *r, const size_t *indices, size_t count, uint64_t 
     if (wlfAddPreTimeDeltaCB(r->pack, before_tick, NULL, r) != WLF_OK) return sdk_error(error, cap);
     return 0;
 }
+int ondas_wlf_begin(ondas_wlf *r, const size_t *indices, size_t count, uint64_t start, uint64_t end, char *error, size_t cap) {
+    return begin_impl(r, indices, count, start, end, error, cap, 0);
+}
+int ondas_wlf_begin_point(ondas_wlf *r, const size_t *indices, size_t count, uint64_t start, uint64_t end, char *error, size_t cap) {
+    return begin_impl(r, indices, count, start, end, error, cap, 1);
+}
 int ondas_wlf_next(ondas_wlf *r, ondas_wlf_record *out, char *error, size_t cap) {
     setCurrentNamespace(r->file);
     for (;;) {
@@ -577,13 +716,20 @@ int ondas_wlf_next(ondas_wlf *r, ondas_wlf_record *out, char *error, size_t cap)
         }
         if (*r->failure) return fail(error, cap, -1, r->failure);
         if (r->finished) return 0;
+        /* Grow only on a later request after a nonempty drained batch. */
+        if (r->record_count > 0) r->batch_records = WLF_BATCH_RECORDS;
         r->record_count = 0; r->record_bytes_len = 0; r->cursor = 0;
         r->have_tick = 0; r->stopped = 0;
         int code = wlfReadDataOverRange(r->pack, r->start, r->start == r->info.startTime ? r->info.startDelta : 0, r->end, WLF_LAST_DELTA, NULL, NULL, NULL);
         if (code != WLF_OK && !*r->failure) {
             sdk_error(r->failure, sizeof(r->failure));
         }
-        if (!*r->failure && !complete_tick(r)) snprintf(r->failure, sizeof(r->failure), "cannot buffer completed WLF tick");
+        if (!*r->failure) {
+            /* A deferred conversion can set the cause here; keep it and add the
+             * generic buffer message only when no cause exists yet. */
+            if (!complete_tick(r) && !*r->failure)
+                snprintf(r->failure, sizeof(r->failure), "%s", "cannot buffer completed WLF tick");
+        }
         if (r->stopped) {
             if (r->next_tick <= r->start) return fail(error, cap, -1, "WLF range made no progress");
             r->start = r->next_tick;

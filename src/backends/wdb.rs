@@ -99,6 +99,13 @@ unsafe extern "C" {
         error: *mut c_char,
         cap: usize,
     ) -> c_int;
+    fn ondas_wdb_begin_points(
+        handle: *mut c_void,
+        ids: *const u64,
+        count: usize,
+        error: *mut c_char,
+        cap: usize,
+    ) -> i32;
     fn ondas_wdb_sample_bits(
         reader: *mut c_void,
         id: u64,
@@ -529,12 +536,10 @@ impl Reader {
         let _lock = lock();
         // SAFETY: live exclusive owner; validated IDs and caller-owned error storage.
         let code = unsafe {
-            ondas_wdb_begin(
+            ondas_wdb_begin_points(
                 traversal.0.0.as_ptr(),
                 ids.as_ptr(),
                 ids.len(),
-                0,
-                time.ticks(),
                 error.as_mut_ptr(),
                 error.len(),
             )

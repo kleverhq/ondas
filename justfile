@@ -73,6 +73,7 @@ conformance-wlf: _inside
 _conformance-wlf: _inside
     cargo test --locked --profile conformance --features wlf-lib --test conformance wlf_ -- --ignored --nocapture
     cargo test --locked --profile conformance --features wlf-lib --test wlf_lib -- --ignored
+    cargo test --locked --profile conformance --features wlf-lib --test wlf_lifecycle -- --ignored --nocapture
     cargo test --locked --profile conformance --features wlf-lib --lib wlf_ -- --ignored
     cargo test --locked --profile conformance --features wlf-lib --test exact_names wlf_ -- --ignored
 
