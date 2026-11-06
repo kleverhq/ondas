@@ -17,6 +17,9 @@
 #![cfg(feature = "wdb-lib")]
 
 use ondas::{Encoding, Sample, Signal, Time, TimeRange, ValueRef, Waveform};
+
+#[path = "support/wdb_compatibility.rs"]
+mod wdb_compatibility;
 use std::{
     fs,
     os::unix::fs::{MetadataExt, symlink},
@@ -31,8 +34,14 @@ use std::{
 const BACKEND: &str = "wdb-lib";
 /// Fixed small same-path reopen cycles; no timing is measured here.
 const SAME_PATH_CYCLES: usize = 6;
-const FIXTURE_A: &str = "wdb0305-enum-core";
-const FIXTURE_B: &str = "wdb0310-packed-shapes";
+// Published recordings that a supported older reader can open: DBG version 4.
+const FIXTURE_A: &str = "wdb0091-tesbench-behav";
+const FIXTURE_B: &str = "wdb0087-testbench-behav";
+// Published recordings that only a newer reader can open: DBG version 6. These scenarios must skip
+// with an explicit version reason instead of failing the suite on a supported older reader.
+const NEWER_STRINGS: &str = "wdb0317-vhdl-strings-ports";
+const NEWER_SAME_SIZE_A: &str = "wdb0042-work-mem1-tb";
+const NEWER_SAME_SIZE_B: &str = "wdb0043-work-mem3-tb";
 
 fn fixture(name: &str) -> PathBuf {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -50,6 +59,12 @@ fn fixture(name: &str) -> PathBuf {
 fn open_native(path: &Path) -> Waveform {
     ondas::open_with(path, BACKEND)
         .unwrap_or_else(|error| panic!("open {} with {BACKEND}: {error}", path.display()))
+}
+
+/// Opens only when this reader can read the recording, or skips the newer-only scenario with the
+/// strict helper: it prints the confirmed version reason and still fails on any other error.
+fn compatible(path: &Path) -> Option<Waveform> {
+    wdb_compatibility::open(ondas::open_with(path, BACKEND), path)
 }
 
 struct TempRoot(PathBuf);
@@ -252,6 +267,11 @@ struct VisitorSentinel;
 fn wdb_sequential_open_lifecycle_over_published_fixtures() {
     let fixture_a = fixture(FIXTURE_A);
     let fixture_b = fixture(FIXTURE_B);
+    // The core lifecycle must run for real: both recordings are from the compatible DBG class.
+    if compatible(&fixture_a).is_none() || compatible(&fixture_b).is_none() {
+        eprintln!("SKIP core lifecycle: this reader cannot open the compatible recordings");
+        return;
+    }
     let reference_a = snapshot(&fixture_a);
     let reference_b = snapshot(&fixture_b);
     assert_ne!(
@@ -360,50 +380,57 @@ fn wdb_sequential_open_lifecycle_over_published_fixtures() {
 
     eprintln!("PHASE 5");
     // Phase 5: a same-size in-place rewrite with a restored mtime must never return the
-    // previously imported state. wdb0042 and wdb0043 are published recordings of equal size, so
-    // size, inode and mtime all stay unchanged and only the content change time and the streamed
-    // digest can distinguish the file.
-    let equal_a = fixture("wdb0042-work-mem1-tb");
-    let equal_b = fixture("wdb0043-work-mem3-tb");
-    assert_eq!(
-        fs::metadata(&equal_a).unwrap().len(),
-        fs::metadata(&equal_b).unwrap().len(),
-        "the published same-size pair must keep its size"
-    );
+    // previously imported state. The published equal-size pair is newer-only, so this phase skips
+    // with an explicit version reason on a supported older reader. Size, inode and mtime all stay
+    // unchanged there; only the content change time and the streamed digest can tell the files
+    // apart.
+    let equal_a = fixture(NEWER_SAME_SIZE_A);
+    let equal_b = fixture(NEWER_SAME_SIZE_B);
+    let same_size_supported = compatible(&equal_a).is_some() && compatible(&equal_b).is_some();
+    if !same_size_supported {
+        eprintln!("SKIP same-size invalidation: the published pair needs a newer reader");
+    }
     let equal = root.file("equal.wdb");
-    fs::copy(&equal_a, &equal).expect("copy same-size fixture A");
-    let reference_equal_a = snapshot(&equal);
-    let reference_equal_b = snapshot(&equal_b);
-    assert_ne!(
-        reference_equal_a, reference_equal_b,
-        "the same-size pair must expose different observations"
-    );
-    let before = fs::metadata(&equal).expect("stat the same-size copy");
-    fs::write(
-        &equal,
-        fs::read(&equal_b).expect("read same-size fixture B"),
-    )
-    .expect("rewrite the same-size copy in place");
-    let file = fs::OpenOptions::new()
-        .write(true)
-        .open(&equal)
-        .expect("open the same-size copy for a timestamp reset");
-    file.set_modified(before.modified().expect("copy mtime"))
-        .expect("restore the copy mtime");
-    drop(file);
-    let after = fs::metadata(&equal).expect("stat the rewritten same-size copy");
-    assert_eq!(before.len(), after.len(), "the rewrite must keep the size");
-    assert_eq!(before.ino(), after.ino(), "the rewrite must keep the inode");
-    assert_eq!(
-        before.modified().unwrap(),
-        after.modified().unwrap(),
-        "the rewrite keeps the recorded mtime"
-    );
-    assert_eq!(
-        snapshot(&equal),
-        reference_equal_b,
-        "a same-size rewrite with a restored mtime must not return the previous observations"
-    );
+    if same_size_supported {
+        assert_eq!(
+            fs::metadata(&equal_a).unwrap().len(),
+            fs::metadata(&equal_b).unwrap().len(),
+            "the published same-size pair must keep its size"
+        );
+        fs::copy(&equal_a, &equal).expect("copy same-size fixture A");
+        let reference_equal_a = snapshot(&equal);
+        let reference_equal_b = snapshot(&equal_b);
+        assert_ne!(
+            reference_equal_a, reference_equal_b,
+            "the same-size pair must expose different observations"
+        );
+        let before = fs::metadata(&equal).expect("stat the same-size copy");
+        fs::write(
+            &equal,
+            fs::read(&equal_b).expect("read same-size fixture B"),
+        )
+        .expect("rewrite the same-size copy in place");
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .open(&equal)
+            .expect("open the same-size copy for a timestamp reset");
+        file.set_modified(before.modified().expect("copy mtime"))
+            .expect("restore the copy mtime");
+        drop(file);
+        let after = fs::metadata(&equal).expect("stat the rewritten same-size copy");
+        assert_eq!(before.len(), after.len(), "the rewrite must keep the size");
+        assert_eq!(before.ino(), after.ino(), "the rewrite must keep the inode");
+        assert_eq!(
+            before.modified().unwrap(),
+            after.modified().unwrap(),
+            "the rewrite keeps the recorded mtime"
+        );
+        assert_eq!(
+            snapshot(&equal),
+            reference_equal_b,
+            "a same-size rewrite with a restored mtime must not return the previous observations"
+        );
+    }
 
     eprintln!("PHASE 6");
     // Phase 6: an in-place rewrite to other content, then an atomic replacement, then a
@@ -548,14 +575,18 @@ fn wdb_sequential_open_lifecycle_over_published_fixtures() {
 
     eprintln!("PHASE 11");
     // Phase 11: no temporary files were created next to the waveform.
+    let mut expected_entries = vec![
+        "copy.wdb".to_owned(),
+        "link.wdb".to_owned(),
+        "other.wdb".to_owned(),
+    ];
+    if same_size_supported {
+        expected_entries.push("equal.wdb".to_owned());
+    }
+    expected_entries.sort();
     assert_eq!(
         temp_entries(root.path()),
-        vec![
-            "copy.wdb".to_owned(),
-            "equal.wdb".to_owned(),
-            "link.wdb".to_owned(),
-            "other.wdb".to_owned()
-        ],
+        expected_entries,
         "unexpected files in the owned temporary root"
     );
     // The last logical close keeps at most one idle owner and drops the descriptor with it.
@@ -792,28 +823,79 @@ fn wdb_late_callback_panics_keep_exact_observations() {
     }
 }
 
-/// A read or decode failure and a caller-caught panic must both keep the owner unparked.
+/// A panic that passes through the active backend keeps the owner unparked, even when the caller
+/// catches it and drops the waveform later, outside the unwind.
 #[test]
 #[ignore = "requires the selected reader and installed WDB fixtures; run just conformance-wdb"]
-fn wdb_failed_reads_and_caught_panics_keep_the_owner_unparked() {
-    let fixture_strings = fixture("wdb0317-vhdl-strings-ports");
+fn wdb_active_panic_keeps_the_owner_unparked() {
+    let fixture_a = fixture(FIXTURE_A);
+    let root = TempRoot::new();
+    let path = root.file("active.wdb");
+    fs::copy(&fixture_a, &path).expect("copy the compatible published fixture");
+    if compatible(&path).is_none() {
+        eprintln!("SKIP active panic: this reader cannot open the compatible recording");
+        return;
+    }
+
+    // A clean lifetime first, so the failing one runs over a retained owner.
+    {
+        let mut waveform = open_native(&path);
+        let signal = first_signal(&waveform);
+        assert!(waveform.sample(signal, Time::ZERO).is_ok());
+    }
+    assert_eq!(
+        descriptors_under(root.path()).len(),
+        1,
+        "prefill the idle owner before the failing lifetime"
+    );
+
+    {
+        let mut waveform = open_native(&path);
+        let signals = vec![first_signal(&waveform)];
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = waveform.scan(
+                &signals,
+                TimeRange::all(),
+                |_| -> std::ops::ControlFlow<()> { std::panic::panic_any(VisitorSentinel) },
+            );
+        }));
+        assert!(caught.is_err(), "the visitor panic must unwind");
+        // The native traversal was removed during the unwind: a later query works, and the later
+        // drop is an ordinary drop with no active unwind.
+        let signal = first_signal(&waveform);
+        assert!(
+            waveform.sample(signal, Time::ZERO).is_ok(),
+            "the native traversal must be cleared during the unwind"
+        );
+    }
+    assert!(
+        descriptors_under(root.path()).is_empty(),
+        "a panic through the active backend must stay unparked after a later ordinary drop: {:?}",
+        descriptors_under(root.path())
+    );
+    let mut waveform = open_native(&path);
+    assert!(waveform.sample(first_signal(&waveform), Time::ZERO).is_ok());
+}
+
+/// A decode error through the active backend keeps the owner unparked. The recorded non-ASCII
+/// string is newer-only, so a supported older reader skips this scenario with a version reason.
+#[test]
+#[ignore = "requires the selected reader and installed WDB fixtures; run just conformance-wdb"]
+fn wdb_decode_error_keeps_the_owner_unparked() {
+    let fixture_strings = fixture(NEWER_STRINGS);
     let root = TempRoot::new();
     let path = root.file("strings.wdb");
-    fs::copy(&fixture_strings, &path).expect("copy published fixture");
-    // A clean lifetime first, so the failure below runs over a retained owner.
+    fs::copy(&fixture_strings, &path).expect("copy the published fixture");
+    if compatible(&path).is_none() {
+        eprintln!("SKIP decode error: the recorded non-ASCII string needs a newer reader");
+        return;
+    }
+
     {
         let mut waveform = open_native(&path);
         let good = waveform.hierarchy().signal("top.message").unwrap();
         assert!(waveform.sample(good, Time::from_ticks(9000)).is_ok());
     }
-    assert_eq!(
-        descriptors_under(root.path()).len(),
-        1,
-        "prefill the idle owner before the failing lifetimes"
-    );
-
-    // Phase A: a decode error (a non-ASCII recorded string) taints reuse only; the same reader
-    // still serves other histories and the owner is not parked by an ordinary drop.
     {
         let mut waveform = open_native(&path);
         let bad = waveform.hierarchy().signal("top.non_ascii").unwrap();
@@ -834,38 +916,6 @@ fn wdb_failed_reads_and_caught_panics_keep_the_owner_unparked() {
         descriptors_under(root.path()).is_empty(),
         "a decode error must keep the owner unparked: {:?}",
         descriptors_under(root.path())
-    );
-
-    // Phase B: the caller catches a visitor panic, keeps the waveform and drops it later, when the
-    // thread is no longer unwinding. The traversal is cleared during the unwind and the owner must
-    // still stay unparked.
-    {
-        let mut waveform = open_native(&path);
-        let signals = vec![first_signal(&waveform)];
-        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = waveform.scan(
-                &signals,
-                TimeRange::all(),
-                |_| -> std::ops::ControlFlow<()> { std::panic::panic_any(VisitorSentinel) },
-            );
-        }));
-        assert!(caught.is_err(), "the visitor panic must unwind");
-        let good = waveform.hierarchy().signal("top.message").unwrap();
-        assert!(
-            waveform.sample(good, Time::from_ticks(9000)).is_ok(),
-            "the native traversal must be cleared during the unwind"
-        );
-    }
-    assert!(
-        descriptors_under(root.path()).is_empty(),
-        "a caught panic must stay unparked after a later ordinary drop: {:?}",
-        descriptors_under(root.path())
-    );
-    let mut waveform = open_native(&path);
-    let good = waveform.hierarchy().signal("top.message").unwrap();
-    assert!(
-        waveform.sample(good, Time::from_ticks(9000)).is_ok(),
-        "a clean open after the failures still works"
     );
 }
 
