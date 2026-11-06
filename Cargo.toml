@@ -18,7 +18,7 @@ exclude = ["fixtures/**"]
 fsdb-lib = ["dep:cc"]
 shm-lib = ["dep:cc"]
 wlf-lib = ["dep:cc", "dep:sha2", "dep:libc"]
-wdb-lib = ["dep:cc"]
+wdb-lib = ["dep:cc", "dep:sha2", "dep:libc"]
 
 [build-dependencies]
 cc = { version = "1", optional = true }

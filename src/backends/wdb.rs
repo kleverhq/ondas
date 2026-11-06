@@ -4,14 +4,19 @@ use crate::{
     Packing, Result, Signal, Time, TimeSpan, TimeUnit, Timescale, ValueRef,
     hierarchy::{EnumerationData, ScopeData, VariableData},
 };
+use sha2::{Digest, Sha256};
 use std::{
     ffi::{CStr, CString, c_char, c_int, c_void},
     io::{Read, Seek, SeekFrom},
     ops::ControlFlow,
     os::unix::ffi::OsStrExt,
+    os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::Path,
     ptr::NonNull,
-    sync::Mutex,
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 const BACKEND: &str = "wdb-lib";
 static SDK: Mutex<()> = Mutex::new(());
@@ -19,7 +24,7 @@ fn lock() -> std::sync::MutexGuard<'static, ()> {
     SDK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 #[repr(C)]
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 struct Meta {
     last: u64,
     precision: i32,
@@ -78,6 +83,8 @@ unsafe extern "C" {
         error: *mut c_char,
         cap: usize,
     ) -> c_int;
+    fn ondas_wdb_validate_runtime(error: *mut c_char, cap: usize) -> c_int;
+    fn ondas_wdb_release_indexes(reader: *mut c_void, error: *mut c_char, cap: usize) -> c_int;
     fn ondas_wdb_close(reader: *mut c_void);
     fn ondas_wdb_metadata(reader: *mut c_void, out: *mut Meta);
     fn ondas_wdb_decl_count(reader: *mut c_void) -> usize;
@@ -130,6 +137,21 @@ fn backend_error(message: impl Into<String>) -> Error {
         backend: BACKEND.into(),
         operation: "decode",
         message: message.into(),
+    }
+}
+// Any native failure makes this logical owner unusable for reuse.
+fn status_reusable(
+    reusable: &AtomicBool,
+    code: c_int,
+    error: &[c_char; 512],
+    operation: &'static str,
+) -> Result<()> {
+    match status(code, error, operation) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            reusable.store(false, Ordering::Relaxed);
+            Err(error)
+        }
     }
 }
 fn status(code: c_int, error: &[c_char; 512], operation: &'static str) -> Result<()> {
@@ -248,12 +270,8 @@ impl Drop for Handle {
         unsafe { ondas_wdb_close(self.0.as_ptr()) };
     }
 }
-fn open_handle(path: &Path, metadata_only: bool) -> Result<Handle> {
-    let operation = if metadata_only {
-        "read metadata"
-    } else {
-        "open"
-    };
+// File-only container preflight. Runs on every logical open, including a reuse hit.
+fn preflight(path: &Path, operation: &'static str) -> Result<(CString, std::fs::File, u64)> {
     let malformed = || Error::Malformed {
         format: Format::Wdb,
         backend: BACKEND.into(),
@@ -283,6 +301,27 @@ fn open_handle(path: &Path, metadata_only: bool) -> Result<Handle> {
             "NUL in WDB path",
         ))
     })?;
+    Ok((path, file, length))
+}
+// SDK selection guards without creating a reader; used when a retained owner is reused.
+fn validate_runtime() -> Result<()> {
+    let mut error = [0; 512];
+    let _lock = lock();
+    // SAFETY: caller-owned error storage; the shim performs no reader work.
+    let code = unsafe { ondas_wdb_validate_runtime(error.as_mut_ptr(), error.len()) };
+    status(code, &error, "open")
+}
+fn native_open(
+    path: &CString,
+    metadata_only: bool,
+    file: &mut std::fs::File,
+    length: u64,
+) -> Result<Handle> {
+    let operation = if metadata_only {
+        "read metadata"
+    } else {
+        "open"
+    };
     let mut raw = std::ptr::null_mut();
     let mut error = [0; 512];
     {
@@ -303,7 +342,7 @@ fn open_handle(path: &Path, metadata_only: bool) -> Result<Handle> {
             let reader_version = env!("ONDAS_WDB_DBG_VERSION").parse::<u16>().unwrap();
             if code == -1
                 && reader_version != 0
-                && let Ok(Some(version)) = dbg_version(&mut file, length)
+                && let Ok(Some(version)) = dbg_version(file, length)
                 && version > reader_version
             {
                 return Err(Error::UnsupportedFeature {
@@ -352,7 +391,9 @@ fn metadata(meta: Meta, source_name: String) -> Result<Metadata> {
     })
 }
 pub(crate) fn read_metadata(path: &Path, name: String) -> Result<Metadata> {
-    let handle = open_handle(path, true)?;
+    let (path, mut file, length) = preflight(path, "read metadata")?;
+    evict_idle();
+    let handle = native_open(&path, true, &mut file, length)?;
     let mut meta = Meta::default();
     // SAFETY: live owner; this reads only the immutable shim-owned descriptor.
     unsafe { ondas_wdb_metadata(handle.0.as_ptr(), &mut meta) };
@@ -366,15 +407,237 @@ impl Drop for Traversal<'_> {
         unsafe { ondas_wdb_end(self.0.0.as_ptr()) };
     }
 }
-pub(crate) struct Reader {
-    handle: Handle,
+// Metadata of a regular file. Coarse timestamps alone are not a freshness proof.
+#[derive(Clone, PartialEq, Eq)]
+struct NativeMetadata {
+    dev: u64,
+    ino: u64,
+    size: u64,
+    mtime: i64,
+    mtime_nsec: i64,
+    ctime: i64,
+    ctime_nsec: i64,
+}
+// Full identity of the file that a native open was created from.
+#[derive(Clone, PartialEq, Eq)]
+struct NativeIdentity {
+    metadata: NativeMetadata,
+    digest: [u8; 32],
+}
+fn metadata_key(meta: &std::fs::Metadata) -> Option<NativeMetadata> {
+    meta.file_type().is_file().then(|| NativeMetadata {
+        dev: meta.dev(),
+        ino: meta.ino(),
+        size: meta.size(),
+        mtime: meta.mtime(),
+        mtime_nsec: meta.mtime_nsec(),
+        ctime: meta.ctime(),
+        ctime_nsec: meta.ctime_nsec(),
+    })
+}
+fn file_metadata(path: &[u8]) -> Option<NativeMetadata> {
+    metadata_key(&std::fs::metadata(std::ffi::OsStr::from_bytes(path)).ok()?)
+}
+// Streamed content identity. Any stat, access, type or IO failure is an optional miss, and
+// no bytes are retained. O_NONBLOCK keeps a replacement FIFO from blocking this optional open.
+fn content_identity(path: &[u8]) -> Option<NativeIdentity> {
+    let before = file_metadata(path)?;
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(std::ffi::OsStr::from_bytes(path))
+        .ok()?;
+    // The descriptor must still be the regular file named by the path metadata.
+    if metadata_key(&file.metadata().ok()?)? != before {
+        return None;
+    }
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    let mut remaining = before.size;
+    while remaining > 0 {
+        let want = remaining.min(buffer.len() as u64) as usize;
+        let read = file.read(&mut buffer[..want]).ok()?;
+        if read == 0 {
+            return None;
+        }
+        hasher.update(&buffer[..read]);
+        remaining -= read as u64;
+    }
+    // One extra byte proves that the content did not grow past the recorded size.
+    let mut extra = [0u8; 1];
+    if file.read(&mut extra).ok()? != 0 {
+        return None;
+    }
+    if metadata_key(&file.metadata().ok()?)? != before
+        || file_metadata(path) != Some(before.clone())
+    {
+        return None;
+    }
+    let mut digest = [0u8; 32];
+    digest.copy_from_slice(&hasher.finalize());
+    Some(NativeIdentity {
+        metadata: before,
+        digest,
+    })
+}
+// Immutable Rust presentation of one imported native declaration table.
+struct Presentation {
     ids: Vec<u64>,
     indices: Vec<usize>,
     encodings: Vec<Encoding>,
+    hierarchy: Hierarchy,
+    meta: Meta,
+}
+struct Idle {
+    path: Vec<u8>,
+    identity: NativeIdentity,
+    handle: Handle,
+    presentation: Presentation,
+}
+// At most one closed, fully validated owner waits for the next logical open.
+static IDLE: Mutex<Option<Idle>> = Mutex::new(None);
+fn take_idle(path: &[u8], identity: &NativeIdentity) -> Option<Idle> {
+    let _lock = lock();
+    let mut idle = IDLE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let candidate = idle.as_ref()?;
+    if candidate.path.as_slice() == path && &candidate.identity == identity {
+        idle.take()
+    } else {
+        None
+    }
+}
+// Destroys the idle owner before any SDK activity. The handle is dropped after the lock.
+fn evict_idle() {
+    let stale = {
+        let _lock = lock();
+        IDLE.lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+    };
+    drop(stale);
+}
+pub(crate) struct Reader {
+    handle: Option<Handle>,
+    ids: Vec<u64>,
+    indices: Vec<usize>,
+    encodings: Vec<Encoding>,
+    // Retained immutable hierarchy data for the next logical open.
+    hierarchy: Option<Hierarchy>,
+    meta: Meta,
+    path: Vec<u8>,
+    identity: Option<NativeIdentity>,
+    reusable: AtomicBool,
+}
+impl Drop for Reader {
+    fn drop(&mut self) {
+        let Some(handle) = self.handle.take() else {
+            return;
+        };
+        let Some(identity) = self.identity.take() else {
+            return;
+        };
+        // A tainted or unwinding logical reader never becomes the idle owner.
+        if !self.reusable.load(Ordering::Relaxed) || std::thread::panicking() {
+            return;
+        }
+        let mut replaced = None;
+        {
+            let _lock = lock();
+            // SAFETY: exclusive live owner; traversal goes before the indexes it references.
+            unsafe { ondas_wdb_end(handle.0.as_ptr()) };
+            let mut error = [0; 512];
+            // SAFETY: live owner; the shim deletes only adapter-created SDK indexes.
+            let code = unsafe {
+                ondas_wdb_release_indexes(handle.0.as_ptr(), error.as_mut_ptr(), error.len())
+            };
+            if code >= 0 {
+                let idle = Idle {
+                    path: std::mem::take(&mut self.path),
+                    identity,
+                    handle,
+                    presentation: Presentation {
+                        ids: std::mem::take(&mut self.ids),
+                        indices: std::mem::take(&mut self.indices),
+                        encodings: std::mem::take(&mut self.encodings),
+                        hierarchy: self
+                            .hierarchy
+                            .take()
+                            .expect("live reader retains its hierarchy"),
+                        meta: self.meta,
+                    },
+                };
+                replaced = IDLE
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .replace(idle);
+            }
+        }
+        drop(replaced);
+    }
 }
 impl Reader {
     pub(crate) fn open(path: &Path, name: String) -> Result<(Self, Hierarchy, Metadata)> {
-        let handle = open_handle(path, false)?;
+        let (path, mut file, length) = preflight(path, "open")?;
+        let path_bytes = path.as_bytes().to_vec();
+        let identity = content_identity(&path_bytes);
+        let hit = match identity.as_ref() {
+            Some(identity) => take_idle(&path_bytes, identity),
+            None => None,
+        };
+        let (handle, presentation) = match hit {
+            Some(idle) => {
+                // The guards must hold for a retained owner exactly as for a fresh open.
+                validate_runtime()?;
+                (idle.handle, idle.presentation)
+            }
+            None => {
+                // A different path, a failed identity or a metadata-only request invalidates
+                // the idle owner before any SDK activity.
+                evict_idle();
+                let handle = native_open(&path, false, &mut file, length)?;
+                let presentation = build_presentation(&handle)?;
+                (handle, presentation)
+            }
+        };
+        Self::retained(handle, presentation, path_bytes, identity, name)
+    }
+
+    // Builds a new logical reader over already imported immutable declarations.
+    fn retained(
+        handle: Handle,
+        presentation: Presentation,
+        path: Vec<u8>,
+        identity: Option<NativeIdentity>,
+        name: String,
+    ) -> Result<(Self, Hierarchy, Metadata)> {
+        let Presentation {
+            ids,
+            indices,
+            encodings,
+            hierarchy,
+            meta,
+        } = presentation;
+        let metadata = metadata(meta, name)?;
+        Ok((
+            Self {
+                handle: Some(handle),
+                ids,
+                indices,
+                encodings,
+                hierarchy: Some(hierarchy.clone()),
+                meta,
+                path,
+                identity,
+                reusable: AtomicBool::new(true),
+            },
+            hierarchy.reopened(),
+            metadata,
+        ))
+    }
+}
+
+fn build_presentation(handle: &Handle) -> Result<Presentation> {
+    {
         let mut scopes = Vec::new();
         let mut variables = Vec::new();
         let mut ids = Vec::new();
@@ -508,19 +771,16 @@ impl Reader {
                 }
             }
         }
-        let metadata = metadata(meta, name)?;
-        let hierarchy = Hierarchy::new(scopes, variables, encodings.clone());
-        Ok((
-            Self {
-                handle,
-                ids,
-                indices,
-                encodings,
-            },
-            hierarchy,
-            metadata,
-        ))
+        Ok(Presentation {
+            ids,
+            indices,
+            hierarchy: Hierarchy::new(scopes, variables, encodings.clone()),
+            encodings,
+            meta,
+        })
     }
+}
+impl Reader {
     pub(crate) fn sample_bits(
         &mut self,
         bases: &[Signal],
@@ -531,7 +791,11 @@ impl Reader {
             .iter()
             .map(|signal| self.ids[signal.index()])
             .collect();
-        let traversal = Traversal(&mut self.handle);
+        let handle = self
+            .handle
+            .as_mut()
+            .ok_or_else(|| backend_error("WDB reader is closed"))?;
+        let traversal = Traversal(handle);
         let mut error = [0; 512];
         let _lock = lock();
         // SAFETY: live exclusive owner; validated IDs and caller-owned error storage.
@@ -544,7 +808,7 @@ impl Reader {
                 error.len(),
             )
         };
-        status(code, &error, "begin read")?;
+        status_reusable(&self.reusable, code, &error, "begin read")?;
         let mut samples = Vec::with_capacity(signals.len());
         for &signal in signals {
             let width = signal
@@ -567,7 +831,7 @@ impl Reader {
                     error.len(),
                 )
             };
-            status(code, &error, "sample")?;
+            status_reusable(&self.reusable, code, &error, "sample")?;
             samples.push(if code == 0 {
                 crate::Sample::Missing { signal }
             } else {
@@ -615,7 +879,11 @@ impl Reader {
             .iter()
             .map(|signal| self.ids[signal.index()])
             .collect();
-        let traversal = Traversal(&mut self.handle);
+        let handle = self
+            .handle
+            .as_mut()
+            .ok_or_else(|| backend_error("WDB reader is closed"))?;
+        let traversal = Traversal(handle);
         let mut error = [0; 512];
         {
             let _lock = lock();
@@ -631,7 +899,7 @@ impl Reader {
                     error.len(),
                 )
             };
-            status(code, &error, "begin read")?;
+            status_reusable(&self.reusable, code, &error, "begin read")?;
         }
         let mut bytes = Vec::new();
         let mut previous = 0;
@@ -649,7 +917,7 @@ impl Reader {
                         error.len(),
                     )
                 };
-                status(code, &error, "read")?;
+                status_reusable(&self.reusable, code, &error, "read")?;
                 if code == 0 {
                     break;
                 }
@@ -843,7 +1111,8 @@ mod tests {
     fn wdb_invalid_native_metadata_indices() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("fixtures/wdb/wdb0091-tesbench-behav/waveform.wdb");
-        let handle = open_handle(&path, false).unwrap();
+        let (path, mut file, length) = preflight(&path, "open").unwrap();
+        let handle = native_open(&path, false, &mut file, length).unwrap();
         let raw = handle.0.as_ptr();
         let mut declaration = Declaration::default();
         let (mut bits, mut label) = (std::ptr::null(), std::ptr::null());

@@ -190,4 +190,30 @@ int main() {
     assert(ondas_wdb_begin_points(&reader, &fresh, 1, error, sizeof(error)) == 0 && manager.scans == scans);
     ondas_wdb_end(&reader); ondas_wdb_end(&reader);
     assert(point(reader, fresh, 0).status == -1);
+
+    // Owner-level index accounting: park deletes every adapter-created SDK index exactly once,
+    // clears the traversal first, and a second release cannot delete anything again.
+    assert(ondas_wdb_begin_points(&reader, ids.data(), ids.size(), error, sizeof(error)) == 0);
+    assert(ondas_wdb_begin(&reader, &fresh, 1, 0, 100, error, sizeof(error)) == 0);
+    ondas_wdb_end(&reader);
+    auto owned = reader.histories.size();
+    assert(owned > 0);
+    auto before_release = manager.removals;
+    assert(ondas_wdb_release_indexes(&reader, error, sizeof(error)) == 0);
+    assert(!reader.traversal);
+    assert(reader.histories.empty());
+    assert(manager.removals == before_release + owned);
+    auto after_release = manager.removals;
+    assert(ondas_wdb_release_indexes(&reader, error, sizeof(error)) == 0);
+    assert(manager.removals == after_release);
+    // A released owner must be able to create and load the same indexes again, and an active
+    // traversal must be dropped before its indexes are deleted.
+    assert(ondas_wdb_begin_points(&reader, ids.data(), ids.size(), error, sizeof(error)) == 0);
+    assert(point(reader, 1, 9).status == 1);
+    auto recreated = reader.histories.size();
+    assert(recreated > 0);
+    before_release = manager.removals;
+    assert(ondas_wdb_release_indexes(&reader, error, sizeof(error)) == 0);
+    assert(!reader.traversal && reader.histories.empty());
+    assert(manager.removals == before_release + recreated);
 }

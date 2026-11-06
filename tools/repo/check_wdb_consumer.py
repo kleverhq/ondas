@@ -12,6 +12,20 @@ ROOT = Path(__file__).resolve().parents[2]
 SOURCE = r"""
 fn main() {
     let path = std::env::args_os().nth(1).expect("WDB path");
+    if std::env::args().nth(2).as_deref() == Some("guard-hit") {
+        // A clean lifetime leaves the idle owner; the next logical open must still run the
+        // runtime selection guards instead of trusting the retained native reader.
+        drop(ondas::open_with(&path, "wdb-lib").unwrap());
+        // SAFETY: this check is a single-threaded standalone consumer and owns its environment.
+        unsafe { std::env::set_var("RDI_DATADIR", std::env::args_os().nth(3).expect("wrong data path")) };
+        let error = ondas::open_with(&path, "wdb-lib")
+            .err()
+            .expect("wrong data selection on a retained owner");
+        assert!(matches!(&error, ondas::Error::UnsupportedFeature { message, .. }
+            if message.contains("RDI_DATADIR")));
+        println!("WDB data selection rejected on a retained owner");
+        return;
+    }
     if std::env::args().nth(2).as_deref() == Some("guard") {
         let error = ondas::open_with(&path, "wdb-lib").err().expect("wrong data selection");
         assert!(matches!(&error, ondas::Error::UnsupportedFeature { message, .. }
@@ -81,6 +95,16 @@ def main():
         )
         guard.check_returncode()
         assert guard.stdout == "WDB data selection rejected\n", guard.stdout
+        env["RDI_DATADIR"] = str(sdk / "data")
+        retained = subprocess.run(
+            [str(crate / "target/debug/ondas-wdb-consumer"), str(fixture), "guard-hit",
+             str(crate / "absent-data")],
+            env=env, cwd=crate, capture_output=True, text=True, timeout=30,
+        )
+        if retained.returncode:
+            print(retained.stderr, end="")
+        retained.check_returncode()
+        assert retained.stdout == "WDB data selection rejected on a retained owner\n", retained.stdout
         print("Standalone WDB consumer read compatible observations and closed successfully.")
 
 

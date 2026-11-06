@@ -14,6 +14,7 @@
 #include <string_view>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace {
 static_assert(sizeof(ondas_wdb_meta) == 16 && offsetof(ondas_wdb_meta, precision) == 8);
@@ -129,36 +130,51 @@ static_assert(sizeof(ByteValue) == 8 && sizeof(TimeByteValue) == 16 && sizeof(Ti
 constexpr size_t indexes_per_byte = ONDAS_WDB_BIT_INDEX ? 8 : 1;
 struct AddressBitPair { long long address; unsigned bit; };
 static_assert(sizeof(AddressBitPair) == 16);
+// One adapter-created SDK history index. ``address``/``bit`` are read from the tree so
+// deletion never depends on a cached copy of the key.
+long long history_address(const void* tree) {
+    static auto address = symbol<long long(*)(const void*)>(
+        "_ZNK9SimBridge14WdbScalarBTree10getAddressEv");
+    return address(tree);
+}
+unsigned history_bit(const void* tree) {
+    static auto bit = ONDAS_WDB_BIT_INDEX ? symbol<unsigned(*)(const void*)>(
+        "_ZNK9SimBridge14WdbScalarBTree14getBitPositionEv") : nullptr;
+    return ONDAS_WDB_BIT_INDEX ? bit(tree) : 0;
+}
+// Deletes exactly one SDK history index through the documented manager API.
+void delete_history(void* manager, const void* tree) {
+    if constexpr (ONDAS_WDB_BIT_INDEX) {
+        static auto remove = symbol<void(*)(void*, const std::vector<AddressBitPair>&)>(
+            "_ZN9SimBridge22WdbAddressBTreeManager15deleteBitBTreesERKSt6vectorINS_17WdbAddressBitPairESaIS2_EE");
+        std::vector<AddressBitPair> one{{history_address(tree), history_bit(tree)}};
+        remove(manager, one);
+    } else {
+        static auto remove = symbol<void(*)(void*, long long, long long)>(
+            "_ZN9SimBridge22WdbAddressBTreeManager16deleteByteBTreesExx");
+        remove(manager, history_address(tree), 1);
+    }
+}
 struct IndexBatch {
     void* manager;
+    // Indexes this owner has already loaded successfully.
+    std::unordered_set<void*>& owned;
     std::vector<void*> created;
-    std::vector<AddressBitPair> rollback_bit = std::vector<AddressBitPair>(ONDAS_WDB_BIT_INDEX ? 1 : 0);
     bool committed = false;
-    long long (*address)(const void*) = symbol<long long(*)(const void*)>(
-        "_ZNK9SimBridge14WdbScalarBTree10getAddressEv");
-    void (*remove)(void*, long long, long long) = symbol<void(*)(void*, long long, long long)>(
-        "_ZN9SimBridge22WdbAddressBTreeManager16deleteByteBTreesExx");
-    unsigned (*bit)(const void*) = ONDAS_WDB_BIT_INDEX ? symbol<unsigned(*)(const void*)>(
-        "_ZNK9SimBridge14WdbScalarBTree14getBitPositionEv") : nullptr;
-    void (*remove_bits)(void*, const std::vector<AddressBitPair>&) = ONDAS_WDB_BIT_INDEX ?
-        symbol<void(*)(void*, const std::vector<AddressBitPair>&)>(
-            "_ZN9SimBridge22WdbAddressBTreeManager15deleteBitBTreesERKSt6vectorINS_17WdbAddressBitPairESaIS2_EE") : nullptr;
-    explicit IndexBatch(void* source) : manager(source) {}
+    IndexBatch(void* source, std::unordered_set<void*>& owner_indexes)
+        : manager(source), owned(owner_indexes) {}
     void deduplicate() {
         std::sort(created.begin(), created.end(), std::less<void*>{});
         created.erase(std::unique(created.begin(), created.end()), created.end());
     }
     ~IndexBatch() {
-        // A failed scan must not leave a partial SDK index available for reuse.
+        // A failed scan must not leave a partial SDK index available for reuse. Rollback also
+        // forgets the deleted trees so park cannot delete them a second time.
         if (!committed) {
             deduplicate();
-            if constexpr (ONDAS_WDB_BIT_INDEX) {
-                for (auto tree : created) {
-                    rollback_bit[0] = {address(tree), bit(tree)};
-                    remove_bits(manager, rollback_bit);
-                }
-            } else {
-                for (auto tree : created) remove(manager, address(tree), 1);
+            for (auto tree : created) {
+                owned.erase(tree);
+                delete_history(manager, tree);
             }
         }
     }
@@ -180,7 +196,7 @@ struct IndexBatch {
             throw std::runtime_error("native index width disagrees with extent");
         if constexpr (ONDAS_WDB_BIT_INDEX) {
             for (size_t i = 0; i < trees.size(); ++i)
-                if (this->address(trees[i]) != address + static_cast<long long>(i / 8) || bit(trees[i]) != i % 8)
+                if (history_address(trees[i]) != address + static_cast<long long>(i / 8) || history_bit(trees[i]) != i % 8)
                     throw std::runtime_error("native bit index order disagrees with extent");
         }
     }
@@ -189,6 +205,7 @@ struct IndexBatch {
         static auto scan = symbol<void(*)(void*, const std::vector<void*>&, void*)>(
             "_ZN9SimBridge22WdbAddressBTreeManager15scanWdbDatabaseERKSt6vectorIPNS_14WdbScalarBTreeESaIS3_EEPN4ISIM10IGuiStatusE");
         if (!created.empty()) scan(manager, created, nullptr);
+        owned.insert(created.begin(), created.end());
         committed = true;
     }
 };
@@ -259,6 +276,8 @@ struct Reader {
     const void* common = nullptr;
     void* index_manager = nullptr;
     std::unique_ptr<Traversal> traversal;
+    // Adapter-created SDK history indexes of this owner, deleted when it becomes idle.
+    std::unordered_set<void*> histories;
     explicit Reader(const char* path) : native(static_cast<SimBridge::WdbOpenMode>(1), true, path, path, {}, 0) {
         auto last = native.getLatestTime();
         if (last < 0 || last == std::numeric_limits<long long>::max())
@@ -578,6 +597,25 @@ void describe(Reader& reader, Declaration& declaration) {
     }
 }
 
+// Runtime guards shared by a native open and an idle-owner hit: the selected data
+// directory and the loaded reader library must still be the build-time selection.
+void validate_runtime() {
+    auto data = getenv("RDI_DATADIR");
+    std::unique_ptr<char, decltype(&free)> resolved(data ? realpath(data, nullptr) : nullptr, &free);
+    if (!resolved || std::strcmp(resolved.get(), ONDAS_WDB_DATA))
+        throw Unsupported("RDI_DATADIR must select the build-time reader data directory");
+    selected_library("_ZN9SimBridge10DataReader13getDataObjMgrEv", ONDAS_WDB_READER);
+    selected_library("_ZNK9SimBridge15WdbCommonReader13getValueEventExRKSt6vectorIPNS_14WdbScalarBTreeESaIS3_EERNS_17WdbTimeByteValuesE", ONDAS_WDB_KERNEL);
+}
+// Drops traversal state before deleting the history indexes that its cursors can reference.
+void release_histories(Reader& reader) {
+    reader.traversal.reset();
+    while (!reader.histories.empty()) {
+        auto tree = *reader.histories.begin();
+        reader.histories.erase(reader.histories.begin());
+        delete_history(reader.index_manager, tree);
+    }
+}
 void import(Reader& reader) {
     auto manager = reader.native.getDataObjMgr();
     reader.conversion = reinterpret_cast<const SimBridge::DataConversion*>(static_cast<const char*>(manager) + 0x1c0);
@@ -743,12 +781,7 @@ template<class F> int protect(char* error, size_t capacity, F run) {
 extern "C" int ondas_wdb_open(const char* path, int metadata_only, void** out, char* error, size_t cap) {
     *out = nullptr;
     return protect(error, cap, [&] {
-        auto data = getenv("RDI_DATADIR");
-        std::unique_ptr<char, decltype(&free)> resolved(data ? realpath(data, nullptr) : nullptr, &free);
-        if (!resolved || std::strcmp(resolved.get(), ONDAS_WDB_DATA))
-            throw Unsupported("RDI_DATADIR must select the build-time reader data directory");
-        selected_library("_ZN9SimBridge10DataReader13getDataObjMgrEv", ONDAS_WDB_READER);
-        selected_library("_ZNK9SimBridge15WdbCommonReader13getValueEventExRKSt6vectorIPNS_14WdbScalarBTreeESaIS3_EERNS_17WdbTimeByteValuesE", ONDAS_WDB_KERNEL);
+        validate_runtime();
         auto reader = std::make_unique<Reader>(path);
         if (!metadata_only) import(*reader);
         else reader->native.traverseAllObjects([&](const SimBridge::IObject* object) {
@@ -756,6 +789,17 @@ extern "C" int ondas_wdb_open(const char* path, int metadata_only, void** out, c
             return static_cast<SimBridge::IReader::TraverseCommand>(0);
         }, true, nullptr);
         *out = reader.release(); return 0;
+    });
+}
+// Validates the runtime selection without creating a reader. Used on a retained-owner hit.
+extern "C" int ondas_wdb_validate_runtime(char* error, size_t cap) {
+    return protect(error, cap, [&] { validate_runtime(); return 0; });
+}
+// Deletes every adapter-created SDK history index of this owner and clears its traversal.
+extern "C" int ondas_wdb_release_indexes(void* opaque, char* error, size_t cap) {
+    return protect(error, cap, [&] {
+        release_histories(*static_cast<Reader*>(opaque));
+        return 0;
     });
 }
 extern "C" void ondas_wdb_close(void* opaque) { delete static_cast<Reader*>(opaque); }
@@ -784,11 +828,13 @@ static int begin(void* opaque, const uint64_t* ids, size_t count, uint64_t start
     auto& reader = *static_cast<Reader*>(opaque);
     reader.traversal.reset();
     return protect(error, cap, [&] {
+        // The batch is declared before the traversal so an exception destroys cursors before
+        // the indexes they reference, and a failed batch rollback can never run under cursors.
+        IndexBatch batch(reader.index_manager, reader.histories);
         auto traversal = std::make_unique<Traversal>();
         traversal->end = std::min(end, reader.meta.last);
         traversal->point_only = point_only;
         if (point_only) traversal->point_positions.reserve(count);
-        IndexBatch batch(reader.index_manager);
         for (size_t i = 0; i < count; ++i) {
             auto& d = reader.declarations.at(ids[i]);
             if (d.scope || d.id != ids[i]) throw std::runtime_error("invalid native history identity");
