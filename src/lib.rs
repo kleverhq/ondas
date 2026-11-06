@@ -98,12 +98,16 @@ constant values and enum tables do not qualify changing unsigned 129-bit values.
 Reads preserve the common completed-tick semantics. Vendor calls are serialized; user callbacks run
 after the lock is released.
 Opening a WDB file imports every native declaration and usually costs more than another format
-containing only logged declarations. A sequential reopen of an unchanged file reuses one validated
-owner instead of importing again: it hashes the whole file, repeats the container and reader guards,
-and creates a fresh hierarchy identity, so handles from the earlier open are rejected. That hash is
-a full file read per reopen. Only one closed owner waits, any other path or a failed identity
-releases it, and a live reader keeps its own native indexes until it is dropped or parked. A
-concurrent writer is not promised an atomic snapshot.
+containing only logged declarations. Every ordinary open hashes the whole file as part of the reuse
+identity, a cold open included. A sequential reopen of an unchanged file then reuses one validated
+owner instead of importing again: it repeats the container and reader guards and creates a fresh
+hierarchy identity, so handles from the earlier open are rejected. Only one closed owner waits; a
+different path, a metadata-only request or a failed identity destroys it. A native or decode error,
+or an unwind through the backend while it reads native state, makes that reader's owner unparkable
+until it is dropped, without affecting another idle owner. A panic in a late callback over results
+that the backend already completed does not by itself prevent the owner from being reused. A live
+reader keeps its own native indexes until it is dropped or parked. A concurrent writer is not
+promised an atomic snapshot.
 
 ```no_run
 # #[cfg(feature = "wdb-lib")]

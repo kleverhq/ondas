@@ -562,6 +562,236 @@ fn wdb_sequential_open_lifecycle_over_published_fixtures() {
     drop(root);
 }
 
+/// Queryable signals of one open hierarchy.
+fn queryable(waveform: &Waveform) -> Vec<Signal> {
+    let signals: Vec<_> = waveform
+        .hierarchy()
+        .variables()
+        .filter_map(|variable| variable.signal())
+        .filter(|signal| !matches!(signal.encoding(), Encoding::Unsupported))
+        .take(3)
+        .collect();
+    assert!(!signals.is_empty(), "fixture must expose queryable signals");
+    signals
+}
+
+fn point_rows(waveform: &mut Waveform, signals: &[Signal], times: &[Time]) -> Vec<String> {
+    times
+        .iter()
+        .map(|time| {
+            waveform
+                .samples(signals, *time)
+                .unwrap_or_else(|error| panic!("samples at {}: {error}", time.ticks()))
+                .iter()
+                .map(sample_text)
+                .collect::<Vec<_>>()
+                .join(" | ")
+        })
+        .collect()
+}
+
+fn selection_rows(selection: &mut ondas::Selection<'_>, time: Time) -> Vec<String> {
+    let rows = selection
+        .samples(time)
+        .unwrap_or_else(|error| panic!("samples at {}: {error}", time.ticks()));
+    rows.iter().map(sample_text).collect()
+}
+
+// Signal identity is source-bound, so the text keeps only slot, time and value.
+fn scan_rows(selection: &mut ondas::Selection<'_>, range: TimeRange) -> Vec<String> {
+    let mut rows = Vec::new();
+    let outcome = selection
+        .scan_each(range, |slot, record| {
+            rows.push(match record {
+                ondas::ScanRef::Initial {
+                    value, changed_at, ..
+                } => format!(
+                    "initial {slot} {} changed_at={:?}",
+                    value_text(value),
+                    changed_at.map(|time| time.ticks())
+                ),
+                ondas::ScanRef::Change { time, value, .. } => {
+                    format!("change {slot} {} {}", time.ticks(), value_text(value))
+                }
+                other => panic!("unhandled ScanRef variant: {other:?}"),
+            });
+            std::ops::ControlFlow::<()>::Continue(())
+        })
+        .unwrap();
+    assert!(outcome.is_continue());
+    rows
+}
+
+fn change_count(selection: &mut ondas::Selection<'_>, range: TimeRange) -> usize {
+    let mut changes = 0;
+    let outcome = selection
+        .scan_each(range, |_, record| {
+            if matches!(record, ondas::ScanRef::Change { .. }) {
+                changes += 1;
+            }
+            std::ops::ControlFlow::<()>::Continue(())
+        })
+        .unwrap();
+    assert!(outcome.is_continue());
+    changes
+}
+
+/// Late-delivery panic point inside a fully materialized result.
+#[derive(Clone, Copy, Debug)]
+enum LateCallbackPanic {
+    /// Borrowed per-slot delivery through `Selection::visit_samples`.
+    VisitSamples,
+    /// Only the final change of a scan.
+    LastChange,
+    /// A scan whose only records are entering states.
+    InitialsOnly,
+}
+
+/// A caller-caught panic in a late callback must leave exact observations on the same selection
+/// and waveform, and after drop and reopen with a fresh source identity. It does not forbid
+/// parking: the native traversal is already gone and the copied values are Rust-owned.
+#[test]
+#[ignore = "requires the selected reader and installed WDB fixtures; run just conformance-wdb"]
+fn wdb_late_callback_panics_keep_exact_observations() {
+    let fixture_a = fixture(FIXTURE_A);
+    let root = TempRoot::new();
+    let path = root.file("late.wdb");
+    fs::copy(&fixture_a, &path).expect("copy published fixture");
+
+    let (times, after_eof) = {
+        let waveform = open_native(&path);
+        let span = waveform.metadata().time_span().expect("recorded span");
+        let (first, last) = (span.first().ticks(), span.last().ticks());
+        (
+            [
+                Time::from_ticks(first),
+                Time::from_ticks(first + (last - first) / 2),
+                Time::from_ticks(last),
+            ],
+            TimeRange::closed(Time::from_ticks(last + 1), Time::from_ticks(last + 1)),
+        )
+    };
+
+    for case in [
+        LateCallbackPanic::VisitSamples,
+        LateCallbackPanic::LastChange,
+        LateCallbackPanic::InitialsOnly,
+    ] {
+        let mut waveform = open_native(&path);
+        let signals: Vec<Signal> = {
+            let mut candidates = queryable(&waveform);
+            // The last-change case needs a signal that actually changes.
+            if matches!(case, LateCallbackPanic::LastChange) {
+                let mut selection = waveform.select(&candidates).unwrap();
+                let changes = change_count(&mut selection, TimeRange::all());
+                drop(selection);
+                if changes == 0 {
+                    candidates.retain(|_| false);
+                }
+            }
+            candidates
+        };
+        if matches!(case, LateCallbackPanic::LastChange) && signals.is_empty() {
+            panic!("fixture has no signal with recorded changes");
+        }
+        let stale = signals[0];
+        let expected_points = point_rows(&mut waveform, &signals, &times);
+
+        let mut selection = waveform.select(&signals).unwrap();
+        let expected_rows = selection_rows(&mut selection, times[1]);
+        let expected_scan = match case {
+            LateCallbackPanic::VisitSamples => None,
+            LateCallbackPanic::LastChange => {
+                let rows = scan_rows(&mut selection, TimeRange::all());
+                assert!(
+                    rows.iter().any(|row| row.starts_with("change")),
+                    "the last-change case needs at least one change"
+                );
+                Some((TimeRange::all(), rows))
+            }
+            LateCallbackPanic::InitialsOnly => {
+                let rows = scan_rows(&mut selection, after_eof);
+                assert!(
+                    !rows.is_empty() && rows.iter().all(|row| row.starts_with("initial")),
+                    "the initials-only case needs entering states and no changes: {rows:?}"
+                );
+                Some((after_eof, rows))
+            }
+        };
+
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match case {
+            LateCallbackPanic::VisitSamples => {
+                let _ = selection.visit_samples(times[1], |_| -> std::ops::ControlFlow<()> {
+                    std::panic::panic_any(VisitorSentinel)
+                });
+            }
+            LateCallbackPanic::LastChange => {
+                let total = change_count(&mut selection, TimeRange::all());
+                let mut seen = 0;
+                let _ = selection.scan_each(TimeRange::all(), |_, record| {
+                    if matches!(record, ondas::ScanRef::Change { .. }) {
+                        seen += 1;
+                        if seen == total {
+                            std::panic::panic_any(VisitorSentinel);
+                        }
+                    }
+                    std::ops::ControlFlow::<()>::Continue(())
+                });
+            }
+            LateCallbackPanic::InitialsOnly => {
+                let _ = selection.scan_each(after_eof, |_, record| {
+                    if matches!(record, ondas::ScanRef::Initial { .. }) {
+                        std::panic::panic_any(VisitorSentinel);
+                    }
+                    std::ops::ControlFlow::<()>::Continue(())
+                });
+            }
+        }));
+        assert!(caught.is_err(), "case {case:?} must unwind");
+        assert!(
+            caught
+                .unwrap_err()
+                .downcast_ref::<VisitorSentinel>()
+                .is_some(),
+            "case {case:?}: the unwind must carry the intentional sentinel"
+        );
+
+        // The same selection and waveform still produce the exact same observations.
+        assert_eq!(
+            selection_rows(&mut selection, times[1]),
+            expected_rows,
+            "case {case:?}: selection observations after the caught panic"
+        );
+        if let Some((range, rows)) = &expected_scan {
+            assert_eq!(
+                &scan_rows(&mut selection, *range),
+                rows,
+                "case {case:?}: scan observations after the caught panic"
+            );
+        }
+        drop(selection);
+        assert_eq!(
+            point_rows(&mut waveform, &signals, &times),
+            expected_points,
+            "case {case:?}: waveform observations after the caught panic"
+        );
+        drop(waveform);
+
+        // Reopen: same observations, fresh source identity, earlier handles rejected.
+        let mut waveform = open_native(&path);
+        assert!(
+            waveform.select(&[stale]).is_err(),
+            "case {case:?}: a Signal from the earlier open must be rejected"
+        );
+        let signals = queryable(&waveform);
+        assert_eq!(
+            point_rows(&mut waveform, &signals, &times),
+            expected_points,
+            "case {case:?}: observations after reopen"
+        );
+    }
+}
+
 /// A read or decode failure and a caller-caught panic must both keep the owner unparked.
 #[test]
 #[ignore = "requires the selected reader and installed WDB fixtures; run just conformance-wdb"]
