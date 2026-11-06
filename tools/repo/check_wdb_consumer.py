@@ -80,7 +80,8 @@ def main():
         env["RDI_DATADIR"] = str(sdk / "data")
         env.pop("XILINX_VIVADO", None)
         env.pop("XILINX_VIVADO_HOMES", None)
-        temp_scope = Path(tempfile.mkdtemp(prefix="wdb-consumer-tmp-", dir=scratch))
+        # Inside the outer temporary directory, so this scope is removed with it.
+        temp_scope = Path(tempfile.mkdtemp(prefix="wdb-consumer-tmp-", dir=crate))
         env["TMPDIR"] = str(temp_scope)
         result = subprocess.run(
             [str(crate / "target/debug/ondas-wdb-consumer"), str(fixture)],
