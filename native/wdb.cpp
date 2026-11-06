@@ -922,6 +922,19 @@ extern "C" int ondas_wdb_release_indexes(void* opaque, char* error, size_t cap) 
         return 0;
     });
 }
+// Releases the manager's temporary backing storage after every history index is gone. Some
+// reader kernels do not export the reset entry point; then reuse is refused instead of turning a
+// user query into an error.
+extern "C" int ondas_wdb_release_storage(void* opaque, char* error, size_t cap) {
+    static void (*reset)(void*) = reinterpret_cast<void (*)(void*)>(
+        dlsym(RTLD_DEFAULT, "_ZN9SimBridge22WdbAddressBTreeManager5resetEv"));
+    if (!reset) return 1;
+    if (!static_cast<Reader*>(opaque)->index_manager) return 1;
+    return protect(error, cap, [&] {
+        reset(static_cast<Reader*>(opaque)->index_manager);
+        return 0;
+    });
+}
 // Number of adapter-created SDK history indexes this owner still tracks. Diagnostic only: the
 // released contract is that a waveform drop leaves none behind.
 extern "C" size_t ondas_wdb_index_count(void* opaque) {

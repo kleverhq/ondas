@@ -8,9 +8,11 @@
 //!
 //! Retained descriptors are the observable for the retained-owner policy: a clean logical close
 //! keeps at most one idle owner, while a metadata-only request, a changed path, a failed
-//! identity or an unwinding caller must release it. Every clean close releases that session's
-//! SDK history indexes before the owner waits. The second ignored test reports cold-miss,
-//! reused-owner, descriptor and RSS behaviour; it asserts only invariants, not speed.
+//! identity or an unwinding caller must release it. A reader without the optional backing-storage
+//! cleanup closes the owner instead of parking it, so zero retained descriptors is also clean.
+//! Every clean close releases that session's SDK history indexes before the owner waits. The
+//! second ignored test reports cold-miss, reused-owner, descriptor and RSS behaviour; it asserts
+//! only invariants, not speed.
 //!
 //! The published fixtures are small declared-value recordings; other encodings, events and
 //! resolution switches remain covered by the existing conformance suite.
@@ -286,7 +288,8 @@ fn wdb_sequential_open_lifecycle_over_published_fixtures() {
 
     eprintln!("PHASE 1");
     // Phase 1: same-path reopens must reproduce exact observations and keep at most one idle
-    // owner: the descriptor count may stay at one but never grows.
+    // owner: the descriptor count may stay at one or drop to zero when the reader has no safe
+    // storage cleanup, but it never grows. The observed count is the baseline for later phases.
     let mut baseline = None;
     for cycle in 0..SAME_PATH_CYCLES {
         let mut waveform = open_native(&path);
@@ -297,24 +300,26 @@ fn wdb_sequential_open_lifecycle_over_published_fixtures() {
         );
         drop(waveform);
         let retained = descriptors_under(root.path());
+        // A clean close keeps at most one idle owner. A reader without the optional storage
+        // cleanup closes the owner instead, so zero retained descriptors is also clean.
         assert!(
             retained.len() <= 1,
             "more than one retained descriptor after cycle {cycle}: {retained:?}"
         );
-        match baseline {
-            None => baseline = Some(retained.len()),
-            Some(first) => assert_eq!(
-                retained.len(),
-                first,
-                "retained descriptors changed: cycle {cycle} has {retained:?}"
-            ),
+        if let Some((_, target)) = retained.first() {
+            assert!(
+                target.ends_with("copy.wdb"),
+                "an idle owner belongs to another path: {retained:?}"
+            );
         }
+        baseline.get_or_insert(retained.len());
     }
-    assert_eq!(
-        baseline,
-        Some(1),
-        "a clean logical close must keep exactly one idle owner"
+    let baseline = baseline.expect("at least one same-path cycle");
+    assert!(
+        baseline <= 1,
+        "a clean logical close must keep at most one idle owner, found {baseline}"
     );
+    let retains_owner = baseline == 1;
 
     eprintln!("PHASE 2");
     // Phase 2: a handle from a dropped logical open is stale even though the idle owner and its
@@ -343,7 +348,7 @@ fn wdb_sequential_open_lifecycle_over_published_fixtures() {
     // Phase 3: a metadata-only request invalidates the idle owner before its own SDK work.
     assert_eq!(
         descriptors_under(root.path()).len(),
-        1,
+        usize::from(retains_owner),
         "prefill the idle owner before the metadata request"
     );
     let metadata = ondas::read_metadata(&path).expect("read metadata of the temporary copy");
@@ -369,15 +374,16 @@ fn wdb_sequential_open_lifecycle_over_published_fixtures() {
     fs::copy(&fixture_b, &other).expect("copy published fixture B");
     assert_eq!(snapshot(&other), reference_b, "second path");
     let retained = descriptors_under(root.path());
-    assert_eq!(
-        retained.len(),
-        1,
-        "one idle owner must remain after two paths: {retained:?}"
-    );
     assert!(
-        retained[0].1.ends_with("other.wdb"),
-        "the idle owner must belong to the last opened path: {retained:?}"
+        retained.len() <= 1,
+        "at most one idle owner may remain after two paths: {retained:?}"
     );
+    if let Some((_, target)) = retained.first() {
+        assert!(
+            target.ends_with("other.wdb"),
+            "the idle owner must belong to the last opened path: {retained:?}"
+        );
+    }
 
     eprintln!("PHASE 5");
     // Phase 5: a same-size in-place rewrite with a restored mtime must never return the
@@ -469,7 +475,7 @@ fn wdb_sequential_open_lifecycle_over_published_fixtures() {
     assert_eq!(snapshot(&path), reference_a, "prefill before deletion");
     assert_eq!(
         descriptors_under(root.path()).len(),
-        1,
+        usize::from(retains_owner),
         "prefill the idle owner before deleting its file"
     );
     fs::remove_file(&path).expect("delete the previously opened temporary file");
@@ -513,7 +519,7 @@ fn wdb_sequential_open_lifecycle_over_published_fixtures() {
     // Phase 9: a caller panic drops the Waveform while unwinding; that owner must not be kept.
     assert_eq!(
         descriptors_under(root.path()).len(),
-        1,
+        usize::from(retains_owner),
         "prefill the idle owner before the panic"
     );
     let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -844,11 +850,19 @@ fn wdb_active_panic_keeps_the_owner_unparked() {
         let signal = first_signal(&waveform);
         assert!(waveform.sample(signal, Time::ZERO).is_ok());
     }
-    assert_eq!(
-        descriptors_under(root.path()).len(),
-        1,
-        "prefill the idle owner before the failing lifetime"
+    // A clean close keeps at most one idle owner; a reader without the optional storage cleanup
+    // closes it instead, and that is still a clean starting point for the failing lifetime.
+    let retained = descriptors_under(root.path());
+    assert!(
+        retained.len() <= 1,
+        "more than one idle owner before the failing lifetime: {retained:?}"
     );
+    if let Some((_, target)) = retained.first() {
+        assert!(
+            target.ends_with("active.wdb"),
+            "the idle owner belongs to another path: {retained:?}"
+        );
+    }
 
     {
         let mut waveform = open_native(&path);
@@ -1032,6 +1046,116 @@ fn wdb_normal_exit_releases_a_parked_owner() {
         "normal exit left temporary files: {:?}",
         temp_entries(root.path())
     );
+}
+
+/// A real `Waveform::drop` returns the SDK backing storage to the clean baseline after each
+/// published `staggered64` spill session. The baseline is captured after an open/drop without a
+/// query (which runs the cleanup) and a reopen before any query; a legitimate SDK header is
+/// therefore allowed. A kernel without the optional cleanup entry point legitimately closes the
+/// owner, so an absent file is also clean.
+#[test]
+#[ignore = "requires the selected reader and installed WDB fixtures; run just conformance-wdb"]
+fn wdb_drop_releases_backing_storage_at_k10000() {
+    if std::env::var_os("ONDAS_WDB_STORAGE_CHILD").is_some() {
+        let root = std::path::PathBuf::from(std::env::var_os("TMPDIR").expect("isolated TMPDIR"));
+        let path = fixture("wdb0301-opb-m");
+        drop(open_native(&path));
+        let baseline = {
+            let wave = open_native(&path);
+            let snapshot = storage_usage(&root);
+            drop(wave);
+            snapshot
+        };
+        println!("STORAGE baseline={baseline:?}");
+        for session in 0..3 {
+            let mut wave = open_native(&path);
+            let paths = bank_paths("staggered64", 10_000);
+            let signals = resolve_paths(&wave, &paths);
+            let rows = wave
+                .samples(&signals, Time::from_ticks(5_000_000))
+                .expect("sample the published read set");
+            assert_eq!(rows.len(), 10_000);
+            let before = storage_usage(&root);
+            println!("STORAGE session={session} pre_drop={before:?}");
+            drop(wave);
+            let after = storage_usage(&root);
+            println!("STORAGE session={session} post_drop={after:?}");
+            assert!(
+                after == (0, 0, 0) || after == baseline,
+                "session {session}: Drop left storage above the clean baseline: \
+                 post={after:?} baseline={baseline:?} pre={before:?}"
+            );
+        }
+        return;
+    }
+    let root = TempRoot::new();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "wdb_drop_releases_backing_storage_at_k10000",
+            "--ignored",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env("ONDAS_WDB_STORAGE_CHILD", "1")
+        .env("TMPDIR", root.path())
+        .status()
+        .expect("run the storage child");
+    assert!(output.success(), "storage child failed");
+    assert!(
+        temp_entries(root.path()).is_empty(),
+        "normal exit left temporary files: {:?}",
+        temp_entries(root.path())
+    );
+}
+
+/// Dropping one waveform must not disturb another live waveform that opened the same path and
+/// built the same published spill read set first.
+#[test]
+#[ignore = "requires the selected reader and installed WDB fixtures; run just conformance-wdb"]
+fn wdb_drop_keeps_another_live_owner_intact() {
+    let path = fixture("wdb0301-opb-m");
+    let mut first = open_native(&path);
+    let mut second = open_native(&path);
+    let paths = bank_paths("staggered64", 10_000);
+    let second_signals = resolve_paths(&second, &paths);
+    let before: Vec<String> = second
+        .samples(&second_signals, Time::from_ticks(5_000_000))
+        .expect("sample the second owner")
+        .iter()
+        .map(sample_text)
+        .collect();
+    let first_signals = resolve_paths(&first, &paths);
+    let first_rows = first
+        .samples(&first_signals, Time::from_ticks(5_000_000))
+        .expect("sample the first owner");
+    assert_eq!(first_rows.len(), 10_000);
+    drop(first);
+    let after: Vec<String> = second
+        .samples(&second_signals, Time::from_ticks(5_000_000))
+        .expect("sample the live owner after the drop")
+        .iter()
+        .map(sample_text)
+        .collect();
+    assert_eq!(
+        before, after,
+        "dropping one owner changed the other live owner"
+    );
+}
+
+/// File count, byte size and allocated blocks of every temporary file in the isolated directory.
+fn storage_usage(root: &Path) -> (usize, u64, u64) {
+    let (mut files, mut bytes, mut blocks) = (0, 0, 0);
+    for entry in fs::read_dir(root).expect("list TMPDIR") {
+        let entry = entry.expect("TMPDIR entry");
+        let metadata = entry.metadata().expect("TMPDIR metadata");
+        if metadata.is_file() {
+            files += 1;
+            bytes += metadata.len();
+            blocks += metadata.blocks() * 512;
+        }
+    }
+    (files, bytes, blocks)
 }
 
 fn bank_paths(bank: &str, count: usize) -> Vec<ondas::HierarchyPath> {

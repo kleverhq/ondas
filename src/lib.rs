@@ -79,10 +79,12 @@ may outlive the logical session and keep its imported declarations, so a later
 logical open of the same unchanged file reuses them without importing again; its
 histories are built again on first access. A point or early stop can therefore pay the
 full selected-history loading cost in a reuse hit. One closed owner may wait, keeping
-the native reader descriptor and the copied declarations. Deleting the indexes does not
-by itself reclaim the storage that the SDK keeps for that idle reader. A different
-path, a metadata-only request or a failed identity destroys it, and a normal exit
-destroys it best-effort while the SDK and owner locks are uncontended.
+the native reader descriptor and the copied declarations. When the reader kernel
+provides the storage cleanup entry point, the drop also releases the temporary SDK
+backing storage before the owner waits; without it, the owner is closed instead of
+retained, so a later open imports again. A different path, a metadata-only request or
+a failed identity destroys it, and a normal exit destroys it best-effort while the SDK
+and owner locks are uncontended.
 Later bit points and range reads with an established entering state can seek.
 This includes compositions whose intermediate values are whole copies of one
 source, joined or sliced at source-width boundaries. Other compositions can

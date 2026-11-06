@@ -85,6 +85,7 @@ unsafe extern "C" {
     ) -> c_int;
     fn ondas_wdb_validate_runtime(error: *mut c_char, cap: usize) -> c_int;
     fn ondas_wdb_release_indexes(reader: *mut c_void, error: *mut c_char, cap: usize) -> c_int;
+    fn ondas_wdb_release_storage(reader: *mut c_void, error: *mut c_char, cap: usize) -> c_int;
     fn ondas_wdb_close(reader: *mut c_void);
     fn ondas_wdb_metadata(reader: *mut c_void, out: *mut Meta);
     fn ondas_wdb_decl_count(reader: *mut c_void) -> usize;
@@ -633,7 +634,18 @@ impl Drop for Reader {
             let code = unsafe {
                 ondas_wdb_release_indexes(handle.0.as_ptr(), error.as_mut_ptr(), error.len())
             };
-            if code >= 0 {
+            // Reuse also requires the optional backing-storage cleanup. A reader kernel without
+            // that entry point, or a failed cleanup, closes the owner instead of parking it; a
+            // user query keeps its ordinary behaviour and only the reuse opportunity is lost.
+            let storage = if code >= 0 {
+                // SAFETY: live owner; the shim only resets this owner's manager storage.
+                unsafe {
+                    ondas_wdb_release_storage(handle.0.as_ptr(), error.as_mut_ptr(), error.len())
+                }
+            } else {
+                -1
+            };
+            if code >= 0 && storage == 0 {
                 let idle = Idle {
                     path: std::mem::take(&mut self.path),
                     identity,
@@ -1183,11 +1195,12 @@ mod tests {
             "the query built no SDK history index"
         );
         drop(wave);
-        assert_eq!(
-            idle_indexes(),
-            Some(0),
-            "Drop parked retained SDK history indexes"
-        );
+        // A parked owner must keep no history index. A kernel without the optional storage
+        // cleanup legitimately closes the owner instead of parking it, so no idle owner is fine.
+        match idle_indexes() {
+            Some(0) | None => {}
+            Some(kept) => panic!("Drop parked {kept} retained SDK history indexes"),
+        }
 
         // The reopen reuses the idle owner, so its first access must build the histories again.
         let mut wave = crate::open_with(&path, BACKEND).expect("reopen published WDB fixture");
@@ -1197,11 +1210,10 @@ mod tests {
             "the reused owner built no fresh SDK history index"
         );
         drop(wave);
-        assert_eq!(
-            idle_indexes(),
-            Some(0),
-            "the second Drop parked retained SDK history indexes"
-        );
+        match idle_indexes() {
+            Some(0) | None => {}
+            Some(kept) => panic!("the second Drop parked {kept} retained SDK history indexes"),
+        }
         evict_idle();
     }
 
