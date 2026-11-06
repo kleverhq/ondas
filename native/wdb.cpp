@@ -1,20 +1,31 @@
 #include "wdb.h"
 #include "wdb_abi.hpp"
 #include <algorithm>
+#include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
 #include <cstdlib>
 #include <cxxabi.h>
 #include <dlfcn.h>
+#include <exception>
 #include <limits>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <queue>
 #include <stdexcept>
 #include <string_view>
+#include <thread>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
+
+namespace SimBridge { struct WdbIEventBlockIterator; }
+
+#ifdef ONDAS_WDB_TEST_THREAD_LIMIT
+extern "C" void ondas_wdb_test_worker_start(size_t index);
+#endif
 
 namespace {
 static_assert(sizeof(ondas_wdb_meta) == 16 && offsetof(ondas_wdb_meta, precision) == 8);
@@ -31,6 +42,10 @@ template<class T> T symbol(const std::string& name) {
     auto address = dlsym(RTLD_DEFAULT, name.c_str());
     if (!address) throw Unsupported("reader is missing ABI symbol " + name);
     return reinterpret_cast<T>(address);
+}
+// Optional symbols keep the serial path when the selected reader does not provide them.
+template<class T> T optional_symbol(const char* name) {
+    return reinterpret_cast<T>(dlsym(RTLD_DEFAULT, name));
 }
 void selected_library(const char* name, const char* expected) {
     Dl_info info{};
@@ -152,6 +167,131 @@ HistoryAbi& history_abi() {
     };
     return abi;
 }
+// Qualified event-block split and task used by the vendor's own multi-threaded scan. The adapter
+// calls the same exported entry points directly on its own bounded threads.
+using EventSplitter = void (*)(const void*, const std::vector<void*>&,
+                               std::vector<std::shared_ptr<SimBridge::WdbIEventBlockIterator>>&,
+                               std::vector<std::vector<void*>>&);
+using EventTask = void (*)(std::shared_ptr<SimBridge::WdbIEventBlockIterator>,
+                           std::vector<void*>, unsigned);
+using EventHeader = const void* (*)(const void*);
+
+// Hardware budget for the bounded fan-out. Normal builds always use the platform value; a
+// controlled test translation unit may replace it to exercise the 0/1/2+ branches deterministically.
+size_t available_workers() {
+#ifdef ONDAS_WDB_TEST_HARDWARE_CONCURRENCY
+    return ONDAS_WDB_TEST_HARDWARE_CONCURRENCY;
+#else
+    return std::thread::hardware_concurrency();
+#endif
+}
+
+// Scans already-created trees through the qualified event-database groups on bounded local
+// threads. False means the capability, database class, load size or worker count does not
+// qualify, so the caller keeps the serial scan. A task failure is rethrown after all workers
+// joined, so the batch rollback removes every created tree and nothing retries over partial
+// indexes.
+bool parallel_scan(const void* database, const std::vector<void*>& trees) {
+    if constexpr (ONDAS_WDB_BIT_INDEX) return false;
+    if (!database || trees.size() < 4096) return false;
+    static auto splitter = optional_symbol<EventSplitter>(
+        "_ZNK9SimBridge30WdbMultipleBucketEventDatabase29getEventBlockDatabaseIteratorERKSt6vectorIPNS_14WdbScalarBTreeESaIS3_EERS1_ISt10shared_ptrINS_22WdbIEventBlockIteratorEESaISA_EERS1_IS5_SaIS5_EE");
+    static auto header = optional_symbol<EventHeader>(
+        "_ZNK9SimBridge30WdbMultipleBucketEventDatabase22getEventDatabaseHeaderEv");
+    static auto task = optional_symbol<EventTask>(
+        "_ZN9SimBridge26ScanEventBlockTaskImprovedESt10shared_ptrINS_22WdbIEventBlockIteratorEESt6vectorIPNS_14WdbScalarBTreeESaIS5_EEj");
+    if (!splitter || !header || !task) return false;
+    // Qualification and planning failures keep the serial scan: they happen before any task and
+    // do not modify indexes.
+    std::vector<std::shared_ptr<SimBridge::WdbIEventBlockIterator>> iterators;
+    std::vector<std::vector<void*>> groups;
+    uint32_t capacity = 0;
+    try {
+        if (class_name(database) != "vtable for SimBridge::WdbMultipleBucketEventDatabase")
+            return false;
+        splitter(database, trees, iterators, groups);
+        if (iterators.size() != groups.size() || groups.empty()) return false;
+        // The qualified splitter returns a known, duplicate-free subset of the created trees.
+        // It legitimately omits unlogged empty trees; those stay in the owned set and read as
+        // Missing. Foreign or repeated pointers keep the serial scan before any task runs.
+        std::unordered_set<void*> expected(trees.begin(), trees.end());
+        if (expected.size() != trees.size()) return false;
+        std::unordered_set<void*> seen;
+        seen.reserve(trees.size());
+        for (const auto& group : groups)
+            for (auto tree : group) {
+                if (expected.count(tree) == 0) return false;
+                if (!seen.insert(tree).second) return false;
+            }
+        const void* block = header(database);
+        if (!block) return false;
+        // Qualified EventDatabase header field used by the same vendor task entry point.
+        std::memcpy(&capacity, static_cast<const char*>(block) + 0x40, sizeof capacity);
+        if (!capacity) return false;
+    } catch (...) {
+        return false;
+    }
+    size_t workers = std::min<size_t>({available_workers(), groups.size(), 16});
+    if (workers <= 1) return false;
+    std::mutex gate_mutex;
+    std::condition_variable gate_cv;
+    bool gate_open = false, abort = false;
+    std::atomic<bool> failed{false};
+    std::atomic<size_t> calls{0};
+    std::mutex error_mutex;
+    std::exception_ptr first_error;
+    std::vector<std::thread> threads;
+    auto worker = [&](size_t worker_index) {
+        {
+            std::unique_lock<std::mutex> lock(gate_mutex);
+            gate_cv.wait(lock, [&] { return gate_open; });
+            if (abort) return;
+        }
+        for (size_t index = worker_index; index < groups.size(); index += workers) {
+            if (failed.load(std::memory_order_relaxed)) return;
+            ++calls;
+            try {
+                task(iterators[index], groups[index], capacity);
+            } catch (...) {
+                {
+                    std::lock_guard<std::mutex> lock(error_mutex);
+                    if (!first_error) first_error = std::current_exception();
+                }
+                failed.store(true, std::memory_order_relaxed);
+                return;
+            }
+        }
+    };
+    std::exception_ptr start_error;
+    try {
+        threads.reserve(workers);
+        for (size_t index = 0; index < workers; ++index) {
+#ifdef ONDAS_WDB_TEST_THREAD_LIMIT
+            if (index == ONDAS_WDB_TEST_THREAD_LIMIT) {
+                ondas_wdb_test_worker_start(index);
+                throw std::runtime_error("controlled worker start failure");
+            }
+#endif
+            threads.emplace_back(worker, index);
+        }
+    } catch (...) {
+        start_error = std::current_exception();
+    }
+    {
+        std::lock_guard<std::mutex> lock(gate_mutex);
+        abort = start_error != nullptr;
+        gate_open = true;
+    }
+    gate_cv.notify_all();
+    for (auto& thread : threads) if (thread.joinable()) thread.join();
+    if (start_error) {
+        // The gate never opened, so no SDK task ran and the serial scan is safe.
+        if (calls.load(std::memory_order_relaxed) == 0) return false;
+        std::rethrow_exception(start_error);
+    }
+    if (first_error) std::rethrow_exception(first_error);
+    return true;
+}
 // Deletes adapter-created SDK history indexes. The ABI is already resolved and the bit scratch
 // vector is allocated at construction, so deleting one index allocates nothing and never looks up
 // a symbol; this keeps an IndexBatch rollback safe while an exception is already unwinding.
@@ -174,10 +314,12 @@ struct IndexBatch {
     HistoryCleanup& cleanup;
     // Indexes this owner has already loaded successfully.
     std::unordered_set<void*>& owned;
+    const void* database;
     std::vector<void*> created;
     bool committed = false;
-    IndexBatch(HistoryCleanup& prepared, std::unordered_set<void*>& owner_indexes)
-        : cleanup(prepared), owned(owner_indexes) {}
+    IndexBatch(HistoryCleanup& prepared, std::unordered_set<void*>& owner_indexes,
+               const void* event_database)
+        : cleanup(prepared), owned(owner_indexes), database(event_database) {}
     void deduplicate() {
         std::sort(created.begin(), created.end(), std::less<void*>{});
         created.erase(std::unique(created.begin(), created.end()), created.end());
@@ -220,7 +362,8 @@ struct IndexBatch {
         deduplicate();
         static auto scan = symbol<void(*)(void*, const std::vector<void*>&, void*)>(
             "_ZN9SimBridge22WdbAddressBTreeManager15scanWdbDatabaseERKSt6vectorIPNS_14WdbScalarBTreeESaIS3_EEPN4ISIM10IGuiStatusE");
-        if (!created.empty()) scan(cleanup.manager, created, nullptr);
+        if (!created.empty() && !parallel_scan(database, created))
+            scan(cleanup.manager, created, nullptr);
         owned.insert(created.begin(), created.end());
         committed = true;
     }
@@ -971,7 +1114,8 @@ static int begin(void* opaque, const uint64_t* ids, size_t count, uint64_t start
         // declared before the traversal so an exception destroys cursors before the indexes they
         // reference.
         HistoryCleanup cleanup(reader.index_manager);
-        IndexBatch batch(cleanup, reader.histories);
+        const void* database = reader.common ? pointer(reader.common, 8) : nullptr;
+        IndexBatch batch(cleanup, reader.histories, database);
         auto traversal = std::make_unique<Traversal>();
         traversal->end = std::min(end, reader.meta.last);
         traversal->point_only = point_only;
