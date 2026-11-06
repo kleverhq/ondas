@@ -14,7 +14,7 @@ use std::{
     path::Path,
     ptr::NonNull,
     sync::{
-        Arc, Mutex, Once,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -521,15 +521,22 @@ fn take_idle(path: &[u8], identity: &NativeIdentity) -> Option<Idle> {
 pub(crate) fn release_idle() {
     evict_idle();
 }
-// Registers a normal-exit cleanup for a parked owner. A static is never dropped by the Rust
-// runtime, so without this the native reader and the vendor temporary backing file would outlive a
-// normal process exit, unlike a reader that is dropped inside the process.
-static IDLE_CLEANUP: Once = Once::new();
-fn register_idle_cleanup() {
-    IDLE_CLEANUP.call_once(|| {
+// A static is never dropped by the Rust runtime, so a parked owner needs a normal-exit cleanup;
+// otherwise its native reader and vendor temporary backing file outlive a normal process exit,
+// unlike a reader that is dropped inside the process.
+static IDLE_CLEANUP: OnceLock<bool> = OnceLock::new();
+// True only when the cleanup handler is actually registered. A failed registration must not be
+// recorded as success, or every later park would leak again.
+fn idle_cleanup_available() -> bool {
+    *IDLE_CLEANUP.get_or_init(|| {
         // SAFETY: the handler never unwinds and never blocks on the SDK mutex.
-        unsafe { libc::atexit(release_idle_at_exit) };
-    });
+        unsafe { libc::atexit(release_idle_at_exit) == 0 }
+    })
+}
+// A reader may leave its owner to the next logical open only when the session is clean, the
+// identity is known and the process-exit cleanup exists.
+fn parkable(tainted: bool, unwinding: bool, has_identity: bool, cleanup_available: bool) -> bool {
+    !tainted && !unwinding && has_identity && cleanup_available
 }
 extern "C" fn release_idle_at_exit() {
     // Another thread may still be using the SDK while the process exits: skip instead of blocking.
@@ -591,8 +598,15 @@ impl Drop for Reader {
         let Some(identity) = self.identity.take() else {
             return;
         };
-        // A tainted or unwinding logical reader never becomes the idle owner.
-        if self.tainted.load(Ordering::Relaxed) || std::thread::panicking() {
+        // A tainted or unwinding logical reader never becomes the idle owner. Without exit cleanup
+        // a parked owner would survive the process, so refuse the park and destroy it here. The
+        // identity is already known at this point, otherwise the reader would have returned above.
+        if !parkable(
+            self.tainted.load(Ordering::Relaxed),
+            std::thread::panicking(),
+            true,
+            idle_cleanup_available(),
+        ) {
             return;
         }
         let mut replaced = None;
@@ -625,8 +639,6 @@ impl Drop for Reader {
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .replace(idle);
-                // The parked owner must not outlive a normal process exit.
-                register_idle_cleanup();
             }
         }
         drop(replaced);
@@ -1193,6 +1205,18 @@ mod tests {
                 .is_err()
             );
         }
+    }
+
+    #[test]
+    fn wdb_park_requires_exit_cleanup_and_a_clean_session() {
+        // Everything is clean and known, but the process-exit cleanup is unavailable: the owner is
+        // destroyed instead of parked, so a normal exit cannot leak it.
+        assert!(!super::parkable(false, false, true, false));
+        assert!(super::parkable(false, false, true, true));
+        // A tainted session, an unwinding caller or an unknown identity is never parked.
+        assert!(!super::parkable(true, false, true, true));
+        assert!(!super::parkable(false, true, true, true));
+        assert!(!super::parkable(false, false, false, true));
     }
 
     #[test]
