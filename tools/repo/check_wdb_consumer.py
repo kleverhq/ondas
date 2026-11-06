@@ -94,7 +94,8 @@ def main():
         # dropped inside the process: no vendor backing file is left behind.
         leftovers = sorted(entry.name for entry in temp_scope.iterdir())
         assert not leftovers, f"normal exit left vendor temporary files behind: {leftovers}"
-        shutil.rmtree(temp_scope)
+        # Keep this scope for the remaining subprocesses, which still inherit TMPDIR. The outer
+        # temporary directory removes it after all of them finish.
         env["RDI_DATADIR"] = str(crate / "absent-data")
         newer = (ROOT / "fixtures/wdb/wdb0002-reg-test-behav/waveform.wdb").resolve(strict=True)
         guard = subprocess.run(
