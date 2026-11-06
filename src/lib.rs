@@ -81,6 +81,9 @@ This includes compositions whose intermediate values are whole copies of one
 source, joined or sliced at source-width boundaries. Other compositions can
 still traverse a prefix to establish their change times.
 Proving `changed_at` for a constant slice can still require many predecessor reads.
+A packed `logic` or `reg` array whose storage the adapter qualifies decodes from its two stored
+planes instead of the vendor formatter. A slice of one such array compares only the stored bits it
+depends on when the whole extent is recorded from tick zero; other layouts keep the previous paths.
 
 The adapter uses a private reader ABI. Build-time symbol checks do not qualify
 other reader layouts. Keep the source file unchanged and available. The reader

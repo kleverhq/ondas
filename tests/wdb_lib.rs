@@ -335,6 +335,172 @@ fn wdb_point_projections_keep_normalized_times_after_seek_and_stop() {
     assert_eq!(*changed_at, Some(t(64)));
 }
 
+/// Checks bit projections of one packed logic array against the streaming history of the same
+/// declaration: the projected value is a substring of the full-width value, and `changed_at` is
+/// the start of the run of that projected value, or `None` when the run reaches the first
+/// recorded state. Counts cases where a known projected change is strictly older than the base
+/// change at the same sample, which is what distinguishes the run start from the sampled tick.
+fn packed_projection_against_streaming(
+    wave: &mut ondas::Waveform,
+    base: ondas::Signal,
+    slices: &[(u32, u32)],
+    ticks: &[u64],
+    older: &mut usize,
+) -> usize {
+    assert_eq!(base.width(), Some(1024), "published corpus width");
+    let trace = wave
+        .traces(&[base], TimeRange::all())
+        .unwrap()
+        .pop()
+        .expect("one traced signal");
+    let text = |value| match value {
+        ondas::ValueRef::Bits(bits) => bits.to_string(),
+        _ => panic!("expected a bit value"),
+    };
+    let mut states: Vec<(Option<Time>, String)> = Vec::new();
+    if let Some(initial) = trace.initial() {
+        states.push((initial.changed_at(), text(initial.value())));
+    }
+    for change in trace.changes() {
+        states.push((Some(change.time()), text(change.value())));
+    }
+    assert!(states.len() > 100, "expected a recorded history");
+    // Run start of the value at `start..start + width` in the streaming history.
+    let run_start = |start: usize, width: usize, time: Time| -> Option<Time> {
+        let project = |text: &str| text[start..start + width].to_string();
+        let index = states
+            .iter()
+            .rposition(|(tick, _)| tick.is_none_or(|tick| tick <= time))
+            .expect("state at or before the sample");
+        let value = project(&states[index].1);
+        let mut run = index;
+        while run > 0 && project(&states[run - 1].1) == value {
+            run -= 1;
+        }
+        (run > 0).then(|| states[run].0.unwrap())
+    };
+    let mut checked = 0;
+    for &(lsb, width) in slices {
+        let slice = base
+            .slice(lsb + width - 1, lsb)
+            .expect("projection inside the vector");
+        let start = 1024 - lsb as usize - width as usize;
+        for &tick in ticks {
+            let time = Time::from_ticks(tick);
+            let expected_at = run_start(start, width as usize, time);
+            let base_at = run_start(0, 1024, time);
+            let mut samples = wave.samples(&[base, slice], time).unwrap().into_iter();
+            let base_sample = samples.next().expect("base sample");
+            let slice_sample = samples.next().expect("slice sample");
+            let Sample::Value {
+                value: Value::Bits(base_bits),
+                ..
+            } = &base_sample
+            else {
+                panic!("expected a recorded base value")
+            };
+            let Sample::Value {
+                value: Value::Bits(slice_bits),
+                changed_at,
+                ..
+            } = &slice_sample
+            else {
+                panic!("expected a recorded slice value")
+            };
+            let base_text = base_bits.as_ref().to_string();
+            assert_eq!(base_text.len(), 1024, "published base width");
+            assert_eq!(
+                slice_bits.as_ref().to_string(),
+                base_text[start..start + width as usize],
+                "slice {lsb}:{lsb}+{width} at {tick}"
+            );
+            assert_eq!(
+                *changed_at, expected_at,
+                "slice {lsb}:{lsb}+{width} changed_at at {tick}"
+            );
+            if let (Some(slice_at), Some(base_at)) = (expected_at, base_at)
+                && slice_at < base_at
+            {
+                *older += 1;
+            }
+            checked += 1;
+        }
+    }
+    checked
+}
+
+#[test]
+#[ignore = "requires the selected WDB reader and installed OPB fixtures"]
+fn wdb_packed_logic_slices_match_streaming_history() {
+    // Qualified packed logic arrays decode from their two stored planes and prove a slice's
+    // changed_at from the stored bits the slice depends on. Expected values and run starts come
+    // from the streaming history of the base declaration, not from the point walk.
+    let path = fixture_path("wdb/wdb0300-opb-s");
+    let Some(mut wave) = wdb_compatibility::open(ondas::open_with(&path, "wdb-lib"), &path) else {
+        return;
+    };
+    // `low_active1024` changes only its least significant bit, so slices are either as active
+    // as the base or never change. `payload` changes its whole base every step and only its
+    // least significant bit once every 16 steps, so its bit 0 has a known change that is
+    // strictly older than the base change at the same sample.
+    // One declaration name contains a dot, so address both by hierarchy components.
+    let slow = wave
+        .hierarchy()
+        .signal_path(&ondas::HierarchyPath::from_components([
+            "tb_opb",
+            "low_active1024",
+            "word[0].data",
+            "q",
+        ]))
+        .expect("published corpus variable");
+    let payload = wave
+        .hierarchy()
+        .signal_path(&ondas::HierarchyPath::from_components([
+            "tb_opb",
+            "payload",
+            "word[0].data",
+            "q",
+        ]))
+        .expect("published corpus variable");
+    let ticks = [0_u64, 1_000, 170_000, 5_000_000, 49_999_000, 95_000_000];
+    let mut older = 0;
+    let checked_slow = packed_projection_against_streaming(
+        &mut wave,
+        slow,
+        &[
+            (0, 1024),
+            (0, 1),
+            (1, 1),
+            (2, 6),
+            (0, 9),
+            (30, 4),
+            (64, 64),
+            (1023, 1),
+            (960, 64),
+        ],
+        &ticks,
+        &mut older,
+    );
+    let checked_payload = packed_projection_against_streaming(
+        &mut wave,
+        payload,
+        &[(0, 1024), (0, 1), (1, 1), (1, 8), (0, 16), (64, 64)],
+        &ticks,
+        &mut older,
+    );
+    assert!(
+        checked_slow > 0 && checked_payload > 0,
+        "no projection was checked"
+    );
+    // Sensitivity to the changed_at defect: these cases have a known projected change strictly
+    // older than the base change at the same sample, so returning the sampled tick instead of
+    // the run start would fail the changed_at assertion above.
+    assert!(
+        older > 0,
+        "no known projected change older than the base change was covered"
+    );
+}
+
 #[test]
 #[ignore = "requires the selected WDB reader and installed enum fixture"]
 fn wdb_repeated_source_points_seed_ranges_without_changing_projection_times() {

@@ -109,6 +109,8 @@ struct Declaration {
     bool scope = false, has_range = false, constant = false, ordinal_enum = false, integer = false, grouped_bits = false;
     uint32_t name_syntax = 0;
     bool qualified = true;
+    // Packed logic array with two 32-bit planes per chunk of 32 logical bits.
+    bool two_plane = false;
     size_t base_len = 0;
     int64_t msb = 0, lsb = 0;
     long long address = -1;
@@ -330,21 +332,30 @@ struct Reader {
         }
         return info;
     }
-    bool raw(const Selected& selected, long long time, std::vector<unsigned char>& bytes,
-             long long& tick, std::vector<unsigned char>* known = nullptr) const {
+    // Stored byte values at `time` for the given index trees, with the adapter's
+    // validation of extent, chronology and record kind. No interpretation of the
+    // declaration is applied here.
+    TimeByteValues events(const std::vector<void*>& trees, long long time) const {
         static auto get = symbol<void(*)(const void*, long long, const std::vector<void*>&, TimeByteValues&)>(
             "_ZNK9SimBridge15WdbCommonReader13getValueEventExRKSt6vectorIPNS_14WdbScalarBTreeESaIS3_EERNS_17WdbTimeByteValuesE");
         TimeByteValues state;
-        get(common, time, selected.trees, state);
-        if (state.bytes.size() != selected.trees.size() || state.tick < 0 || state.tick > time)
+        get(common, time, trees, state);
+        if (state.bytes.size() != trees.size() || state.tick < 0 || state.tick > time)
             throw std::runtime_error("invalid native point extent or time");
+        for (const auto& byte : state.bytes)
+            if (byte.kind != 0 && byte.kind != 1)
+                throw std::runtime_error("native point returned a non-value record");
+        return state;
+    }
+    bool raw(const Selected& selected, long long time, std::vector<unsigned char>& bytes,
+             long long& tick, std::vector<unsigned char>* known = nullptr) const {
+        const auto state = events(selected.trees, time);
+        tick = state.tick;
         bytes.assign(selected.declaration->length, 0);
         if (known) known->assign(bytes.size(), 0);
         bool complete = true;
         for (size_t i = 0; i < state.bytes.size(); ++i) {
             const auto byte = state.bytes[i];
-            if (byte.kind != 0 && byte.kind != 1)
-                throw std::runtime_error("native point returned a non-value record");
             const auto offset = i / indexes_per_byte;
             const unsigned mask = ONDAS_WDB_BIT_INDEX ? 1u << (i % 8) : 0xff;
             if constexpr (ONDAS_WDB_BIT_INDEX) {
@@ -358,7 +369,6 @@ struct Reader {
             if (known && byte.kind == 1) (*known)[offset] |= mask;
             complete &= byte.kind == 1;
         }
-        tick = state.tick;
         return complete;
     }
     void decode(const Declaration& d, const unsigned char* bytes, std::vector<unsigned char>& output) const {
@@ -385,6 +395,9 @@ struct Reader {
             return;
         }
         if (d.encoding != 1) throw Unsupported("selected native value layout is not qualified");
+        if constexpr (!ONDAS_WDB_BIT_INDEX) {
+            if (d.two_plane) { decode_two_plane(d, bytes, output); return; }
+        }
         if (d.ordinal_enum || d.integer) {
             if (d.offset % 8 || d.width > (d.integer ? 64u : 32u))
                 throw Unsupported("unqualified native integral offset or width");
@@ -426,6 +439,80 @@ struct Reader {
             if (supported.find(bit) == std::string_view::npos)
                 throw Unsupported("native value is not a supported logic representation");
         }
+    }
+    // Two-plane packed logic: chunk of 32 logical bits holds one aval word and one bval
+    // word, least significant chunk first. Emit the same MSB-first 0/1/x/z text as the
+    // vendor formatter without a virtual call per logical bit. Bits above the declared
+    // width inside the last chunk are padding and are never read.
+    void decode_two_plane(const Declaration& d, const unsigned char* bytes,
+                          std::vector<unsigned char>& output) const {
+        output.resize(d.width);
+        const auto* storage = bytes + d.offset / 8;
+        for (uint32_t chunk = 0; chunk * 32 < d.width; ++chunk) {
+            uint32_t aval = 0, bval = 0;
+            // The extent carries no alignment guarantee; copy instead of casting.
+            std::memcpy(&aval, storage + chunk * 8u, 4);
+            std::memcpy(&bval, storage + chunk * 8u + 4, 4);
+            const uint32_t count = std::min<uint32_t>(32, d.width - chunk * 32);
+            for (uint32_t position = 0; position < count; ++position) {
+                const uint32_t mask = 1u << position;
+                const bool avalue = (aval & mask) != 0;
+                const bool bvalue = (bval & mask) != 0;
+                output[d.width - 1 - (chunk * 32 + position)] =
+                    avalue ? (bvalue ? 'x' : '1') : (bvalue ? 'z' : '0');
+            }
+        }
+    }
+    // Bit projection changed_at without decoding the declaration at every predecessor.
+    // Walks only the stored bytes that carry the projected aval/bval bits and compares
+    // the masked physical bits. Returns false when the previous full-extent loop must
+    // run instead: the extent is not completely recorded from tick zero, an earlier
+    // record is missing, or the projection does not fit the selected extent.
+    bool projection_changed_at(const Selected& selected, uint32_t lsb, uint32_t width,
+                               long long& at, int* changed) const {
+        const uint64_t first = lsb, last = uint64_t(lsb) + width - 1;
+        const size_t byte_first = static_cast<size_t>(first / 32) * 8;
+        const size_t byte_last = static_cast<size_t>(last / 32) * 8 + 7;
+        if (byte_last >= selected.trees.size()) return false;
+        const size_t span = byte_last - byte_first + 1;
+        std::vector<unsigned char> mask(span, 0);
+        for (uint64_t bit = first; bit <= last; ++bit) {
+            const uint64_t aval = (bit / 32) * 64 + (bit % 32);
+            for (const uint64_t plane : {aval, aval + 32})
+                mask[static_cast<size_t>(plane / 8) - byte_first] |= static_cast<unsigned char>(1u << (plane % 8));
+        }
+        const std::vector<void*> trees(selected.trees.begin() + static_cast<long>(byte_first),
+                                       selected.trees.begin() + static_cast<long>(byte_last) + 1);
+        // The full-extent loop stops without a change when an earlier extent is partially
+        // recorded. That branch is reproduced here only when every byte is recorded from
+        // tick zero, where the recorded set can no longer shrink at later ticks.
+        const auto origin = events(selected.trees, 0);
+        for (const auto& byte : origin.bytes)
+            if (byte.kind != 1) return false;
+        const auto reference = events(trees, at);
+        for (const auto& byte : reference.bytes)
+            if (byte.kind != 1) return false;
+        long long current = at;
+        while (current > 0) {
+            const auto previous = events(trees, current - 1);
+            if (previous.tick >= current)
+                throw std::runtime_error("native point predecessor did not move backwards");
+            bool complete = true, equal = true;
+            for (size_t index = 0; index < span && complete; ++index) {
+                const auto& recorded = previous.bytes[index];
+                if (recorded.kind != 1) { complete = false; break; }
+                if ((recorded.value & mask[index]) !=
+                    (reference.bytes[index].value & mask[index]))
+                    equal = false;
+            }
+            if (!complete) return false;
+            // The returned tick is the last predecessor that still matched, which is the
+            // tick that established the observed value, not the sampled tick.
+            if (!equal) { at = current; *changed = 1; return true; }
+            current = previous.tick;
+        }
+        at = current;
+        return true;
     }
 };
 
@@ -550,6 +637,15 @@ void describe_type(Reader& reader, Declaration& d) {
             d.msb = top.left; d.lsb = top.right; d.has_range = true;
         }
     }
+    // Qualified packed-logic storage: one 32-bit aval word and one 32-bit bval word per
+    // chunk of 32 logical bits, least significant chunk first, no padding inside a chunk
+    // beyond the declared width. Established by bit-level qualification of the installed
+    // reader for this layout only; every other layout keeps the vendor formatter.
+    d.two_plane = d.encoding == 1 && !d.ordinal_enum && !d.integer &&
+                  native_class == "vtable for SimBridge::ArrayTypeObj" &&
+                  packing == 2 && d.packing == 1 && d.grouped_bits && d.has_range &&
+                  d.domain == 2 && d.offset == 0 && d.msb > d.lsb && word(owner, 0x30) == 1 &&
+                  static_cast<uint64_t>(d.length) == (static_cast<uint64_t>(d.width) + 31) / 32 * 8;
     if (d.ordinal_enum) {
         auto begin = static_cast<const std::string*>(pointer(owner, 0x40));
         auto end = static_cast<const std::string*>(pointer(owner, 0x48));
@@ -602,6 +698,7 @@ void describe(Reader& reader, Declaration& declaration) {
     catch (const LayoutUnsupported&) {
         // Unpacked members remain accessible when only the aggregate value
         // exceeds the value-layout qualifications.
+        declaration.two_plane = false;
         declaration.qualified = declaration.packing == 2;
         declaration.encoding = 0;
         declaration.width = 0;
@@ -940,7 +1037,12 @@ extern "C" int ondas_wdb_sample_bits(void* opaque, uint64_t id, uint64_t time, u
         reader.decode(d, raw.data(), decoded);
         const auto first = d.width - lsb - width;
         value.assign(decoded.begin() + first, decoded.begin() + first + width);
-        while (at > 0) {
+        bool walked = false;
+        if constexpr (!ONDAS_WDB_BIT_INDEX) {
+            if (d.two_plane && width < d.width)
+                walked = reader.projection_changed_at(selected, lsb, width, at, changed);
+        }
+        while (!walked && at > 0) {
             long long before = 0;
             if (!reader.raw(selected, at - 1, raw, before)) break;
             if (before >= at) throw std::runtime_error("native point predecessor did not move backwards");
