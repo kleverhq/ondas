@@ -1030,3 +1030,142 @@ fn wdb_normal_exit_releases_a_parked_owner_before_any_history() {
         temp_entries(root.path())
     );
 }
+
+fn bank_paths(bank: &str, count: usize) -> Vec<ondas::HierarchyPath> {
+    (0..count)
+        .map(|i| {
+            ondas::HierarchyPath::from_components([
+                "tb_opb".to_string(),
+                bank.to_string(),
+                format!("word[{i}].data"),
+                "q".to_string(),
+            ])
+        })
+        .collect()
+}
+
+fn resolve_paths(wave: &Waveform, paths: &[ondas::HierarchyPath]) -> Vec<Signal> {
+    paths
+        .iter()
+        .map(|path| wave.hierarchy().signal_path(path).unwrap())
+        .collect()
+}
+
+fn report_resource(fixture: &str, phase: &str, elapsed: Option<Instant>, peak: bool) {
+    let (fds, rss) = resource_usage();
+    let root = PathBuf::from(std::env::var_os("TMPDIR").unwrap_or_default());
+    let mut files = Vec::new();
+    let mut bytes = 0u64;
+    let mut blocks = 0u64;
+    if let Ok(entries) = fs::read_dir(&root) {
+        for entry in entries.flatten() {
+            if let Ok(metadata) = entry.metadata()
+                && metadata.is_file()
+            {
+                bytes += metadata.len();
+                blocks += metadata.blocks() * 512;
+                files.push(entry.file_name().to_string_lossy().into_owned());
+            }
+        }
+    }
+    let elapsed_ms = elapsed
+        .map(|start| format!("{:.3}", start.elapsed().as_secs_f64() * 1000.0))
+        .unwrap_or_default();
+    println!(
+        "RESOURCE,fixture={fixture},phase={phase},elapsed_ms={elapsed_ms},peak={peak},rss_kib={rss},rss_mib={:.3},fds={fds},tmp_files={},tmp_bytes={bytes},tmp_blocks_bytes={blocks},files={}",
+        rss as f64 / 1024.0,
+        files.len(),
+        files.join("|")
+    );
+}
+
+/// Warm/cold resource control at a substantial 10 000-signal read set. Counters are measured by
+/// the private native probe; this test measures the actual Rust consumer (resident set, fds,
+/// SDK temporary backing files) and the normal-exit cleanup in an isolated TMPDIR.
+#[test]
+#[ignore = "requires the selected reader and installed WDB fixtures; run just conformance-wdb"]
+fn wdb_warm_readset_resources_at_k10000() {
+    if std::env::var_os("ONDAS_WDB_RESOURCE_CHILD").is_some() {
+        for name in ["wdb0301-opb-m", "wdb0302-opb-l"] {
+            let path = fixture(name);
+            let regular = bank_paths("regular64", 10_000);
+            let staggered = bank_paths("staggered64", 10_000);
+            let tick = Time::from_ticks(5_000_000);
+            let late = Time::from_ticks(50_000_000);
+
+            let started = Instant::now();
+            let mut wave = open_native(&path);
+            let open = started.elapsed();
+            let signals = resolve_paths(&wave, &regular);
+            let started = Instant::now();
+            let rows = wave.samples(&signals, tick).unwrap();
+            assert_eq!(rows.len(), 10_000);
+            report_resource(name, "cold-open", Some(started), false);
+            println!(
+                "RESOURCE,fixture={name},phase=cold-open-ms,elapsed_ms={:.3}",
+                open.as_secs_f64() * 1000.0
+            );
+            drop(wave);
+            report_resource(name, "cold-park", None, false);
+
+            let mut wave = open_native(&path);
+            let signals = resolve_paths(&wave, &regular);
+            let started = Instant::now();
+            let rows = wave.samples(&signals, late).unwrap();
+            assert_eq!(rows.len(), 10_000);
+            report_resource(name, "warm-hit", Some(started), false);
+            let mut selection = wave.select(&signals).unwrap();
+            let started = Instant::now();
+            let _ = selection.samples(tick).unwrap();
+            report_resource(name, "live-repeat", Some(started), false);
+            drop(selection);
+            drop(wave);
+            report_resource(name, "warm-park", None, false);
+
+            // A full disjoint bank: the retained regular64 histories coexist with the new
+            // staggered64 histories until the park prune.
+            let mut wave = open_native(&path);
+            let other = resolve_paths(&wave, &staggered);
+            let started = Instant::now();
+            let rows = wave.samples(&other, tick).unwrap();
+            assert_eq!(rows.len(), 10_000);
+            report_resource(name, "disjoint-full", Some(started), true);
+            drop(wave);
+            report_resource(name, "disjoint-park", None, false);
+
+            let mut wave = open_native(&path);
+            let half = resolve_paths(&wave, &staggered[..5_000]);
+            let started = Instant::now();
+            let rows = wave.samples(&half, tick).unwrap();
+            assert_eq!(rows.len(), 5_000);
+            report_resource(name, "subset", Some(started), false);
+            drop(wave);
+            report_resource(name, "subset-park", None, false);
+
+            drop(open_native(&path)); // no query
+            report_resource(name, "no-query-park", None, false);
+            drop(open_native(&fixture("wdb0311-partial-logging"))); // evicts the parked owner
+            report_resource(name, "evict", None, false);
+        }
+        return;
+    }
+    let root = TempRoot::new();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "wdb_warm_readset_resources_at_k10000",
+            "--ignored",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env("ONDAS_WDB_RESOURCE_CHILD", "1")
+        .env("TMPDIR", root.path())
+        .status()
+        .expect("run the resource child");
+    assert!(output.success(), "resource child failed");
+    assert!(
+        temp_entries(root.path()).is_empty(),
+        "normal exit left temporary files: {:?}",
+        temp_entries(root.path())
+    );
+}
