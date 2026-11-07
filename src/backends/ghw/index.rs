@@ -20,6 +20,10 @@ const FRAME_CHUNK: usize = 64;
 const STREAM_START: usize = 16;
 // A group that already has a frame recorded in the current frame.
 const NO_GROUP: usize = usize::MAX;
+// Retained per-group arrays: two byte streams of `Vec<u8>` elements plus one
+// `u64` and three `u32` counters. Used for the constructor preflight.
+const GROUPS_PER_ELEMENT_BYTES: usize =
+    2 * size_of::<Vec<u8>>() + size_of::<u64>() + 3 * size_of::<u32>();
 // A group without a recorded pair yet.
 const NO_FRAME: u32 = u32::MAX;
 
@@ -82,6 +86,12 @@ impl Index {
 
     fn with_limit(active: usize, limit: usize) -> Option<Self> {
         let count = active.div_ceil(RANKS_PER_GROUP);
+        // Aggregate preflight before any reserve: an oversized active table is
+        // refused without requesting optional capacity. The post-reserve check
+        // below keeps the accounting exact if the allocator rounds up.
+        if count.checked_mul(GROUPS_PER_ELEMENT_BYTES)? > limit {
+            return None;
+        }
         let mut ids = Vec::new();
         ids.try_reserve_exact(count).ok()?;
         let mut offs = Vec::new();
@@ -698,6 +708,18 @@ mod tests {
         assert!(index.ids[0].len() < 8, "{}", index.ids[0].len());
         assert!(index.offs[0].len() >= 100, "{}", index.offs[0].len());
         assert!(index.offs[0].len() <= 200, "{}", index.offs[0].len());
+    }
+
+    #[test]
+    fn oversized_active_table_is_refused_before_any_reserve() {
+        // 600 M ranks is 9 375 000 groups and 637.5 MB of per-group arrays,
+        // above the 512 MiB budget, so construction must refuse quickly.
+        assert!(Index::new(600_000_000).is_none());
+        assert!(Index::with_limit(600_000_000, 1024).is_none());
+        // The preflight is exact: one byte below the aggregate is refused too.
+        let groups = 600_000_000usize.div_ceil(RANKS_PER_GROUP);
+        let aggregate = groups.checked_mul(GROUPS_PER_ELEMENT_BYTES).unwrap();
+        assert!(Index::with_limit(600_000_000, aggregate - 1).is_none());
     }
 
     #[test]
