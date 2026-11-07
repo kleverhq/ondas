@@ -89,6 +89,68 @@ impl Clock {
     }
 }
 
+/// Most buffered bytes one record can occupy: a five-byte rank delta and a
+/// ten-byte 64-bit integer. A window with fewer bytes left is left to the
+/// checked readers instead of being decoded in the bulk loop.
+const WINDOW_RECORD: usize = 15;
+
+/// Decode one cycle rank delta from a buffered window. `None` means the checked
+/// reader must handle the field, including every malformed encoding.
+#[inline]
+fn window_uleb(bytes: &[u8]) -> Option<(u32, usize)> {
+    let mut value = 0u32;
+    for group in 0..5 {
+        let byte = *bytes.get(group)?;
+        if group == 4 && byte & 0xf0 != 0 {
+            return None;
+        }
+        value |= u32::from(byte & 0x7f) << (7 * group);
+        if byte & 0x80 == 0 {
+            return Some((value, group + 1));
+        }
+    }
+    None
+}
+
+/// Decode one value from a buffered window. `None` means the checked reader
+/// must handle the field, so ordinal, signed-range and endian rules keep one
+/// implementation and one error text.
+#[inline]
+fn window_value(
+    bytes: &[u8],
+    types: &Types,
+    big_endian: bool,
+    id: usize,
+) -> Option<(Scalar, usize)> {
+    let (storage, literals, _) = types.scalar(id)?;
+    Some(match storage {
+        Storage::B2 | Storage::E8 => {
+            let ordinal = *bytes.first()?;
+            if ordinal as usize >= literals.len() {
+                return None;
+            }
+            (Scalar::Ordinal(ordinal), 1)
+        }
+        Storage::I32 | Storage::P32 => {
+            let (value, length) = super::wire::decode_sleb(bytes, 32)?;
+            (Scalar::Integer(value), length)
+        }
+        Storage::I64 | Storage::P64 => {
+            let (value, length) = super::wire::decode_sleb(bytes, 64)?;
+            (Scalar::Integer(value), length)
+        }
+        Storage::F64 => {
+            let raw = *bytes.first_chunk::<8>()?;
+            let bits = if big_endian {
+                u64::from_be_bytes(raw)
+            } else {
+                u64::from_le_bytes(raw)
+            };
+            (Scalar::Real(bits), 8)
+        }
+    })
+}
+
 fn descriptor(wire: &mut Wire) -> Result<()> {
     let expected = [if wire.big_endian { 2 } else { 1 }, 4, 1, 0];
     if wire.fixed::<4>()? != expected {
@@ -154,6 +216,60 @@ pub(super) fn walk<B>(
                 loop {
                     let mut rank = 0usize;
                     loop {
+                        // Bulk-decode the records that the buffered window covers
+                        // completely. Records it leaves out are taken by the checked
+                        // readers below, one at a time, so values, offsets, ordering
+                        // and error texts stay identical.
+                        let mut consumed = 0usize;
+                        let mut decoded_rank = rank;
+                        let mut stopped = None;
+                        {
+                            let big_endian = wire.big_endian;
+                            let base = wire.offset;
+                            let bytes = wire.window()?;
+                            while bytes.len() - consumed >= WINDOW_RECORD {
+                                let at = consumed;
+                                let Some((delta, width)) = window_uleb(&bytes[at..]) else {
+                                    break;
+                                };
+                                if delta == 0 {
+                                    break;
+                                }
+                                let Some(next_rank) = decoded_rank.checked_add(delta as usize)
+                                else {
+                                    break;
+                                };
+                                let Some(&(id, ty)) = active.get(next_rank - 1) else {
+                                    break;
+                                };
+                                let Some((value, length)) =
+                                    window_value(&bytes[at + width..], types, big_endian, ty)
+                                else {
+                                    break;
+                                };
+                                decoded_rank = next_rank;
+                                consumed = at + width + length;
+                                if let ControlFlow::Break(value) = visitor(Event::Scalar {
+                                    id,
+                                    rank: next_rank - 1,
+                                    time: Time::from_ticks(time as u64),
+                                    offset: base + (at + width) as u64,
+                                    value,
+                                    cyclic: true,
+                                }) {
+                                    stopped = Some(value);
+                                    break;
+                                }
+                            }
+                        }
+                        wire.consume_window(consumed);
+                        rank = decoded_rank;
+                        if let Some(value) = stopped {
+                            return Ok((ControlFlow::Break(value), clock.span()));
+                        }
+                        if consumed != 0 {
+                            continue;
+                        }
                         let delta = wire.uleb()? as usize;
                         if delta == 0 {
                             break;
@@ -555,5 +671,269 @@ mod tests {
         eprintln!(
             "GHW source body probe: {passed} complete, 3 malformed cycles, 1 malformed missing nested range"
         );
+    }
+}
+
+#[cfg(test)]
+mod window_parity {
+    use super::*;
+    use std::io::{BufReader, Cursor};
+
+    /// Read-ahead sizes that keep the bulk window smaller than one record, exactly
+    /// at its edge, and much larger than it.
+    const CAPACITIES: [usize; 10] = [1, 2, 3, 4, 7, 8, 15, 16, 17, 4096];
+
+    /// Header, string pool and type table for these inputs: I32, I64, F64 and a
+    /// three-literal enumeration. Body bytes follow at the returned offset.
+    fn waveform(body: &[u8]) -> (Vec<u8>, u64) {
+        let strings = ["", "i32", "i64", "f64", "e8", "a", "b", "c"];
+        let mut bytes = b"GHDLwave\n\x10\0\x01\x01\x04\x01\0STR\0\0\0\0\0".to_vec();
+        bytes.extend((strings.len() as u32).to_le_bytes());
+        bytes.extend((strings.iter().map(|s| s.len()).sum::<usize>() as u32).to_le_bytes());
+        for string in strings {
+            bytes.extend(string.as_bytes());
+            bytes.push(0);
+        }
+        bytes.extend(b"EOS\0TYP\0\0\0\0\0");
+        bytes.extend(4u32.to_le_bytes());
+        // Scalar I32, I64, F64 and an E8 with three literals, then the terminator.
+        bytes.extend([25, 1, 26, 2, 27, 3, 23, 4, 3, 5, 6, 7]);
+        bytes.push(0);
+        let body_start = bytes.len() as u64;
+        bytes.extend(body);
+        (bytes, body_start)
+    }
+
+    /// 130 active scalars: ranks 1..=3 are the integer and real types, the rest
+    /// are the enumeration, so rank deltas above 127 have room to be encoded.
+    fn active(types: &Types) -> Vec<(u32, usize)> {
+        let mut wire = Wire::new(Box::new(Cursor::new(vec![1u8, 2, 3, 4]))).unwrap();
+        let nodes = (0..4)
+            .map(|_| types.type_id(&mut wire).unwrap())
+            .collect::<Vec<_>>();
+        let mut active = vec![(1, nodes[0]), (2, nodes[1]), (3, nodes[2])];
+        active.extend((4..=130u32).map(|id| (id, nodes[3])));
+        active
+    }
+
+    fn parsed(bytes: &[u8], capacity: usize) -> (Wire, Types, Vec<(u32, usize)>) {
+        let mut wire = Wire::new(Box::new(BufReader::with_capacity(
+            capacity,
+            Cursor::new(bytes.to_vec()),
+        )))
+        .unwrap()
+        .with_buffer_capacity(capacity);
+        wire.header().unwrap();
+        let strings = wire.strings().unwrap();
+        let types = Types::read(&mut wire, strings).unwrap();
+        let active = active(&types);
+        (wire, types, active)
+    }
+
+    /// Walk a body with one read-ahead capacity and return every event, the error
+    /// text that ended the walk, and the reader position the walk stopped at.
+    fn walk_body(
+        bytes: &[u8],
+        body_start: u64,
+        capacity: usize,
+    ) -> (Vec<Event>, Option<String>, u64) {
+        let (mut wire, types, active) = parsed(bytes, capacity);
+        wire.seek(body_start).unwrap();
+        let mut events = Vec::new();
+        let result = walk(
+            &mut wire,
+            &types,
+            &active,
+            Time::from_ticks(u64::MAX),
+            |event| {
+                events.push(event);
+                ControlFlow::<()>::Continue(())
+            },
+        );
+        (
+            events,
+            result.err().map(|error| error.to_string()),
+            wire.offset,
+        )
+    }
+
+    /// Walk a body with a visitor that stops after `limit` events.
+    fn walk_until(
+        bytes: &[u8],
+        body_start: u64,
+        capacity: usize,
+        limit: usize,
+    ) -> (Vec<Event>, u64) {
+        let (mut wire, types, active) = parsed(bytes, capacity);
+        wire.seek(body_start).unwrap();
+        let mut events = Vec::new();
+        let result = walk(
+            &mut wire,
+            &types,
+            &active,
+            Time::from_ticks(u64::MAX),
+            |event| {
+                events.push(event);
+                if events.len() == limit {
+                    return ControlFlow::Break(());
+                }
+                ControlFlow::<()>::Continue(())
+            },
+        );
+        assert!(result.unwrap().0.is_break());
+        (events, wire.offset)
+    }
+
+    fn snapshot(time: i64, values: &[u8], bytes: &mut Vec<u8>) {
+        bytes.extend(b"SNP\0\0\0\0\0");
+        bytes.extend(time.to_le_bytes());
+        bytes.extend(values);
+        bytes.extend(b"ESN\0");
+    }
+
+    /// A body that stores one value of every supported storage and uses a
+    /// two-byte rank delta plus a noncanonical one-byte value encoding.
+    fn mixed_body() -> Vec<u8> {
+        let mut body = Vec::new();
+        let mut values = vec![0x80, 0x00]; // Noncanonical zero for I32.
+        values.extend([0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x7f]);
+        values.extend(1.5f64.to_bits().to_le_bytes());
+        values.extend([2u8; 127]);
+        snapshot(0, &values, &mut body);
+        body.extend(b"CYC\0");
+        body.extend(0i64.to_le_bytes());
+        body.extend([0x81, 0x01, 2]); // Delta 129 reaches the enumeration.
+        body.extend([0x81, 0x00, 1]); // Noncanonical delta 1 reaches rank 130.
+        body.push(0);
+        body.push(1);
+        body.extend([0x01, 0xff, 0xff, 0xff, 0xff, 0x07]); // I32 maximum.
+        body.push(0x01);
+        body.extend([0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x7f]);
+        body.push(0x01); // I64 minimum.
+        body.extend(1.5f64.to_bits().to_le_bytes());
+        body.push(0x01);
+        body.push(0);
+        body.push(0);
+        body.push(0x7f);
+        body.extend(b"ECY\0");
+        body
+    }
+
+    #[test]
+    fn bulk_window_preserves_every_event_and_offset_across_buffer_boundaries() {
+        let body = mixed_body();
+        let (bytes, body_start) = waveform(&body);
+        let (expected, error, offset) =
+            walk_body(&bytes, body_start, CAPACITIES[CAPACITIES.len() - 1]);
+        assert_eq!(error, None);
+        let scalars = expected
+            .iter()
+            .filter(|event| matches!(event, Event::Scalar { .. }))
+            .count();
+        let list_ends = expected
+            .iter()
+            .filter(|event| matches!(event, Event::ListEnd(_)))
+            .count();
+        let ticks = expected
+            .iter()
+            .filter(|event| matches!(event, Event::Tick(_)))
+            .count();
+        assert_eq!((scalars, list_ends, ticks), (136, 3, 2));
+        assert!(expected.iter().any(|event| matches!(
+            event,
+            Event::Scalar {
+                value: Scalar::Integer(i64::MIN),
+                ..
+            }
+        )));
+        assert!(expected.iter().any(|event| matches!(
+            event,
+            Event::Scalar {
+                value: Scalar::Real(bits),
+                ..
+            } if *bits == 1.5f64.to_bits()
+        )));
+        assert!(expected.iter().any(|event| matches!(
+            event,
+            Event::Scalar {
+                value: Scalar::Integer(2_147_483_647),
+                ..
+            }
+        )));
+        for capacity in CAPACITIES {
+            let (events, error, position) = walk_body(&bytes, body_start, capacity);
+            assert_eq!(error, None, "capacity {capacity}");
+            assert_eq!(events, expected, "capacity {capacity}");
+            assert_eq!(position, offset, "capacity {capacity}");
+        }
+    }
+
+    #[test]
+    fn stopping_mid_list_leaves_the_same_events_and_position() {
+        let body = mixed_body();
+        let (bytes, body_start) = waveform(&body);
+        let expected = walk_until(&bytes, body_start, CAPACITIES[CAPACITIES.len() - 1], 7);
+        assert_eq!(expected.0.len(), 7);
+        for capacity in CAPACITIES {
+            assert_eq!(
+                walk_until(&bytes, body_start, capacity, 7),
+                expected,
+                "capacity {capacity}"
+            );
+        }
+    }
+
+    /// A cycle list that starts with the malformed bytes and is padded afterwards,
+    /// so the bulk window has room and the record really reaches it first.
+    fn padded_cycle(malformed: &[u8]) -> Vec<u8> {
+        let mut body = b"CYC\0".to_vec();
+        body.extend(0i64.to_le_bytes());
+        body.extend(malformed);
+        body.extend(std::iter::repeat_n(2u8, 64));
+        body
+    }
+
+    #[test]
+    fn malformed_cycle_fields_report_the_same_error_and_position_at_every_boundary() {
+        let valid = mixed_body();
+        let truncated_value = [
+            b"CYC\0".to_vec(),
+            0i64.to_le_bytes().to_vec(),
+            vec![1, 0x80],
+        ]
+        .concat();
+        let backward_time = [
+            b"CYC\0".to_vec(),
+            5i64.to_le_bytes().to_vec(),
+            vec![1, 1, 0, 0x7f],
+            b"ECY\0".to_vec(),
+            b"CYC\0".to_vec(),
+            0i64.to_le_bytes().to_vec(),
+            vec![1, 1, 0, 0x7f],
+            b"ECY\0".to_vec(),
+        ]
+        .concat();
+        let bodies = [
+            &valid[..valid.len() - 6],
+            &truncated_value[..],
+            &backward_time[..],
+            &padded_cycle(&[0x04, 3])[..], // Ordinal outside the base literals.
+            &padded_cycle(&[0xff, 0xff, 0xff, 0xff, 0x1f])[..], // Rank delta above 32 bits.
+            &padded_cycle(&[0x01, 0x80, 0x80, 0x80, 0x80, 0x80])[..], // I32 SLEB above 32 bits.
+            &padded_cycle(&[0xc8, 0x01, 1])[..], // Rank beyond the active table.
+            &padded_cycle(&[0x01, 1, 0x00, 0x7e])[..], // Negative cycle time step.
+        ];
+        for body in bodies {
+            let (bytes, body_start) = waveform(body);
+            let (reference, error, offset) =
+                walk_body(&bytes, body_start, CAPACITIES[CAPACITIES.len() - 1]);
+            let error = error.expect("malformed body must be rejected");
+            for capacity in CAPACITIES {
+                let (events, other, position) = walk_body(&bytes, body_start, capacity);
+                assert_eq!(other, Some(error.clone()), "capacity {capacity}");
+                assert_eq!(events, reference, "capacity {capacity}");
+                assert_eq!(position, offset, "capacity {capacity}");
+            }
+        }
     }
 }
