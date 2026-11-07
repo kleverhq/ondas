@@ -1630,6 +1630,84 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn vcd_candidate_times_are_an_activity_superset() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tmp")
+            .join(format!("candidate-times-{}.vcd", std::process::id()));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let source = b"$var wire 2 ! a $end $var wire 1 \" b $end $enddefinitions $end \
+            #0 b00 ! 0\"\n#1 b00 !\n#2 b01 ! 1\"\n#2 b00 !\n#3 b01 !\n#3 b00 ! 1\"\n#4 b01 !\n";
+        std::fs::write(&path, source).unwrap();
+        let mut wave = crate::open_with(&path, "vcd-native").unwrap();
+        let mut serial =
+            crate::open_bytes_with("serial.vcd", source.as_slice().into(), "vcd-native").unwrap();
+        let signal = wave.hierarchy().signal("a").unwrap();
+        let reference = serial.hierarchy().signal("a").unwrap();
+        let crate::backends::Reader::Vcd(reader) = &mut wave.reader else {
+            unreachable!()
+        };
+        reader.force_parallel_for_test(std::fs::File::open(&path).unwrap(), vec![source.len()], 4);
+        let range = TimeRange::closed(Time::from_ticks(0), Time::from_ticks(4));
+        let candidates = |selection: &mut crate::Selection<'_>| {
+            let mut times = Vec::new();
+            let _ = selection
+                .scan_candidate_times(range, |time| {
+                    times.push(time.ticks());
+                    ControlFlow::<()>::Continue(())
+                })
+                .unwrap();
+            times
+        };
+        let mut selection = wave.select(&[signal]).unwrap();
+        let superset = candidates(&mut selection);
+        assert!(superset.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(superset.iter().all(|time| *time <= 4));
+        // Requirement: every change tick of the normalized scan is present.
+        let mut changes = Vec::new();
+        let mut last = None;
+        let mut reference_selection = serial.select(&[reference]).unwrap();
+        let _ = reference_selection
+            .scan(range, |record| {
+                if let ScanRef::Change { time, .. } = record
+                    && last != Some(time)
+                {
+                    last = Some(time);
+                    changes.push(time.ticks());
+                }
+                ControlFlow::<()>::Continue(())
+            })
+            .unwrap();
+        for time in &changes {
+            assert!(superset.contains(time), "missing change {time}");
+        }
+        // Tick 1 has an identical record, so activity is a strict superset.
+        assert!(superset.contains(&1));
+        assert!(!changes.contains(&1));
+        // A Break stops the candidate visit without touching reader state.
+        let mut first = None;
+        let outcome = selection
+            .scan_candidate_times(range, |time| {
+                first = Some(time.ticks());
+                ControlFlow::Break(())
+            })
+            .unwrap();
+        assert!(outcome.is_break());
+        assert_eq!(first, Some(0));
+        assert_eq!(candidates(&mut selection), superset);
+        drop(selection);
+        // A slice passes its whole base; base activity covers projected changes.
+        let slice = signal.slice(1, 1).unwrap();
+        let mut slice_selection = wave.select(&[slice]).unwrap();
+        let slice_candidates = candidates(&mut slice_selection);
+        assert!(!slice_candidates.is_empty());
+        // Without the position index the generic scan answers.
+        let mut byte_selection = serial.select(&[reference]).unwrap();
+        assert_eq!(candidates(&mut byte_selection), changes);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn vcd_indexed_traversal_keeps_selection_semantics() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tmp")
@@ -2032,10 +2110,17 @@ mod tests {
                 .unwrap();
             times
         };
-        assert_eq!(
-            collect(&mut wave, &selected),
-            collect(&mut serial, &reference)
-        );
+        // The indexed backend may visit extra activity; every generic scan
+        // change must still be present and the order must be strict.
+        let indexed_candidates = collect(&mut wave, &selected);
+        let reference_changes = collect(&mut serial, &reference);
+        assert!(indexed_candidates.windows(2).all(|pair| pair[0] < pair[1]));
+        for time in &reference_changes {
+            assert!(
+                indexed_candidates.contains(time),
+                "missing candidate {time:?}"
+            );
+        }
         let first = |wave: &mut crate::Waveform, signals: &[crate::Signal]| {
             wave.scan(signals, TimeRange::all(), |record| match record {
                 ScanRef::Change { time, .. } => ControlFlow::Break(time),

@@ -22,6 +22,8 @@ A sparse selection reads its indexed records in tick order instead of walking ev
 
 An explicit-time batch can seed its requested window from a validated entering state only when the index, the selection and the resource policy support it; otherwise it keeps the body start. It still reads one fresh chronological traversal and does not reuse an earlier selection replay.
 
+A candidate-time request can visit indexed base activity directly. That covers every change time of a normalized scan and can include extra activity; the public candidate contract allows this superset. A slice or composition passes its whole bases. Without the index the generic scan supplies the candidate times.
+
 ## A checkpoint needs parser context
 
 Without an index entry, the identifier map cannot seek to a tick. Without reusable state, a late read must establish selected state from the index or the body. A selection can retain its last completed state and one bounded boundary checkpoint. The checkpoint needs dump-block context as well as a byte offset and timestamp.

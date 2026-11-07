@@ -277,6 +277,12 @@ impl Selection<'_> {
         if let crate::backends::Reader::Fst(reader) = &mut self.waveform.reader {
             return reader.read_candidate_times(&self.bases, range.start(), end, visitor);
         }
+        if let crate::backends::Reader::Vcd(reader) = &self.waveform.reader
+            && let Some(result) =
+                reader.candidate_times(&self.bases, range.start(), end, &mut visitor)
+        {
+            return Ok(result);
+        }
         let mut last = None;
         self.scan(range, |record| {
             if let ScanRef::Change { time, .. } = record

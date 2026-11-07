@@ -641,7 +641,7 @@ impl Reader {
         let workers = thread::available_parallelism()
             .ok()?
             .get()
-            .min(length / (8 * 1024 * 1024));
+            .min(length / (2 * 1024 * 1024));
         if workers < 2 {
             return None;
         }
@@ -1030,7 +1030,7 @@ impl Reader {
                 return None;
             }
             if selected.insert(signal.index()) {
-                if index.max_token(signal.index()) > TOKEN_BYTES {
+                if index.max_token() > TOKEN_BYTES {
                     return None;
                 }
                 let width = match signal.encoding() {
@@ -1108,6 +1108,71 @@ impl Reader {
         Some((samples, position))
     }
 
+    /// Visits validated base record times in the closed range.
+    ///
+    /// The result is a strictly increasing candidate superset: it covers every
+    /// change time of a full normalized scan of the selection and can include
+    /// extra activity. Slices and compositions pass their whole bases. It reads
+    /// no source bytes, decodes no values and needs no entering seed. Without the
+    /// position index it returns `None`, so the caller keeps the generic scan.
+    pub(crate) fn candidate_times<B>(
+        &self,
+        signals: &[Signal],
+        start: Time,
+        end: Time,
+        visitor: &mut impl FnMut(Time) -> ControlFlow<B>,
+    ) -> Option<ControlFlow<B>> {
+        use std::{cmp::Reverse, collections::BinaryHeap};
+
+        let index = self.index.as_ref()?;
+        if signals.is_empty() || start > end {
+            return Some(ControlFlow::Continue(()));
+        }
+        let mut seen = HashSet::new();
+        let mut streams = Vec::new();
+        for signal in signals {
+            if signal.is_computed() {
+                return None;
+            }
+            let signal_index = signal.index();
+            if !seen.insert(signal_index) {
+                continue;
+            }
+            let list = index.entries(signal_index);
+            let first = list.partition_point(|entry| entry.time < start.ticks());
+            let stop = list.partition_point(|entry| entry.time <= end.ticks());
+            if first < stop {
+                streams.push((signal_index, first, stop));
+            }
+        }
+        let mut heap = BinaryHeap::new();
+        let mut cursors = Vec::with_capacity(streams.len());
+        for (stream, &(signal_index, first, stop)) in streams.iter().enumerate() {
+            cursors.push(first);
+            if first < stop {
+                heap.push(Reverse((index.entries(signal_index)[first].time, stream)));
+            }
+        }
+        let mut last = None;
+        while let Some(Reverse((time, stream))) = heap.pop() {
+            if last != Some(time) {
+                last = Some(time);
+                if let ControlFlow::Break(value) = visitor(Time::from_ticks(time)) {
+                    return Some(ControlFlow::Break(value));
+                }
+            }
+            cursors[stream] += 1;
+            let (signal_index, _, stop) = streams[stream];
+            if cursors[stream] < stop {
+                heap.push(Reverse((
+                    index.entries(signal_index)[cursors[stream]].time,
+                    stream,
+                )));
+            }
+        }
+        Some(ControlFlow::Continue(()))
+    }
+
     /// Reads selected records in source order from validated positions.
     ///
     /// The byte lower bound, not the time, is the consumed-record boundary: a
@@ -1140,13 +1205,13 @@ impl Reader {
                 Encoding::Bits { .. } | Encoding::Real | Encoding::Event => {}
                 Encoding::String | Encoding::Unsupported => return None,
             }
-            // A raw record larger than the traversal working state keeps the walk.
-            if index.max_token(signal_index) > TOKEN_BYTES {
-                return None;
-            }
             selected.push(signal_index);
         }
         if selected.is_empty() {
+            return None;
+        }
+        // A raw record larger than the traversal working state keeps the walk.
+        if index.max_token() > TOKEN_BYTES {
             return None;
         }
         let mut streams = Vec::with_capacity(selected.len());
@@ -1164,11 +1229,7 @@ impl Reader {
                 last = last.max(list[stop - 1].offset);
                 // Encoded width and density, not the declared width alone.
                 estimate = estimate.checked_add(
-                    count.checked_mul(
-                        index
-                            .max_token(signal_index)
-                            .saturating_add(READ_WINDOW as u64),
-                    )?,
+                    count.checked_mul(index.max_token().saturating_add(READ_WINDOW as u64))?,
                 )?;
             }
             streams.push((signal_index, start, stop));
@@ -1316,13 +1377,13 @@ impl Reader {
                 Err(_) => Ok(None),
             },
             (Encoding::Event, _) if !matches!(prefix, b'r' | b's') => {
-                if payload.is_empty() || BitsRef::from_ascii(payload).is_none() {
+                if payload.is_empty() || !valid_bits(payload) {
                     return Ok(None);
                 }
                 Ok(Some(Decoded::Event))
             }
             (Encoding::Bits { width }, _) if !matches!(prefix, b'r' | b's') => {
-                if payload.is_empty() || BitsRef::from_ascii(payload).is_none() {
+                if payload.is_empty() || !valid_bits(payload) {
                     return Ok(None);
                 }
                 let width = width as usize;
@@ -1886,7 +1947,7 @@ impl Reader {
                         records
                             .as_deref_mut()
                             .expect("indexing needs a builder")
-                            .record(index, time, offset, (word.len() as u64, id.len() as u64));
+                            .record(index, time, offset, (payload.len() as u64, id.len() as u64));
                     }
                     value
                 }
@@ -1896,7 +1957,7 @@ impl Reader {
                         records
                             .as_deref_mut()
                             .expect("indexing needs a builder")
-                            .record(index, time, offset, (word.len() as u64, id.len() as u64));
+                            .record(index, time, offset, (payload.len() as u64, id.len() as u64));
                     }
                     ValueRef::String(&string)
                 }
@@ -1906,7 +1967,7 @@ impl Reader {
                 ) if !matches!(prefix, b'r' | b's') => {
                     if (payload.is_empty()
                         && !(encoding == Encoding::Unsupported && prefix == b'b'))
-                        || BitsRef::from_ascii(payload).is_none()
+                        || !valid_bits(payload)
                     {
                         return Err(self.tokens.error("invalid bit value"));
                     }
@@ -1922,7 +1983,7 @@ impl Reader {
                                         index,
                                         time,
                                         offset,
-                                        (word.len() as u64, id.len() as u64),
+                                        (payload.len() as u64, id.len() as u64),
                                     );
                             }
                             continue;
@@ -1943,7 +2004,12 @@ impl Reader {
                             records
                                 .as_deref_mut()
                                 .expect("indexing needs a builder")
-                                .record(index, time, offset, (word.len() as u64, id.len() as u64));
+                                .record(
+                                    index,
+                                    time,
+                                    offset,
+                                    (payload.len() as u64, id.len() as u64),
+                                );
                         }
                         ValueRef::Event { occurrences: 1 }
                     }
@@ -2146,6 +2212,39 @@ impl Decoded<'_> {
             Self::Event => Value::Event { occurrences: 1 },
         }
     }
+}
+
+/// Validates VCD bit digits without a per-byte case match.
+///
+/// The table mirrors `BitsRef::from_ascii`; a unit test compares every byte.
+static VCD_BIT: [bool; 256] = {
+    let mut table = [false; 256];
+    let mut byte = 0;
+    while byte < 256 {
+        table[byte] = matches!(
+            byte as u8,
+            b'0' | b'1'
+                | b'x'
+                | b'X'
+                | b'z'
+                | b'Z'
+                | b'h'
+                | b'H'
+                | b'u'
+                | b'U'
+                | b'w'
+                | b'W'
+                | b'l'
+                | b'L'
+                | b'-'
+        );
+        byte += 1;
+    }
+    table
+};
+
+fn valid_bits(bytes: &[u8]) -> bool {
+    bytes.len() <= u32::MAX as usize && bytes.iter().all(|&byte| VCD_BIT[byte as usize])
 }
 
 fn name(bytes: &[u8]) -> Result<String> {
@@ -3287,6 +3386,21 @@ mod replay_tests {
         }
         source.extend_from_slice(b"\n#2 r1.5 $ 1!\n");
         source
+    }
+
+    #[test]
+    fn bit_digit_table_matches_the_value_parser() {
+        for byte in 0..=255_u8 {
+            assert_eq!(
+                valid_bits(&[byte]),
+                BitsRef::from_ascii(&[byte]).is_some(),
+                "byte {byte}"
+            );
+        }
+        assert!(valid_bits(b"01xzhuwl-"));
+        assert!(valid_bits(b"01XZHUWL-"));
+        assert!(!valid_bits(b"2"));
+        assert!(!valid_bits(b"a"));
     }
 
     #[cfg(unix)]
