@@ -1227,11 +1227,17 @@ impl Reader {
                 let count = (stop - start) as u64;
                 records = records.checked_add(count)?;
                 last = last.max(list[stop - 1].offset);
-                // A record's token lies in the reused source window unless it
-                // is larger than that window. One window read per record is the
-                // conservative bound; the token bytes are not added again.
-                estimate = estimate
-                    .checked_add(count.checked_mul(index.max_token().max(READ_WINDOW as u64))?)?;
+                // A raw token larger than one source window needs additional
+                // whole-window refills. Round the token cost up to window units
+                // and count one window per record. This is a conservative
+                // selection heuristic, not an exact total-I/O guarantee.
+                let window = READ_WINDOW as u64;
+                let refill = index
+                    .max_token()
+                    .max(1)
+                    .div_ceil(window)
+                    .saturating_mul(window);
+                estimate = estimate.checked_add(count.checked_mul(refill)?)?;
             }
             streams.push((signal_index, start, stop));
         }
@@ -3168,6 +3174,125 @@ mod replay_tests {
             })
             .unwrap();
         records
+    }
+
+    #[cfg(unix)]
+    fn traversal_digest(
+        reader: &mut Reader,
+        signals: &[Signal],
+        end: Time,
+        position: Option<Position>,
+    ) -> (usize, u64) {
+        use std::{
+            collections::hash_map::DefaultHasher,
+            hash::{Hash, Hasher},
+        };
+        let mut hasher = DefaultHasher::new();
+        let mut count = 0;
+        let _ = reader
+            .read_from(signals, end, position, |index, time, value, _| {
+                count += 1;
+                index.hash(&mut hasher);
+                time.ticks().hash(&mut hasher);
+                match value {
+                    ValueRef::Bits(bits) => {
+                        bits.width().hash(&mut hasher);
+                        bits.ascii().hash(&mut hasher);
+                    }
+                    ValueRef::Real(real) => real.to_bits().hash(&mut hasher),
+                    ValueRef::String(text) => text.hash(&mut hasher),
+                    ValueRef::Event { occurrences } => occurrences.hash(&mut hasher),
+                }
+                ControlFlow::<()>::Continue(())
+            })
+            .unwrap();
+        (count, hasher.finish())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn indexed_traversal_rounds_long_tokens_to_windows() {
+        use std::sync::atomic::Ordering;
+
+        let value = "0".repeat(5000);
+        let open = |path: &std::path::Path, source: &[u8], last: u64| {
+            let (mut reader, hierarchy, _) = Reader::open(
+                Box::new(BufReader::new(File::open(path).unwrap())),
+                "round-token.vcd".into(),
+                None,
+            )
+            .unwrap();
+            reader.force_parallel_for_test(File::open(path).unwrap(), vec![source.len()], last);
+            (reader, hierarchy)
+        };
+        // A fully dense 5000-bit stream read before EOF. One token needs two
+        // window refills; the unrounded token cost would classify it as sparse.
+        let mut dense = Vec::from(b"$var wire 5000 ! w $end $enddefinitions $end " as &[u8]);
+        for tick in 0..2000 {
+            dense.extend_from_slice(format!("#{tick} b{value} !\n").as_bytes());
+        }
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tmp")
+            .join(format!("traversal-round-dense-{}.vcd", std::process::id()));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, &dense).unwrap();
+        let (mut indexed, hierarchy) = open(&path, &dense, 1999);
+        let (mut walked, _) = open(&path, &dense, 1999);
+        walked.disable_index();
+        let signal = hierarchy.signal("w").unwrap();
+        let body = Some(Position {
+            offset: indexed.body,
+            time: 0,
+            block: false,
+        });
+        let before = indexed.traversal_queries.load(Ordering::Relaxed);
+        let observed = traversal_digest(&mut indexed, &[signal], Time::from_ticks(1998), body);
+        assert_eq!(observed.0, 1999);
+        assert_eq!(
+            indexed.traversal_queries.load(Ordering::Relaxed),
+            before,
+            "a dense stream must keep the walk"
+        );
+        assert_eq!(
+            observed,
+            traversal_digest(&mut walked, &[signal], Time::from_ticks(1998), body)
+        );
+        std::fs::remove_file(&path).unwrap();
+
+        // The same token over a wide unselected gap is a sparse traversal.
+        let mut sparse = Vec::from(
+            b"$var wire 5000 ! w $end $var wire 1 n noise $end $enddefinitions $end #0 " as &[u8],
+        );
+        sparse.extend_from_slice(format!("b{value} !\n#1 ").as_bytes());
+        for _ in 0..20_000 {
+            sparse.extend_from_slice(b"0n ");
+        }
+        sparse.extend_from_slice(format!("\n#2 b{value} !\n").as_bytes());
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tmp")
+            .join(format!("traversal-round-sparse-{}.vcd", std::process::id()));
+        std::fs::write(&path, &sparse).unwrap();
+        let (mut indexed, hierarchy) = open(&path, &sparse, 2);
+        let (mut walked, _) = open(&path, &sparse, 2);
+        walked.disable_index();
+        let signal = hierarchy.signal("w").unwrap();
+        let body = Some(Position {
+            offset: indexed.body,
+            time: 0,
+            block: false,
+        });
+        let before = indexed.traversal_queries.load(Ordering::Relaxed);
+        let observed = traversal_digest(&mut indexed, &[signal], Time::from_ticks(2), body);
+        assert_eq!(observed.0, 2);
+        assert!(
+            indexed.traversal_queries.load(Ordering::Relaxed) > before,
+            "a long token over a wide gap must still traverse"
+        );
+        assert_eq!(
+            observed,
+            traversal_digest(&mut walked, &[signal], Time::from_ticks(2), body)
+        );
+        std::fs::remove_file(path).unwrap();
     }
 
     #[cfg(unix)]
