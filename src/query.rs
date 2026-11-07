@@ -95,6 +95,19 @@ impl Selection<'_> {
         &self.signals
     }
 
+    /// Test probe: successful VCD position-index seeds for this retained selection.
+    #[cfg(all(test, unix))]
+    pub(crate) fn vcd_index_queries(&self) -> Option<usize> {
+        match &self.waveform.reader {
+            crate::backends::Reader::Vcd(reader) => Some(
+                reader
+                    .index_queries
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            ),
+            _ => None,
+        }
+    }
+
     /// Returns the hierarchy associated with the selected waveform.
     pub fn hierarchy(&self) -> &Hierarchy {
         self.waveform.hierarchy()

@@ -2518,37 +2518,23 @@ mod replay_tests {
         assert_eq!(reader.index_queries.load(Ordering::Relaxed), 7);
         drop(reader);
 
-        // A Selection uses the same seed, including a gap and a later record.
+        // One retained Selection carries the Initial and Change stops, the
+        // repeat and the earlier query, so dropping it cannot hide stale state.
         let mut wave = crate::open_with(&path, "vcd-native").unwrap();
         let signal = wave.hierarchy().signal("a").unwrap();
         let crate::backends::Reader::Vcd(reader) = &mut wave.reader else {
             unreachable!()
         };
         reader.force_parallel_for_test(File::open(&path).unwrap(), vec![source.len()], 7);
-        let samples = wave.samples(&[signal], Time::from_ticks(5)).unwrap();
-        match samples.as_slice() {
-            [
-                Sample::Value {
-                    value, changed_at, ..
-                },
-            ] => {
-                assert!(value.as_ref().same_value(bits("01").as_ref()));
-                assert_eq!(changed_at.map(Time::ticks), Some(3));
-            }
-            _ => panic!("expected one point value"),
-        }
-        let crate::backends::Reader::Vcd(reader) = &wave.reader else {
-            unreachable!()
-        };
-        assert!(reader.index_queries.load(Ordering::Relaxed) > 0);
-        // A repeated, backwards and after-EOF access on one retained selection.
         let mut selection = wave.select(&[signal]).unwrap();
-        for (time, value, changed) in [
-            (6, "01", Some(3)),
-            (3, "01", Some(3)),
-            (7, "00", Some(7)),
-            (100, "00", Some(7)),
-        ] {
+        let probe = |selection: &crate::Selection<'_>| selection.vcd_index_queries().unwrap();
+        fn check(
+            selection: &mut crate::Selection<'_>,
+            time: u64,
+            value: &str,
+            changed: Option<u64>,
+        ) {
+            let expected = Value::Bits(crate::Bits::from_ascii(value.as_bytes()).unwrap());
             match selection
                 .samples(Time::from_ticks(time))
                 .unwrap()
@@ -2561,17 +2547,26 @@ mod replay_tests {
                         ..
                     },
                 ] => {
-                    assert!(observed.as_ref().same_value(bits(value).as_ref()));
-                    assert_eq!(changed_at.map(Time::ticks), changed);
+                    assert!(
+                        observed.as_ref().same_value(expected.as_ref()),
+                        "value at {time}"
+                    );
+                    assert_eq!(changed_at.map(Time::ticks), changed, "changed_at at {time}");
                 }
                 _ => panic!("expected one value at {time}"),
             }
         }
-        drop(selection);
-        // A stop on Initial and on Change keeps later queries exact.
-        let initial = wave
+        // The first point proves an engine-driven seed, not a direct helper call.
+        let seeded = probe(&selection);
+        check(&mut selection, 6, "01", Some(3));
+        assert!(
+            probe(&selection) > seeded,
+            "first point must seed from the index"
+        );
+
+        // Break on Initial through the retained Selection, then repeat at once.
+        let outcome = selection
             .scan(
-                &[signal],
                 TimeRange::closed(Time::from_ticks(5), Time::from_ticks(7)),
                 |record| {
                     assert!(matches!(record, ScanRef::Initial { .. }));
@@ -2579,10 +2574,17 @@ mod replay_tests {
                 },
             )
             .unwrap();
-        assert!(initial.is_break());
-        let change = wave
+        assert!(outcome.is_break());
+        let seeded = probe(&selection);
+        check(&mut selection, 6, "01", Some(3));
+        assert!(
+            probe(&selection) > seeded,
+            "repeat after an Initial stop must re-seed"
+        );
+
+        // Break on Change through the same Selection, then read an earlier tick.
+        let outcome = selection
             .scan(
-                &[signal],
                 TimeRange::closed(Time::from_ticks(3), Time::from_ticks(7)),
                 |record| {
                     if matches!(record, ScanRef::Change { .. }) {
@@ -2592,22 +2594,18 @@ mod replay_tests {
                 },
             )
             .unwrap();
-        assert!(change.is_break());
-        match wave
-            .samples(&[signal], Time::from_ticks(7))
-            .unwrap()
-            .as_slice()
-        {
-            [
-                Sample::Value {
-                    value, changed_at, ..
-                },
-            ] => {
-                assert!(value.as_ref().same_value(bits("00").as_ref()));
-                assert_eq!(changed_at.map(Time::ticks), Some(7));
-            }
-            _ => panic!("expected the final value"),
-        }
+        assert!(outcome.is_break());
+        let seeded = probe(&selection);
+        check(&mut selection, 3, "01", Some(3));
+        assert!(
+            probe(&selection) > seeded,
+            "earlier query after a Change stop must re-seed"
+        );
+
+        // A gap before the next record and the held state after EOF.
+        check(&mut selection, 4, "01", Some(3));
+        check(&mut selection, 100, "00", Some(7));
+        drop(selection);
         std::fs::remove_file(path).unwrap();
     }
 
