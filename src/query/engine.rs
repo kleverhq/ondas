@@ -1644,6 +1644,8 @@ mod tests {
             vec![cut(b"\n#2"), cut(b"\n#4"), source.len()],
             6,
         );
+        // The position index answered the base-prefix points below.
+        assert!(reader.has_index());
         let names = ["a", "b", "e"];
         let selected = names.map(|name| wave.hierarchy().signal(name).unwrap());
         let reference = names.map(|name| serial.hierarchy().signal(name).unwrap());

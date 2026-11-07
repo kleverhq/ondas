@@ -28,6 +28,19 @@ use crate::{
 #[cfg(unix)]
 use crate::{Sample, Value};
 
+mod index;
+
+// Backend budgets, not platform or resident-set limits. The transient records
+// of one opening and the retained position lists are bounded separately, and
+// the merge peak covers both. An input that does not fit keeps the
+// chronological paths.
+const INDEX_BYTES: usize = 512 * 1024 * 1024;
+const BUILDER_BYTES: usize = 256 * 1024 * 1024;
+const BUILD_PEAK_BYTES: usize = INDEX_BYTES + BUILDER_BYTES;
+// One record decode may walk back over earlier records to prove `changed_at`.
+// An unproven timestamp keeps the chronological path, never a guess.
+const PROOF_STEPS: usize = 64;
+
 fn malformed(message: impl Into<String>) -> Error {
     Error::Malformed {
         format: Format::Vcd,
@@ -167,6 +180,7 @@ pub(crate) struct Reader {
     ids: Arc<HashMap<Vec<u8>, usize>>,
     dense_ids: Arc<Vec<Option<usize>>>,
     encodings: Vec<Encoding>,
+    index: Option<index::Index>,
     #[cfg(unix)]
     parallel: Option<ParallelSource>,
 }
@@ -311,12 +325,27 @@ impl Seek for RangeReader {
     }
 }
 
+/// Opening-only sinks: collected comments and optional position records.
+struct OpeningSinks<'a> {
+    comments: Option<&'a mut Vec<String>>,
+    records: Option<&'a mut index::Builder>,
+}
+
+#[cfg(unix)]
+type Opening = (
+    Option<TimeSpan>,
+    Vec<String>,
+    Vec<Encoding>,
+    Option<index::Index>,
+);
+
 #[cfg(unix)]
 struct OpeningChunk {
     span: Option<TimeSpan>,
     seen: Vec<bool>,
     encodings: Vec<Encoding>,
     comments: Vec<String>,
+    records: index::Builder,
 }
 
 impl Reader {
@@ -523,22 +552,34 @@ impl Reader {
             ids: Arc::new(ids),
             dense_ids: Arc::new(dense_ids),
             encodings,
+            index: None,
             #[cfg(unix)]
             parallel: None,
         };
-        metadata.time_span = if let Some((span, comments, encodings)) =
+        let mut records = index::Builder::new(BUILDER_BYTES);
+        metadata.time_span = if let Some((span, comments, encodings, index)) =
             file.and_then(|file| reader.parallel_open(file))
         {
             metadata.comments.extend(comments);
             reader.encodings = encodings;
+            reader.index = index;
             span
         } else {
             let (_, span, _) = reader.walk(
                 u64::MAX,
                 None,
-                Some(&mut metadata.comments),
+                OpeningSinks {
+                    comments: Some(&mut metadata.comments),
+                    records: Some(&mut records),
+                },
                 |_, _, _, _| ControlFlow::<()>::Continue(()),
             )?;
+            reader.index = index::Index::build(
+                [records],
+                reader.encodings.len(),
+                INDEX_BYTES,
+                BUILD_PEAK_BYTES,
+            );
             span
         };
         let hierarchy = Hierarchy::new(scopes, variables, reader.encodings.clone());
@@ -546,17 +587,14 @@ impl Reader {
     }
 
     #[cfg(unix)]
-    fn parallel_open(
-        &mut self,
-        file: File,
-    ) -> Option<(Option<TimeSpan>, Vec<String>, Vec<Encoding>)> {
+    fn parallel_open(&mut self, file: File) -> Option<Opening> {
         let end = usize::try_from(file.metadata().ok()?.len()).ok()?;
         let start = usize::try_from(self.body).ok()?;
         let length = end.checked_sub(start)?;
         let workers = thread::available_parallelism()
             .ok()?
             .get()
-            .min(length / (32 * 1024 * 1024));
+            .min(length / (8 * 1024 * 1024));
         if workers < 2 {
             return None;
         }
@@ -584,12 +622,9 @@ impl Reader {
     }
 
     #[cfg(unix)]
-    fn parallel_open_with_cuts(
-        &self,
-        file: File,
-        cuts: &[usize],
-    ) -> Option<(Option<TimeSpan>, Vec<String>, Vec<Encoding>)> {
+    fn parallel_open_with_cuts(&self, file: File, cuts: &[usize]) -> Option<Opening> {
         let file = Arc::new(file);
+        let workers = cuts.len().saturating_sub(1).max(1);
         let parts = thread::scope(|scope| {
             let handles = cuts
                 .windows(2)
@@ -624,18 +659,26 @@ impl Reader {
                             ids,
                             dense_ids,
                             encodings,
+                            index: None,
                             parallel: None,
                         };
                         let mut comments = Vec::new();
-                        let (_, span, seen) =
-                            reader.walk(u64::MAX, None, Some(&mut comments), |_, _, _, _| {
-                                ControlFlow::<()>::Continue(())
-                            })?;
+                        let mut records = index::Builder::new(BUILDER_BYTES / workers);
+                        let (_, span, seen) = reader.walk(
+                            u64::MAX,
+                            None,
+                            OpeningSinks {
+                                comments: Some(&mut comments),
+                                records: Some(&mut records),
+                            },
+                            |_, _, _, _| ControlFlow::<()>::Continue(()),
+                        )?;
                         Ok::<_, Error>(OpeningChunk {
                             span,
                             seen,
                             encodings: reader.encodings,
                             comments,
+                            records,
                         })
                     })
                 })
@@ -650,6 +693,7 @@ impl Reader {
         })?;
         let mut span: Option<TimeSpan> = None;
         let mut comments = Vec::new();
+        let mut records = Vec::with_capacity(parts.len());
         let mut saw_real = vec![false; self.encodings.len()];
         let mut saw_string = vec![false; self.encodings.len()];
         for (index, part) in parts.into_iter().enumerate() {
@@ -673,6 +717,7 @@ impl Reader {
                 }
             }
             comments.extend(part.comments);
+            records.push(part.records);
         }
         if saw_real
             .iter()
@@ -687,7 +732,8 @@ impl Reader {
                 encodings[index] = Encoding::String;
             }
         }
-        Some((span, comments, encodings))
+        let index = index::Index::build(records, encodings.len(), INDEX_BYTES, BUILD_PEAK_BYTES);
+        Some((span, comments, encodings, index))
     }
 
     #[cfg(unix)]
@@ -697,7 +743,13 @@ impl Reader {
         end: Time,
     ) -> Option<(Vec<Sample>, Position)> {
         let source = self.parallel.as_ref()?;
-        if signals.is_empty() || end == Time::ZERO || end.ticks() < source.last_time.div_ceil(8) {
+        if signals.is_empty() || end == Time::ZERO {
+            return None;
+        }
+        if let Some(prefix) = self.indexed_prefix(source, signals, end) {
+            return Some(prefix);
+        }
+        if end.ticks() < source.last_time.div_ceil(8) {
             return None;
         }
         // A chunk keeps up to three owned values per signal. Account for the
@@ -763,13 +815,17 @@ impl Reader {
                             ids,
                             dense_ids,
                             encodings,
+                            index: None,
                             parallel: None,
                         };
                         let mut values = HashMap::<usize, ChunkValue>::new();
                         let (_, span, _) = reader.walk(
                             end.ticks(),
                             Some(&selected),
-                            None,
+                            OpeningSinks {
+                                comments: None,
+                                records: None,
+                            },
                             |index, time, value, _| {
                                 let value = value.to_owned();
                                 if let Some(previous) = values.get_mut(&index) {
@@ -861,6 +917,185 @@ impl Reader {
         ))
     }
 
+    /// Answers an entering state and resume position from validated record positions.
+    ///
+    /// Every value is decoded from its recorded source offset and every
+    /// `changed_at` is proven from preceding records. A missing index, an
+    /// unsupported encoding, an unreadable position or an unproven timestamp
+    /// returns `None`, so the caller keeps the chronological paths. The index
+    /// is a position map, not a value history.
+    #[cfg(unix)]
+    fn indexed_prefix(
+        &self,
+        source: &ParallelSource,
+        signals: &[Signal],
+        end: Time,
+    ) -> Option<(Vec<Sample>, Position)> {
+        let index = self.index.as_ref()?;
+        let file = source.file.as_ref();
+        let file_len = file.metadata().ok()?.len();
+        // The same bound as the chunk path: declared widths and one replacement
+        // copy. Refuse before decoding any value.
+        let mut selected = HashSet::new();
+        let mut bytes = 0_usize;
+        for signal in signals {
+            if signal.is_slice() {
+                return None;
+            }
+            if selected.insert(signal.index()) {
+                let width = match signal.encoding() {
+                    Encoding::Bits { width } => width as usize,
+                    Encoding::Real => std::mem::size_of::<f64>(),
+                    _ => return None,
+                };
+                bytes = bytes.checked_add(
+                    width
+                        .checked_mul(5)?
+                        .checked_add(std::mem::size_of::<ChunkValue>() + 64)?,
+                )?;
+            }
+        }
+        if bytes > 4 * 1024 * 1024 {
+            return None;
+        }
+        let mut samples = Vec::with_capacity(signals.len());
+        for &signal in signals {
+            let signal_index = signal.index();
+            let list = index.entries(signal_index);
+            let Some(at) = index.last_at_or_before(signal_index, end.ticks()) else {
+                samples.push(Sample::Missing { signal });
+                continue;
+            };
+            let value = self.indexed_value(file, file_len, list[at].offset, signal_index)?;
+            let changed_at =
+                self.indexed_changed_at(index, file, file_len, signal_index, at, &value)?;
+            samples.push(Sample::Value {
+                signal,
+                value,
+                changed_at,
+            });
+        }
+        // Resume at the first selected record after `end`. Starting there keeps
+        // that record's tick, so a later `#time` still stops the walk. A block
+        // snapshot position keeps the chronological path.
+        let mut resume = None;
+        for &signal in signals {
+            let signal_index = signal.index();
+            let list = index.entries(signal_index);
+            let Some(entry) = list.get(index.first_after(signal_index, end.ticks())) else {
+                continue;
+            };
+            if resume.is_none_or(|(offset, _)| entry.offset < offset) {
+                resume = Some((entry.offset, entry.time));
+            }
+        }
+        let position = match resume {
+            Some((offset, time)) if !index.in_block(offset) => Position {
+                offset,
+                time,
+                block: false,
+            },
+            Some(_) => return None,
+            None => Position {
+                offset: file_len,
+                time: end.ticks(),
+                block: false,
+            },
+        };
+        Some((samples, position))
+    }
+
+    /// Decodes one record at a validated source offset.
+    #[cfg(unix)]
+    fn indexed_value(
+        &self,
+        file: &File,
+        file_len: u64,
+        offset: u64,
+        expected: usize,
+    ) -> Option<Value> {
+        let mut word = Vec::new();
+        let next = read_word(file, file_len, offset, &mut word)?;
+        let prefix = word.first()?.to_ascii_lowercase();
+        let mut id = Vec::new();
+        let (payload, id): (&[u8], &[u8]) = if matches!(prefix, b'b' | b'r' | b's') {
+            read_word(file, file_len, next, &mut id)?;
+            (&word[1..], id.as_slice())
+        } else {
+            (&word[..1], &word[1..])
+        };
+        let index = if self.dense_ids.is_empty() {
+            self.ids.get(id).copied()
+        } else {
+            identifier_number(id)
+                .and_then(|number| self.dense_ids.get(number).copied().flatten())
+                .or_else(|| self.ids.get(id).copied())
+        }?;
+        if index != expected {
+            return None;
+        }
+        match (self.encodings[index], prefix) {
+            (Encoding::Real, b'r') => Some(Value::Real(real(payload).ok()?)),
+            (Encoding::Bits { width }, _) if !matches!(prefix, b'r' | b's') => {
+                if payload.is_empty() || BitsRef::from_ascii(payload).is_none() {
+                    return None;
+                }
+                let width = width as usize;
+                let fill = match payload[0].to_ascii_lowercase() {
+                    b'0' | b'1' => b'0',
+                    other => other,
+                };
+                let mut bits = vec![fill; width.saturating_sub(payload.len())];
+                bits.extend_from_slice(&payload[payload.len().saturating_sub(width)..]);
+                Some(Value::Bits(crate::Bits::from_validated_ascii(bits)))
+            }
+            _ => None,
+        }
+    }
+
+    /// Proves the tick that established the current value.
+    ///
+    /// The search compares tick-final values, so an excursion that returns to
+    /// the entering value does not advance `changed_at`. `Some(None)` means no
+    /// preceding observation proves an earlier state. `None` means the bounded
+    /// proof ran out; the caller must keep the chronological attribution.
+    #[cfg(unix)]
+    fn indexed_changed_at(
+        &self,
+        index: &index::Index,
+        file: &File,
+        file_len: u64,
+        signal: usize,
+        mut at: usize,
+        value: &Value,
+    ) -> Option<Option<Time>> {
+        let list = index.entries(signal);
+        for _ in 0..PROOF_STEPS {
+            let time = list[at].time;
+            let before = list[..at].partition_point(|entry| entry.time < time);
+            let Some(previous) = before.checked_sub(1) else {
+                return Some(None);
+            };
+            let earlier = self.indexed_value(file, file_len, list[previous].offset, signal)?;
+            if earlier.as_ref().same_value(value.as_ref()) {
+                at = previous;
+                continue;
+            }
+            return Some(Some(Time::from_ticks(time)));
+        }
+        None
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn disable_index(&mut self) {
+        self.index = None;
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn has_index(&self) -> bool {
+        self.index.is_some()
+    }
+
     #[cfg(all(test, unix))]
     pub(crate) fn force_parallel_for_test(
         &mut self,
@@ -877,7 +1112,15 @@ impl Reader {
     }
 
     #[cfg(not(unix))]
-    fn parallel_open(&self, _: File) -> Option<(Option<TimeSpan>, Vec<String>, Vec<Encoding>)> {
+    fn parallel_open(
+        &self,
+        _: File,
+    ) -> Option<(
+        Option<TimeSpan>,
+        Vec<String>,
+        Vec<Encoding>,
+        Option<index::Index>,
+    )> {
         None
     }
 
@@ -918,8 +1161,22 @@ impl Reader {
         self.tokens.input.seek(SeekFrom::Start(position.offset))?;
         self.tokens.offset = position.offset;
         self.position = Some(position);
+        // A resumed position can name a tick past a bounded request end. The
+        // later `#time` line would stop the walk, but a record-first position
+        // must not publish records outside the request.
+        if position.time > end.ticks() {
+            return Ok(ControlFlow::Continue(()));
+        }
         let selected = signals.iter().map(|s| s.index()).collect();
-        let result = self.walk(end.ticks(), Some(&selected), None, visitor);
+        let result = self.walk(
+            end.ticks(),
+            Some(&selected),
+            OpeningSinks {
+                comments: None,
+                records: None,
+            },
+            visitor,
+        );
         if !matches!(result, Ok((ControlFlow::Continue(()), _, _))) {
             self.position = None;
         }
@@ -987,6 +1244,7 @@ impl Reader {
                     ids: Arc::clone(&self.ids),
                     dense_ids: Arc::clone(&self.dense_ids),
                     encodings: self.encodings.clone(),
+                    index: None,
                     parallel: None,
                 };
                 let stop = range[1] as u64;
@@ -1124,10 +1382,10 @@ impl Reader {
         &mut self,
         end: u64,
         selected: Option<&HashSet<usize>>,
-        comments: Option<&mut Vec<String>>,
+        opening: OpeningSinks<'_>,
         visitor: impl for<'v> FnMut(usize, Time, ValueRef<'v>, Position) -> ControlFlow<B>,
     ) -> Result<(ControlFlow<B>, Option<TimeSpan>, Vec<bool>)> {
-        self.walk_inner(end, selected, comments, visitor, None, || {
+        self.walk_inner(end, selected, opening, visitor, None, || {
             ControlFlow::Continue(())
         })
     }
@@ -1144,7 +1402,10 @@ impl Reader {
         self.walk_inner(
             end,
             selected,
-            comments,
+            OpeningSinks {
+                comments,
+                records: None,
+            },
             visitor,
             Some(1024 * 1024),
             progress,
@@ -1155,16 +1416,21 @@ impl Reader {
         &mut self,
         end: u64,
         selected: Option<&HashSet<usize>>,
-        mut comments: Option<&mut Vec<String>>,
+        opening: OpeningSinks<'_>,
         mut visitor: impl for<'v> FnMut(usize, Time, ValueRef<'v>, Position) -> ControlFlow<B>,
         progress_bytes: Option<u64>,
         mut progress: impl FnMut() -> ControlFlow<B>,
     ) -> Result<(ControlFlow<B>, Option<TimeSpan>, Vec<bool>)> {
+        let OpeningSinks { comments, records } = opening;
+        let mut comments = comments;
+        let mut records = records;
         let mut last_progress = self.tokens.offset;
         let position = self.position.take();
         let mut time = position.map_or(0, |position| position.time);
         let mut span = None::<TimeSpan>;
         let mut block = position.is_some_and(|position| position.block);
+        let mut block_start = None;
+        let indexing = records.is_some() && selected.is_none();
         let mut bits = Vec::new();
         let mut string = String::new();
         let mut word = Vec::new();
@@ -1210,8 +1476,18 @@ impl Reader {
             }
             if word[0] == b'$' {
                 match word.as_slice() {
-                    b"$dumpvars" | b"$dumpall" | b"$dumpoff" | b"$dumpon" if !block => block = true,
-                    b"$end" if block => block = false,
+                    b"$dumpvars" | b"$dumpall" | b"$dumpoff" | b"$dumpon" if !block => {
+                        block = true;
+                        block_start = Some(offset);
+                    }
+                    b"$end" if block => {
+                        block = false;
+                        if let (Some(start), Some(builder)) =
+                            (block_start.take(), records.as_deref_mut())
+                        {
+                            builder.block(start, self.tokens.offset);
+                        }
+                    }
                     b"$comment" if !block => {
                         let text = self.tokens.text()?;
                         if let Some(comments) = comments.as_mut() {
@@ -1254,9 +1530,24 @@ impl Reader {
                 span = Some(TimeSpan::new(Time::ZERO, Time::ZERO));
             }
             let value = match (self.encodings[index], prefix) {
-                (Encoding::Real, b'r') => ValueRef::Real(real(payload)?),
+                (Encoding::Real, b'r') => {
+                    let value = ValueRef::Real(real(payload)?);
+                    if indexing {
+                        records
+                            .as_deref_mut()
+                            .expect("indexing needs a builder")
+                            .record(index, time, offset);
+                    }
+                    value
+                }
                 (Encoding::String, b's') => {
                     decode_string(payload, &mut string, selected, Time::from_ticks(time))?;
+                    if indexing {
+                        records
+                            .as_deref_mut()
+                            .expect("indexing needs a builder")
+                            .record(index, time, offset);
+                    }
                     ValueRef::String(&string)
                 }
                 (
@@ -1272,6 +1563,13 @@ impl Reader {
                     if let Encoding::Bits { width } = encoding {
                         // Never revalidate a retained wide buffer for unrelated records.
                         if !selected {
+                            // Dump-block event records are snapshots, not occurrences.
+                            if indexing && !(block && encoding == Encoding::Event) {
+                                records
+                                    .as_deref_mut()
+                                    .expect("indexing needs a builder")
+                                    .record(index, time, offset);
+                            }
                             continue;
                         }
                         let width = width as usize;
@@ -1286,6 +1584,12 @@ impl Reader {
                         // validated digits. Do not rescan the declared width.
                         ValueRef::Bits(BitsRef::from_validated_ascii(&bits))
                     } else {
+                        if indexing && !(block && encoding == Encoding::Event) {
+                            records
+                                .as_deref_mut()
+                                .expect("indexing needs a builder")
+                                .record(index, time, offset);
+                        }
                         ValueRef::Event { occurrences: 1 }
                     }
                 }
@@ -1317,6 +1621,70 @@ impl Reader {
             block,
         });
         Ok((ControlFlow::Continue(()), span, seen))
+    }
+}
+
+/// Reads one whitespace-delimited token from a validated source position.
+///
+/// Returns the offset of the first byte after the token. A short read before
+/// the end of the file is not a token boundary, so the window grows instead.
+/// A token that does not fit a bounded window or an unexplained short read
+/// returns `None`, keeping the chronological path.
+#[cfg(unix)]
+fn read_word(file: &File, file_len: u64, offset: u64, word: &mut Vec<u8>) -> Option<u64> {
+    const FIRST: usize = 128;
+    const LIMIT: usize = 64 * 1024;
+    let mut window = FIRST;
+    loop {
+        let remaining = file_len.checked_sub(offset)?;
+        if remaining == 0 {
+            return None;
+        }
+        let take = window.min(remaining as usize);
+        let mut buffer = vec![0_u8; take];
+        let count = file.read_at(&mut buffer, offset).ok()?;
+        if count == 0 {
+            return None;
+        }
+        let end_of_file = offset + count as u64 >= file_len;
+        if count < take && !end_of_file {
+            if window >= LIMIT || take == remaining as usize {
+                return None;
+            }
+            window *= 2;
+            continue;
+        }
+        let Some(start) = buffer[..count]
+            .iter()
+            .position(|byte| !byte.is_ascii_whitespace())
+        else {
+            if end_of_file || window >= LIMIT {
+                return None;
+            }
+            window *= 2;
+            continue;
+        };
+        match buffer[start..count]
+            .iter()
+            .position(|byte| byte.is_ascii_whitespace())
+        {
+            Some(len) => {
+                word.clear();
+                word.extend_from_slice(&buffer[start..start + len]);
+                return Some(offset + (start + len) as u64);
+            }
+            None if end_of_file => {
+                word.clear();
+                word.extend_from_slice(&buffer[start..count]);
+                return Some(offset + count as u64);
+            }
+            None => {
+                if window >= LIMIT {
+                    return None;
+                }
+                window *= 2;
+            }
+        }
     }
 }
 
@@ -1645,7 +2013,7 @@ mod replay_tests {
             .position(|bytes| bytes == b"\n#1")
             .unwrap()
             + 1;
-        let (span, comments, encodings) = reader
+        let (span, comments, encodings, index) = reader
             .parallel_open_with_cuts(
                 File::open(&path).unwrap(),
                 &[reader.body as usize, cut, source.len()],
@@ -1654,6 +2022,20 @@ mod replay_tests {
         assert_eq!(span, metadata.time_span);
         assert_eq!(comments, ["first", "note"]);
         assert_eq!(encodings, reader.encodings);
+        // Both cuts are real tick boundaries, so the merged positions cover every
+        // record and equal the positions of the serial opening walk.
+        let parallel_index = index.as_ref().unwrap();
+        let serial_index = reader.index.as_ref().unwrap();
+        for signal in 0..reader.encodings.len() {
+            let positions = |index: &index::Index| {
+                index
+                    .entries(signal)
+                    .iter()
+                    .map(|entry| (entry.time, entry.offset))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(positions(parallel_index), positions(serial_index));
+        }
 
         let mut real_source = header.to_vec();
         real_source.extend_from_slice(b"#0 r1 !");
@@ -1795,6 +2177,8 @@ mod replay_tests {
                 }
             }
         }
+        // The remaining checks cover the chunk path's own cut validation.
+        reader.disable_index();
         let second_same_tick = source
             .windows(3)
             .enumerate()
@@ -1810,6 +2194,208 @@ mod replay_tests {
                 .parallel_prefix(&signals, Time::from_ticks(3))
                 .is_none()
         );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn indexed_prefix_matches_serial_and_bounds_events() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tmp")
+            .join(format!("indexed-prefix-{}.vcd", std::process::id()));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let source = b"$var wire 4 ! a $end $var wire 1 \" b $end $var real 1 $ r $end \
+            $var event 1 # e $end $enddefinitions $end \
+            $dumpvars b0000 ! 0\" r1.5 $ 1# $end\n\
+            #1 b0001 ! 1#\n#2 b0001 ! 0\"\n#2 b0010 !\n#3 b0010 ! 0\" 1#\n#4 b0011 !\n";
+        std::fs::write(&path, source).unwrap();
+        let (mut reader, hierarchy, _) = Reader::open(
+            Box::new(BufReader::new(File::open(&path).unwrap())),
+            "indexed.vcd".into(),
+            None,
+        )
+        .unwrap();
+        assert!(reader.has_index());
+        // A dump-block event record is a snapshot, not an occurrence.
+        let event = hierarchy.signal("e").unwrap();
+        let times = reader
+            .index
+            .as_ref()
+            .unwrap()
+            .entries(event.index())
+            .iter()
+            .map(|entry| entry.time)
+            .collect::<Vec<_>>();
+        assert_eq!(times, [1, 3]);
+        let signals = ["a", "b", "r"].map(|name| hierarchy.signal(name).unwrap());
+        reader.force_parallel_for_test(
+            File::open(&path).unwrap(),
+            vec![source.len()],
+            reader.index.as_ref().unwrap().entries(signals[0].index())[3].time,
+        );
+        let mut serial =
+            crate::open_bytes_with("serial.vcd", source.as_slice().into(), "vcd-native").unwrap();
+        let reference = ["a", "b", "r"].map(|name| serial.hierarchy().signal(name).unwrap());
+        let observe = |samples: Vec<Sample>| {
+            samples
+                .into_iter()
+                .map(|sample| match sample {
+                    Sample::Value {
+                        value, changed_at, ..
+                    } => format!("{value:?}@{changed_at:?}"),
+                    Sample::Missing { .. } => "missing".into(),
+                    Sample::Event { occurrences, .. } => format!("event:{occurrences}"),
+                })
+                .collect::<Vec<_>>()
+        };
+        for tick in [1, 2, 3, 4] {
+            let time = Time::from_ticks(tick);
+            let (samples, position) = reader.parallel_prefix(&signals, time).unwrap();
+            assert!(position.offset >= reader.body);
+            assert_eq!(
+                observe(samples),
+                observe(serial.samples(&reference, time).unwrap()),
+                "prefix at {tick}"
+            );
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn indexed_prefix_keeps_chronology_when_a_block_bounds_the_resume() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tmp")
+            .join(format!("indexed-block-{}.vcd", std::process::id()));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let source = b"$var wire 1 ! a $end $enddefinitions $end \
+            #0 0!\n#5 $dumpall 1! $end\n#6 0!\n";
+        std::fs::write(&path, source).unwrap();
+        let (mut reader, hierarchy, _) = Reader::open(
+            Box::new(BufReader::new(File::open(&path).unwrap())),
+            "block.vcd".into(),
+            None,
+        )
+        .unwrap();
+        let signal = hierarchy.signal("a").unwrap();
+        reader.force_parallel_for_test(File::open(&path).unwrap(), vec![source.len()], 6);
+        let source_ref = reader.parallel.as_ref().unwrap();
+        // The next selected record is a dump-block snapshot. The indexed path
+        // must not resume there, and the chunk path keeps the exact state.
+        assert!(
+            reader
+                .indexed_prefix(source_ref, &[signal], Time::from_ticks(4))
+                .is_none()
+        );
+        let (samples, _) = reader
+            .parallel_prefix(&[signal], Time::from_ticks(4))
+            .unwrap();
+        assert!(matches!(
+            samples.as_slice(),
+            [Sample::Value { value, changed_at: None, .. }]
+                if value.as_ref().same_value(
+                    Value::Bits(crate::Bits::from_ascii(b"0").unwrap()).as_ref()
+                )
+        ));
+        // The snapshot itself is persistent state.
+        assert!(
+            reader
+                .indexed_prefix(source_ref, &[signal], Time::from_ticks(5))
+                .is_some()
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unproven_changed_at_keeps_the_chronological_state() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tmp")
+            .join(format!("indexed-proof-{}.vcd", std::process::id()));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut source = Vec::from(b"$var wire 1 ! a $end $enddefinitions $end \n#0 0!\n" as &[u8]);
+        for tick in 1..=70 {
+            source.extend_from_slice(format!("#{tick} 0!\n").as_bytes());
+        }
+        source.extend_from_slice(b"#71 1!\n");
+        std::fs::write(&path, &source).unwrap();
+        let (mut reader, hierarchy, _) = Reader::open(
+            Box::new(BufReader::new(File::open(&path).unwrap())),
+            "proof.vcd".into(),
+            None,
+        )
+        .unwrap();
+        assert!(reader.has_index());
+        let signal = hierarchy.signal("a").unwrap();
+        reader.force_parallel_for_test(File::open(&path).unwrap(), vec![source.len()], 71);
+        let source_ref = reader.parallel.as_ref().unwrap();
+        // More than the proof budget of identical tick-final values.
+        assert!(
+            reader
+                .indexed_prefix(source_ref, &[signal], Time::from_ticks(70))
+                .is_none()
+        );
+        let (samples, _) = reader
+            .parallel_prefix(&[signal], Time::from_ticks(70))
+            .unwrap();
+        assert!(matches!(
+            samples.as_slice(),
+            [Sample::Value {
+                changed_at: None,
+                ..
+            }]
+        ));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resumed_position_never_publishes_a_later_tick() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tmp")
+            .join(format!("indexed-resume-{}.vcd", std::process::id()));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let source = b"$var wire 1 ! a $end $enddefinitions $end #0 0!\n#1 1!\n#2 0!\n";
+        std::fs::write(&path, source).unwrap();
+        let (mut reader, hierarchy, _) = Reader::open(
+            Box::new(BufReader::new(File::open(&path).unwrap())),
+            "resume.vcd".into(),
+            None,
+        )
+        .unwrap();
+        let signal = hierarchy.signal("a").unwrap();
+        let offset = source.windows(3).position(|bytes| bytes == b"#2 ").unwrap() as u64 + 3;
+        let position = Position {
+            offset,
+            time: 2,
+            block: false,
+        };
+        let mut observed = Vec::new();
+        let _ = reader
+            .read_from(
+                &[signal],
+                Time::from_ticks(1),
+                Some(position),
+                |_, time, _, _| {
+                    observed.push(time.ticks());
+                    ControlFlow::<()>::Continue(())
+                },
+            )
+            .unwrap();
+        assert!(observed.is_empty());
+        assert_eq!(reader.position().map(|position| position.time), Some(2));
+        let _ = reader
+            .read_from(
+                &[signal],
+                Time::from_ticks(2),
+                Some(position),
+                |_, time, _, _| {
+                    observed.push(time.ticks());
+                    ControlFlow::<()>::Continue(())
+                },
+            )
+            .unwrap();
+        assert_eq!(observed, [2]);
         std::fs::remove_file(path).unwrap();
     }
 
