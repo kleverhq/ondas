@@ -29,13 +29,159 @@ pub(super) struct Declarations {
     pub(super) active: Vec<(u32, usize)>,
 }
 
+/// Source-ID to scalar-type lookup.
+///
+/// Native scalar IDs may be sparse and only a few of the declared IDs may be
+/// referenced, so blocks are allocated on first use. The map stays for ID
+/// spaces whose block index alone would be large.
+enum ScalarTable {
+    Blocks {
+        blocks: Vec<Option<Vec<usize>>>,
+        used: usize,
+        allocated: usize,
+    },
+    Sparse(HashMap<u32, usize>),
+}
+
+// Consecutive native scalar IDs share one block. A block is created when an ID
+// inside it is first referenced, so the table costs what the hierarchy uses
+// rather than what it declares.
+const SCALAR_BLOCK_BITS: u32 = 10;
+const SCALAR_BLOCK_LEN: usize = 1 << SCALAR_BLOCK_BITS;
+
+// Upper bound for the block index itself, which holds one optional block per
+// 1024 declared IDs. Larger declared ID spaces keep the sparse map.
+const SCALAR_BLOCK_INDEX_BYTES: u64 = 1 << 20;
+
+// Scattered IDs would allocate one block each. Once this many blocks exist, a
+// table whose IDs fill less than one slot in SCALAR_BLOCK_DENSITY switches to
+// the sparse map, so memory follows the referenced IDs and not the declared
+// bound. Sequential IDs keep the block table.
+const SCALAR_BLOCK_SAMPLE: usize = 4;
+const SCALAR_BLOCK_DENSITY: usize = 8;
+
+impl ScalarTable {
+    fn new(limit: u32, wire: &Wire) -> Self {
+        let ids = usize::try_from(limit)
+            .unwrap_or(usize::MAX)
+            .saturating_add(1);
+        let blocks = ids.div_ceil(SCALAR_BLOCK_LEN);
+        let index_bytes =
+            (blocks as u64).saturating_mul(std::mem::size_of::<Option<Vec<usize>>>() as u64);
+        if index_bytes <= SCALAR_BLOCK_INDEX_BYTES
+            && blocks as u64 <= wire.len.saturating_sub(wire.offset)
+        {
+            Self::Blocks {
+                blocks: vec![None; blocks],
+                used: 0,
+                allocated: 0,
+            }
+        } else {
+            Self::Sparse(HashMap::new())
+        }
+    }
+
+    fn get(&self, id: u32) -> Option<usize> {
+        match self {
+            Self::Blocks { blocks, .. } => {
+                let block = blocks.get((id as usize) >> SCALAR_BLOCK_BITS)?;
+                let ty = block
+                    .as_ref()?
+                    .get((id as usize) & (SCALAR_BLOCK_LEN - 1))?;
+                (*ty != usize::MAX).then_some(*ty)
+            }
+            Self::Sparse(table) => table.get(&id).copied(),
+        }
+    }
+
+    fn insert(&mut self, id: u32, ty: usize) {
+        if let Self::Sparse(table) = self {
+            table.insert(id, ty);
+            return;
+        }
+        let mut sparse = false;
+        if let Self::Blocks {
+            blocks,
+            used,
+            allocated,
+        } = self
+        {
+            let Some(block) = blocks.get_mut((id as usize) >> SCALAR_BLOCK_BITS) else {
+                return;
+            };
+            if block.is_none() {
+                *block = Some(vec![usize::MAX; SCALAR_BLOCK_LEN]);
+                *allocated += 1;
+            }
+            if let Some(block) = block {
+                let entry = &mut block[(id as usize) & (SCALAR_BLOCK_LEN - 1)];
+                if *entry == usize::MAX {
+                    *used += 1;
+                }
+                *entry = ty;
+            }
+            sparse = *allocated >= SCALAR_BLOCK_SAMPLE
+                && *used * SCALAR_BLOCK_DENSITY < *allocated * SCALAR_BLOCK_LEN;
+        }
+        if sparse {
+            self.switch_to_sparse();
+        }
+    }
+
+    /// Replace the block table by the sparse map once the referenced IDs no
+    /// longer justify the blocks they allocated.
+    fn switch_to_sparse(&mut self) {
+        let Self::Blocks { blocks, used, .. } = self else {
+            return;
+        };
+        let mut table = HashMap::with_capacity(*used);
+        for (index, block) in blocks.iter().enumerate() {
+            let Some(block) = block else { continue };
+            for (offset, ty) in block.iter().enumerate() {
+                if *ty != usize::MAX {
+                    let id = (index << SCALAR_BLOCK_BITS) | offset;
+                    table.insert(id as u32, *ty);
+                }
+            }
+        }
+        *self = Self::Sparse(table);
+    }
+
+    /// Active scalars in ascending ID order with aliases resolved.
+    fn into_active(self, types: &Types) -> Vec<(u32, usize)> {
+        match self {
+            Self::Blocks { blocks, used, .. } => {
+                let mut active = Vec::with_capacity(used);
+                for (index, block) in blocks.into_iter().enumerate() {
+                    let Some(block) = block else { continue };
+                    for (offset, ty) in block.into_iter().enumerate() {
+                        if ty != usize::MAX {
+                            let id = (index << SCALAR_BLOCK_BITS) | offset;
+                            active.push((id as u32, types.effective(ty)));
+                        }
+                    }
+                }
+                active
+            }
+            Self::Sparse(table) => {
+                let mut active = table
+                    .into_iter()
+                    .map(|(id, ty)| (id, types.effective(ty)))
+                    .collect::<Vec<_>>();
+                active.sort_unstable_by_key(|&(id, _)| id);
+                active
+            }
+        }
+    }
+}
+
 struct Mapper<'t> {
     types: &'t Types,
     scopes: Vec<ScopeData>,
     variables: Vec<VariableData>,
     recipes: Vec<Recipe>,
     keys: HashMap<(Vec<u32>, Encoding), usize>,
-    scalar_types: HashMap<u32, usize>,
+    scalar_types: ScalarTable,
     max_id: u32,
     empty_scopes: usize,
 }
@@ -107,7 +253,7 @@ impl Mapper<'_> {
             if source_id == 0 || source_id > self.max_id {
                 return Err(wire.malformed("hierarchy scalar ID exceeds table boundary"));
             }
-            if let Some(&previous) = self.scalar_types.get(&source_id) {
+            if let Some(previous) = self.scalar_types.get(source_id) {
                 let (previous_storage, previous_literals, _) = self
                     .types
                     .scalar(previous)
@@ -448,7 +594,7 @@ pub(super) fn read(wire: &mut Wire, types: &Types) -> Result<Declarations> {
         variables: Vec::new(),
         recipes: Vec::new(),
         keys: HashMap::new(),
-        scalar_types: HashMap::new(),
+        scalar_types: ScalarTable::new(max_id, wire),
         max_id,
         empty_scopes: 0,
     };
@@ -528,12 +674,7 @@ pub(super) fn read(wire: &mut Wire, types: &Types) -> Result<Declarations> {
     if !stack.is_empty() {
         return Err(wire.malformed("unclosed hierarchy scopes"));
     }
-    let mut active = mapper
-        .scalar_types
-        .into_iter()
-        .map(|(id, ty)| (id, types.effective(ty)))
-        .collect::<Vec<_>>();
-    active.sort_unstable_by_key(|&(id, _)| id);
+    let active = mapper.scalar_types.into_active(types);
     let encodings = mapper.recipes.iter().map(|r| r.encoding).collect();
     Ok(Declarations {
         hierarchy: Hierarchy::new(mapper.scopes, mapper.variables, encodings),
@@ -951,5 +1092,160 @@ mod tests {
                 ));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod scalar_table_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    /// Types 1 and 2 are enumerations with two and three literals.
+    fn types() -> Types {
+        let mut bytes = b"TYP\0\0\0\0\0\x02\0\0\0".to_vec();
+        bytes.extend([23, 1, 2, 2, 3, 23, 4, 3, 2, 3, 7, 0]);
+        let strings = [
+            "",
+            "logic",
+            "'0'",
+            "'1'",
+            "wide_logic",
+            "'2'",
+            "'3'",
+            "'4'",
+            "top",
+            "first",
+            "second",
+        ];
+        let mut wire = Wire::new(Box::new(Cursor::new(bytes))).unwrap();
+        Types::read(&mut wire, strings.into_iter().map(str::to_owned).collect()).unwrap()
+    }
+
+    fn uleb(mut value: u32, bytes: &mut Vec<u8>) {
+        loop {
+            let byte = (value & 0x7f) as u8;
+            value >>= 7;
+            if value == 0 {
+                bytes.push(byte);
+                return;
+            }
+            bytes.push(byte | 0x80);
+        }
+    }
+
+    /// Two signals under `top` that reference the given source scalar IDs, with
+    /// `padding` trailing bytes so that the declared ID bound is judged against a
+    /// realistic file size.
+    fn declarations_with_padding(
+        max_id: u32,
+        ids: [u32; 2],
+        padding: usize,
+    ) -> Result<Declarations> {
+        let mut bytes = vec![0; 4];
+        bytes.extend(1u32.to_le_bytes());
+        bytes.extend(2u32.to_le_bytes());
+        bytes.extend(max_id.to_le_bytes());
+        bytes.extend([3, 8]);
+        for (name, id) in [(9u8, ids[0]), (10, ids[1])] {
+            bytes.extend([16, name, 1]);
+            uleb(id, &mut bytes);
+        }
+        bytes.extend([15, 0]);
+        bytes.extend(std::iter::repeat_n(0u8, padding));
+        let mut wire = Wire::new(Box::new(Cursor::new(bytes))).unwrap();
+        read(&mut wire, &types())
+    }
+
+    fn declarations(max_id: u32, ids: [u32; 2]) -> Result<Declarations> {
+        declarations_with_padding(max_id, ids, 0)
+    }
+
+    fn active_ids(declarations: &Declarations) -> Vec<u32> {
+        declarations.active.iter().map(|&(id, _)| id).collect()
+    }
+
+    #[test]
+    fn blocked_and_sparse_tables_produce_the_same_active_scalars() {
+        // The same two IDs, once inside a small declared bound and once inside a
+        // bound far above what the remaining input could describe.
+        let blocked = declarations(4, [1, 4]).unwrap();
+        let sparse = declarations(4_000_000, [1, 4]).unwrap();
+        assert_eq!(active_ids(&blocked), [1, 4]);
+        assert_eq!(blocked.active, sparse.active);
+        assert_eq!(blocked.recipes.len(), sparse.recipes.len());
+        assert_eq!(blocked.hierarchy.signals().count(), 2);
+    }
+
+    #[test]
+    fn sparse_ids_keep_their_native_values() {
+        let declarations = declarations(4_000_000, [1, 4_000_000]).unwrap();
+        assert_eq!(active_ids(&declarations), [1, 4_000_000]);
+        assert_eq!(declarations.hierarchy.signals().count(), 2);
+    }
+
+    #[test]
+    fn declared_bound_above_the_referenced_ids_allocates_only_used_blocks() {
+        // Two referenced IDs inside a declared bound of 8 MiB entries in a file
+        // large enough to admit the block index: nothing scales with the bound,
+        // because only the two touched blocks are allocated.
+        let declarations = declarations_with_padding(8_388_607, [1, 8_388_607], 64 * 1024).unwrap();
+        assert_eq!(active_ids(&declarations), [1, 8_388_607]);
+        assert_eq!(declarations.hierarchy.signals().count(), 2);
+    }
+
+    #[test]
+    fn declared_bound_too_large_for_the_block_index_uses_the_sparse_map() {
+        let blocked = declarations_with_padding(8_388_607, [1, 4], 64 * 1024).unwrap();
+        let sparse = declarations_with_padding(200_000_000, [1, 4], 64 * 1024).unwrap();
+        assert_eq!(active_ids(&sparse), [1, 4]);
+        assert_eq!(blocked.active, sparse.active);
+    }
+
+    /// A table whose declared bound admits the block path for a padded file.
+    fn table_with_room() -> ScalarTable {
+        let wire = Wire::new(Box::new(Cursor::new(vec![0u8; 64 * 1024]))).unwrap();
+        ScalarTable::new(8_388_607, &wire)
+    }
+
+    #[test]
+    fn scattered_ids_fall_back_to_the_sparse_map() {
+        let mut table = table_with_room();
+        let ids = (0..64u32)
+            .map(|index| 1 + SCALAR_BLOCK_LEN as u32 * index)
+            .collect::<Vec<_>>();
+        for &id in &ids {
+            table.insert(id, 0);
+        }
+        assert!(matches!(table, ScalarTable::Sparse(_)));
+        let active = table.into_active(&types());
+        assert_eq!(active.iter().map(|&(id, _)| id).collect::<Vec<_>>(), ids);
+    }
+
+    #[test]
+    fn sequential_ids_stay_in_the_block_table() {
+        let mut table = table_with_room();
+        for id in 1..=4096u32 {
+            table.insert(id, 0);
+        }
+        assert!(matches!(table, ScalarTable::Blocks { .. }));
+        assert_eq!(table.into_active(&types()).len(), 4096);
+    }
+
+    #[test]
+    fn alias_storage_checks_apply_to_the_table() {
+        // Both signals reference source ID 1, but the second uses an enumeration
+        // with a different literal count, which the alias rule rejects.
+        let mut bytes = vec![0; 4];
+        bytes.extend(1u32.to_le_bytes());
+        bytes.extend(2u32.to_le_bytes());
+        bytes.extend(4u32.to_le_bytes());
+        bytes.extend([3, 8, 16, 9, 1, 1, 16, 10, 2, 1, 15, 0]);
+        let mut wire = Wire::new(Box::new(Cursor::new(bytes))).unwrap();
+        let result = read(&mut wire, &types());
+        assert!(matches!(
+            result,
+            Err(crate::Error::Malformed { ref message, .. })
+                if message.contains("incompatible scalar alias storage")
+        ));
     }
 }

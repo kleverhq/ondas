@@ -22,8 +22,12 @@ fn indexed_scalar_stops_before_later_selected_values_and_skips_noise() {
         let crate::backends::Reader::Ghw(reader) = &wave.reader else {
             panic!("GHW")
         };
-        assert!(reader.index.is_some());
-        assert_eq!(reader.records_read, 1);
+        assert!(reader.validated.index.is_some());
+        // Indexed reads decode selected ranks only and skip the rest of the frame.
+        assert!(reader.records_read <= 2, "{}", reader.records_read);
+        let work = reader.work().unwrap();
+        assert_eq!(work.payloads_decoded, reader.records_read);
+        assert!(work.frames_scanned > 0);
         assert_eq!(reader.assembly_bytes, 1);
         let sample = wave.sample(control, Time::from_ticks(1)).unwrap();
         assert!(
@@ -41,12 +45,12 @@ fn indexed_values_preserve_final_tick_states_across_tiny_buffers() {
         let (mut reader, _, _) =
             Reader::open(Box::new(std::io::Cursor::new(data)), "index.ghw".into()).unwrap();
         reader.wire = reader.wire.with_buffer_capacity(capacity);
-        reader.wire.seek(reader.body_start).unwrap();
+        reader.wire.seek(reader.validated.body_start).unwrap();
         let mut expected = BTreeMap::new();
         let (_, _) = body::walk(
             &mut reader.wire,
-            &reader.types,
-            &reader.active,
+            &reader.validated.types,
+            &reader.validated.active,
             Time::from_ticks(4),
             |event| {
                 if let body::Event::Scalar {
@@ -59,17 +63,23 @@ fn indexed_values_preserve_final_tick_states_across_tiny_buffers() {
             },
         )
         .unwrap();
-        reader.wire.seek(reader.body_start).unwrap();
-        let ids = reader.active.iter().map(|&(id, _)| id).collect::<Vec<_>>();
+        reader.wire.seek(reader.validated.body_start).unwrap();
+        let ids = reader
+            .validated
+            .active
+            .iter()
+            .map(|&(id, _)| id)
+            .collect::<Vec<_>>();
         let mut actual = BTreeMap::new();
         let _ = reader
+            .validated
             .index
             .as_ref()
             .unwrap()
             .read(
                 &mut reader.wire,
-                &reader.types,
-                &reader.active,
+                &reader.validated.types,
+                &reader.validated.active,
                 &ids,
                 Time::from_ticks(4),
                 |event| {
@@ -146,9 +156,9 @@ fn partial_repeated_and_reversed_recipes_preserve_missing_and_projection_time() 
         let crate::backends::Reader::Ghw(reader) = &wave.reader else {
             panic!("GHW")
         };
-        assert!(reader.index.is_some());
+        assert!(reader.validated.index.is_some());
         assert_eq!(
-            2 < reader.active.len().div_ceil(2),
+            2 < reader.validated.active.len().div_ceil(2),
             selective,
             "exercise both selective and broad routing with an unused source and ID holes"
         );

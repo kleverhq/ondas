@@ -309,6 +309,11 @@ impl ChildLinks {
     }
 }
 
+/// Retained bytes of one vector payload, counted by capacity rather than length.
+fn vec_bytes<T>(capacity: usize) -> usize {
+    capacity.saturating_mul(std::mem::size_of::<T>())
+}
+
 static NEXT_SOURCE: AtomicU64 = AtomicU64::new(1);
 
 fn next_source() -> u64 {
@@ -413,9 +418,70 @@ impl Hierarchy {
         }
     }
 
+    // Bytes this hierarchy retains, including the lookup tables that are built on first use.
+    // A reader that parks validated declarations needs a byte bound, and the lazy tables are a
+    // deterministic function of the declarations, so they are counted before they exist.
+    pub(crate) fn validated_bytes(&self) -> usize {
+        let data = &self.data;
+        let scopes = data.scopes.len();
+        let variables = data.variables.len();
+        let mut bytes = std::mem::size_of::<HierarchyData>();
+        bytes = bytes.saturating_add(vec_bytes::<ScopeData>(data.scopes.capacity()));
+        for scope in &data.scopes {
+            bytes = bytes.saturating_add(scope.name.capacity());
+            bytes = bytes.saturating_add(scope.kind.capacity());
+            bytes = bytes.saturating_add(
+                scope
+                    .definition_name
+                    .as_ref()
+                    .map_or(0, |name| name.capacity()),
+            );
+        }
+        bytes = bytes.saturating_add(vec_bytes::<VariableData>(data.variables.capacity()));
+        for variable in &data.variables {
+            bytes = bytes.saturating_add(variable.name.capacity());
+            bytes = bytes.saturating_add(variable.kind.capacity());
+            bytes = bytes.saturating_add(
+                variable
+                    .reader_name
+                    .as_ref()
+                    .map_or(0, |name| name.capacity()),
+            );
+            bytes = bytes.saturating_add(
+                variable
+                    .type_name
+                    .as_ref()
+                    .map_or(0, |name| name.capacity()),
+            );
+            if let Some(enumeration) = &variable.enumeration {
+                bytes = bytes.saturating_add(std::mem::size_of::<EnumerationData>());
+                bytes = bytes
+                    .saturating_add(enumeration.name.as_ref().map_or(0, |name| name.capacity()));
+                bytes = bytes.saturating_add(vec_bytes::<(String, String)>(
+                    enumeration.variants.capacity(),
+                ));
+                for (key, label) in &enumeration.variants {
+                    bytes = bytes.saturating_add(key.capacity());
+                    bytes = bytes.saturating_add(label.capacity());
+                }
+            }
+        }
+        bytes = bytes.saturating_add(vec_bytes::<Encoding>(data.encodings.capacity()));
+        // Children links keep one entry per scope and one per declaration; the name index keeps
+        // one offset per scope plus two, and one declaration index per declaration.
+        let child_entries = scopes.saturating_mul(2).saturating_add(variables);
+        let name_entries = scopes
+            .saturating_mul(2)
+            .saturating_add(variables)
+            .saturating_add(2);
+        let words = std::mem::size_of::<usize>();
+        bytes = bytes.saturating_add(child_entries.saturating_mul(words));
+        bytes = bytes.saturating_add(name_entries.saturating_mul(words));
+        bytes
+    }
+
     // A reader may retain immutable declaration data across sequential logical opens. Every
     // open still needs its own source identity so handles from an earlier open are rejected.
-    #[cfg(feature = "wdb-lib")]
     pub(crate) fn reopened(&self) -> Self {
         Self {
             source: next_source(),

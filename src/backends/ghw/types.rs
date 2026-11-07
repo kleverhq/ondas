@@ -142,6 +142,10 @@ pub(super) struct Types {
     source_ids: Vec<usize>,
 }
 
+fn vec_bytes<T>(capacity: usize) -> usize {
+    capacity.saturating_mul(std::mem::size_of::<T>())
+}
+
 impl Types {
     pub(super) fn read(wire: &mut Wire, strings: Vec<String>) -> Result<Self> {
         wire.marker(b"TYP\0")?;
@@ -307,6 +311,44 @@ impl Types {
             id = *base;
         }
         id
+    }
+
+    /// Retained bytes of this table, for cache admission.
+    ///
+    /// Vector payloads are counted by capacity, because a retained graph keeps
+    /// whatever the allocator reserved. Sizes saturate, so an absurd table is
+    /// refused by the budget instead of wrapping.
+    pub(super) fn retained_bytes(&self) -> usize {
+        let mut bytes = std::mem::size_of::<Self>();
+        bytes = bytes.saturating_add(vec_bytes::<String>(self.strings.capacity()));
+        for string in &self.strings {
+            bytes = bytes.saturating_add(string.capacity());
+        }
+        bytes = bytes.saturating_add(vec_bytes::<Type>(self.nodes.capacity()));
+        for node in &self.nodes {
+            match &node.shape {
+                Shape::Scalar {
+                    literals, _units, ..
+                } => {
+                    bytes = bytes.saturating_add(vec_bytes::<usize>(literals.capacity()));
+                    bytes = bytes.saturating_add(vec_bytes::<(usize, i64)>(_units.capacity()));
+                }
+                Shape::Alias { .. } => {}
+                Shape::Array {
+                    indices, bounds, ..
+                } => {
+                    bytes = bytes.saturating_add(vec_bytes::<usize>(indices.capacity()));
+                    if let Some(bounds) = bounds {
+                        bytes = bytes.saturating_add(vec_bytes::<Range>(bounds.capacity()));
+                    }
+                }
+                Shape::Record { fields } => {
+                    bytes = bytes.saturating_add(vec_bytes::<(usize, usize)>(fields.capacity()));
+                }
+            }
+        }
+        bytes = bytes.saturating_add(vec_bytes::<usize>(self.source_ids.capacity()));
+        bytes
     }
 
     pub(super) fn scalar(&self, id: usize) -> Option<(Storage, &[usize], u8)> {

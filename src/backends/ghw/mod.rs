@@ -1,18 +1,96 @@
 mod body;
 mod hierarchy;
+mod identity;
 mod index;
 #[cfg(test)]
 #[path = "../../../tests/support/ghw_bytes.rs"]
 mod test_bytes;
 mod types;
+mod validated;
 mod wire;
 
 use super::Input;
 use crate::{BitsRef, Encoding, Hierarchy, Metadata, Result, Signal, Time, ValueRef};
-use hierarchy::Recipe;
+use identity::Identity;
 use std::ops::{ControlFlow, Range};
+use std::sync::Arc;
 use types::Types;
+use validated::{CACHE_BYTES, Validated};
 use wire::Wire;
+
+/// Why one logical open runs. A metadata-only request must not leave a parked
+/// validated hierarchy behind, so it never parks one of its own and releases the
+/// one it reused.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Purpose {
+    Waveform,
+    Metadata,
+}
+
+/// One parked validated source, shared by every logical open of this backend.
+struct Cache {
+    slot: std::sync::Mutex<Option<Arc<Validated>>>,
+    #[cfg(test)]
+    hits: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    parses: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    #[allow(dead_code)]
+    skipped: std::sync::atomic::AtomicUsize,
+}
+
+static CACHE: Cache = Cache::new();
+
+impl Cache {
+    const fn new() -> Self {
+        Self {
+            slot: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            hits: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            parses: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            skipped: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    fn slot(&self) -> std::sync::MutexGuard<'_, Option<Arc<Validated>>> {
+        self.slot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Identity of the parked source, if any.
+    fn parked_identity(&self) -> Option<identity::ContentIdentity> {
+        self.slot()
+            .as_ref()
+            .and_then(|validated| validated.identity)
+    }
+
+    /// The parked source when its content identity matches.
+    fn take_matching(&self, identity: &identity::ContentIdentity) -> Option<Arc<Validated>> {
+        self.slot()
+            .as_ref()
+            .filter(|validated| validated.identity == Some(*identity))
+            .map(Arc::clone)
+    }
+
+    /// Park one validated source. A source above the byte bound is not parked, and
+    /// a replaced source is dropped outside the lock.
+    fn park(&self, candidate: Arc<Validated>) {
+        if candidate.retained_bytes > CACHE_BYTES {
+            return;
+        }
+        let replaced = self.slot().replace(candidate);
+        drop(replaced);
+    }
+
+    /// Release the parked source.
+    fn clear(&self) {
+        let parked = self.slot().take();
+        drop(parked);
+    }
+}
 
 pub(crate) enum Notification<'v> {
     Value {
@@ -25,15 +103,15 @@ pub(crate) enum Notification<'v> {
 
 pub(crate) struct Reader {
     wire: Wire,
-    types: Types,
-    recipes: Vec<Recipe>,
-    active: Vec<(u32, usize)>,
-    body_start: u64,
-    index: Option<index::Index>,
+    validated: Arc<Validated>,
     #[cfg(test)]
     pub(crate) records_read: usize,
     #[cfg(test)]
     pub(crate) assembly_bytes: usize,
+    #[cfg(test)]
+    pub(crate) indexed_reads: usize,
+    #[cfg(test)]
+    pub(crate) walk_reads: usize,
 }
 
 struct Buffer {
@@ -51,6 +129,62 @@ struct Dependency {
     slot: usize,
     position: usize,
     seen: bool,
+}
+
+/// Dependency range of one source ID in the sorted dependency list.
+fn dependency_range(dependencies: &[Dependency], id: u32) -> Range<usize> {
+    let start = dependencies.partition_point(|dependency| dependency.id < id);
+    let mut end = start;
+    while dependencies
+        .get(end)
+        .is_some_and(|dependency| dependency.id == id)
+    {
+        end += 1;
+    }
+    start..end
+}
+
+/// Dependency range of one scalar event.
+///
+/// A broad read indexes ranges by rank, an indexed read supplies the route of the
+/// selected scalar, and everything else — the sequential walker, a route the
+/// current table does not cover — falls back to the searched lookup.
+fn event_range(
+    event: &body::Event,
+    broad: Option<&[Range<usize>]>,
+    selected: Option<&[Range<usize>]>,
+    dependencies: &[Dependency],
+) -> Range<usize> {
+    let body::Event::Scalar {
+        id, rank, route, ..
+    } = *event
+    else {
+        return 0..0;
+    };
+    if let Some(routes) = broad {
+        return routes
+            .get(rank)
+            .cloned()
+            .unwrap_or_else(|| dependency_range(dependencies, id));
+    }
+    if let Some(routes) = selected
+        && route != body::NO_ROUTE
+        && let Some(range) = routes.get(route as usize)
+    {
+        return range.clone();
+    }
+    dependency_range(dependencies, id)
+}
+
+/// Ranges of the selected source IDs, in the same ascending order in which the
+/// indexed reader assigns route indices to selected ranks.
+fn selected_ranges(dependencies: &[Dependency], ids: &[u32]) -> Option<Vec<Range<usize>>> {
+    let mut ranges = Vec::new();
+    ranges.try_reserve_exact(ids.len()).ok()?;
+    for &id in ids {
+        ranges.push(dependency_range(dependencies, id));
+    }
+    Some(ranges)
 }
 
 // The active table and dependencies both use ascending source IDs.
@@ -108,7 +242,92 @@ impl Reader {
         input: Box<dyn Input>,
         source_name: String,
     ) -> Result<(Self, Hierarchy, Metadata)> {
-        let mut wire = Wire::new(input)?;
+        Self::open_with(input, source_name, Purpose::Waveform, &CACHE)
+    }
+
+    /// Read owned source metadata with the same validation and reuse path, but
+    /// without leaving a parked validated hierarchy behind.
+    pub(crate) fn metadata(input: Box<dyn Input>, source_name: String) -> Result<Metadata> {
+        let (reader, _, metadata) = Self::open_with(input, source_name, Purpose::Metadata, &CACHE)?;
+        drop(reader);
+        Ok(metadata)
+    }
+
+    fn open_with(
+        input: Box<dyn Input>,
+        source_name: String,
+        purpose: Purpose,
+        cache: &Cache,
+    ) -> Result<(Self, Hierarchy, Metadata)> {
+        let mut input = input;
+        if let Some(parked) = cache.parked_identity() {
+            // A parked source is only usable for byte-identical content, and the
+            // length is part of that identity: a different length is a certain miss
+            // and needs no scan. Otherwise the scan reads the whole current input; a
+            // failure here is an optional miss and the parser below reports whatever
+            // error it reaches.
+            let length = input.seek(std::io::SeekFrom::End(0))?;
+            input.seek(std::io::SeekFrom::Start(0))?;
+            if length == parked.length
+                && identity::scan(&mut *input).is_ok_and(|current| current == parked)
+                && let Some(validated) = cache.take_matching(&parked)
+            {
+                let mut wire = Wire::new(input)?;
+                if wire.len == parked.length {
+                    #[cfg(test)]
+                    cache
+                        .hits
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    wire.version = validated.version;
+                    wire.big_endian = validated.big_endian;
+                    let metadata = Metadata {
+                        source_name,
+                        timescale: None,
+                        time_span: validated.time_span,
+                        writer: None,
+                        date: None,
+                        comments: Vec::new(),
+                    };
+                    let hierarchy = validated.hierarchy.reopened();
+                    let reader = Self {
+                        wire,
+                        validated,
+                        #[cfg(test)]
+                        records_read: 0,
+                        #[cfg(test)]
+                        assembly_bytes: 0,
+                        #[cfg(test)]
+                        indexed_reads: 0,
+                        #[cfg(test)]
+                        walk_reads: 0,
+                    };
+                    if purpose == Purpose::Metadata {
+                        // A metadata-only request must not keep a parked hierarchy.
+                        cache.clear();
+                    }
+                    return Ok((reader, hierarchy, metadata));
+                }
+                // The length changed under the identity, so this is a miss.
+                input = wire.into_input();
+            }
+        }
+        Self::parse(input, source_name, purpose, cache)
+    }
+
+    /// Cold or cache-miss parse: validation runs over a watched input, so the
+    /// identity describes exactly the bytes this parse consumed.
+    fn parse(
+        input: Box<dyn Input>,
+        source_name: String,
+        purpose: Purpose,
+        cache: &Cache,
+    ) -> Result<(Self, Hierarchy, Metadata)> {
+        #[cfg(test)]
+        cache
+            .parses
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let identity = Identity::new();
+        let mut wire = Wire::new(identity.watch(input))?;
         wire.header()?;
         let strings = wire.strings()?;
         let mut types = Types::read(&mut wire, strings)?;
@@ -130,41 +349,99 @@ impl Reader {
             &declarations.active,
             Time::from_ticks(u64::MAX),
             |event| {
-                if let body::Event::Scalar {
-                    rank, time, offset, ..
-                } = event
-                    && let Some(positions) = &mut index
-                    && !positions.push(rank, time, offset)
-                {
-                    index = None;
+                let Some(positions) = &mut index else {
+                    return ControlFlow::<()>::Continue(());
+                };
+                match event {
+                    body::Event::Scalar {
+                        rank,
+                        time,
+                        offset,
+                        cyclic,
+                        ..
+                    } => {
+                        if !positions.push(rank, time, offset, cyclic) {
+                            index = None;
+                        }
+                    }
+                    body::Event::ListEnd(_) => positions.list_end(),
+                    body::Event::Tick(_) => {}
                 }
                 ControlFlow::<()>::Continue(())
             },
         )?;
+        let complete = match &mut index {
+            Some(positions) => positions.finish(),
+            None => true,
+        };
+        if !complete {
+            // An incomplete representation is discarded: the sequential walker
+            // answers instead, and opening validation already finished.
+            index = None;
+        }
+        let version = wire.version;
+        let big_endian = wire.big_endian;
+        let hierarchy = declarations.hierarchy;
+        let recipes = declarations.recipes;
+        let recipe_slots = recipes.capacity();
+        let active = declarations.active;
+        let active_slots = active.capacity();
+        // The parser consumes the whole input, so the proof covers what it validated.
+        let proven = identity.finish(wire.len);
+        let retained_bytes = validated::retained_bytes(
+            &types,
+            &recipes,
+            recipe_slots,
+            active_slots,
+            &hierarchy,
+            index.as_ref(),
+        );
+        let validated = Arc::new(Validated {
+            identity: proven,
+            hierarchy: hierarchy.clone(),
+            types,
+            recipes,
+            active,
+            body_start,
+            version,
+            big_endian,
+            time_span,
+            index,
+            retained_bytes,
+        });
+        if proven.is_some() && purpose == Purpose::Waveform {
+            cache.park(Arc::clone(&validated));
+        } else if purpose == Purpose::Metadata {
+            // A metadata-only request must not keep a parked hierarchy.
+            cache.clear();
+        }
         let metadata = Metadata {
             source_name,
             timescale: None,
-            time_span,
+            time_span: validated.time_span,
             writer: None,
             date: None,
             comments: Vec::new(),
         };
-        Ok((
-            Self {
-                wire,
-                types,
-                recipes: declarations.recipes,
-                active: declarations.active,
-                body_start,
-                index,
-                #[cfg(test)]
-                records_read: 0,
-                #[cfg(test)]
-                assembly_bytes: 0,
-            },
-            declarations.hierarchy,
-            metadata,
-        ))
+        let reader = Self {
+            wire,
+            validated,
+            #[cfg(test)]
+            records_read: 0,
+            #[cfg(test)]
+            assembly_bytes: 0,
+            #[cfg(test)]
+            indexed_reads: 0,
+            #[cfg(test)]
+            walk_reads: 0,
+        };
+        Ok((reader, hierarchy, metadata))
+    }
+
+    /// Query diagnostics of the completed index, for focused tests.
+    #[cfg(test)]
+    pub(super) fn work(&self) -> Option<index::Work> {
+        self.validated.index.as_ref().map(index::Index::work)
     }
 
     pub(crate) fn read<B>(
@@ -176,15 +453,17 @@ impl Reader {
         if signals.is_empty() {
             return Ok(ControlFlow::Continue(()));
         }
-        self.wire.seek(self.body_start)?;
+        self.wire.seek(self.validated.body_start)?;
         let mut buffers = Vec::new();
         let mut dependencies = Vec::new();
         for signal in signals {
             let recipe = self
+                .validated
                 .recipes
                 .get(signal.index())
                 .ok_or_else(|| self.wire.malformed("invalid private recipe index"))?;
             let (_, _, wkt) = self
+                .validated
                 .types
                 .scalar(recipe.scalar_type)
                 .ok_or_else(|| self.wire.malformed("non-scalar recipe encoding"))?;
@@ -227,32 +506,30 @@ impl Reader {
             .map(|dependency| dependency.id)
             .collect::<Vec<_>>();
         ids.dedup(); // Dependencies are already sorted by source ID.
-        let broad = ids.len() >= self.active.len().div_ceil(2);
-        let routes = broad.then(|| dependency_ranges(&self.active, &dependencies));
+        let broad = ids.len() >= self.validated.active.len().div_ceil(2);
+        let routes = broad.then(|| dependency_ranges(&self.validated.active, &dependencies));
+        // A narrow indexed read resolves each selected range once and receives the
+        // matching route index with every event.
+        let selected = (!broad && self.validated.index.is_some())
+            .then(|| selected_ranges(&dependencies, &ids))
+            .flatten();
         // The block permits the closure attribute on MSRV. Force scalar-event
         // specialization in the walker instead of a per-record callback.
-        let consume = {
+        let mut consume = {
             #[inline(always)]
             |event| {
                 match event {
-                    body::Event::Scalar {
-                        id, rank, value, ..
-                    } => {
+                    body::Event::Scalar { value, .. } => {
                         #[cfg(test)]
                         {
                             self.records_read += 1;
                         }
-                        let range = if let Some(routes) = &routes {
-                            routes[rank].clone()
-                        } else {
-                            let start =
-                                dependencies.partition_point(|dependency| dependency.id < id);
-                            let mut end = start;
-                            while dependencies.get(end).is_some_and(|d| d.id == id) {
-                                end += 1;
-                            }
-                            start..end
-                        };
+                        let range = event_range(
+                            &event,
+                            routes.as_deref(),
+                            selected.as_deref(),
+                            &dependencies,
+                        );
                         if !range.is_empty() {
                             // The first entry owns this source scalar's seen flag.
                             let first = !dependencies[range.start].seen;
@@ -293,24 +570,39 @@ impl Reader {
                 ControlFlow::Continue(())
             }
         };
-        // Broad selections keep the sequential path without a many-chain merge.
-        if let Some(index) = &self.index
+        if let Some(index) = &self.validated.index
             && !broad
-        {
-            index.read(
+            && let Some(flow) = index.read(
                 &mut self.wire,
-                &self.types,
-                &self.active,
+                &self.validated.types,
+                &self.validated.active,
                 &ids,
                 end,
-                consume,
-            )
-        } else {
-            let (flow, _) = body::walk(&mut self.wire, &self.types, &self.active, end, consume)?;
-            Ok(flow)
+                &mut consume,
+            )?
+        {
+            #[cfg(test)]
+            {
+                self.indexed_reads += 1;
+            }
+            return Ok(flow);
         }
+        #[cfg(test)]
+        {
+            self.walk_reads += 1;
+        }
+        let (flow, _) = body::walk(
+            &mut self.wire,
+            &self.validated.types,
+            &self.validated.active,
+            end,
+            consume,
+        )?;
+        Ok(flow)
     }
 }
 
+#[cfg(test)]
+mod reuse_tests;
 #[cfg(test)]
 mod tests;

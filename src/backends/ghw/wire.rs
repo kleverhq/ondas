@@ -69,6 +69,26 @@ impl Wire {
         Ok(self.input.fill_buf()?.is_empty())
     }
 
+    /// Buffered bytes from the current position without consuming them.
+    ///
+    /// Bulk decoders read whole fields from the slice and then report the
+    /// covered length to [`Self::consume_window`]. The reported length must
+    /// cover every byte they used so that `offset` stays exact; whatever they
+    /// leave out is decoded again by the checked single-field readers.
+    /// The input at its current position, used when an open decides not to reuse.
+    pub(super) fn into_input(self) -> Box<dyn Input> {
+        self.input.into_inner()
+    }
+
+    pub(super) fn window(&mut self) -> Result<&[u8]> {
+        Ok(self.input.fill_buf()?)
+    }
+
+    pub(super) fn consume_window(&mut self, length: usize) {
+        self.input.consume(length);
+        self.offset += length as u64;
+    }
+
     pub(super) fn fixed<const N: usize>(&mut self) -> Result<[u8; N]> {
         let mut result = [0; N];
         let mut filled = 0;
@@ -285,6 +305,40 @@ impl Wire {
         self.marker(b"EOS\0")?;
         Ok(strings)
     }
+}
+
+/// Decode one SLEB128 field that starts at `bytes[0]`, which must hold at
+/// least `bits.div_ceil(7)` bytes. Returns `None` where the checked reader
+/// reports a malformed field, so callers can delegate the error to it and keep
+/// one source of truth for messages and byte offsets.
+pub(super) fn decode_sleb(bytes: &[u8], bits: u32) -> Option<(i64, usize)> {
+    let mut value = 0u64;
+    for group in 0..bits.div_ceil(7) {
+        let byte = *bytes.get(group as usize)?;
+        let shift = group * 7;
+        let remaining = bits - shift;
+        if remaining < 7 {
+            let sign = 1u8 << (remaining - 1);
+            let high_mask = 0x7f & !((1u8 << remaining) - 1);
+            let expected = if byte & sign == 0 { 0 } else { high_mask };
+            if byte & 0x80 != 0 || byte & high_mask != expected {
+                return None;
+            }
+        }
+        value |= u64::from(byte & 0x7f) << shift;
+        if byte & 0x80 == 0 {
+            let consumed = shift + 7;
+            if byte & 0x40 != 0 && consumed < 64 {
+                value |= u64::MAX << consumed;
+            }
+            let signed = value as i64;
+            if bits == 32 && i32::try_from(signed).is_err() {
+                return None;
+            }
+            return Some((signed, group as usize + 1));
+        }
+    }
+    None
 }
 
 #[cfg(test)]
