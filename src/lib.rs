@@ -74,13 +74,25 @@ installed `rdi` or `xv` reader libraries without a separate setting. A confirmed
 newer embedded DBG format returns [`Error::UnsupportedFeature`].
 
 First access to selected stored bytes builds their SDK history indexes, including
-times after the query end. These indexes remain until the waveform is dropped.
-A point or early stop can therefore pay the full selected-history loading cost.
+times after the query end. Every waveform drop releases those indexes. A native owner
+may outlive the logical session and keep its imported declarations, so a later
+logical open of the same unchanged file reuses them without importing again; its
+histories are built again on first access. A point or early stop can therefore pay the
+full selected-history loading cost in a reuse hit. One closed owner may wait, keeping
+the native reader descriptor and the copied declarations. When the reader kernel
+provides the storage cleanup entry point, the drop also releases the temporary SDK
+backing storage before the owner waits; without it, the owner is closed instead of
+retained, so a later open imports again. A different path, a metadata-only request or
+a failed identity destroys it, and a normal exit destroys it best-effort while the SDK
+and owner locks are uncontended.
 Later bit points and range reads with an established entering state can seek.
 This includes compositions whose intermediate values are whole copies of one
 source, joined or sliced at source-width boundaries. Other compositions can
 still traverse a prefix to establish their change times.
 Proving `changed_at` for a constant slice can still require many predecessor reads.
+A packed `logic` or `reg` array whose storage the adapter qualifies decodes from its two stored
+planes instead of the vendor formatter. A slice of one such array compares only the stored bits it
+depends on when the whole extent is recorded from tick zero; other layouts keep the previous paths.
 
 The adapter uses a private reader ABI. Build-time symbol checks do not qualify
 other reader layouts. Keep the source file unchanged and available. The reader
@@ -97,6 +109,17 @@ of an error. The cause remains unresolved between recording and reading. Success
 constant values and enum tables do not qualify changing unsigned 129-bit values.
 Reads preserve the common completed-tick semantics. Vendor calls are serialized; user callbacks run
 after the lock is released.
+Opening a WDB file imports every native declaration and usually costs more than another format
+containing only logged declarations. Every ordinary open hashes the whole file as part of the reuse
+identity, a cold open included. A sequential reopen of an unchanged file then reuses one validated
+owner instead of importing again: it repeats the container and reader guards and creates a fresh
+hierarchy identity, so handles from the earlier open are rejected. Only one closed owner waits; a
+different path, a metadata-only request or a failed identity destroys it. A native or decode error,
+or an unwind through the backend while it reads native state, makes that reader's owner unparkable
+until it is dropped, without affecting another idle owner. A panic in a late callback over results
+that the backend already completed does not by itself prevent the owner from being reused. A live
+reader keeps its own native indexes until it is dropped or parked. A concurrent writer is not
+promised an atomic snapshot.
 
 ```no_run
 # #[cfg(feature = "wdb-lib")]

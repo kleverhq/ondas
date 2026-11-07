@@ -40,7 +40,17 @@ pub fn open(path: impl AsRef<Path>) -> Result<Waveform> {
 ///
 /// This function accepts filesystem paths, including SHM directories, not bytes.
 pub fn read_metadata(path: impl AsRef<Path>) -> Result<Metadata> {
-    let path = path.as_ref();
+    let result = read_metadata_path(path.as_ref());
+    #[cfg(feature = "wdb-lib")]
+    if result.is_err() {
+        // A failed request must not keep a retained WDB owner for a path that may have changed
+        // or disappeared before the adapter was entered.
+        crate::backends::wdb::release_idle();
+    }
+    result
+}
+
+fn read_metadata_path(path: &Path) -> Result<Metadata> {
     let name = path.to_string_lossy().into_owned();
     if std::fs::metadata(path)?.is_dir() {
         let format = directory_format(path)?;
@@ -135,6 +145,17 @@ fn check_backend(backend: Option<&str>) -> Result<()> {
 }
 
 fn open_file(path: &Path, backend: Option<&str>) -> Result<Waveform> {
+    let result = open_file_path(path, backend);
+    #[cfg(feature = "wdb-lib")]
+    if result.is_err() {
+        // A failed open must not keep a retained WDB owner for a path that may have changed or
+        // disappeared before the adapter was entered.
+        crate::backends::wdb::release_idle();
+    }
+    result
+}
+
+fn open_file_path(path: &Path, backend: Option<&str>) -> Result<Waveform> {
     check_backend(backend)?;
     if std::fs::metadata(path)?.is_dir() {
         let format = if backend == Some("shm-lib") {

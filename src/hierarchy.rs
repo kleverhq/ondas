@@ -208,6 +208,8 @@ impl fmt::Display for HierarchyPath {
 /// ```
 #[derive(Clone)]
 pub struct Hierarchy {
+    // Identity of this logical source. Clones keep it, so views from a clone compare equal.
+    source: u64,
     data: Arc<HierarchyData>,
 }
 
@@ -268,7 +270,6 @@ impl EnumerationData {
 }
 
 struct HierarchyData {
-    source: u64,
     scopes: Vec<ScopeData>,
     variables: Vec<VariableData>,
     encodings: Vec<Encoding>,
@@ -310,6 +311,12 @@ impl ChildLinks {
 
 static NEXT_SOURCE: AtomicU64 = AtomicU64::new(1);
 
+fn next_source() -> u64 {
+    NEXT_SOURCE
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+        .expect("hierarchy source IDs exhausted")
+}
+
 /// A scope or variable encountered during hierarchy traversal.
 pub enum Item<'h> {
     /// A hierarchy scope.
@@ -342,7 +349,7 @@ pub struct Variable<'h> {
 
 impl PartialEq<Scope<'_>> for Scope<'_> {
     fn eq(&self, other: &Scope<'_>) -> bool {
-        self.hierarchy.data.source == other.hierarchy.data.source && self.index == other.index
+        self.hierarchy.source == other.hierarchy.source && self.index == other.index
     }
 }
 
@@ -350,7 +357,7 @@ impl Eq for Scope<'_> {}
 
 impl PartialEq<Variable<'_>> for Variable<'_> {
     fn eq(&self, other: &Variable<'_>) -> bool {
-        self.hierarchy.data.source == other.hierarchy.data.source && self.index == other.index
+        self.hierarchy.source == other.hierarchy.source && self.index == other.index
     }
 }
 
@@ -394,12 +401,9 @@ impl Hierarchy {
         variables: Vec<VariableData>,
         encodings: Vec<Encoding>,
     ) -> Self {
-        let source = NEXT_SOURCE
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
-            .expect("hierarchy source IDs exhausted");
         Self {
+            source: next_source(),
             data: Arc::new(HierarchyData {
-                source,
                 scopes,
                 variables,
                 encodings,
@@ -409,10 +413,20 @@ impl Hierarchy {
         }
     }
 
+    // A reader may retain immutable declaration data across sequential logical opens. Every
+    // open still needs its own source identity so handles from an earlier open are rejected.
+    #[cfg(feature = "wdb-lib")]
+    pub(crate) fn reopened(&self) -> Self {
+        Self {
+            source: next_source(),
+            data: Arc::clone(&self.data),
+        }
+    }
+
     pub(crate) fn signal_at(&self, index: usize) -> Signal {
         let encoding = self.data.encodings[index];
         Signal {
-            source: self.data.source,
+            source: self.source,
             index,
             computed: false,
             base_encoding: encoding,
@@ -431,7 +445,7 @@ impl Hierarchy {
     pub(crate) fn computed_signal(&self, index: usize, width: u32) -> Signal {
         let encoding = Encoding::Bits { width };
         Signal {
-            source: self.data.source,
+            source: self.source,
             index,
             computed: true,
             base_encoding: encoding,
@@ -445,7 +459,7 @@ impl Hierarchy {
         signal: Signal,
         encoding: Option<Encoding>,
     ) -> Result<usize> {
-        let valid = signal.source == self.data.source
+        let valid = signal.source == self.source
             && encoding == Some(signal.base_encoding)
             && match (signal.base_encoding, signal.encoding) {
                 (Encoding::Bits { width: base }, Encoding::Bits { width }) => {

@@ -27,6 +27,10 @@ struct ondas_wdb_record {
     size_t len;
 };
 int ondas_wdb_open(const char*, int, void**, char*, size_t);
+int ondas_wdb_validate_runtime(char*, size_t);
+int ondas_wdb_release_indexes(void*, char*, size_t);
+int ondas_wdb_release_storage(void*, char*, size_t);
+size_t ondas_wdb_index_count(void*);
 void ondas_wdb_close(void*);
 void ondas_wdb_metadata(void*, struct ondas_wdb_meta*);
 size_t ondas_wdb_decl_count(void*);

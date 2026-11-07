@@ -4,6 +4,12 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+### Changed
+
+- Reuse a validated WDB reader for sequential opens of an unchanged file. Release history indexes and temporary storage on drop.
+- Load large WDB byte-history batches with bounded local workers.
+- Speed up decoding and slice change detection for qualified packed WDB `logic` and `reg` arrays.
+
 ## [2.0.0] - 2026-10-30
 
 ### Breaking changes

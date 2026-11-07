@@ -1,19 +1,31 @@
 #include "wdb.h"
 #include "wdb_abi.hpp"
 #include <algorithm>
+#include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
 #include <cstdlib>
 #include <cxxabi.h>
 #include <dlfcn.h>
+#include <exception>
 #include <limits>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <queue>
 #include <stdexcept>
 #include <string_view>
+#include <thread>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
+
+namespace SimBridge { struct WdbIEventBlockIterator; }
+
+#ifdef ONDAS_WDB_TEST_THREAD_LIMIT
+extern "C" void ondas_wdb_test_worker_start(size_t index);
+#endif
 
 namespace {
 static_assert(sizeof(ondas_wdb_meta) == 16 && offsetof(ondas_wdb_meta, precision) == 8);
@@ -30,6 +42,10 @@ template<class T> T symbol(const std::string& name) {
     auto address = dlsym(RTLD_DEFAULT, name.c_str());
     if (!address) throw Unsupported("reader is missing ABI symbol " + name);
     return reinterpret_cast<T>(address);
+}
+// Optional symbols keep the serial path when the selected reader does not provide them.
+template<class T> T optional_symbol(const char* name) {
+    return reinterpret_cast<T>(dlsym(RTLD_DEFAULT, name));
 }
 void selected_library(const char* name, const char* expected) {
     Dl_info info{};
@@ -108,6 +124,8 @@ struct Declaration {
     bool scope = false, has_range = false, constant = false, ordinal_enum = false, integer = false, grouped_bits = false;
     uint32_t name_syntax = 0;
     bool qualified = true;
+    // Packed logic array with two 32-bit planes per chunk of 32 logical bits.
+    bool two_plane = false;
     size_t base_len = 0;
     int64_t msb = 0, lsb = 0;
     long long address = -1;
@@ -129,36 +147,192 @@ static_assert(sizeof(ByteValue) == 8 && sizeof(TimeByteValue) == 16 && sizeof(Ti
 constexpr size_t indexes_per_byte = ONDAS_WDB_BIT_INDEX ? 8 : 1;
 struct AddressBitPair { long long address; unsigned bit; };
 static_assert(sizeof(AddressBitPair) == 16);
-struct IndexBatch {
+// Index identity and deletion entry points. Resolving them allocates nothing per call and, once
+// resolved, cannot throw; the first call must therefore happen before any native tree exists.
+struct HistoryAbi {
+    long long (*address)(const void*);
+    unsigned (*bit)(const void*);
+    void (*remove_bytes)(void*, long long, long long);
+    void (*remove_bits)(void*, const std::vector<AddressBitPair>&);
+};
+HistoryAbi& history_abi() {
+    static HistoryAbi abi{
+        symbol<long long(*)(const void*)>("_ZNK9SimBridge14WdbScalarBTree10getAddressEv"),
+        ONDAS_WDB_BIT_INDEX ? symbol<unsigned(*)(const void*)>(
+            "_ZNK9SimBridge14WdbScalarBTree14getBitPositionEv") : nullptr,
+        symbol<void(*)(void*, long long, long long)>(
+            "_ZN9SimBridge22WdbAddressBTreeManager16deleteByteBTreesExx"),
+        ONDAS_WDB_BIT_INDEX ? symbol<void(*)(void*, const std::vector<AddressBitPair>&)>(
+            "_ZN9SimBridge22WdbAddressBTreeManager15deleteBitBTreesERKSt6vectorINS_17WdbAddressBitPairESaIS2_EE") : nullptr,
+    };
+    return abi;
+}
+// Qualified event-block split and task used by the vendor's own multi-threaded scan. The adapter
+// calls the same exported entry points directly on its own bounded threads.
+using EventSplitter = void (*)(const void*, const std::vector<void*>&,
+                               std::vector<std::shared_ptr<SimBridge::WdbIEventBlockIterator>>&,
+                               std::vector<std::vector<void*>>&);
+using EventTask = void (*)(std::shared_ptr<SimBridge::WdbIEventBlockIterator>,
+                           std::vector<void*>, unsigned);
+using EventHeader = const void* (*)(const void*);
+
+// Hardware budget for the bounded fan-out. Normal builds always use the platform value; a
+// controlled test translation unit may replace it to exercise the 0/1/2+ branches deterministically.
+size_t available_workers() {
+#ifdef ONDAS_WDB_TEST_HARDWARE_CONCURRENCY
+    return ONDAS_WDB_TEST_HARDWARE_CONCURRENCY;
+#else
+    return std::thread::hardware_concurrency();
+#endif
+}
+
+// Scans already-created trees through the qualified event-database groups on bounded local
+// threads. False means the capability, database class, load size or worker count does not
+// qualify, so the caller keeps the serial scan. A task failure is rethrown after all workers
+// joined, so the batch rollback removes every created tree and nothing retries over partial
+// indexes.
+bool parallel_scan(const void* database, const std::vector<void*>& trees) {
+    if constexpr (ONDAS_WDB_BIT_INDEX) return false;
+    if (!database || trees.size() < 4096) return false;
+    static auto splitter = optional_symbol<EventSplitter>(
+        "_ZNK9SimBridge30WdbMultipleBucketEventDatabase29getEventBlockDatabaseIteratorERKSt6vectorIPNS_14WdbScalarBTreeESaIS3_EERS1_ISt10shared_ptrINS_22WdbIEventBlockIteratorEESaISA_EERS1_IS5_SaIS5_EE");
+    static auto header = optional_symbol<EventHeader>(
+        "_ZNK9SimBridge30WdbMultipleBucketEventDatabase22getEventDatabaseHeaderEv");
+    static auto task = optional_symbol<EventTask>(
+        "_ZN9SimBridge26ScanEventBlockTaskImprovedESt10shared_ptrINS_22WdbIEventBlockIteratorEESt6vectorIPNS_14WdbScalarBTreeESaIS5_EEj");
+    if (!splitter || !header || !task) return false;
+    // Qualification and planning failures keep the serial scan: they happen before any task and
+    // do not modify indexes.
+    std::vector<std::shared_ptr<SimBridge::WdbIEventBlockIterator>> iterators;
+    std::vector<std::vector<void*>> groups;
+    uint32_t capacity = 0;
+    try {
+        if (class_name(database) != "vtable for SimBridge::WdbMultipleBucketEventDatabase")
+            return false;
+        splitter(database, trees, iterators, groups);
+        if (iterators.size() != groups.size() || groups.empty()) return false;
+        // The qualified splitter returns a known, duplicate-free subset of the created trees.
+        // It legitimately omits unlogged empty trees; those stay in the owned set and read as
+        // Missing. Foreign or repeated pointers keep the serial scan before any task runs.
+        std::unordered_set<void*> expected(trees.begin(), trees.end());
+        if (expected.size() != trees.size()) return false;
+        std::unordered_set<void*> seen;
+        seen.reserve(trees.size());
+        for (const auto& group : groups)
+            for (auto tree : group) {
+                if (expected.count(tree) == 0) return false;
+                if (!seen.insert(tree).second) return false;
+            }
+        const void* block = header(database);
+        if (!block) return false;
+        // Qualified EventDatabase header field used by the same vendor task entry point.
+        std::memcpy(&capacity, static_cast<const char*>(block) + 0x40, sizeof capacity);
+        if (!capacity) return false;
+    } catch (...) {
+        return false;
+    }
+    size_t workers = std::min<size_t>({available_workers(), groups.size(), 16});
+    if (workers <= 1) return false;
+    std::mutex gate_mutex;
+    std::condition_variable gate_cv;
+    bool gate_open = false, abort = false;
+    std::atomic<bool> failed{false};
+    std::atomic<size_t> calls{0};
+    std::mutex error_mutex;
+    std::exception_ptr first_error;
+    std::vector<std::thread> threads;
+    auto worker = [&](size_t worker_index) {
+        {
+            std::unique_lock<std::mutex> lock(gate_mutex);
+            gate_cv.wait(lock, [&] { return gate_open; });
+            if (abort) return;
+        }
+        for (size_t index = worker_index; index < groups.size(); index += workers) {
+            if (failed.load(std::memory_order_relaxed)) return;
+            ++calls;
+            try {
+                task(iterators[index], groups[index], capacity);
+            } catch (...) {
+                {
+                    std::lock_guard<std::mutex> lock(error_mutex);
+                    if (!first_error) first_error = std::current_exception();
+                }
+                failed.store(true, std::memory_order_relaxed);
+                return;
+            }
+        }
+    };
+    std::exception_ptr start_error;
+    try {
+        threads.reserve(workers);
+        for (size_t index = 0; index < workers; ++index) {
+#ifdef ONDAS_WDB_TEST_THREAD_LIMIT
+            if (index == ONDAS_WDB_TEST_THREAD_LIMIT) {
+                ondas_wdb_test_worker_start(index);
+                throw std::runtime_error("controlled worker start failure");
+            }
+#endif
+            threads.emplace_back(worker, index);
+        }
+    } catch (...) {
+        start_error = std::current_exception();
+    }
+    {
+        std::lock_guard<std::mutex> lock(gate_mutex);
+        abort = start_error != nullptr;
+        gate_open = true;
+    }
+    gate_cv.notify_all();
+    for (auto& thread : threads) if (thread.joinable()) thread.join();
+    if (start_error) {
+        // The gate never opened, so no SDK task ran and the serial scan is safe.
+        if (calls.load(std::memory_order_relaxed) == 0) return false;
+        std::rethrow_exception(start_error);
+    }
+    if (first_error) std::rethrow_exception(first_error);
+    return true;
+}
+// Deletes adapter-created SDK history indexes. The ABI is already resolved and the bit scratch
+// vector is allocated at construction, so deleting one index allocates nothing and never looks up
+// a symbol; this keeps an IndexBatch rollback safe while an exception is already unwinding.
+struct HistoryCleanup {
     void* manager;
+    HistoryAbi& abi;
+    std::vector<AddressBitPair> scratch;
+    explicit HistoryCleanup(void* source)
+        : manager(source), abi(history_abi()), scratch(ONDAS_WDB_BIT_INDEX ? 1 : 0) {}
+    void operator()(const void* tree) {
+        if constexpr (ONDAS_WDB_BIT_INDEX) {
+            scratch[0] = {abi.address(tree), abi.bit(tree)};
+            abi.remove_bits(manager, scratch);
+        } else {
+            abi.remove_bytes(manager, abi.address(tree), 1);
+        }
+    }
+};
+struct IndexBatch {
+    HistoryCleanup& cleanup;
+    // Indexes this owner has already loaded successfully.
+    std::unordered_set<void*>& owned;
+    const void* database;
     std::vector<void*> created;
-    std::vector<AddressBitPair> rollback_bit = std::vector<AddressBitPair>(ONDAS_WDB_BIT_INDEX ? 1 : 0);
     bool committed = false;
-    long long (*address)(const void*) = symbol<long long(*)(const void*)>(
-        "_ZNK9SimBridge14WdbScalarBTree10getAddressEv");
-    void (*remove)(void*, long long, long long) = symbol<void(*)(void*, long long, long long)>(
-        "_ZN9SimBridge22WdbAddressBTreeManager16deleteByteBTreesExx");
-    unsigned (*bit)(const void*) = ONDAS_WDB_BIT_INDEX ? symbol<unsigned(*)(const void*)>(
-        "_ZNK9SimBridge14WdbScalarBTree14getBitPositionEv") : nullptr;
-    void (*remove_bits)(void*, const std::vector<AddressBitPair>&) = ONDAS_WDB_BIT_INDEX ?
-        symbol<void(*)(void*, const std::vector<AddressBitPair>&)>(
-            "_ZN9SimBridge22WdbAddressBTreeManager15deleteBitBTreesERKSt6vectorINS_17WdbAddressBitPairESaIS2_EE") : nullptr;
-    explicit IndexBatch(void* source) : manager(source) {}
+    IndexBatch(HistoryCleanup& prepared, std::unordered_set<void*>& owner_indexes,
+               const void* event_database)
+        : cleanup(prepared), owned(owner_indexes), database(event_database) {}
     void deduplicate() {
         std::sort(created.begin(), created.end(), std::less<void*>{});
         created.erase(std::unique(created.begin(), created.end()), created.end());
     }
     ~IndexBatch() {
-        // A failed scan must not leave a partial SDK index available for reuse.
+        // A failed scan must not leave a partial SDK index available for reuse. Rollback also
+        // forgets the deleted trees so park cannot delete them a second time. The cleanup object
+        // was constructed before any tree existed, so this path cannot allocate or throw.
         if (!committed) {
             deduplicate();
-            if constexpr (ONDAS_WDB_BIT_INDEX) {
-                for (auto tree : created) {
-                    rollback_bit[0] = {address(tree), bit(tree)};
-                    remove_bits(manager, rollback_bit);
-                }
-            } else {
-                for (auto tree : created) remove(manager, address(tree), 1);
+            for (auto tree : created) {
+                owned.erase(tree);
+                cleanup(tree);
             }
         }
     }
@@ -170,17 +344,17 @@ struct IndexBatch {
             pairs.reserve(size_t(length) * indexes_per_byte);
             for (unsigned byte = 0; byte < length; ++byte)
                 for (unsigned bit = 0; bit < 8; ++bit) pairs.push_back({address + byte, bit});
-            create(manager, pairs, trees, created);
+            create(cleanup.manager, pairs, trees, created);
         } else {
             static auto create = symbol<void(*)(void*, long long, long long, std::vector<void*>&, std::vector<void*>&)>(
                 "_ZN9SimBridge22WdbAddressBTreeManager21getOrCreateByteBTreesExxRSt6vectorIPNS_14WdbScalarBTreeESaIS3_EES6_");
-            create(manager, address, length, trees, created);
+            create(cleanup.manager, address, length, trees, created);
         }
         if (trees.size() != size_t(length) * indexes_per_byte)
             throw std::runtime_error("native index width disagrees with extent");
         if constexpr (ONDAS_WDB_BIT_INDEX) {
             for (size_t i = 0; i < trees.size(); ++i)
-                if (this->address(trees[i]) != address + static_cast<long long>(i / 8) || bit(trees[i]) != i % 8)
+                if (cleanup.abi.address(trees[i]) != address + static_cast<long long>(i / 8) || cleanup.abi.bit(trees[i]) != i % 8)
                     throw std::runtime_error("native bit index order disagrees with extent");
         }
     }
@@ -188,7 +362,9 @@ struct IndexBatch {
         deduplicate();
         static auto scan = symbol<void(*)(void*, const std::vector<void*>&, void*)>(
             "_ZN9SimBridge22WdbAddressBTreeManager15scanWdbDatabaseERKSt6vectorIPNS_14WdbScalarBTreeESaIS3_EEPN4ISIM10IGuiStatusE");
-        if (!created.empty()) scan(manager, created, nullptr);
+        if (!created.empty() && !parallel_scan(database, created))
+            scan(cleanup.manager, created, nullptr);
+        owned.insert(created.begin(), created.end());
         committed = true;
     }
 };
@@ -259,6 +435,10 @@ struct Reader {
     const void* common = nullptr;
     void* index_manager = nullptr;
     std::unique_ptr<Traversal> traversal;
+    // Adapter-created SDK history indexes of this owner. A clean park releases all of them
+    // before the owner waits for another logical open; destruction releases whatever a failed
+    // session left behind.
+    std::unordered_set<void*> histories;
     explicit Reader(const char* path) : native(static_cast<SimBridge::WdbOpenMode>(1), true, path, path, {}, 0) {
         auto last = native.getLatestTime();
         if (last < 0 || last == std::numeric_limits<long long>::max())
@@ -297,21 +477,30 @@ struct Reader {
         }
         return info;
     }
-    bool raw(const Selected& selected, long long time, std::vector<unsigned char>& bytes,
-             long long& tick, std::vector<unsigned char>* known = nullptr) const {
+    // Stored byte values at `time` for the given index trees, with the adapter's
+    // validation of extent, chronology and record kind. No interpretation of the
+    // declaration is applied here.
+    TimeByteValues events(const std::vector<void*>& trees, long long time) const {
         static auto get = symbol<void(*)(const void*, long long, const std::vector<void*>&, TimeByteValues&)>(
             "_ZNK9SimBridge15WdbCommonReader13getValueEventExRKSt6vectorIPNS_14WdbScalarBTreeESaIS3_EERNS_17WdbTimeByteValuesE");
         TimeByteValues state;
-        get(common, time, selected.trees, state);
-        if (state.bytes.size() != selected.trees.size() || state.tick < 0 || state.tick > time)
+        get(common, time, trees, state);
+        if (state.bytes.size() != trees.size() || state.tick < 0 || state.tick > time)
             throw std::runtime_error("invalid native point extent or time");
+        for (const auto& byte : state.bytes)
+            if (byte.kind != 0 && byte.kind != 1)
+                throw std::runtime_error("native point returned a non-value record");
+        return state;
+    }
+    bool raw(const Selected& selected, long long time, std::vector<unsigned char>& bytes,
+             long long& tick, std::vector<unsigned char>* known = nullptr) const {
+        const auto state = events(selected.trees, time);
+        tick = state.tick;
         bytes.assign(selected.declaration->length, 0);
         if (known) known->assign(bytes.size(), 0);
         bool complete = true;
         for (size_t i = 0; i < state.bytes.size(); ++i) {
             const auto byte = state.bytes[i];
-            if (byte.kind != 0 && byte.kind != 1)
-                throw std::runtime_error("native point returned a non-value record");
             const auto offset = i / indexes_per_byte;
             const unsigned mask = ONDAS_WDB_BIT_INDEX ? 1u << (i % 8) : 0xff;
             if constexpr (ONDAS_WDB_BIT_INDEX) {
@@ -325,7 +514,6 @@ struct Reader {
             if (known && byte.kind == 1) (*known)[offset] |= mask;
             complete &= byte.kind == 1;
         }
-        tick = state.tick;
         return complete;
     }
     void decode(const Declaration& d, const unsigned char* bytes, std::vector<unsigned char>& output) const {
@@ -352,6 +540,9 @@ struct Reader {
             return;
         }
         if (d.encoding != 1) throw Unsupported("selected native value layout is not qualified");
+        if constexpr (!ONDAS_WDB_BIT_INDEX) {
+            if (d.two_plane) { decode_two_plane(d, bytes, output); return; }
+        }
         if (d.ordinal_enum || d.integer) {
             if (d.offset % 8 || d.width > (d.integer ? 64u : 32u))
                 throw Unsupported("unqualified native integral offset or width");
@@ -393,6 +584,80 @@ struct Reader {
             if (supported.find(bit) == std::string_view::npos)
                 throw Unsupported("native value is not a supported logic representation");
         }
+    }
+    // Two-plane packed logic: chunk of 32 logical bits holds one aval word and one bval
+    // word, least significant chunk first. Emit the same MSB-first 0/1/x/z text as the
+    // vendor formatter without a virtual call per logical bit. Bits above the declared
+    // width inside the last chunk are padding and are never read.
+    void decode_two_plane(const Declaration& d, const unsigned char* bytes,
+                          std::vector<unsigned char>& output) const {
+        output.resize(d.width);
+        const auto* storage = bytes + d.offset / 8;
+        for (uint32_t chunk = 0; chunk * 32 < d.width; ++chunk) {
+            uint32_t aval = 0, bval = 0;
+            // The extent carries no alignment guarantee; copy instead of casting.
+            std::memcpy(&aval, storage + chunk * 8u, 4);
+            std::memcpy(&bval, storage + chunk * 8u + 4, 4);
+            const uint32_t count = std::min<uint32_t>(32, d.width - chunk * 32);
+            for (uint32_t position = 0; position < count; ++position) {
+                const uint32_t mask = 1u << position;
+                const bool avalue = (aval & mask) != 0;
+                const bool bvalue = (bval & mask) != 0;
+                output[d.width - 1 - (chunk * 32 + position)] =
+                    avalue ? (bvalue ? 'x' : '1') : (bvalue ? 'z' : '0');
+            }
+        }
+    }
+    // Bit projection changed_at without decoding the declaration at every predecessor.
+    // Walks only the stored bytes that carry the projected aval/bval bits and compares
+    // the masked physical bits. Returns false when the previous full-extent loop must
+    // run instead: the extent is not completely recorded from tick zero, an earlier
+    // record is missing, or the projection does not fit the selected extent.
+    bool projection_changed_at(const Selected& selected, uint32_t lsb, uint32_t width,
+                               long long& at, int* changed) const {
+        const uint64_t first = lsb, last = uint64_t(lsb) + width - 1;
+        const size_t byte_first = static_cast<size_t>(first / 32) * 8;
+        const size_t byte_last = static_cast<size_t>(last / 32) * 8 + 7;
+        if (byte_last >= selected.trees.size()) return false;
+        const size_t span = byte_last - byte_first + 1;
+        std::vector<unsigned char> mask(span, 0);
+        for (uint64_t bit = first; bit <= last; ++bit) {
+            const uint64_t aval = (bit / 32) * 64 + (bit % 32);
+            for (const uint64_t plane : {aval, aval + 32})
+                mask[static_cast<size_t>(plane / 8) - byte_first] |= static_cast<unsigned char>(1u << (plane % 8));
+        }
+        const std::vector<void*> trees(selected.trees.begin() + static_cast<long>(byte_first),
+                                       selected.trees.begin() + static_cast<long>(byte_last) + 1);
+        // The full-extent loop stops without a change when an earlier extent is partially
+        // recorded. That branch is reproduced here only when every byte is recorded from
+        // tick zero, where the recorded set can no longer shrink at later ticks.
+        const auto origin = events(selected.trees, 0);
+        for (const auto& byte : origin.bytes)
+            if (byte.kind != 1) return false;
+        const auto reference = events(trees, at);
+        for (const auto& byte : reference.bytes)
+            if (byte.kind != 1) return false;
+        long long current = at;
+        while (current > 0) {
+            const auto previous = events(trees, current - 1);
+            if (previous.tick >= current)
+                throw std::runtime_error("native point predecessor did not move backwards");
+            bool complete = true, equal = true;
+            for (size_t index = 0; index < span && complete; ++index) {
+                const auto& recorded = previous.bytes[index];
+                if (recorded.kind != 1) { complete = false; break; }
+                if ((recorded.value & mask[index]) !=
+                    (reference.bytes[index].value & mask[index]))
+                    equal = false;
+            }
+            if (!complete) return false;
+            // The returned tick is the last predecessor that still matched, which is the
+            // tick that established the observed value, not the sampled tick.
+            if (!equal) { at = current; *changed = 1; return true; }
+            current = previous.tick;
+        }
+        at = current;
+        return true;
     }
 };
 
@@ -517,6 +782,15 @@ void describe_type(Reader& reader, Declaration& d) {
             d.msb = top.left; d.lsb = top.right; d.has_range = true;
         }
     }
+    // Qualified packed-logic storage: one 32-bit aval word and one 32-bit bval word per
+    // chunk of 32 logical bits, least significant chunk first, no padding inside a chunk
+    // beyond the declared width. Established by bit-level qualification of the installed
+    // reader for this layout only; every other layout keeps the vendor formatter.
+    d.two_plane = d.encoding == 1 && !d.ordinal_enum && !d.integer &&
+                  native_class == "vtable for SimBridge::ArrayTypeObj" &&
+                  packing == 2 && d.packing == 1 && d.grouped_bits && d.has_range &&
+                  d.domain == 2 && d.offset == 0 && d.msb > d.lsb && word(owner, 0x30) == 1 &&
+                  static_cast<uint64_t>(d.length) == (static_cast<uint64_t>(d.width) + 31) / 32 * 8;
     if (d.ordinal_enum) {
         auto begin = static_cast<const std::string*>(pointer(owner, 0x40));
         auto end = static_cast<const std::string*>(pointer(owner, 0x48));
@@ -569,6 +843,7 @@ void describe(Reader& reader, Declaration& declaration) {
     catch (const LayoutUnsupported&) {
         // Unpacked members remain accessible when only the aggregate value
         // exceeds the value-layout qualifications.
+        declaration.two_plane = false;
         declaration.qualified = declaration.packing == 2;
         declaration.encoding = 0;
         declaration.width = 0;
@@ -578,6 +853,32 @@ void describe(Reader& reader, Declaration& declaration) {
     }
 }
 
+// Runtime guards shared by a native open and an idle-owner hit: the selected data
+// directory and the loaded reader library must still be the build-time selection.
+void validate_runtime() {
+    auto data = getenv("RDI_DATADIR");
+    std::unique_ptr<char, decltype(&free)> resolved(data ? realpath(data, nullptr) : nullptr, &free);
+    if (!resolved || std::strcmp(resolved.get(), ONDAS_WDB_DATA))
+        throw Unsupported("RDI_DATADIR must select the build-time reader data directory");
+    selected_library("_ZN9SimBridge10DataReader13getDataObjMgrEv", ONDAS_WDB_READER);
+    selected_library("_ZNK9SimBridge15WdbCommonReader13getValueEventExRKSt6vectorIPNS_14WdbScalarBTreeESaIS3_EERNS_17WdbTimeByteValuesE", ONDAS_WDB_KERNEL);
+}
+// Drops traversal state before deleting the history indexes that its cursors can reference.
+void release_histories(Reader& reader) {
+    reader.traversal.reset();
+    if (reader.histories.empty()) return;
+    // All symbols are resolved before the first deletion, so a missing symbol leaves no partially
+    // deleted set behind.
+    HistoryCleanup cleanup(reader.index_manager);
+    while (!reader.histories.empty()) {
+        auto tree = *reader.histories.begin();
+        reader.histories.erase(reader.histories.begin());
+        cleanup(tree);
+    }
+    // Release the adapter's tracking capacity after all recorded indexes are gone. This says
+    // nothing about SDK or allocator memory, which the resource observations report separately.
+    std::unordered_set<void*>().swap(reader.histories);
+}
 void import(Reader& reader) {
     auto manager = reader.native.getDataObjMgr();
     reader.conversion = reinterpret_cast<const SimBridge::DataConversion*>(static_cast<const char*>(manager) + 0x1c0);
@@ -743,12 +1044,7 @@ template<class F> int protect(char* error, size_t capacity, F run) {
 extern "C" int ondas_wdb_open(const char* path, int metadata_only, void** out, char* error, size_t cap) {
     *out = nullptr;
     return protect(error, cap, [&] {
-        auto data = getenv("RDI_DATADIR");
-        std::unique_ptr<char, decltype(&free)> resolved(data ? realpath(data, nullptr) : nullptr, &free);
-        if (!resolved || std::strcmp(resolved.get(), ONDAS_WDB_DATA))
-            throw Unsupported("RDI_DATADIR must select the build-time reader data directory");
-        selected_library("_ZN9SimBridge10DataReader13getDataObjMgrEv", ONDAS_WDB_READER);
-        selected_library("_ZNK9SimBridge15WdbCommonReader13getValueEventExRKSt6vectorIPNS_14WdbScalarBTreeESaIS3_EERNS_17WdbTimeByteValuesE", ONDAS_WDB_KERNEL);
+        validate_runtime();
         auto reader = std::make_unique<Reader>(path);
         if (!metadata_only) import(*reader);
         else reader->native.traverseAllObjects([&](const SimBridge::IObject* object) {
@@ -757,6 +1053,35 @@ extern "C" int ondas_wdb_open(const char* path, int metadata_only, void** out, c
         }, true, nullptr);
         *out = reader.release(); return 0;
     });
+}
+// Validates the runtime selection without creating a reader. Used on a retained-owner hit.
+extern "C" int ondas_wdb_validate_runtime(char* error, size_t cap) {
+    return protect(error, cap, [&] { validate_runtime(); return 0; });
+}
+// Deletes every adapter-created SDK history index of this owner and clears its traversal.
+extern "C" int ondas_wdb_release_indexes(void* opaque, char* error, size_t cap) {
+    return protect(error, cap, [&] {
+        release_histories(*static_cast<Reader*>(opaque));
+        return 0;
+    });
+}
+// Releases the manager's temporary backing storage after every history index is gone. Some
+// reader kernels do not export the reset entry point; then reuse is refused instead of turning a
+// user query into an error.
+extern "C" int ondas_wdb_release_storage(void* opaque, char* error, size_t cap) {
+    static void (*reset)(void*) = reinterpret_cast<void (*)(void*)>(
+        dlsym(RTLD_DEFAULT, "_ZN9SimBridge22WdbAddressBTreeManager5resetEv"));
+    if (!reset) return 1;
+    if (!static_cast<Reader*>(opaque)->index_manager) return 1;
+    return protect(error, cap, [&] {
+        reset(static_cast<Reader*>(opaque)->index_manager);
+        return 0;
+    });
+}
+// Number of adapter-created SDK history indexes this owner still tracks. Diagnostic only: the
+// released contract is that a waveform drop leaves none behind.
+extern "C" size_t ondas_wdb_index_count(void* opaque) {
+    return static_cast<Reader*>(opaque)->histories.size();
 }
 extern "C" void ondas_wdb_close(void* opaque) { delete static_cast<Reader*>(opaque); }
 extern "C" void ondas_wdb_metadata(void* opaque, ondas_wdb_meta* out) { *out = static_cast<Reader*>(opaque)->meta; }
@@ -784,11 +1109,17 @@ static int begin(void* opaque, const uint64_t* ids, size_t count, uint64_t start
     auto& reader = *static_cast<Reader*>(opaque);
     reader.traversal.reset();
     return protect(error, cap, [&] {
+        // Cleanup and its rollback scratch are prepared before any native tree exists, so a
+        // missing ABI symbol fails here instead of during an unwinding rollback. The batch is
+        // declared before the traversal so an exception destroys cursors before the indexes they
+        // reference.
+        HistoryCleanup cleanup(reader.index_manager);
+        const void* database = reader.common ? pointer(reader.common, 8) : nullptr;
+        IndexBatch batch(cleanup, reader.histories, database);
         auto traversal = std::make_unique<Traversal>();
         traversal->end = std::min(end, reader.meta.last);
         traversal->point_only = point_only;
         if (point_only) traversal->point_positions.reserve(count);
-        IndexBatch batch(reader.index_manager);
         for (size_t i = 0; i < count; ++i) {
             auto& d = reader.declarations.at(ids[i]);
             if (d.scope || d.id != ids[i]) throw std::runtime_error("invalid native history identity");
@@ -870,7 +1201,12 @@ extern "C" int ondas_wdb_sample_bits(void* opaque, uint64_t id, uint64_t time, u
         reader.decode(d, raw.data(), decoded);
         const auto first = d.width - lsb - width;
         value.assign(decoded.begin() + first, decoded.begin() + first + width);
-        while (at > 0) {
+        bool walked = false;
+        if constexpr (!ONDAS_WDB_BIT_INDEX) {
+            if (d.two_plane && width < d.width)
+                walked = reader.projection_changed_at(selected, lsb, width, at, changed);
+        }
+        while (!walked && at > 0) {
             long long before = 0;
             if (!reader.raw(selected, at - 1, raw, before)) break;
             if (before >= at) throw std::runtime_error("native point predecessor did not move backwards");

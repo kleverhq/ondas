@@ -12,6 +12,20 @@ ROOT = Path(__file__).resolve().parents[2]
 SOURCE = r"""
 fn main() {
     let path = std::env::args_os().nth(1).expect("WDB path");
+    if std::env::args().nth(2).as_deref() == Some("guard-hit") {
+        // A clean lifetime leaves the idle owner; the next logical open must still run the
+        // runtime selection guards instead of trusting the retained native reader.
+        drop(ondas::open_with(&path, "wdb-lib").unwrap());
+        // SAFETY: this check is a single-threaded standalone consumer and owns its environment.
+        unsafe { std::env::set_var("RDI_DATADIR", std::env::args_os().nth(3).expect("wrong data path")) };
+        let error = ondas::open_with(&path, "wdb-lib")
+            .err()
+            .expect("wrong data selection on a retained owner");
+        assert!(matches!(&error, ondas::Error::UnsupportedFeature { message, .. }
+            if message.contains("RDI_DATADIR")));
+        println!("WDB data selection rejected on a retained owner");
+        return;
+    }
     if std::env::args().nth(2).as_deref() == Some("guard") {
         let error = ondas::open_with(&path, "wdb-lib").err().expect("wrong data selection");
         assert!(matches!(&error, ondas::Error::UnsupportedFeature { message, .. }
@@ -60,11 +74,15 @@ def main():
         env["CARGO_TARGET_DIR"] = str(crate / "target")
         subprocess.run(["cargo", "build", "--offline", "--manifest-path", str(crate / "Cargo.toml")],
                        env=env, check=True)
-        # Supply the selected SDK explicitly; inherit no Cargo-added loader paths.
+        # Supply the selected SDK explicitly; inherit no Cargo-added loader paths. An isolated
+        # TMPDIR makes the vendor backing file of this process observable after a normal exit.
         env["LD_LIBRARY_PATH"] = str(sdk / "lib/lnx64.o")
         env["RDI_DATADIR"] = str(sdk / "data")
         env.pop("XILINX_VIVADO", None)
         env.pop("XILINX_VIVADO_HOMES", None)
+        # Inside the outer temporary directory, so this scope is removed with it.
+        temp_scope = Path(tempfile.mkdtemp(prefix="wdb-consumer-tmp-", dir=crate))
+        env["TMPDIR"] = str(temp_scope)
         result = subprocess.run(
             [str(crate / "target/debug/ondas-wdb-consumer"), str(fixture)],
             env=env, cwd=crate, capture_output=True, text=True, timeout=30,
@@ -73,6 +91,12 @@ def main():
             print(result.stderr, end="")
         result.check_returncode()
         assert result.stdout == "compatible WDB queries passed\n", result.stdout
+        # A normal single-thread exit must release a parked reader exactly like a reader that is
+        # dropped inside the process: no vendor backing file is left behind.
+        leftovers = sorted(entry.name for entry in temp_scope.iterdir())
+        assert not leftovers, f"normal exit left vendor temporary files behind: {leftovers}"
+        # Keep this scope for the remaining subprocesses, which still inherit TMPDIR. The outer
+        # temporary directory removes it after all of them finish.
         env["RDI_DATADIR"] = str(crate / "absent-data")
         newer = (ROOT / "fixtures/wdb/wdb0002-reg-test-behav/waveform.wdb").resolve(strict=True)
         guard = subprocess.run(
@@ -81,6 +105,16 @@ def main():
         )
         guard.check_returncode()
         assert guard.stdout == "WDB data selection rejected\n", guard.stdout
+        env["RDI_DATADIR"] = str(sdk / "data")
+        retained = subprocess.run(
+            [str(crate / "target/debug/ondas-wdb-consumer"), str(fixture), "guard-hit",
+             str(crate / "absent-data")],
+            env=env, cwd=crate, capture_output=True, text=True, timeout=30,
+        )
+        if retained.returncode:
+            print(retained.stderr, end="")
+        retained.check_returncode()
+        assert retained.stdout == "WDB data selection rejected on a retained owner\n", retained.stdout
         print("Standalone WDB consumer read compatible observations and closed successfully.")
 
 

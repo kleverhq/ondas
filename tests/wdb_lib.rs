@@ -335,6 +335,172 @@ fn wdb_point_projections_keep_normalized_times_after_seek_and_stop() {
     assert_eq!(*changed_at, Some(t(64)));
 }
 
+/// Checks bit projections of one packed logic array against the streaming history of the same
+/// declaration: the projected value is a substring of the full-width value, and `changed_at` is
+/// the start of the run of that projected value, or `None` when the run reaches the first
+/// recorded state. Counts cases where a known projected change is strictly older than the base
+/// change at the same sample, which is what distinguishes the run start from the sampled tick.
+fn packed_projection_against_streaming(
+    wave: &mut ondas::Waveform,
+    base: ondas::Signal,
+    slices: &[(u32, u32)],
+    ticks: &[u64],
+    older: &mut usize,
+) -> usize {
+    assert_eq!(base.width(), Some(1024), "published corpus width");
+    let trace = wave
+        .traces(&[base], TimeRange::all())
+        .unwrap()
+        .pop()
+        .expect("one traced signal");
+    let text = |value| match value {
+        ondas::ValueRef::Bits(bits) => bits.to_string(),
+        _ => panic!("expected a bit value"),
+    };
+    let mut states: Vec<(Option<Time>, String)> = Vec::new();
+    if let Some(initial) = trace.initial() {
+        states.push((initial.changed_at(), text(initial.value())));
+    }
+    for change in trace.changes() {
+        states.push((Some(change.time()), text(change.value())));
+    }
+    assert!(states.len() > 100, "expected a recorded history");
+    // Run start of the value at `start..start + width` in the streaming history.
+    let run_start = |start: usize, width: usize, time: Time| -> Option<Time> {
+        let project = |text: &str| text[start..start + width].to_string();
+        let index = states
+            .iter()
+            .rposition(|(tick, _)| tick.is_none_or(|tick| tick <= time))
+            .expect("state at or before the sample");
+        let value = project(&states[index].1);
+        let mut run = index;
+        while run > 0 && project(&states[run - 1].1) == value {
+            run -= 1;
+        }
+        (run > 0).then(|| states[run].0.unwrap())
+    };
+    let mut checked = 0;
+    for &(lsb, width) in slices {
+        let slice = base
+            .slice(lsb + width - 1, lsb)
+            .expect("projection inside the vector");
+        let start = 1024 - lsb as usize - width as usize;
+        for &tick in ticks {
+            let time = Time::from_ticks(tick);
+            let expected_at = run_start(start, width as usize, time);
+            let base_at = run_start(0, 1024, time);
+            let mut samples = wave.samples(&[base, slice], time).unwrap().into_iter();
+            let base_sample = samples.next().expect("base sample");
+            let slice_sample = samples.next().expect("slice sample");
+            let Sample::Value {
+                value: Value::Bits(base_bits),
+                ..
+            } = &base_sample
+            else {
+                panic!("expected a recorded base value")
+            };
+            let Sample::Value {
+                value: Value::Bits(slice_bits),
+                changed_at,
+                ..
+            } = &slice_sample
+            else {
+                panic!("expected a recorded slice value")
+            };
+            let base_text = base_bits.as_ref().to_string();
+            assert_eq!(base_text.len(), 1024, "published base width");
+            assert_eq!(
+                slice_bits.as_ref().to_string(),
+                base_text[start..start + width as usize],
+                "slice {lsb}:{lsb}+{width} at {tick}"
+            );
+            assert_eq!(
+                *changed_at, expected_at,
+                "slice {lsb}:{lsb}+{width} changed_at at {tick}"
+            );
+            if let (Some(slice_at), Some(base_at)) = (expected_at, base_at)
+                && slice_at < base_at
+            {
+                *older += 1;
+            }
+            checked += 1;
+        }
+    }
+    checked
+}
+
+#[test]
+#[ignore = "requires the selected WDB reader and installed OPB fixtures"]
+fn wdb_packed_logic_slices_match_streaming_history() {
+    // Qualified packed logic arrays decode from their two stored planes and prove a slice's
+    // changed_at from the stored bits the slice depends on. Expected values and run starts come
+    // from the streaming history of the base declaration, not from the point walk.
+    let path = fixture_path("wdb/wdb0300-opb-s");
+    let Some(mut wave) = wdb_compatibility::open(ondas::open_with(&path, "wdb-lib"), &path) else {
+        return;
+    };
+    // `low_active1024` changes only its least significant bit, so slices are either as active
+    // as the base or never change. `payload` changes its whole base every step and only its
+    // least significant bit once every 16 steps, so its bit 0 has a known change that is
+    // strictly older than the base change at the same sample.
+    // One declaration name contains a dot, so address both by hierarchy components.
+    let slow = wave
+        .hierarchy()
+        .signal_path(&ondas::HierarchyPath::from_components([
+            "tb_opb",
+            "low_active1024",
+            "word[0].data",
+            "q",
+        ]))
+        .expect("published corpus variable");
+    let payload = wave
+        .hierarchy()
+        .signal_path(&ondas::HierarchyPath::from_components([
+            "tb_opb",
+            "payload",
+            "word[0].data",
+            "q",
+        ]))
+        .expect("published corpus variable");
+    let ticks = [0_u64, 1_000, 170_000, 5_000_000, 49_999_000, 95_000_000];
+    let mut older = 0;
+    let checked_slow = packed_projection_against_streaming(
+        &mut wave,
+        slow,
+        &[
+            (0, 1024),
+            (0, 1),
+            (1, 1),
+            (2, 6),
+            (0, 9),
+            (30, 4),
+            (64, 64),
+            (1023, 1),
+            (960, 64),
+        ],
+        &ticks,
+        &mut older,
+    );
+    let checked_payload = packed_projection_against_streaming(
+        &mut wave,
+        payload,
+        &[(0, 1024), (0, 1), (1, 1), (1, 8), (0, 16), (64, 64)],
+        &ticks,
+        &mut older,
+    );
+    assert!(
+        checked_slow > 0 && checked_payload > 0,
+        "no projection was checked"
+    );
+    // Sensitivity to the changed_at defect: these cases have a known projected change strictly
+    // older than the base change at the same sample, so returning the sampled tick instead of
+    // the run start would fail the changed_at assertion above.
+    assert!(
+        older > 0,
+        "no known projected change older than the base change was covered"
+    );
+}
+
 #[test]
 #[ignore = "requires the selected WDB reader and installed enum fixture"]
 fn wdb_repeated_source_points_seed_ranges_without_changing_projection_times() {
@@ -879,4 +1045,215 @@ fn wdb_same_tick_byte_updates_keep_final_values_and_candidate_ticks() {
         )
         .unwrap();
     assert!(candidates.contains(&5_560_000), "{candidates:?}");
+}
+
+#[test]
+#[ignore = "requires the selected reader and installed WDB fixtures; run just conformance-wdb"]
+fn wdb_reused_owner_reopen_matches_fresh_owner_at_other_times_and_selections() {
+    use ondas::HierarchyPath;
+    use std::path::Path;
+
+    fn render(sample: Sample) -> String {
+        match sample {
+            Sample::Missing { .. } => "missing".into(),
+            Sample::Value {
+                value: Value::Bits(bits),
+                changed_at,
+                ..
+            } => format!("{}@{:?}", bits.as_ref(), changed_at.map(Time::ticks)),
+            Sample::Value { changed_at, .. } => format!("other@{:?}", changed_at.map(Time::ticks)),
+            other => format!("{other:?}"),
+        }
+    }
+    type Query<'a> = (&'a str, u64);
+    type SliceQuery<'a> = (&'a str, u32, u32, u64);
+    fn observe(path: &Path, queries: &[Query<'_>], slices: &[SliceQuery<'_>]) -> Vec<String> {
+        let mut wave = ondas::open_with(path, "wdb-lib").unwrap();
+        let mut rows = Vec::new();
+        for (name, tick) in queries {
+            let signal = wave.hierarchy().signal(name).unwrap();
+            rows.push(format!(
+                "{name}@{tick}={}",
+                render(wave.sample(signal, Time::from_ticks(*tick)).unwrap())
+            ));
+        }
+        for (name, msb, lsb, tick) in slices {
+            let base = wave
+                .hierarchy()
+                .signal_path(&HierarchyPath::parse(name).unwrap())
+                .unwrap();
+            let signal = base.slice(*msb, *lsb).unwrap();
+            rows.push(format!(
+                "{name}[{msb}:{lsb}]@{tick}={}",
+                render(wave.sample(signal, Time::from_ticks(*tick)).unwrap())
+            ));
+        }
+        rows
+    }
+
+    let root = std::env::temp_dir().join(format!(
+        "ondas-wdb-reopen-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(root.clone());
+
+    for fixture in ["wdb/wdb0185-adders-io", "wdb/wdb0311-partial-logging"] {
+        let source = fixture_path(fixture);
+        let reused = root.join("reused.wdb");
+        let fresh = root.join("fresh.wdb");
+        std::fs::copy(&source, &reused).unwrap();
+        std::fs::copy(&source, &fresh).unwrap();
+        let (cold_queries, reused_queries, reused_slices): (
+            Vec<Query>,
+            Vec<Query>,
+            Vec<SliceQuery>,
+        ) = if fixture.contains("adders") {
+            (
+                vec![
+                    ("apatb_adders_io_top.in1", 0),
+                    ("apatb_adders_io_top.in1", 120_000),
+                ],
+                vec![
+                    ("apatb_adders_io_top.in1", 40_000),
+                    ("apatb_adders_io_top.in1", 300_000),
+                    ("apatb_adders_io_top.in2", 120_000),
+                ],
+                vec![
+                    ("apatb_adders_io_top.in1", 15, 0, 200_000),
+                    ("apatb_adders_io_top.in1", 31, 16, 80_000),
+                ],
+            )
+        } else {
+            (
+                vec![("top.recorded", 0), ("top.hidden", 9)],
+                vec![
+                    ("top.recorded", 1),
+                    ("top.recorded", 4),
+                    ("top.recorded", 20),
+                    ("top.hidden", 0),
+                    ("top.hidden", 20),
+                    ("top.unlogged", 9),
+                ],
+                vec![],
+            )
+        };
+        std::mem::drop(observe(&reused, &cold_queries, &[]));
+        let reused_rows = observe(&reused, &reused_queries, &reused_slices);
+        let fresh_rows = observe(&fresh, &reused_queries, &reused_slices);
+        assert_eq!(
+            reused_rows, fresh_rows,
+            "{fixture}: reused-owner reopen differs from a fresh owner"
+        );
+    }
+
+    // A stale signal from the cold logical open must not observe the reopened owner.
+    let source = fixture_path("wdb/wdb0185-adders-io");
+    let path = root.join("stale.wdb");
+    std::fs::copy(&source, &path).unwrap();
+    let stale = {
+        let wave = ondas::open_with(&path, "wdb-lib").unwrap();
+        wave.hierarchy().signal("apatb_adders_io_top.in1").unwrap()
+    };
+    let mut wave = ondas::open_with(&path, "wdb-lib").unwrap();
+    assert!(matches!(
+        wave.sample(stale, Time::from_ticks(0)),
+        Err(Error::InvalidSignal { .. })
+    ));
+}
+
+#[test]
+#[ignore = "requires the selected reader and installed WDB fixtures; run just conformance-wdb"]
+fn wdb_session_sequence_matches_the_published_oracle() {
+    use ondas::Sample;
+    let path = fixture_path("wdb/wdb0311-partial-logging");
+    // The fixture window starts at tick 1. Ticks are the published oracle ticks; tick 0 is
+    // outside that window and stays covered by the trace/composition regression instead.
+    const WINDOW: [u64; 5] = [1, 4, 9, 15, 20];
+    const RECORDED: [(u64, &str, Option<u64>); 5] = [
+        (1, "0", None),
+        (4, "1", Some(4)),
+        (9, "1", Some(4)),
+        (15, "1", Some(4)),
+        (20, "1", Some(4)),
+    ];
+    fn check_recorded(wave: &mut ondas::Waveform) {
+        let recorded = wave.hierarchy().signal("top.recorded").unwrap();
+        for (tick, expected, changed) in RECORDED {
+            match wave.sample(recorded, Time::from_ticks(tick)).unwrap() {
+                Sample::Value {
+                    value: Value::Bits(bits),
+                    changed_at,
+                    ..
+                } => {
+                    assert_eq!(bits.as_ref().to_string(), expected, "recorded at {tick}");
+                    assert_eq!(
+                        changed_at.map(Time::ticks),
+                        changed,
+                        "recorded changed_at at {tick}"
+                    );
+                    println!(
+                        "CHECK,signal=top.recorded,tick={tick},value={expected},changed_at={changed:?}"
+                    );
+                }
+                other => panic!("recorded at {tick}: {other:?}"),
+            }
+        }
+    }
+    fn check_missing(wave: &mut ondas::Waveform, name: &str) {
+        let signal = wave.hierarchy().signal(name).unwrap();
+        for tick in WINDOW {
+            assert!(
+                matches!(
+                    wave.sample(signal, Time::from_ticks(tick)).unwrap(),
+                    Sample::Missing { .. }
+                ),
+                "{name} at {tick} is not Missing"
+            );
+            println!("CHECK,signal={name},tick={tick},missing");
+        }
+    }
+    // Each call is a separate logical session: it opens the unchanged file, selects only the
+    // listed bases, checks them against the published oracle, and drops (parks) the waveform.
+    fn session(path: &std::path::Path, phase: &str, names: &[&str]) {
+        println!("SESSION,phase={phase},bases={}", names.join("|"));
+        let mut wave = ondas::open_with(path, "wdb-lib").unwrap();
+        for name in names {
+            match *name {
+                "top.recorded" => check_recorded(&mut wave),
+                "top.hidden" | "top.unlogged" => check_missing(&mut wave, name),
+                other => panic!("unexpected fixture path {other}"),
+            }
+        }
+    }
+    const FULL: [&str; 3] = ["top.recorded", "top.hidden", "top.unlogged"];
+    const SUBSET: [&str; 1] = ["top.recorded"];
+    const DISJOINT: [&str; 2] = ["top.hidden", "top.unlogged"];
+    // Session 1: the compatibility-guarded first open with the full read set.
+    {
+        let mut wave = match wdb_compatibility::open(ondas::open(&path), &path) {
+            Some(wave) => wave,
+            None => return,
+        };
+        println!("SESSION,phase=full-first,bases={}", FULL.join("|"));
+        check_recorded(&mut wave);
+        check_missing(&mut wave, "top.hidden");
+        check_missing(&mut wave, "top.unlogged");
+    }
+    // Session 2: strict subset of the full read set.
+    session(&path, "subset", &SUBSET);
+    // Session 3: disjoint from the subset.
+    session(&path, "disjoint", &DISJOINT);
+    // Session 4: the original full read set again.
+    session(&path, "original-full", &FULL);
 }
