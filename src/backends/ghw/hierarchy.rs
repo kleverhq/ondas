@@ -35,7 +35,11 @@ pub(super) struct Declarations {
 /// referenced, so blocks are allocated on first use. The map stays for ID
 /// spaces whose block index alone would be large.
 enum ScalarTable {
-    Blocks(Vec<Option<Vec<usize>>>),
+    Blocks {
+        blocks: Vec<Option<Vec<usize>>>,
+        used: usize,
+        allocated: usize,
+    },
     Sparse(HashMap<u32, usize>),
 }
 
@@ -49,6 +53,13 @@ const SCALAR_BLOCK_LEN: usize = 1 << SCALAR_BLOCK_BITS;
 // 1024 declared IDs. Larger declared ID spaces keep the sparse map.
 const SCALAR_BLOCK_INDEX_BYTES: u64 = 1 << 20;
 
+// Scattered IDs would allocate one block each. Once this many blocks exist, a
+// table whose IDs fill less than one slot in SCALAR_BLOCK_DENSITY switches to
+// the sparse map, so memory follows the referenced IDs and not the declared
+// bound. Sequential IDs keep the block table.
+const SCALAR_BLOCK_SAMPLE: usize = 4;
+const SCALAR_BLOCK_DENSITY: usize = 8;
+
 impl ScalarTable {
     fn new(limit: u32, wire: &Wire) -> Self {
         let ids = usize::try_from(limit)
@@ -60,7 +71,11 @@ impl ScalarTable {
         if index_bytes <= SCALAR_BLOCK_INDEX_BYTES
             && blocks as u64 <= wire.len.saturating_sub(wire.offset)
         {
-            Self::Blocks(vec![None; blocks])
+            Self::Blocks {
+                blocks: vec![None; blocks],
+                used: 0,
+                allocated: 0,
+            }
         } else {
             Self::Sparse(HashMap::new())
         }
@@ -68,7 +83,7 @@ impl ScalarTable {
 
     fn get(&self, id: u32) -> Option<usize> {
         match self {
-            Self::Blocks(blocks) => {
+            Self::Blocks { blocks, .. } => {
                 let block = blocks.get((id as usize) >> SCALAR_BLOCK_BITS)?;
                 let ty = block
                     .as_ref()?
@@ -80,25 +95,63 @@ impl ScalarTable {
     }
 
     fn insert(&mut self, id: u32, ty: usize) {
-        match self {
-            Self::Blocks(blocks) => {
-                let Some(block) = blocks.get_mut((id as usize) >> SCALAR_BLOCK_BITS) else {
-                    return;
-                };
-                let block = block.get_or_insert_with(|| vec![usize::MAX; SCALAR_BLOCK_LEN]);
-                block[(id as usize) & (SCALAR_BLOCK_LEN - 1)] = ty;
+        if let Self::Sparse(table) = self {
+            table.insert(id, ty);
+            return;
+        }
+        let mut sparse = false;
+        if let Self::Blocks {
+            blocks,
+            used,
+            allocated,
+        } = self
+        {
+            let Some(block) = blocks.get_mut((id as usize) >> SCALAR_BLOCK_BITS) else {
+                return;
+            };
+            if block.is_none() {
+                *block = Some(vec![usize::MAX; SCALAR_BLOCK_LEN]);
+                *allocated += 1;
             }
-            Self::Sparse(table) => {
-                table.insert(id, ty);
+            if let Some(block) = block {
+                let entry = &mut block[(id as usize) & (SCALAR_BLOCK_LEN - 1)];
+                if *entry == usize::MAX {
+                    *used += 1;
+                }
+                *entry = ty;
+            }
+            sparse = *allocated >= SCALAR_BLOCK_SAMPLE
+                && *used * SCALAR_BLOCK_DENSITY < *allocated * SCALAR_BLOCK_LEN;
+        }
+        if sparse {
+            self.switch_to_sparse();
+        }
+    }
+
+    /// Replace the block table by the sparse map once the referenced IDs no
+    /// longer justify the blocks they allocated.
+    fn switch_to_sparse(&mut self) {
+        let Self::Blocks { blocks, used, .. } = self else {
+            return;
+        };
+        let mut table = HashMap::with_capacity(*used);
+        for (index, block) in blocks.iter().enumerate() {
+            let Some(block) = block else { continue };
+            for (offset, ty) in block.iter().enumerate() {
+                if *ty != usize::MAX {
+                    let id = (index << SCALAR_BLOCK_BITS) | offset;
+                    table.insert(id as u32, *ty);
+                }
             }
         }
+        *self = Self::Sparse(table);
     }
 
     /// Active scalars in ascending ID order with aliases resolved.
     fn into_active(self, types: &Types) -> Vec<(u32, usize)> {
         match self {
-            Self::Blocks(blocks) => {
-                let mut active = Vec::new();
+            Self::Blocks { blocks, used, .. } => {
+                let mut active = Vec::with_capacity(used);
                 for (index, block) in blocks.into_iter().enumerate() {
                     let Some(block) = block else { continue };
                     for (offset, ty) in block.into_iter().enumerate() {
@@ -1146,6 +1199,36 @@ mod scalar_table_tests {
         let sparse = declarations_with_padding(200_000_000, [1, 4], 64 * 1024).unwrap();
         assert_eq!(active_ids(&sparse), [1, 4]);
         assert_eq!(blocked.active, sparse.active);
+    }
+
+    /// A table whose declared bound admits the block path for a padded file.
+    fn table_with_room() -> ScalarTable {
+        let wire = Wire::new(Box::new(Cursor::new(vec![0u8; 64 * 1024]))).unwrap();
+        ScalarTable::new(8_388_607, &wire)
+    }
+
+    #[test]
+    fn scattered_ids_fall_back_to_the_sparse_map() {
+        let mut table = table_with_room();
+        let ids = (0..64u32)
+            .map(|index| 1 + SCALAR_BLOCK_LEN as u32 * index)
+            .collect::<Vec<_>>();
+        for &id in &ids {
+            table.insert(id, 0);
+        }
+        assert!(matches!(table, ScalarTable::Sparse(_)));
+        let active = table.into_active(&types());
+        assert_eq!(active.iter().map(|&(id, _)| id).collect::<Vec<_>>(), ids);
+    }
+
+    #[test]
+    fn sequential_ids_stay_in_the_block_table() {
+        let mut table = table_with_room();
+        for id in 1..=4096u32 {
+            table.insert(id, 0);
+        }
+        assert!(matches!(table, ScalarTable::Blocks { .. }));
+        assert_eq!(table.into_active(&types()).len(), 4096);
     }
 
     #[test]

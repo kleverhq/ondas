@@ -883,6 +883,38 @@ mod window_parity {
         }
     }
 
+    /// A cycle list long enough that a visitor break lands inside the bulk
+    /// window: one integer and 127 enumeration records.
+    fn long_cycle_body() -> Vec<u8> {
+        let mut body = b"CYC\0".to_vec();
+        body.extend(0i64.to_le_bytes());
+        body.extend([0x01, 1]); // Rank 1, integer.
+        body.extend([0x03, 2]); // Rank 4, enumeration.
+        for _ in 0..126 {
+            body.extend([0x01, 2]); // Ranks 5..=130.
+        }
+        body.push(0);
+        body.push(0x7f);
+        body.extend(b"ECY\0");
+        body
+    }
+
+    #[test]
+    fn stopping_inside_a_long_cycle_window_leaves_the_same_events_and_position() {
+        let (bytes, body_start) = waveform(&long_cycle_body());
+        for limit in [1, 2, 4, 64, 128] {
+            let expected = walk_until(&bytes, body_start, CAPACITIES[CAPACITIES.len() - 1], limit);
+            assert_eq!(expected.0.len(), limit);
+            for capacity in CAPACITIES {
+                assert_eq!(
+                    walk_until(&bytes, body_start, capacity, limit),
+                    expected,
+                    "limit {limit} capacity {capacity}"
+                );
+            }
+        }
+    }
+
     /// A cycle list that starts with the malformed bytes and is padded afterwards,
     /// so the bulk window has room and the record really reaches it first.
     fn padded_cycle(malformed: &[u8]) -> Vec<u8> {
