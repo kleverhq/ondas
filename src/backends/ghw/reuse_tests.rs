@@ -650,13 +650,24 @@ fn a_hit_keeps_binary64_and_big_endian_values() {
 // Identity failures, rewinds and required payload errors.
 // ---------------------------------------------------------------------------
 
-/// An input that can fail or shorten its reads on demand.
+/// What one faulty input actually did, observable after it is consumed by an open.
+#[derive(Default)]
+struct Observed {
+    seeks: std::sync::atomic::AtomicUsize,
+    read_bytes: std::sync::atomic::AtomicUsize,
+}
+
+/// An input that can fail or shorten its reads and seeks on demand.
 struct Faulty {
     bytes: Vec<u8>,
     position: usize,
     fail_read_at: Option<usize>,
     eof_at: Option<usize>,
-    fail_seek: bool,
+    /// Fail the seek with this one-based index, and no other.
+    fail_seek_at: Option<usize>,
+    /// Fail this seek and every later one.
+    fail_seeks_from: Option<usize>,
+    observed: Arc<Observed>,
 }
 
 impl Faulty {
@@ -666,7 +677,9 @@ impl Faulty {
             position: 0,
             fail_read_at: None,
             eof_at: None,
-            fail_seek: false,
+            fail_seek_at: None,
+            fail_seeks_from: None,
+            observed: Arc::new(Observed::default()),
         }
     }
 }
@@ -694,13 +707,19 @@ impl std::io::BufRead for Faulty {
     }
 
     fn consume(&mut self, amount: usize) {
+        self.observed
+            .read_bytes
+            .fetch_add(amount, Ordering::Relaxed);
         self.position = (self.position + amount).min(self.bytes.len());
     }
 }
 
 impl Seek for Faulty {
     fn seek(&mut self, from: SeekFrom) -> std::io::Result<u64> {
-        if self.fail_seek && self.position > 0 {
+        let seek = self.observed.seeks.fetch_add(1, Ordering::Relaxed) + 1;
+        if self.fail_seek_at == Some(seek)
+            || self.fail_seeks_from.is_some_and(|first| seek >= first)
+        {
             return Err(std::io::Error::other("injected seek failure"));
         }
         self.position = match from {
@@ -743,12 +762,51 @@ fn a_late_identity_read_failure_leaves_the_early_malformed_error() {
 }
 
 #[test]
-fn a_failing_identity_rewind_is_reported_and_is_a_miss() {
+fn a_rewind_failure_after_a_complete_scan_falls_back_to_parsing() {
+    // Opening seeks twice before the identity pass (end, then start), so the third
+    // seek is the rewind that the scan performs after reading the whole input.
     let bytes = test_bytes::recording(0);
     let cache = Cache::new();
     open(&bytes, "rewind.ghw", Purpose::Waveform, &cache).unwrap();
     let mut input = Faulty::new(&bytes);
-    input.fail_seek = true;
+    input.fail_seek_at = Some(3);
+    let observed = Arc::clone(&input.observed);
+    let (mut reader, hierarchy, _) =
+        open_buffer(Box::new(input), "rewind.ghw", Purpose::Waveform, &cache).unwrap();
+    // The scan really ran over the whole input and its rewind was the failing seek.
+    assert_eq!(
+        observed.read_bytes.load(Ordering::Relaxed),
+        2 * bytes.len(),
+        "one complete identity pass plus one complete parse"
+    );
+    assert!(observed.seeks.load(Ordering::Relaxed) >= 3);
+    // It was a miss, not a hit, and the fallback parse answers normally.
+    assert_eq!(diagnostics(&cache), (0, 2));
+    assert!(reader.validated.identity.is_some());
+    let mut seen = Vec::new();
+    let _ = reader
+        .read(
+            &hierarchy.signals().collect::<Vec<_>>(),
+            Time::from_ticks(2),
+            |event| {
+                if let Notification::Value { value, .. } = event {
+                    seen.push(format!("{value:?}"));
+                }
+                ControlFlow::<()>::Continue(())
+            },
+        )
+        .unwrap();
+    assert!(!seen.is_empty());
+}
+
+#[test]
+fn a_persistent_seek_failure_after_the_scan_propagates_as_an_io_error() {
+    let bytes = test_bytes::recording(0);
+    let cache = Cache::new();
+    open(&bytes, "rewind.ghw", Purpose::Waveform, &cache).unwrap();
+    let mut input = Faulty::new(&bytes);
+    input.fail_seeks_from = Some(3);
+    let observed = Arc::clone(&input.observed);
     let failed = error(open_buffer(
         Box::new(input),
         "rewind.ghw",
@@ -756,7 +814,10 @@ fn a_failing_identity_rewind_is_reported_and_is_a_miss() {
         &cache,
     ));
     assert!(matches!(failed, crate::Error::Io(_)), "{failed}");
-    assert_eq!(diagnostics(&cache), (0, 1));
+    // The identity pass completed before the failing rewind; the fallback parse was
+    // entered and failed on its own positioning seek, and nothing was reused.
+    assert!(observed.read_bytes.load(Ordering::Relaxed) >= bytes.len());
+    assert_eq!(diagnostics(&cache), (0, 2));
 }
 
 #[test]
