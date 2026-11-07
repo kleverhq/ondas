@@ -66,7 +66,8 @@ pub(super) struct Index {
     pending_run: Vec<u32>,
     // Query work counters, kept separate from the retained size.
     // Query diagnostics stay inside the immutable representation so a completed index can be
-    // shared between logical opens without a lock; only tests write them.
+    // shared between logical opens without a lock; only tests write them. They are shared by
+    // every logical open and are not independent per-reader statistics.
     #[cfg(test)]
     frames_scanned: std::sync::atomic::AtomicUsize,
     #[cfg(test)]

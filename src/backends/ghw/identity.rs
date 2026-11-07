@@ -1,5 +1,8 @@
 //! Content identity of the bytes one checked GHW parse consumes.
 //!
+//! BLAKE3 is used because a warm open pays for exactly one pass over the whole
+//! input, so the hash is the floor of every reused opening.
+//!
 //! A parsed result may be reused only for input whose complete content is
 //! cryptographically identical to the content that an earlier checked parse
 //! validated. The digest is therefore attached to the input before parsing and
@@ -7,7 +10,7 @@
 use std::io::{self, BufRead, Read, Seek, SeekFrom};
 use std::sync::{Arc, Mutex};
 
-use sha2::{Digest, Sha256};
+use blake3::Hasher;
 
 use crate::backends::Input;
 
@@ -18,12 +21,12 @@ pub(super) struct ContentIdentity {
     pub(super) digest: [u8; 32],
 }
 
-/// Streams content of one input through SHA-256 while it is read.
+/// Streams content of one input through BLAKE3 while it is read.
 #[derive(Clone)]
 pub(super) struct Identity(Arc<Mutex<State>>);
 
 struct State {
-    hasher: Sha256,
+    hasher: Hasher,
     /// Bytes hashed so far.
     covered: u64,
     /// False once a seek or a failed read broke the single forward pass.
@@ -35,7 +38,7 @@ struct State {
 impl Identity {
     pub(super) fn new() -> Self {
         Self(Arc::new(Mutex::new(State {
-            hasher: Sha256::new(),
+            hasher: Hasher::new(),
             covered: 0,
             sequential: true,
             finished: false,
@@ -61,12 +64,10 @@ impl Identity {
         }
         state.finished = true;
         let digest = std::mem::take(&mut state.hasher).finalize();
-        let mut identity = ContentIdentity {
+        Some(ContentIdentity {
             length,
-            digest: [0; 32],
-        };
-        identity.digest.copy_from_slice(&digest);
-        Some(identity)
+            digest: *digest.as_bytes(),
+        })
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
@@ -97,7 +98,7 @@ impl Identity {
 /// deciding to parse. An I/O failure is only a miss: the caller parses as usual and
 /// reports whatever error the parser reaches.
 pub(super) fn scan(input: &mut dyn Input) -> io::Result<ContentIdentity> {
-    let mut hasher = Sha256::new();
+    let mut hasher = Hasher::new();
     let mut length = 0u64;
     let mut buffer = [0; 64 * 1024];
     let result = loop {
@@ -115,13 +116,10 @@ pub(super) fn scan(input: &mut dyn Input) -> io::Result<ContentIdentity> {
     let rewind = input.seek(SeekFrom::Start(0));
     result?;
     rewind?;
-    let digest = hasher.finalize();
-    let mut identity = ContentIdentity {
+    Ok(ContentIdentity {
         length,
-        digest: [0; 32],
-    };
-    identity.digest.copy_from_slice(&digest);
-    Ok(identity)
+        digest: *hasher.finalize().as_bytes(),
+    })
 }
 
 struct Watched {
@@ -187,9 +185,9 @@ mod tests {
         assert_eq!(read, bytes);
         let proven = identity.finish(bytes.len() as u64).unwrap();
         assert_eq!(proven.length, bytes.len() as u64);
-        let mut hasher = Sha256::new();
+        let mut hasher = Hasher::new();
         hasher.update(bytes);
-        assert_eq!(proven.digest, hasher.finalize().as_slice());
+        assert_eq!(proven.digest, *hasher.finalize().as_bytes());
     }
 
     #[test]

@@ -3,7 +3,7 @@
 //! Every test drives its own private [`Cache`], so reuse behaviour is observable
 //! without depending on which other tests have opened GHW content.
 use super::*;
-use std::io::{Cursor, Read, Seek, SeekFrom};
+use std::io::{BufRead, Cursor, Read, Seek, SeekFrom};
 use std::sync::atomic::Ordering;
 
 /// A value one read delivered, comparable across two logical opens.
@@ -67,6 +67,26 @@ fn error(result: Result<(Reader, Hierarchy, Metadata)>) -> crate::Error {
     match result {
         Ok(_) => panic!("expected an open error"),
         Err(error) => error,
+    }
+}
+
+/// Sample content without hierarchy identity, so runs can be compared.
+fn sample_text(sample: &crate::Sample) -> String {
+    match sample {
+        crate::Sample::Event { .. } => "event".into(),
+        crate::Sample::Missing { .. } => "missing".into(),
+        crate::Sample::Value {
+            value, changed_at, ..
+        } => {
+            let changed = changed_at.map_or("none".to_string(), |time| time.ticks().to_string());
+            match value {
+                crate::Value::Bits(bits) => format!("bits:{} changed:{changed}", bits.as_ref()),
+                crate::Value::Real(value) => {
+                    format!("real:{:016x} changed:{changed}", value.to_bits())
+                }
+                other => format!("{other:?} changed:{changed}"),
+            }
+        }
     }
 }
 
@@ -409,4 +429,452 @@ fn accounting_covers_declarations_and_lazy_tables() {
         hierarchy.validated_bytes()
             >= variables * std::mem::size_of::<crate::hierarchy::VariableData>()
     );
+}
+
+// ---------------------------------------------------------------------------
+// The public query surface must observe the same things on a guaranteed hit.
+// ---------------------------------------------------------------------------
+
+use crate::{ScanRef, TimeRange};
+
+#[derive(Debug, PartialEq)]
+struct Engine {
+    control: Vec<(u64, String)>,
+    wide: Vec<String>,
+    broad_records: usize,
+    indexed_payloads: usize,
+    indexed_frames: usize,
+}
+
+fn indexed_work(wave: &crate::Waveform) -> (usize, usize) {
+    let crate::backends::Reader::Ghw(reader) = &wave.reader else {
+        panic!("GHW")
+    };
+    reader
+        .work()
+        .map_or((0, 0), |work| (work.payloads_decoded, work.frames_scanned))
+}
+
+/// Drive a waveform whose reader comes from `cache`, so cold and hit runs can be
+/// compared through the public engine rather than through private events.
+fn engine(bytes: &[u8], name: &str, cache: &Cache) -> Engine {
+    let (reader, _, _) = Reader::open_with(
+        Box::new(Cursor::new(bytes.to_vec())),
+        name.into(),
+        Purpose::Waveform,
+        cache,
+    )
+    .unwrap();
+    let mut wave = crate::open_bytes(name, bytes.to_vec().into()).unwrap();
+    wave.reader = crate::backends::Reader::Ghw(Box::new(reader));
+    let control = wave.hierarchy().signal("top.control").unwrap();
+    let wide = wave.hierarchy().signal("top.wide").unwrap();
+    let mut observations = Vec::new();
+    let _ = wave
+        .scan(&[control], TimeRange::all(), |record| {
+            if let ScanRef::Change { time, value, .. } = record {
+                observations.push((time.ticks(), format!("{value:?}")));
+            }
+            ControlFlow::<()>::Continue(())
+        })
+        .unwrap();
+    let (indexed_payloads, indexed_frames) = indexed_work(&wave);
+    // Exact change time for a point sample.
+    let sample = wave.sample(control, Time::from_ticks(1)).unwrap();
+    assert!(
+        matches!(sample, crate::Sample::Value { changed_at: Some(time), .. } if time.ticks() == 1),
+        "{sample:?}"
+    );
+    let mut values = Vec::new();
+    for tick in 0..=4 {
+        let samples = wave.samples(&[wide], Time::from_ticks(tick)).unwrap();
+        values.push(sample_text(&samples[0]));
+    }
+    // The fixture cancels a same-tick excursion and then changes at ticks 3 and 4.
+    assert_eq!(values[3], "bits:111 changed:3", "{}", values[3]);
+    assert_eq!(values[4], "bits:110 changed:4", "{}", values[4]);
+    // Aliases stay one handle with one shared history.
+    assert_eq!(
+        wave.hierarchy().signal("top.wide").unwrap(),
+        wave.hierarchy().signal("top.alias").unwrap()
+    );
+    // Broad replay over every signal uses the sequential walker.
+    let signals = wave.hierarchy().signals().collect::<Vec<_>>();
+    let mut broad_records = 0;
+    let _ = wave
+        .scan(&signals, TimeRange::all(), |_| {
+            broad_records += 1;
+            ControlFlow::<()>::Continue(())
+        })
+        .unwrap();
+    // A stopped read and a panicking visitor must not affect later queries.
+    let flow = wave
+        .scan(&[control], TimeRange::all(), |_| ControlFlow::Break(7))
+        .unwrap();
+    assert_eq!(flow, ControlFlow::Break(7));
+    assert!(wave.sample(control, Time::from_ticks(1)).is_ok());
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = wave.scan(&[control], TimeRange::all(), |_| -> ControlFlow<()> {
+            panic!("visitor")
+        });
+    }));
+    assert!(wave.sample(control, Time::from_ticks(1)).is_ok());
+    Engine {
+        control: observations,
+        wide: values,
+        broad_records,
+        indexed_payloads,
+        indexed_frames,
+    }
+}
+
+#[test]
+fn a_hit_keeps_public_engine_observations() {
+    let bytes = test_bytes::recording(0);
+    let cache = Cache::new();
+    let cold = engine(&bytes, "engine.ghw", &cache);
+    assert_eq!(diagnostics(&cache), (0, 1));
+    let warm = engine(&bytes, "engine.ghw", &cache);
+    // Exactly one guaranteed local hit, without any conformance race.
+    assert_eq!(diagnostics(&cache), (1, 1));
+    assert_eq!(warm, cold);
+    assert!(!cold.control.is_empty());
+    assert!(
+        cold.indexed_payloads > 0,
+        "selective read must use the index"
+    );
+    assert!(cold.indexed_frames > 0);
+    assert!(cold.broad_records > cold.indexed_payloads);
+}
+
+#[test]
+fn a_hit_keeps_missing_and_projection_change_times() {
+    let mut bytes = test_bytes::recording(0);
+    for (declaration, ids) in [
+        ([16, 14, 4, 3, 1, 4], [3, 3, 4]),
+        ([16, 15, 4, 3, 1, 4], [3, 3, 4]),
+        ([16, 16, 4, 4, 1, 3], [4, 3, 3]),
+    ] {
+        let at = bytes
+            .windows(declaration.len())
+            .position(|candidate| candidate == declaration)
+            .unwrap();
+        bytes[at + 3..at + 6].copy_from_slice(&ids);
+    }
+    let body = bytes.windows(4).position(|b| b == b"SNP\0").unwrap();
+    bytes.truncate(body);
+    bytes.extend(b"CYC\0");
+    bytes.extend(0i64.to_le_bytes());
+    bytes.extend([1, 3, 0, 1, 1, 2, 0, 1, 2, 3, 0, 1, 2, 2, 0, 127]);
+    bytes.extend(b"ECY\0");
+    let cache = Cache::new();
+    let observe = |cache: &Cache| {
+        let (reader, _, _) = Reader::open_with(
+            Box::new(Cursor::new(bytes.clone())),
+            "partial.ghw".into(),
+            Purpose::Waveform,
+            cache,
+        )
+        .unwrap();
+        let mut wave = crate::open_bytes("partial.ghw", bytes.clone().into()).unwrap();
+        wave.reader = crate::backends::Reader::Ghw(Box::new(reader));
+        let wide = wave.hierarchy().signal("top.wide").unwrap();
+        let low = wide.slice(0, 0).unwrap();
+        let mut seen = Vec::new();
+        for tick in [0, 1, 2, 3, 1, 0, 3, 2] {
+            let samples = wave.samples(&[wide, low], Time::from_ticks(tick)).unwrap();
+            seen.push(
+                samples
+                    .iter()
+                    .map(sample_text)
+                    .collect::<Vec<_>>()
+                    .join(" | "),
+            );
+        }
+        seen
+    };
+    let cold = observe(&cache);
+    assert_eq!(diagnostics(&cache), (0, 1));
+    let warm = observe(&cache);
+    assert_eq!(diagnostics(&cache), (1, 1));
+    assert_eq!(warm, cold);
+    // Ticks 0 and 1 have an incomplete recipe, so the value is Missing.
+    assert_eq!(cold[0], "missing | missing", "{}", cold[0]);
+    assert_eq!(cold[1], "missing | missing", "{}", cold[1]);
+    assert_eq!(
+        cold[2], "bits:001 changed:none | bits:1 changed:none",
+        "{}",
+        cold[2]
+    );
+}
+
+#[test]
+fn a_hit_keeps_binary64_and_big_endian_values() {
+    for big in [false, true] {
+        let bytes = test_bytes::real_recording(big, 1, 0x400921fb54442d18);
+        let cache = Cache::new();
+        let observe = |cache: &Cache| {
+            let (reader, _, _) = Reader::open_with(
+                Box::new(Cursor::new(bytes.clone())),
+                "real.ghw".into(),
+                Purpose::Waveform,
+                cache,
+            )
+            .unwrap();
+            let mut wave = crate::open_bytes("real.ghw", bytes.clone().into()).unwrap();
+            wave.reader = crate::backends::Reader::Ghw(Box::new(reader));
+            let real = wave.hierarchy().signals().next().unwrap();
+            let mut bits = Vec::new();
+            for tick in [3, 4] {
+                let sample = wave.sample(real, Time::from_ticks(tick)).unwrap();
+                match sample {
+                    crate::Sample::Value {
+                        value: crate::Value::Real(value),
+                        ..
+                    } => bits.push(value.to_bits()),
+                    other => panic!("expected a real value, got {other:?}"),
+                }
+            }
+            bits
+        };
+        let cold = observe(&cache);
+        assert_eq!(diagnostics(&cache), (0, 1));
+        let warm = observe(&cache);
+        assert_eq!(diagnostics(&cache), (1, 1));
+        assert_eq!(warm, cold);
+        assert_eq!(cold, vec![0x8000_0000_0000_0000u64, 0x400921fb54442d18u64]);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Identity failures, rewinds and required payload errors.
+// ---------------------------------------------------------------------------
+
+/// An input that can fail or shorten its reads on demand.
+struct Faulty {
+    bytes: Vec<u8>,
+    position: usize,
+    fail_read_at: Option<usize>,
+    eof_at: Option<usize>,
+    fail_seek: bool,
+}
+
+impl Faulty {
+    fn new(bytes: &[u8]) -> Self {
+        Self {
+            bytes: bytes.to_vec(),
+            position: 0,
+            fail_read_at: None,
+            eof_at: None,
+            fail_seek: false,
+        }
+    }
+}
+
+impl Read for Faulty {
+    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+        let bytes = self.fill_buf()?;
+        let n = output.len().min(bytes.len());
+        output[..n].copy_from_slice(&bytes[..n]);
+        self.consume(n);
+        Ok(n)
+    }
+}
+
+impl std::io::BufRead for Faulty {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        if self
+            .fail_read_at
+            .is_some_and(|limit| self.position >= limit)
+        {
+            return Err(std::io::Error::other("injected read failure"));
+        }
+        let end = self.bytes.len().min(self.eof_at.unwrap_or(usize::MAX));
+        Ok(&self.bytes[self.position.min(end)..end])
+    }
+
+    fn consume(&mut self, amount: usize) {
+        self.position = (self.position + amount).min(self.bytes.len());
+    }
+}
+
+impl Seek for Faulty {
+    fn seek(&mut self, from: SeekFrom) -> std::io::Result<u64> {
+        if self.fail_seek && self.position > 0 {
+            return Err(std::io::Error::other("injected seek failure"));
+        }
+        self.position = match from {
+            SeekFrom::Start(offset) => offset as usize,
+            SeekFrom::End(offset) => (self.bytes.len() as i64 + offset).max(0) as usize,
+            SeekFrom::Current(offset) => (self.position as i64 + offset).max(0) as usize,
+        }
+        .min(self.bytes.len());
+        Ok(self.position as u64)
+    }
+}
+
+#[test]
+fn a_late_identity_read_failure_leaves_the_early_malformed_error() {
+    let valid = test_bytes::recording(0);
+    let cache = Cache::new();
+    open(&valid, "order.ghw", Purpose::Waveform, &cache).unwrap();
+    let mut malformed = valid.clone();
+    let marker = malformed.windows(4).position(|b| b == b"ESN\0").unwrap();
+    malformed[marker] = b'X';
+    // The identity pass fails long after the byte that is already malformed.
+    let mut input = Faulty::new(&malformed);
+    input.fail_read_at = Some(malformed.len() - 8);
+    let reused = error(open_buffer(
+        Box::new(input),
+        "order.ghw",
+        Purpose::Waveform,
+        &cache,
+    ));
+    let fresh = error(Reader::open_with(
+        Box::new(Cursor::new(malformed.clone())),
+        "order.ghw".into(),
+        Purpose::Waveform,
+        &Cache::new(),
+    ));
+    assert!(matches!(reused, crate::Error::Malformed { .. }), "{reused}");
+    assert_eq!(reused.to_string(), fresh.to_string());
+    // The parked source was not reused and the rejected input was parsed once.
+    assert_eq!(diagnostics(&cache), (0, 2));
+}
+
+#[test]
+fn a_failing_identity_rewind_is_reported_and_is_a_miss() {
+    let bytes = test_bytes::recording(0);
+    let cache = Cache::new();
+    open(&bytes, "rewind.ghw", Purpose::Waveform, &cache).unwrap();
+    let mut input = Faulty::new(&bytes);
+    input.fail_seek = true;
+    let failed = error(open_buffer(
+        Box::new(input),
+        "rewind.ghw",
+        Purpose::Waveform,
+        &cache,
+    ));
+    assert!(matches!(failed, crate::Error::Io(_)), "{failed}");
+    assert_eq!(diagnostics(&cache), (0, 1));
+}
+
+#[test]
+fn a_short_read_at_the_same_length_is_a_miss_with_the_parser_error() {
+    let bytes = test_bytes::recording(0);
+    let cache = Cache::new();
+    open(&bytes, "short.ghw", Purpose::Waveform, &cache).unwrap();
+    let short = bytes[..bytes.len() - 1].to_vec();
+    let mut input = Faulty::new(&bytes);
+    input.eof_at = Some(short.len());
+    let reused = error(open_buffer(
+        Box::new(input),
+        "short.ghw",
+        Purpose::Waveform,
+        &cache,
+    ));
+    let fresh = error(Reader::open_with(
+        Box::new(Cursor::new(short)),
+        "short.ghw".into(),
+        Purpose::Waveform,
+        &Cache::new(),
+    ));
+    assert_eq!(reused.to_string(), fresh.to_string());
+    // The parked source was not reused, and the short read was parsed once.
+    assert_eq!(diagnostics(&cache), (0, 2));
+}
+
+#[test]
+fn a_hit_reports_required_payload_errors_and_recovers() {
+    use std::sync::atomic::AtomicBool;
+    struct Switchable {
+        inner: Faulty,
+        fail: Arc<AtomicBool>,
+    }
+    impl Read for Switchable {
+        fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+            if self.fail.load(Ordering::Relaxed) {
+                return Err(std::io::Error::other("injected read failure"));
+            }
+            self.inner.read(output)
+        }
+    }
+    impl std::io::BufRead for Switchable {
+        fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+            if self.fail.load(Ordering::Relaxed) {
+                return Err(std::io::Error::other("injected read failure"));
+            }
+            self.inner.fill_buf()
+        }
+        fn consume(&mut self, amount: usize) {
+            self.inner.consume(amount);
+        }
+    }
+    impl Seek for Switchable {
+        fn seek(&mut self, from: SeekFrom) -> std::io::Result<u64> {
+            self.inner.seek(from)
+        }
+    }
+    let bytes = test_bytes::recording(0);
+    let cache = Cache::new();
+    open(&bytes, "payload.ghw", Purpose::Waveform, &cache).unwrap();
+    let fail = Arc::new(AtomicBool::new(false));
+    let input = Switchable {
+        inner: Faulty::new(&bytes),
+        fail: Arc::clone(&fail),
+    };
+    let (reader, _, _) =
+        open_buffer(Box::new(input), "payload.ghw", Purpose::Waveform, &cache).unwrap();
+    assert_eq!(diagnostics(&cache), (1, 1));
+    let mut wave = crate::open_bytes("payload.ghw", bytes.clone().into()).unwrap();
+    wave.reader = crate::backends::Reader::Ghw(Box::new(reader));
+    let control = wave.hierarchy().signal("top.control").unwrap();
+    fail.store(true, Ordering::Relaxed);
+    let failed = wave.sample(control, Time::from_ticks(1));
+    assert!(matches!(failed, Err(crate::Error::Io(_))), "{failed:?}");
+    fail.store(false, Ordering::Relaxed);
+    assert!(wave.sample(control, Time::from_ticks(1)).is_ok());
+}
+
+#[test]
+fn identity_depends_on_content_not_on_the_input_object() {
+    // Same content through two different input implementations, one of them with
+    // tiny read-ahead, must reuse the same parked result. This is the CI-safe
+    // equivalent of the ignored published-fixture file/bytes test.
+    let bytes = test_bytes::recording(0);
+    let cache = Cache::new();
+    let (_, _, _) = open(&bytes, "kind.ghw", Purpose::Waveform, &cache).unwrap();
+    assert_eq!(diagnostics(&cache), (0, 1));
+    struct Small {
+        inner: Cursor<Vec<u8>>,
+    }
+    impl Read for Small {
+        fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+            let window = self.inner.fill_buf()?;
+            let n = output.len().min(window.len()).min(3);
+            output[..n].copy_from_slice(&window[..n]);
+            self.inner.consume(n);
+            Ok(n)
+        }
+    }
+    impl std::io::BufRead for Small {
+        fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+            let window = self.inner.fill_buf()?;
+            Ok(&window[..window.len().min(3)])
+        }
+        fn consume(&mut self, amount: usize) {
+            self.inner.consume(amount);
+        }
+    }
+    impl Seek for Small {
+        fn seek(&mut self, from: SeekFrom) -> std::io::Result<u64> {
+            self.inner.seek(from)
+        }
+    }
+    let input = Box::new(Small {
+        inner: Cursor::new(bytes),
+    });
+    let (_, _, metadata) = open_buffer(input, "kind.ghw", Purpose::Waveform, &cache).unwrap();
+    assert_eq!(diagnostics(&cache), (1, 1));
+    assert!(metadata.time_span.is_some());
 }
