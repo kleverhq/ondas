@@ -67,13 +67,17 @@ pub(super) struct Index {
     // Query work counters, kept separate from the retained size.
     // Query diagnostics stay inside the immutable representation so a completed index can be
     // shared between logical opens without a lock; only tests write them. They are shared by
-    // every logical open and are not independent per-reader statistics.
+    // every logical open, and a reset at the start of an indexed read does not make them
+    // per-reader while several readers run, so diagnostics must use a private cache or a
+    // call-local measurement rather than treating these as per-reader state.
     #[cfg(test)]
     frames_scanned: std::sync::atomic::AtomicUsize,
     #[cfg(test)]
     payloads_decoded: std::sync::atomic::AtomicUsize,
     #[cfg(test)]
     payloads_skipped: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    groups_selected: std::sync::atomic::AtomicUsize,
 }
 
 /// Query work of the last indexed read.
@@ -83,6 +87,7 @@ pub(crate) struct Work {
     pub(super) frames_scanned: usize,
     pub(super) payloads_decoded: usize,
     pub(super) payloads_skipped: usize,
+    pub(super) groups_selected: usize,
 }
 
 impl Index {
@@ -142,6 +147,8 @@ impl Index {
             payloads_decoded: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(test)]
             payloads_skipped: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            groups_selected: std::sync::atomic::AtomicUsize::new(0),
         })
     }
 
@@ -215,6 +222,7 @@ impl Index {
             frames_scanned: self.frames_scanned.load(Ordering::Relaxed),
             payloads_decoded: self.payloads_decoded.load(Ordering::Relaxed),
             payloads_skipped: self.payloads_skipped.load(Ordering::Relaxed),
+            groups_selected: self.groups_selected.load(Ordering::Relaxed),
         }
     }
 
@@ -349,6 +357,7 @@ impl Index {
             self.frames_scanned.store(0, Ordering::Relaxed);
             self.payloads_decoded.store(0, Ordering::Relaxed);
             self.payloads_skipped.store(0, Ordering::Relaxed);
+            self.groups_selected.store(0, Ordering::Relaxed);
         }
         let mut ranks = Vec::new();
         if ranks.try_reserve_exact(ids.len()).is_err() {
@@ -362,6 +371,9 @@ impl Index {
         }
         ranks.sort_unstable();
         ranks.dedup();
+        if ranks.len() > u32::MAX as usize {
+            return Ok(None);
+        }
         let mut cursors = Vec::new();
         if cursors.try_reserve_exact(ranks.len()).is_err() {
             return Ok(None);
@@ -371,16 +383,31 @@ impl Index {
         let mut position = 0;
         while position < ranks.len() {
             let group = ranks[position] / RANKS_PER_GROUP;
+            let base = group * RANKS_PER_GROUP;
             let mut last = position;
-            while last + 1 < ranks.len() && ranks[last + 1] / RANKS_PER_GROUP == group {
+            let mut mask = 0u64;
+            loop {
+                mask |= 1u64 << (ranks[last] - base);
+                if last + 1 >= ranks.len() || ranks[last + 1] / RANKS_PER_GROUP != group {
+                    break;
+                }
                 last += 1;
             }
+            // Route index of this group's first selected rank in the query's
+            // ascending selected-rank list; a scan adds the number of selected ranks
+            // below the one it reports, so the consumer resolves its range without a
+            // search.
+            let Ok(first_route) = u32::try_from(position) else {
+                return Ok(None);
+            };
             position = last + 1;
             if self.ids[group].is_empty() {
                 continue;
             }
             cursors.push(Cursor {
                 group,
+                mask,
+                first_route,
                 last: ranks[last],
                 ids: 0,
                 offs: 0,
@@ -391,6 +418,10 @@ impl Index {
                 offset: 0,
                 first: 0,
             });
+        }
+        #[cfg(test)]
+        {
+            self.groups_selected.store(cursors.len(), Ordering::Relaxed);
         }
         let mut heap = BinaryHeap::new();
         if heap.try_reserve(cursors.len()).is_err() {
@@ -428,11 +459,7 @@ impl Index {
             }
             for &slot in &pending {
                 let cursor = &cursors[slot];
-                let sources = Sources {
-                    active,
-                    types,
-                    ranks: &ranks,
-                };
+                let sources = Sources { active, types };
                 if let ControlFlow::Break(value) =
                     self.scan(wire, sources, stored, cursor, &mut visitor)?
                 {
@@ -526,13 +553,18 @@ impl Index {
         wire.seek_value(cursor.offset)?;
         loop {
             let (id, ty) = sources.active[rank];
-            if sources.ranks.binary_search(&rank).is_ok() {
+            let local = rank - base;
+            let bit = 1u64 << local;
+            if cursor.mask & bit != 0 {
                 let offset = wire.offset;
                 let value = body::scalar(wire, sources.types, ty)?;
                 #[cfg(test)]
                 {
                     self.payloads_decoded.fetch_add(1, Ordering::Relaxed);
                 }
+                // Selected ranks are numbered in the query's ascending list, so the
+                // count of selected ranks below this one is its offset in that list.
+                let route = cursor.first_route + (cursor.mask & (bit - 1)).count_ones();
                 if let ControlFlow::Break(value) = visitor(body::Event::Scalar {
                     id,
                     rank,
@@ -540,6 +572,7 @@ impl Index {
                     offset,
                     value,
                     cyclic: frame.cyclic,
+                    route,
                 }) {
                     return Ok(ControlFlow::Break(value));
                 }
@@ -574,12 +607,16 @@ impl Index {
 struct Sources<'a> {
     active: &'a [(u32, usize)],
     types: &'a Types,
-    ranks: &'a [usize],
 }
 
 /// Decoding state of one group's position streams.
 struct Cursor {
     group: usize,
+    /// Selected local ranks of this group, one bit per rank.
+    mask: u64,
+    /// Route index of this group's first selected rank in the query's ascending
+    /// selected-rank list.
+    first_route: u32,
     /// Largest selected rank of this group.
     last: usize,
     ids: u32,
@@ -664,6 +701,8 @@ mod tests {
     fn pairs(index: &Index, group: usize) -> Vec<(u32, u64, usize)> {
         let mut cursor = Cursor {
             group,
+            mask: u64::MAX,
+            first_route: 0,
             last: usize::MAX,
             ids: 0,
             offs: 0,

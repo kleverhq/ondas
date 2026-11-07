@@ -108,6 +108,10 @@ pub(crate) struct Reader {
     pub(crate) records_read: usize,
     #[cfg(test)]
     pub(crate) assembly_bytes: usize,
+    #[cfg(test)]
+    pub(crate) indexed_reads: usize,
+    #[cfg(test)]
+    pub(crate) walk_reads: usize,
 }
 
 struct Buffer {
@@ -125,6 +129,62 @@ struct Dependency {
     slot: usize,
     position: usize,
     seen: bool,
+}
+
+/// Dependency range of one source ID in the sorted dependency list.
+fn dependency_range(dependencies: &[Dependency], id: u32) -> Range<usize> {
+    let start = dependencies.partition_point(|dependency| dependency.id < id);
+    let mut end = start;
+    while dependencies
+        .get(end)
+        .is_some_and(|dependency| dependency.id == id)
+    {
+        end += 1;
+    }
+    start..end
+}
+
+/// Dependency range of one scalar event.
+///
+/// A broad read indexes ranges by rank, an indexed read supplies the route of the
+/// selected scalar, and everything else — the sequential walker, a route the
+/// current table does not cover — falls back to the searched lookup.
+fn event_range(
+    event: &body::Event,
+    broad: Option<&[Range<usize>]>,
+    selected: Option<&[Range<usize>]>,
+    dependencies: &[Dependency],
+) -> Range<usize> {
+    let body::Event::Scalar {
+        id, rank, route, ..
+    } = *event
+    else {
+        return 0..0;
+    };
+    if let Some(routes) = broad {
+        return routes
+            .get(rank)
+            .cloned()
+            .unwrap_or_else(|| dependency_range(dependencies, id));
+    }
+    if let Some(routes) = selected
+        && route != body::NO_ROUTE
+        && let Some(range) = routes.get(route as usize)
+    {
+        return range.clone();
+    }
+    dependency_range(dependencies, id)
+}
+
+/// Ranges of the selected source IDs, in the same ascending order in which the
+/// indexed reader assigns route indices to selected ranks.
+fn selected_ranges(dependencies: &[Dependency], ids: &[u32]) -> Option<Vec<Range<usize>>> {
+    let mut ranges = Vec::new();
+    ranges.try_reserve_exact(ids.len()).ok()?;
+    for &id in ids {
+        ranges.push(dependency_range(dependencies, id));
+    }
+    Some(ranges)
 }
 
 // The active table and dependencies both use ascending source IDs.
@@ -236,6 +296,10 @@ impl Reader {
                         records_read: 0,
                         #[cfg(test)]
                         assembly_bytes: 0,
+                        #[cfg(test)]
+                        indexed_reads: 0,
+                        #[cfg(test)]
+                        walk_reads: 0,
                     };
                     if purpose == Purpose::Metadata {
                         // A metadata-only request must not keep a parked hierarchy.
@@ -366,6 +430,10 @@ impl Reader {
             records_read: 0,
             #[cfg(test)]
             assembly_bytes: 0,
+            #[cfg(test)]
+            indexed_reads: 0,
+            #[cfg(test)]
+            walk_reads: 0,
         };
         Ok((reader, hierarchy, metadata))
     }
@@ -440,30 +508,28 @@ impl Reader {
         ids.dedup(); // Dependencies are already sorted by source ID.
         let broad = ids.len() >= self.validated.active.len().div_ceil(2);
         let routes = broad.then(|| dependency_ranges(&self.validated.active, &dependencies));
+        // A narrow indexed read resolves each selected range once and receives the
+        // matching route index with every event.
+        let selected = (!broad && self.validated.index.is_some())
+            .then(|| selected_ranges(&dependencies, &ids))
+            .flatten();
         // The block permits the closure attribute on MSRV. Force scalar-event
         // specialization in the walker instead of a per-record callback.
         let mut consume = {
             #[inline(always)]
             |event| {
                 match event {
-                    body::Event::Scalar {
-                        id, rank, value, ..
-                    } => {
+                    body::Event::Scalar { value, .. } => {
                         #[cfg(test)]
                         {
                             self.records_read += 1;
                         }
-                        let range = if let Some(routes) = &routes {
-                            routes[rank].clone()
-                        } else {
-                            let start =
-                                dependencies.partition_point(|dependency| dependency.id < id);
-                            let mut end = start;
-                            while dependencies.get(end).is_some_and(|d| d.id == id) {
-                                end += 1;
-                            }
-                            start..end
-                        };
+                        let range = event_range(
+                            &event,
+                            routes.as_deref(),
+                            selected.as_deref(),
+                            &dependencies,
+                        );
                         if !range.is_empty() {
                             // The first entry owns this source scalar's seen flag.
                             let first = !dependencies[range.start].seen;
@@ -515,7 +581,15 @@ impl Reader {
                 &mut consume,
             )?
         {
+            #[cfg(test)]
+            {
+                self.indexed_reads += 1;
+            }
             return Ok(flow);
+        }
+        #[cfg(test)]
+        {
+            self.walk_reads += 1;
         }
         let (flow, _) = body::walk(
             &mut self.wire,

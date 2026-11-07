@@ -23,10 +23,17 @@ pub(super) enum Event {
         value: Scalar,
         /// True for cycle lists, where every record carries a rank delta.
         cyclic: bool,
+        /// Index the indexed reader assigned to this selected source scalar, so
+        /// the consumer does not search for its dependency range. The sequential
+        /// walker sets [`NO_ROUTE`].
+        route: u32,
     },
     ListEnd(Time),
     Tick(Time),
 }
+
+/// Route of an event that carries no precomputed dependency range.
+pub(super) const NO_ROUTE: u32 = u32::MAX;
 
 // Keep checked buffered decoding inside the caller's scalar loop.
 #[inline(always)]
@@ -197,6 +204,7 @@ pub(super) fn walk<B>(
                         offset,
                         value,
                         cyclic: false,
+                        route: NO_ROUTE,
                     }) {
                         return Ok((ControlFlow::Break(value), clock.span()));
                     }
@@ -256,6 +264,7 @@ pub(super) fn walk<B>(
                                     offset: base + (at + width) as u64,
                                     value,
                                     cyclic: true,
+                                    route: NO_ROUTE,
                                 }) {
                                     stopped = Some(value);
                                     break;
@@ -289,6 +298,7 @@ pub(super) fn walk<B>(
                             offset,
                             value,
                             cyclic: true,
+                            route: NO_ROUTE,
                         }) {
                             return Ok((ControlFlow::Break(value), clock.span()));
                         }

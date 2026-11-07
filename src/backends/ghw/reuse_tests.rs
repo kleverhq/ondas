@@ -939,3 +939,317 @@ fn identity_depends_on_content_not_on_the_input_object() {
     assert_eq!(diagnostics(&cache), (1, 1));
     assert!(metadata.time_span.is_some());
 }
+
+// ---------------------------------------------------------------------------
+// The indexed routing must match the sequential walker exactly.
+// ---------------------------------------------------------------------------
+
+/// Bytes with `count` one-bit enumeration scalars, one shared type, and a body
+/// that leaves rank groups partly selected: a snapshot at tick 0, a cycle frame at
+/// tick 1 whose records start above the first selected rank, and a cycle frame at
+/// tick 2 that spans a rank-group boundary.
+fn sparse_group_fixture(count: u32) -> Vec<u8> {
+    assert!(count > 66);
+    fn uleb(mut value: u32, bytes: &mut Vec<u8>) {
+        loop {
+            let byte = (value & 0x7f) as u8;
+            value >>= 7;
+            if value == 0 {
+                bytes.push(byte);
+                return;
+            }
+            bytes.push(byte | 0x80);
+        }
+    }
+    let mut names = Vec::new();
+    for index in 0..count {
+        names.push(format!("s{index}"));
+    }
+    let mut bytes = b"GHDLwave\n\x10\0\x01\x01\x04\x01\0STR\0\0\0\0\0".to_vec();
+    // Four fixed names and one name per scalar; the empty string at ID zero is
+    // implicit and is not written on the wire.
+    bytes.extend((count + 4).to_le_bytes());
+    let size = 14 + names.iter().map(|name| name.len()).sum::<usize>();
+    bytes.extend((size as u32).to_le_bytes());
+    for extra in ["logic", "'0'", "'1'", "top"] {
+        bytes.extend(extra.as_bytes());
+        bytes.push(0);
+    }
+    for name in &names {
+        bytes.extend(name.as_bytes());
+        bytes.push(0);
+    }
+    bytes.extend(b"EOS\0TYP\0\0\0\0\0");
+    bytes.extend(1u32.to_le_bytes());
+    bytes.extend([23, 1, 2, 2, 3, 0]);
+    bytes.extend(b"HIE\0\0\0\0\0");
+    bytes.extend(1u32.to_le_bytes());
+    bytes.extend(count.to_le_bytes());
+    bytes.extend(count.to_le_bytes());
+    bytes.extend([3, 4]);
+    for index in 0..count {
+        bytes.push(16);
+        uleb(5 + index, &mut bytes);
+        uleb(1, &mut bytes);
+        uleb(index + 1, &mut bytes);
+    }
+    bytes.extend([15, 0]);
+    bytes.extend(b"EOH\0SNP\0\0\0\0\0");
+    bytes.extend(0i64.to_le_bytes());
+    bytes.extend(std::iter::repeat_n(0u8, count as usize));
+    bytes.extend(b"ESN\0CYC\0");
+    bytes.extend(1i64.to_le_bytes());
+    // Records only at ranks 41 and 46, so the frame starts above rank 5.
+    bytes.extend([41, 1, 5, 1, 0]);
+    bytes.push(1);
+    // Records at ranks 63..66, which span the boundary between groups 0 and 1.
+    bytes.extend([63, 1, 1, 1, 1, 1, 1, 1, 0]);
+    bytes.push(0x7f);
+    bytes.extend(b"ECY\0");
+    bytes
+}
+
+/// Completed public-engine observations, which fold same-tick lists the way the
+/// contract defines them instead of exposing per-list reader events.
+fn observations(
+    wave: &mut crate::Waveform,
+    signals: &[crate::Signal],
+    ticks: &[u64],
+) -> Vec<String> {
+    let mut seen = Vec::new();
+    for tick in ticks {
+        let samples = wave.samples(signals, Time::from_ticks(*tick)).unwrap();
+        seen.push(
+            samples
+                .iter()
+                .map(sample_text)
+                .collect::<Vec<_>>()
+                .join(" | "),
+        );
+    }
+    seen
+}
+
+/// Which reader branch each query took, from the test-only reader counters.
+fn branches(wave: &crate::Waveform) -> (usize, usize) {
+    let crate::backends::Reader::Ghw(reader) = &wave.reader else {
+        panic!("GHW")
+    };
+    (reader.indexed_reads, reader.walk_reads)
+}
+
+fn waveform_from_reader(bytes: &[u8], name: &str, purpose: Purpose) -> (crate::Waveform, Cache) {
+    let cache = Cache::new();
+    let (reader, _, _) = Reader::open_with(
+        Box::new(Cursor::new(bytes.to_vec())),
+        name.into(),
+        purpose,
+        &cache,
+    )
+    .unwrap();
+    let mut wave = crate::open_bytes(name, bytes.to_vec().into()).unwrap();
+    wave.reader = crate::backends::Reader::Ghw(Box::new(reader));
+    (wave, cache)
+}
+
+/// Signals of the crafted fixture by name, in the order given.
+fn named(wave: &crate::Waveform, names: &[&str]) -> Vec<crate::Signal> {
+    names
+        .iter()
+        .map(|name| wave.hierarchy().signal(name).unwrap())
+        .collect()
+}
+
+#[test]
+fn indexed_routing_matches_the_sequential_walker() {
+    let bytes = sparse_group_fixture(130);
+    for count in [1usize, 4, 130] {
+        {
+            let (mut wave, _) = waveform_from_reader(&bytes, "routing.ghw", Purpose::Metadata);
+            let signals = wave.hierarchy().signals().collect::<Vec<_>>();
+            let selection = signals.iter().take(count).copied().collect::<Vec<_>>();
+            let ticks = [0, 1, 2];
+            let before = branches(&wave);
+            let indexed = observations(&mut wave, &selection, &ticks);
+            let after = branches(&wave);
+            let broad = selection.len() >= wave.hierarchy().signals().count().div_ceil(2);
+            if broad {
+                // An all-signal selection may take the sequential walker, so the
+                // indexed read must not be claimed.
+                assert_eq!(after.0, before.0, "broad selection took the indexed read");
+                assert!(after.1 > before.1, "broad selection must report walk reads");
+            } else {
+                assert!(after.0 > before.0, "narrow selection must index");
+                assert_eq!(after.1, before.1, "narrow selection must not walk");
+            }
+            // Drop the index in place and require the same completed observations.
+            let crate::backends::Reader::Ghw(reader) = &mut wave.reader else {
+                panic!("GHW")
+            };
+            Arc::get_mut(&mut reader.validated)
+                .expect("not parked")
+                .index = None;
+            let before = branches(&wave);
+            let walked = observations(&mut wave, &selection, &ticks);
+            let after = branches(&wave);
+            assert!(after.1 > before.1, "the fallback must report walk reads");
+            assert_eq!(indexed, walked, "selection of {count} signals");
+            // Completed observations are not all initial states unless the body
+            // really has no changes; require at least one moved value somewhere.
+            assert!(indexed.iter().any(|text| !text.is_empty()));
+        }
+    }
+}
+
+#[test]
+fn alias_and_repeated_positions_fan_out_on_the_indexed_path() {
+    let bytes = test_bytes::padded_recording(0);
+    let (mut wave, _) = waveform_from_reader(&bytes, "alias.ghw", Purpose::Metadata);
+    let wide = wave.hierarchy().signal("top.wide").unwrap();
+    let alias = wave.hierarchy().signal("top.alias").unwrap();
+    assert_eq!(wide, alias, "aliases share one handle");
+    let selection = named(&wave, &["top.wide", "top.reversed"]);
+    let ticks = [0, 1, 2, 3, 4];
+    let before = branches(&wave);
+    let indexed = observations(&mut wave, &selection, &ticks);
+    let after = branches(&wave);
+    assert!(after.0 > before.0 && after.1 == before.1);
+    // The wide vector needs three source positions, so this read really fans out.
+    let work = {
+        let crate::backends::Reader::Ghw(reader) = &wave.reader else {
+            panic!("GHW")
+        };
+        reader.work().unwrap()
+    };
+    assert!(work.payloads_decoded > 0);
+    let crate::backends::Reader::Ghw(reader) = &mut wave.reader else {
+        panic!("GHW")
+    };
+    Arc::get_mut(&mut reader.validated)
+        .expect("not parked")
+        .index = None;
+    assert_eq!(indexed, observations(&mut wave, &selection, &ticks));
+}
+
+#[test]
+fn sparse_ranks_across_a_group_boundary_match_the_walker() {
+    let bytes = sparse_group_fixture(130);
+    let (mut wave, _) = waveform_from_reader(&bytes, "boundary.ghw", Purpose::Metadata);
+    // Source IDs 63..66 are active ranks 62..65, so the selection spans the
+    // boundary between rank groups 0 and 1.
+    let selection = named(&wave, &["top.s62", "top.s63", "top.s64", "top.s65"]);
+    let ticks = [0, 1, 2];
+    let before = branches(&wave);
+    let indexed = observations(&mut wave, &selection, &ticks);
+    let after = branches(&wave);
+    assert!(after.0 > before.0 && after.1 == before.1);
+    let work = {
+        let crate::backends::Reader::Ghw(reader) = &wave.reader else {
+            panic!("GHW")
+        };
+        reader.work().unwrap()
+    };
+    assert_eq!(
+        work.groups_selected, 2,
+        "the selection must span two groups"
+    );
+    let crate::backends::Reader::Ghw(reader) = &mut wave.reader else {
+        panic!("GHW")
+    };
+    Arc::get_mut(&mut reader.validated)
+        .expect("not parked")
+        .index = None;
+    assert_eq!(indexed, observations(&mut wave, &selection, &ticks));
+}
+
+#[test]
+fn a_frame_starting_above_the_first_selected_rank_matches_the_walker() {
+    let bytes = sparse_group_fixture(130);
+    let (mut wave, _) = waveform_from_reader(&bytes, "frame.ghw", Purpose::Metadata);
+    // Rank 5 is selected but only appears in the snapshot; the cycle frame at tick
+    // 1 starts at rank 40, above it, inside the same rank group.
+    let selection = named(&wave, &["top.s5", "top.s40", "top.s45"]);
+    let ticks = [0, 1, 2];
+    let indexed = observations(&mut wave, &selection, &ticks);
+    let work = {
+        let crate::backends::Reader::Ghw(reader) = &wave.reader else {
+            panic!("GHW")
+        };
+        reader.work().unwrap()
+    };
+    assert_eq!(work.groups_selected, 1);
+    let crate::backends::Reader::Ghw(reader) = &mut wave.reader else {
+        panic!("GHW")
+    };
+    Arc::get_mut(&mut reader.validated)
+        .expect("not parked")
+        .index = None;
+    assert_eq!(indexed, observations(&mut wave, &selection, &ticks));
+}
+
+#[test]
+fn event_ranges_use_the_route_and_fall_back_to_the_search() {
+    let dependencies = [
+        Dependency {
+            id: 7,
+            slot: 0,
+            position: 0,
+            seen: false,
+        },
+        Dependency {
+            id: 7,
+            slot: 1,
+            position: 1,
+            seen: false,
+        },
+        Dependency {
+            id: 9,
+            slot: 2,
+            position: 0,
+            seen: false,
+        },
+    ];
+    let event = |rank: usize, route: u32| body::Event::Scalar {
+        id: 7,
+        rank,
+        time: Time::from_ticks(0),
+        offset: 0,
+        value: body::Scalar::Ordinal(1),
+        cyclic: false,
+        route,
+    };
+    // The table is deliberately swapped for this id, so a used route is visible.
+    let selected = [2..3, 0..2];
+    let broad_range = 0..2;
+    assert_eq!(
+        event_range(&event(5, 0), None, Some(&selected), &dependencies),
+        2..3
+    );
+    assert_eq!(
+        event_range(
+            &event(5, 0),
+            Some(std::slice::from_ref(&broad_range)),
+            Some(&selected),
+            &dependencies
+        ),
+        0..2
+    );
+    // Walker events and routes the table does not cover search for the range.
+    assert_eq!(
+        event_range(
+            &event(5, body::NO_ROUTE),
+            None,
+            Some(&selected),
+            &dependencies
+        ),
+        0..2
+    );
+    assert_eq!(
+        event_range(&event(5, 9), None, Some(&selected), &dependencies),
+        0..2
+    );
+    assert_eq!(
+        event_range(&event(5, 0), Some(&[]), None, &dependencies),
+        0..2
+    );
+}
