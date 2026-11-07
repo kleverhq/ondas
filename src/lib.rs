@@ -246,10 +246,11 @@ candidate list or require another waveform borrow inside a callback.
 replays selected signals for queries. It does not store full value histories.
 Source files must remain unchanged while open.
 
-Opening can retain a bounded index of validated record positions. A late point
-or prefix decodes indexed records and proves change times from earlier records.
-It keeps the chronological replay when a proof or a resource bound is
-insufficient. The index stores no values, source bytes or query state.
+A chunked file opening can retain a bounded index of validated record positions.
+A late point or prefix decodes indexed records and proves change times from
+earlier records. It keeps the chronological replay when a proof or a resource
+bound is insufficient. The index stores no values, source bytes or query state,
+and other inputs retain no index.
 
 - The reader preserves aliases, exact ranges, nine-state bits, real signed zero,
   strings and ordinary repeated events. Strings decode escapes and retain ASCII,

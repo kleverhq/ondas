@@ -193,13 +193,22 @@ impl Index {
             .into_iter()
             .map(Builder::into_parts)
             .collect::<Option<Vec<_>>>()?;
+        // Check the bounds that do not need records before touching one counter
+        // per declaration. An impossible list table or peak refuses here.
+        let list_floor = signals.checked_mul(LIST_BYTES)?;
+        let counts_bytes = signals.checked_mul(size_of::<u32>())?;
+        let mut held = 0_usize;
+        for part in &parts {
+            held = held.checked_add(part.held())?;
+        }
+        if list_floor > limit || held.checked_add(counts_bytes)? > peak {
+            return None;
+        }
         let mut counts = Vec::new();
         counts.try_reserve_exact(signals).ok()?;
         counts.resize(signals, 0_u32);
-        let mut held = 0_usize;
         let mut blocks_len = 0_usize;
         for part in &parts {
-            held = held.checked_add(part.held())?;
             blocks_len = blocks_len.checked_add(part.blocks.len())?;
             for &signal in &part.signals {
                 let count = counts.get_mut(signal as usize)?;
@@ -211,14 +220,9 @@ impl Index {
             .try_fold(0_usize, |total, &count| total.checked_add(count as usize))?;
         let retained = entries
             .checked_mul(ENTRY_BYTES)?
-            .checked_add(signals.checked_mul(LIST_BYTES)?)?
+            .checked_add(list_floor)?
             .checked_add(blocks_len.checked_mul(BLOCK_BYTES)?)?;
-        if retained > limit
-            || held
-                .checked_add(retained)?
-                .checked_add(counts.len() * size_of::<u32>())?
-                > peak
-        {
+        if retained > limit || held.checked_add(retained)?.checked_add(counts_bytes)? > peak {
             return None;
         }
         let mut lists = Vec::new();
@@ -325,11 +329,22 @@ mod tests {
 
     #[test]
     fn tick_and_block_budgets_are_bounded() {
-        // A new tick on every record must not bypass the record budget.
-        let mut ticks = Builder::new(8 * (RECORD_BYTES + TICK_BYTES));
+        // The same 1024 records in one tick fit the records and one tick entry.
+        let mut same_tick = Builder::new(32 * 1024);
+        for offset in 0..1024 {
+            same_tick.record(0, 7, offset);
+        }
+        assert!(!same_tick.overflow);
+        assert_eq!(same_tick.signals.len(), 1024);
+        assert_eq!(same_tick.ticks.len(), 1);
+        assert!(Index::build([same_tick], 1, usize::MAX, usize::MAX).is_some());
+        // One tick per record keeps the same record capacities but must exhaust
+        // the tick budget, which an implementation that ignored ticks would not.
+        let mut ticks = Builder::new(32 * 1024);
         for tick in 0..1024 {
             ticks.record(0, tick, tick);
         }
+        assert!(ticks.overflow);
         assert!(Index::build([ticks], 1, usize::MAX, usize::MAX).is_none());
         // An empty block on every tick is also retained state.
         let mut blocks = Builder::new(8 * BLOCK_BYTES);
@@ -337,13 +352,32 @@ mod tests {
             blocks.block(tick, tick + 1);
         }
         assert!(Index::build([blocks], 1, usize::MAX, usize::MAX).is_none());
-        // Both stay available inside a budget that covers the minimum capacities.
+        // Retained state stays available inside a budget that covers it.
         let mut small = Builder::new(64 * 1024);
         for tick in 0..4 {
             small.record(0, tick, tick);
             small.block(tick, tick + 1);
         }
         assert!(Index::build([small], 1, 4096, usize::MAX).is_some());
+    }
+
+    #[test]
+    fn impossible_lower_bounds_refuse_before_counting() {
+        // The per-signal list table alone exceeds the retained limit.
+        let builder = part(&[], &[]);
+        assert!(Index::build([builder], 1024, 1024 * LIST_BYTES - 1, usize::MAX).is_none());
+        // The transient parts plus the counters exceed the merge peak.
+        let builder = part(&[(0, 1, 4)], &[]);
+        let held = builder.into_parts().unwrap().held();
+        assert!(
+            Index::build(
+                [part(&[(0, 1, 4)], &[])],
+                1024,
+                usize::MAX,
+                held + 1024 * 4 - 1
+            )
+            .is_none()
+        );
     }
 
     #[test]

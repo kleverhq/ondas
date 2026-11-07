@@ -181,6 +181,8 @@ pub(crate) struct Reader {
     dense_ids: Arc<Vec<Option<usize>>>,
     encodings: Vec<Encoding>,
     index: Option<index::Index>,
+    #[cfg(all(test, unix))]
+    pub(crate) index_queries: AtomicUsize,
     #[cfg(unix)]
     parallel: Option<ParallelSource>,
 }
@@ -331,7 +333,6 @@ struct OpeningSinks<'a> {
     records: Option<&'a mut index::Builder>,
 }
 
-#[cfg(unix)]
 type Opening = (
     Option<TimeSpan>,
     Vec<String>,
@@ -345,7 +346,7 @@ struct OpeningChunk {
     seen: Vec<bool>,
     encodings: Vec<Encoding>,
     comments: Vec<String>,
-    records: index::Builder,
+    records: Option<index::Builder>,
 }
 
 impl Reader {
@@ -353,6 +354,24 @@ impl Reader {
         input: Box<dyn Input>,
         source_name: String,
         file: Option<File>,
+    ) -> Result<(Self, Hierarchy, Metadata)> {
+        Self::open_inner(input, source_name, file, true)
+    }
+
+    /// Validates the same body without retaining a query position index.
+    pub(crate) fn open_metadata(
+        input: Box<dyn Input>,
+        source_name: String,
+        file: Option<File>,
+    ) -> Result<(Self, Hierarchy, Metadata)> {
+        Self::open_inner(input, source_name, file, false)
+    }
+
+    fn open_inner(
+        input: Box<dyn Input>,
+        source_name: String,
+        file: Option<File>,
+        query: bool,
     ) -> Result<(Self, Hierarchy, Metadata)> {
         let mut tokens = Tokens {
             input,
@@ -553,12 +572,15 @@ impl Reader {
             dense_ids: Arc::new(dense_ids),
             encodings,
             index: None,
+            #[cfg(all(test, unix))]
+            index_queries: AtomicUsize::new(0),
             #[cfg(unix)]
             parallel: None,
         };
-        let mut records = index::Builder::new(BUILDER_BYTES);
+        // Only the parallel opening path consumes the position index, so a
+        // serial opening retains none.
         metadata.time_span = if let Some((span, comments, encodings, index)) =
-            file.and_then(|file| reader.parallel_open(file))
+            file.and_then(|file| reader.parallel_open(file, query))
         {
             metadata.comments.extend(comments);
             reader.encodings = encodings;
@@ -570,16 +592,10 @@ impl Reader {
                 None,
                 OpeningSinks {
                     comments: Some(&mut metadata.comments),
-                    records: Some(&mut records),
+                    records: None,
                 },
                 |_, _, _, _| ControlFlow::<()>::Continue(()),
             )?;
-            reader.index = index::Index::build(
-                [records],
-                reader.encodings.len(),
-                INDEX_BYTES,
-                BUILD_PEAK_BYTES,
-            );
             span
         };
         let hierarchy = Hierarchy::new(scopes, variables, reader.encodings.clone());
@@ -587,7 +603,7 @@ impl Reader {
     }
 
     #[cfg(unix)]
-    fn parallel_open(&mut self, file: File) -> Option<Opening> {
+    fn parallel_open(&mut self, file: File, collect: bool) -> Option<Opening> {
         let end = usize::try_from(file.metadata().ok()?.len()).ok()?;
         let start = usize::try_from(self.body).ok()?;
         let length = end.checked_sub(start)?;
@@ -612,7 +628,7 @@ impl Reader {
             cuts.push(cut);
         }
         cuts.push(end);
-        let result = self.parallel_open_with_cuts(file.try_clone().ok()?, &cuts)?;
+        let result = self.parallel_open_with_cuts(file.try_clone().ok()?, &cuts, collect)?;
         self.parallel = Some(ParallelSource {
             file: Arc::new(file),
             cuts,
@@ -622,7 +638,12 @@ impl Reader {
     }
 
     #[cfg(unix)]
-    fn parallel_open_with_cuts(&self, file: File, cuts: &[usize]) -> Option<Opening> {
+    fn parallel_open_with_cuts(
+        &self,
+        file: File,
+        cuts: &[usize],
+        collect: bool,
+    ) -> Option<Opening> {
         let file = Arc::new(file);
         let workers = cuts.len().saturating_sub(1).max(1);
         let parts = thread::scope(|scope| {
@@ -660,16 +681,19 @@ impl Reader {
                             dense_ids,
                             encodings,
                             index: None,
+                            #[cfg(all(test, unix))]
+                            index_queries: AtomicUsize::new(0),
                             parallel: None,
                         };
                         let mut comments = Vec::new();
-                        let mut records = index::Builder::new(BUILDER_BYTES / workers);
+                        let mut records =
+                            collect.then(|| index::Builder::new(BUILDER_BYTES / workers));
                         let (_, span, seen) = reader.walk(
                             u64::MAX,
                             None,
                             OpeningSinks {
                                 comments: Some(&mut comments),
-                                records: Some(&mut records),
+                                records: records.as_mut(),
                             },
                             |_, _, _, _| ControlFlow::<()>::Continue(()),
                         )?;
@@ -732,7 +756,12 @@ impl Reader {
                 encodings[index] = Encoding::String;
             }
         }
-        let index = index::Index::build(records, encodings.len(), INDEX_BYTES, BUILD_PEAK_BYTES);
+        let index = if collect {
+            let records = records.into_iter().collect::<Option<Vec<_>>>()?;
+            index::Index::build(records, encodings.len(), INDEX_BYTES, BUILD_PEAK_BYTES)
+        } else {
+            None
+        };
         Some((span, comments, encodings, index))
     }
 
@@ -816,6 +845,8 @@ impl Reader {
                             dense_ids,
                             encodings,
                             index: None,
+                            #[cfg(all(test, unix))]
+                            index_queries: AtomicUsize::new(0),
                             parallel: None,
                         };
                         let mut values = HashMap::<usize, ChunkValue>::new();
@@ -1002,6 +1033,8 @@ impl Reader {
                 block: false,
             },
         };
+        #[cfg(all(test, unix))]
+        self.index_queries.fetch_add(1, Ordering::Relaxed);
         Some((samples, position))
     }
 
@@ -1103,6 +1136,11 @@ impl Reader {
         mut cuts: Vec<usize>,
         last_time: u64,
     ) {
+        // A serial test opening has no index. Build the one a parallel opening
+        // would retain so the reached-path tests use the production lookup.
+        if self.index.is_none() {
+            self.rebuild_index_for_test();
+        }
         cuts.insert(0, self.body as usize);
         self.parallel = Some(ParallelSource {
             file: Arc::new(file),
@@ -1111,16 +1149,35 @@ impl Reader {
         });
     }
 
+    #[cfg(all(test, unix))]
+    fn rebuild_index_for_test(&mut self) {
+        let start = self.body;
+        if self.tokens.input.seek(SeekFrom::Start(start)).is_err() {
+            return;
+        }
+        self.tokens.offset = start;
+        self.position = None;
+        let mut records = index::Builder::new(BUILDER_BYTES);
+        let _ = self.walk(
+            u64::MAX,
+            None,
+            OpeningSinks {
+                comments: None,
+                records: Some(&mut records),
+            },
+            |_, _, _, _| ControlFlow::<()>::Continue(()),
+        );
+        self.index = index::Index::build(
+            [records],
+            self.encodings.len(),
+            INDEX_BYTES,
+            BUILD_PEAK_BYTES,
+        );
+        self.position = None;
+    }
+
     #[cfg(not(unix))]
-    fn parallel_open(
-        &self,
-        _: File,
-    ) -> Option<(
-        Option<TimeSpan>,
-        Vec<String>,
-        Vec<Encoding>,
-        Option<index::Index>,
-    )> {
+    fn parallel_open(&self, _: File, _: bool) -> Option<Opening> {
         None
     }
 
@@ -1245,6 +1302,8 @@ impl Reader {
                     dense_ids: Arc::clone(&self.dense_ids),
                     encodings: self.encodings.clone(),
                     index: None,
+                    #[cfg(all(test, unix))]
+                    index_queries: AtomicUsize::new(0),
                     parallel: None,
                 };
                 let stop = range[1] as u64;
@@ -2008,6 +2067,8 @@ mod replay_tests {
             None,
         )
         .unwrap();
+        let mut reader = reader;
+        reader.rebuild_index_for_test();
         let cut = source
             .windows(3)
             .position(|bytes| bytes == b"\n#1")
@@ -2017,6 +2078,7 @@ mod replay_tests {
             .parallel_open_with_cuts(
                 File::open(&path).unwrap(),
                 &[reader.body as usize, cut, source.len()],
+                true,
             )
             .unwrap();
         assert_eq!(span, metadata.time_span);
@@ -2065,7 +2127,8 @@ mod replay_tests {
                 real_reader
                     .parallel_open_with_cuts(
                         File::open(&path).unwrap(),
-                        &[real_reader.body as usize, cut, source.len()]
+                        &[real_reader.body as usize, cut, source.len()],
+                        true
                     )
                     .is_none()
             );
@@ -2091,7 +2154,8 @@ mod replay_tests {
             reader
                 .parallel_open_with_cuts(
                     File::open(&path).unwrap(),
-                    &[reader.body as usize, cut, source.len()]
+                    &[reader.body as usize, cut, source.len()],
+                    true
                 )
                 .is_none()
         );
@@ -2215,9 +2279,11 @@ mod replay_tests {
             None,
         )
         .unwrap();
+        let signals = ["a", "b", "r"].map(|name| hierarchy.signal(name).unwrap());
+        let event = hierarchy.signal("e").unwrap();
+        reader.force_parallel_for_test(File::open(&path).unwrap(), vec![source.len()], 4);
         assert!(reader.has_index());
         // A dump-block event record is a snapshot, not an occurrence.
-        let event = hierarchy.signal("e").unwrap();
         let times = reader
             .index
             .as_ref()
@@ -2227,12 +2293,6 @@ mod replay_tests {
             .map(|entry| entry.time)
             .collect::<Vec<_>>();
         assert_eq!(times, [1, 3]);
-        let signals = ["a", "b", "r"].map(|name| hierarchy.signal(name).unwrap());
-        reader.force_parallel_for_test(
-            File::open(&path).unwrap(),
-            vec![source.len()],
-            reader.index.as_ref().unwrap().entries(signals[0].index())[3].time,
-        );
         let mut serial =
             crate::open_bytes_with("serial.vcd", source.as_slice().into(), "vcd-native").unwrap();
         let reference = ["a", "b", "r"].map(|name| serial.hierarchy().signal(name).unwrap());
@@ -2325,9 +2385,9 @@ mod replay_tests {
             None,
         )
         .unwrap();
-        assert!(reader.has_index());
         let signal = hierarchy.signal("a").unwrap();
         reader.force_parallel_for_test(File::open(&path).unwrap(), vec![source.len()], 71);
+        assert!(reader.has_index());
         let source_ref = reader.parallel.as_ref().unwrap();
         // More than the proof budget of identical tick-final values.
         assert!(
@@ -2345,6 +2405,209 @@ mod replay_tests {
                 ..
             }]
         ));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn byte_small_file_and_metadata_opens_retain_no_unused_index() {
+        let source = b"$var wire 1 ! a $end $enddefinitions $end #0 0!\n#1 1!\n";
+        let bytes =
+            crate::open_bytes_with("bytes.vcd", source.as_slice().into(), "vcd-native").unwrap();
+        let crate::backends::Reader::Vcd(reader) = &bytes.reader else {
+            unreachable!()
+        };
+        assert!(reader.index.is_none());
+        assert!(reader.parallel.is_none());
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tmp")
+            .join(format!("small-open-{}.vcd", std::process::id()));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, source).unwrap();
+        let wave = crate::open_with(&path, "vcd-native").unwrap();
+        let crate::backends::Reader::Vcd(reader) = &wave.reader else {
+            unreachable!()
+        };
+        assert!(reader.index.is_none());
+        assert!(reader.parallel.is_none());
+
+        // Metadata-only opening validates the same body without a query index.
+        let (reader, _, metadata) = Reader::open_metadata(
+            Box::new(BufReader::new(File::open(&path).unwrap())),
+            "metadata.vcd".into(),
+            File::open(&path).ok(),
+        )
+        .unwrap();
+        assert!(reader.index.is_none());
+        assert_eq!(metadata.time_span(), wave.metadata().time_span());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn indexed_seed_is_literal_and_survives_selection_stops() {
+        use crate::{ScanRef, TimeRange};
+        use std::sync::atomic::Ordering;
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tmp")
+            .join(format!("indexed-seed-{}.vcd", std::process::id()));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // An excursion inside tick 5 returns to the tick-3 value, so it does not
+        // advance changed_at. Tick 7 changes it.
+        let source = b"$var wire 2 ! a $end $enddefinitions $end \
+            #2 b00 !\n#3 b01 !\n#5 b11 !\n#5 b01 !\n#7 b11 !\n#7 b00 !\n";
+        std::fs::write(&path, source).unwrap();
+        // A record position is the separator before its token; the decoder
+        // skips leading whitespace.
+        let at = |marker: &[u8]| {
+            (source
+                .windows(marker.len())
+                .position(|bytes| bytes == marker)
+                .unwrap()
+                + 2) as u64
+        };
+        let file_len = source.len() as u64;
+        let bits = |text: &str| Value::Bits(crate::Bits::from_ascii(text.as_bytes()).unwrap());
+        let (mut reader, hierarchy, _) = Reader::open(
+            Box::new(BufReader::new(File::open(&path).unwrap())),
+            "seed.vcd".into(),
+            None,
+        )
+        .unwrap();
+        let signal = hierarchy.signal("a").unwrap();
+        reader.force_parallel_for_test(File::open(&path).unwrap(), vec![source.len()], 7);
+        assert!(reader.has_index());
+        let source_ref = reader.parallel.as_ref().unwrap();
+        // Literal values, normalized change times and the resume record itself.
+        for (time, value, changed, resume) in [
+            (2, "00", None, (at(b"#3 b01"), 3)),
+            (3, "01", Some(3), (at(b"#5 b11"), 5)),
+            (4, "01", Some(3), (at(b"#5 b11"), 5)),
+            (5, "01", Some(3), (at(b"#7 b11"), 7)),
+            (6, "01", Some(3), (at(b"#7 b11"), 7)),
+            (7, "00", Some(7), (file_len, 7)),
+            (10, "00", Some(7), (file_len, 10)),
+        ] {
+            let (samples, position) = reader
+                .indexed_prefix(source_ref, &[signal], Time::from_ticks(time))
+                .unwrap();
+            match samples.as_slice() {
+                [
+                    Sample::Value {
+                        value: observed,
+                        changed_at,
+                        ..
+                    },
+                ] => {
+                    assert!(
+                        observed.as_ref().same_value(bits(value).as_ref()),
+                        "value at {time}"
+                    );
+                    assert_eq!(changed_at.map(Time::ticks), changed, "changed_at at {time}");
+                }
+                _ => panic!("expected one value at {time}"),
+            }
+            assert_eq!(
+                (position.offset, position.time),
+                resume,
+                "resume after {time}"
+            );
+        }
+        assert_eq!(reader.index_queries.load(Ordering::Relaxed), 7);
+        drop(reader);
+
+        // A Selection uses the same seed, including a gap and a later record.
+        let mut wave = crate::open_with(&path, "vcd-native").unwrap();
+        let signal = wave.hierarchy().signal("a").unwrap();
+        let crate::backends::Reader::Vcd(reader) = &mut wave.reader else {
+            unreachable!()
+        };
+        reader.force_parallel_for_test(File::open(&path).unwrap(), vec![source.len()], 7);
+        let samples = wave.samples(&[signal], Time::from_ticks(5)).unwrap();
+        match samples.as_slice() {
+            [
+                Sample::Value {
+                    value, changed_at, ..
+                },
+            ] => {
+                assert!(value.as_ref().same_value(bits("01").as_ref()));
+                assert_eq!(changed_at.map(Time::ticks), Some(3));
+            }
+            _ => panic!("expected one point value"),
+        }
+        let crate::backends::Reader::Vcd(reader) = &wave.reader else {
+            unreachable!()
+        };
+        assert!(reader.index_queries.load(Ordering::Relaxed) > 0);
+        // A repeated, backwards and after-EOF access on one retained selection.
+        let mut selection = wave.select(&[signal]).unwrap();
+        for (time, value, changed) in [
+            (6, "01", Some(3)),
+            (3, "01", Some(3)),
+            (7, "00", Some(7)),
+            (100, "00", Some(7)),
+        ] {
+            match selection
+                .samples(Time::from_ticks(time))
+                .unwrap()
+                .as_slice()
+            {
+                [
+                    Sample::Value {
+                        value: observed,
+                        changed_at,
+                        ..
+                    },
+                ] => {
+                    assert!(observed.as_ref().same_value(bits(value).as_ref()));
+                    assert_eq!(changed_at.map(Time::ticks), changed);
+                }
+                _ => panic!("expected one value at {time}"),
+            }
+        }
+        drop(selection);
+        // A stop on Initial and on Change keeps later queries exact.
+        let initial = wave
+            .scan(
+                &[signal],
+                TimeRange::closed(Time::from_ticks(5), Time::from_ticks(7)),
+                |record| {
+                    assert!(matches!(record, ScanRef::Initial { .. }));
+                    ControlFlow::Break(())
+                },
+            )
+            .unwrap();
+        assert!(initial.is_break());
+        let change = wave
+            .scan(
+                &[signal],
+                TimeRange::closed(Time::from_ticks(3), Time::from_ticks(7)),
+                |record| {
+                    if matches!(record, ScanRef::Change { .. }) {
+                        return ControlFlow::Break(());
+                    }
+                    ControlFlow::Continue(())
+                },
+            )
+            .unwrap();
+        assert!(change.is_break());
+        match wave
+            .samples(&[signal], Time::from_ticks(7))
+            .unwrap()
+            .as_slice()
+        {
+            [
+                Sample::Value {
+                    value, changed_at, ..
+                },
+            ] => {
+                assert!(value.as_ref().same_value(bits("00").as_ref()));
+                assert_eq!(changed_at.map(Time::ticks), Some(7));
+            }
+            _ => panic!("expected the final value"),
+        }
         std::fs::remove_file(path).unwrap();
     }
 
