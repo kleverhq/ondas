@@ -1227,10 +1227,11 @@ impl Reader {
                 let count = (stop - start) as u64;
                 records = records.checked_add(count)?;
                 last = last.max(list[stop - 1].offset);
-                // Encoded width and density, not the declared width alone.
-                estimate = estimate.checked_add(
-                    count.checked_mul(index.max_token().saturating_add(READ_WINDOW as u64))?,
-                )?;
+                // A record's token lies in the reused source window unless it
+                // is larger than that window. One window read per record is the
+                // conservative bound; the token bytes are not added again.
+                estimate = estimate
+                    .checked_add(count.checked_mul(index.max_token().max(READ_WINDOW as u64))?)?;
             }
             streams.push((signal_index, start, stop));
         }
@@ -3569,6 +3570,64 @@ mod replay_tests {
         assert_eq!(
             observed,
             traversal_records(&mut walked, &signals, Time::from_ticks(1), body, None)
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn indexed_traversal_counts_one_window_per_record() {
+        use std::sync::atomic::Ordering;
+
+        // A wide unselected record raises the global token high-water mark.
+        // The selected one-bit records are about 5 KiB apart, so one 4 KiB
+        // window per record is cheaper than the walk. The sum of the token and
+        // the window would wrongly refuse this traversal.
+        let wide = "0".repeat(1000);
+        let mut source = Vec::from(
+            b"$var wire 1 ! a $end $var wire 1000 w wide $end $enddefinitions $end #0 0!\n#1 "
+                as &[u8],
+        );
+        for step in 0..100 {
+            source.extend_from_slice(if step % 2 == 0 { b"1! " } else { b"0! " });
+            for _ in 0..5 {
+                source.extend_from_slice(format!("b{wide} w ").as_bytes());
+            }
+        }
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tmp")
+            .join(format!("traversal-window-model-{}.vcd", std::process::id()));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, &source).unwrap();
+        let open = |path: &std::path::Path| {
+            let (mut reader, hierarchy, _) = Reader::open(
+                Box::new(BufReader::new(File::open(path).unwrap())),
+                "window-model.vcd".into(),
+                None,
+            )
+            .unwrap();
+            reader.force_parallel_for_test(File::open(path).unwrap(), vec![source.len()], 1);
+            (reader, hierarchy)
+        };
+        let (mut indexed, hierarchy) = open(&path);
+        let (mut walked, _) = open(&path);
+        walked.disable_index();
+        let signal = hierarchy.signal("a").unwrap();
+        let body = Some(Position {
+            offset: indexed.body,
+            time: 0,
+            block: false,
+        });
+        let before = indexed.traversal_queries.load(Ordering::Relaxed);
+        let observed = traversal_records(&mut indexed, &[signal], Time::from_ticks(1), body, None);
+        assert_eq!(observed.len(), 101, "the tick-zero record and 100 later");
+        assert!(
+            indexed.traversal_queries.load(Ordering::Relaxed) > before,
+            "one window per selected record must stay cheaper than the walk"
+        );
+        assert_eq!(
+            observed,
+            traversal_records(&mut walked, &[signal], Time::from_ticks(1), body, None)
         );
         std::fs::remove_file(path).unwrap();
     }
