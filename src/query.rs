@@ -108,6 +108,19 @@ impl Selection<'_> {
         }
     }
 
+    /// Test probe: VCD indexed traversals for this retained selection.
+    #[cfg(all(test, unix))]
+    pub(crate) fn vcd_traversal_queries(&self) -> Option<usize> {
+        match &self.waveform.reader {
+            crate::backends::Reader::Vcd(reader) => Some(
+                reader
+                    .traversal_queries
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            ),
+            _ => None,
+        }
+    }
+
     /// Returns the hierarchy associated with the selected waveform.
     pub fn hierarchy(&self) -> &Hierarchy {
         self.waveform.hierarchy()

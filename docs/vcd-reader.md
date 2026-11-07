@@ -18,6 +18,8 @@ A file opening that uses chunked validation also retains a bounded index of vali
 
 A late point or prefix decodes the last indexed record of each selected signal and proves its `changed_at` from earlier records. The proof compares tick-final values, so an excursion that returns to the entering value does not advance the time. The read keeps the chronological replay when a value, a selection or the transient records exceed the private budgets, when the merge peak would exceed them, when an allocation fails, when the proof runs out, or when the next record lies in a dump block. A retained record is decoded again from the source with the same encoding and validation rules. Opening still validates the whole body, and source files must remain unchanged.
 
+A sparse selection reads its indexed records in tick order instead of walking every intervening record. The byte offset is the consumed-record boundary, so a checkpoint inside a tick never repeats an already consumed record. Dense selections, strings, values wider than the bounded token window, unsupported encodings and requests whose merged records would not save reads keep the walk. An explicit-time batch reads one traversal of its requested window from an indexed entering state; it does not reuse an earlier selection replay.
+
 ## A checkpoint needs parser context
 
 Without an index entry, the identifier map cannot seek to a tick. Without reusable state, a late read must establish selected state from the index or the body. A selection can retain its last completed state and one bounded boundary checkpoint. The checkpoint needs dump-block context as well as a byte offset and timestamp.
