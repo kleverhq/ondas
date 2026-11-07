@@ -40,6 +40,13 @@ const BUILD_PEAK_BYTES: usize = INDEX_BYTES + BUILDER_BYTES;
 // One record decode may walk back over earlier records to prove `changed_at`.
 // An unproven timestamp keeps the chronological path, never a guess.
 const PROOF_STEPS: usize = 64;
+// The indexed read retains one bounded source window. A record whose raw token
+// exceeds the working-state policy keeps the walk; the position index stays a
+// map of validated positions, not a value store.
+#[cfg(unix)]
+const READ_WINDOW: usize = 4096;
+#[cfg(unix)]
+const TOKEN_BYTES: u64 = 8 * 1024 * 1024;
 
 fn malformed(message: impl Into<String>) -> Error {
     Error::Malformed {
@@ -187,6 +194,14 @@ pub(crate) struct Reader {
     pub(crate) traversal_queries: AtomicUsize,
     #[cfg(all(test, unix))]
     pub(crate) traversal_records: AtomicUsize,
+    #[cfg(all(test, unix))]
+    pub(crate) read_calls: AtomicUsize,
+    #[cfg(all(test, unix))]
+    pub(crate) window_refills: AtomicUsize,
+    #[cfg(all(test, unix))]
+    pub(crate) borrowed_decodes: AtomicUsize,
+    #[cfg(all(test, unix))]
+    pub(crate) fail_read_at: Option<usize>,
     #[cfg(unix)]
     parallel: Option<ParallelSource>,
 }
@@ -582,6 +597,14 @@ impl Reader {
             traversal_queries: AtomicUsize::new(0),
             #[cfg(all(test, unix))]
             traversal_records: AtomicUsize::new(0),
+            #[cfg(all(test, unix))]
+            read_calls: AtomicUsize::new(0),
+            #[cfg(all(test, unix))]
+            window_refills: AtomicUsize::new(0),
+            #[cfg(all(test, unix))]
+            borrowed_decodes: AtomicUsize::new(0),
+            #[cfg(all(test, unix))]
+            fail_read_at: None,
             #[cfg(unix)]
             parallel: None,
         };
@@ -674,6 +697,7 @@ impl Reader {
                     );
                     let offset = range[0] as u64;
                     thread::Builder::new().spawn_scoped(scope, move || {
+                        let signals = encodings.len();
                         let mut reader = Self {
                             tokens: Tokens {
                                 input: Box::new(input),
@@ -695,11 +719,19 @@ impl Reader {
                             traversal_queries: AtomicUsize::new(0),
                             #[cfg(all(test, unix))]
                             traversal_records: AtomicUsize::new(0),
+                            #[cfg(all(test, unix))]
+                            read_calls: AtomicUsize::new(0),
+                            #[cfg(all(test, unix))]
+                            window_refills: AtomicUsize::new(0),
+                            #[cfg(all(test, unix))]
+                            borrowed_decodes: AtomicUsize::new(0),
+                            #[cfg(all(test, unix))]
+                            fail_read_at: None,
                             parallel: None,
                         };
                         let mut comments = Vec::new();
                         let mut records =
-                            collect.then(|| index::Builder::new(BUILDER_BYTES / workers));
+                            collect.then(|| index::Builder::new(signals, BUILDER_BYTES / workers));
                         let (_, span, seen) = reader.walk(
                             u64::MAX,
                             None,
@@ -863,6 +895,14 @@ impl Reader {
                             traversal_queries: AtomicUsize::new(0),
                             #[cfg(all(test, unix))]
                             traversal_records: AtomicUsize::new(0),
+                            #[cfg(all(test, unix))]
+                            read_calls: AtomicUsize::new(0),
+                            #[cfg(all(test, unix))]
+                            window_refills: AtomicUsize::new(0),
+                            #[cfg(all(test, unix))]
+                            borrowed_decodes: AtomicUsize::new(0),
+                            #[cfg(all(test, unix))]
+                            fail_read_at: None,
                             parallel: None,
                         };
                         let mut values = HashMap::<usize, ChunkValue>::new();
@@ -990,6 +1030,9 @@ impl Reader {
                 return None;
             }
             if selected.insert(signal.index()) {
+                if index.max_token(signal.index()) > TOKEN_BYTES {
+                    return None;
+                }
                 let width = match signal.encoding() {
                     Encoding::Bits { width } => width as usize,
                     Encoding::Real => std::mem::size_of::<f64>(),
@@ -1019,8 +1062,14 @@ impl Reader {
                 continue;
             };
             let offset = index.entries(signal_index)[at].offset;
-            let value = self.indexed_value(&mut lookup, offset, signal_index)?;
-            let changed_at = self.indexed_changed_at(&mut lookup, signal_index, at, &value)?;
+            let value = match self.indexed_value(&mut lookup, offset, signal_index) {
+                Ok(Some(value)) => value,
+                _ => return None,
+            };
+            let changed_at = match self.indexed_changed_at(&mut lookup, signal_index, at, &value) {
+                Ok(Some(changed_at)) => changed_at,
+                _ => return None,
+            };
             samples.push(Sample::Value {
                 signal,
                 value,
@@ -1062,10 +1111,10 @@ impl Reader {
     /// Reads selected records in source order from validated positions.
     ///
     /// The byte lower bound, not the time, is the consumed-record boundary: a
-    /// checkpoint can sit inside a tick. The sparse-selection estimate and all
-    /// encoding checks happen before the first callback; a dense or unsupported
-    /// request returns `None` and keeps the walk. A failure after delivery is an
-    /// error, never a restart.
+    /// checkpoint can sit inside a tick. Encoding, raw-token capability and the
+    /// cost estimate are decided before the first callback; an unsupported,
+    /// oversized or dense request returns `None` and keeps the walk. A genuine
+    /// IO or source inconsistency after delivery is an error, never a restart.
     #[cfg(unix)]
     fn indexed_traversal<B>(
         &mut self,
@@ -1076,20 +1125,10 @@ impl Reader {
     ) -> Option<Result<ControlFlow<B>>> {
         use std::{cmp::Reverse, collections::BinaryHeap};
 
-        const WORD_LIMIT: usize = 64 * 1024;
-        // One merged record is estimated as no cheaper than this much
-        // sequential window. It is a backend estimate, not a platform limit.
-        const MERGE_BYTES: usize = 4096;
         let index = self.index.as_ref()?;
         let source = self.parallel.as_ref()?;
         let file = source.file.as_ref();
         let file_len = file.metadata().ok()?.len();
-        let mut lookup = Lookup {
-            index,
-            file,
-            file_len,
-            scratch: Scratch::default(),
-        };
         let mut selected = Vec::new();
         let mut seen = HashSet::new();
         for &signal in signals {
@@ -1098,9 +1137,12 @@ impl Reader {
                 continue;
             }
             match self.encodings[signal_index] {
-                Encoding::Bits { width } if width as usize + 2 < WORD_LIMIT => {}
-                Encoding::Real | Encoding::Event => {}
-                Encoding::Bits { .. } | Encoding::String | Encoding::Unsupported => return None,
+                Encoding::Bits { .. } | Encoding::Real | Encoding::Event => {}
+                Encoding::String | Encoding::Unsupported => return None,
+            }
+            // A raw record larger than the traversal working state keeps the walk.
+            if index.max_token(signal_index) > TOKEN_BYTES {
+                return None;
             }
             selected.push(signal_index);
         }
@@ -1108,7 +1150,8 @@ impl Reader {
             return None;
         }
         let mut streams = Vec::with_capacity(selected.len());
-        let mut records = 0_usize;
+        let mut records = 0_u64;
+        let mut estimate = 0_u64;
         let mut last = lower;
         for &signal_index in &selected {
             let list = index.entries(signal_index);
@@ -1116,21 +1159,38 @@ impl Reader {
             let end_at = list.partition_point(|entry| entry.time <= end.ticks());
             let stop = end_at.max(start);
             if stop > start {
-                records = records.checked_add(stop - start)?;
+                let count = (stop - start) as u64;
+                records = records.checked_add(count)?;
                 last = last.max(list[stop - 1].offset);
+                // Encoded width and density, not the declared width alone.
+                estimate = estimate.checked_add(
+                    count.checked_mul(
+                        index
+                            .max_token(signal_index)
+                            .saturating_add(READ_WINDOW as u64),
+                    )?,
+                )?;
             }
             streams.push((signal_index, start, stop));
         }
         if records == 0 {
             return Some(Ok(ControlFlow::Continue(())));
         }
-        if (records as u64).saturating_mul(MERGE_BYTES as u64) > last.saturating_sub(lower) {
+        if estimate >= last.saturating_sub(lower) {
             return None;
         }
+        let mut lookup = Lookup {
+            index,
+            file,
+            file_len,
+            scratch: Scratch::default(),
+        };
         #[cfg(all(test, unix))]
         {
             self.traversal_queries.fetch_add(1, Ordering::Relaxed);
-            self.traversal_records.fetch_add(records, Ordering::Relaxed);
+            self.traversal_records
+                .fetch_add(records as usize, Ordering::Relaxed);
+            lookup.scratch.fail_at = self.fail_read_at;
         }
         let mut heap = BinaryHeap::new();
         let mut cursors = Vec::with_capacity(streams.len());
@@ -1141,62 +1201,98 @@ impl Reader {
                 heap.push(Reverse((entry.time, entry.offset, stream)));
             }
         }
+        let outcome =
+            self.indexed_traversal_inner(&mut lookup, &streams, &mut cursors, &mut heap, visitor);
+        #[cfg(all(test, unix))]
+        {
+            self.read_calls
+                .fetch_add(lookup.scratch.reads, Ordering::Relaxed);
+            self.window_refills
+                .fetch_add(lookup.scratch.refills, Ordering::Relaxed);
+            self.borrowed_decodes
+                .fetch_add(lookup.scratch.borrowed, Ordering::Relaxed);
+        }
+        outcome
+    }
+
+    #[cfg(unix)]
+    fn indexed_traversal_inner<B>(
+        &self,
+        lookup: &mut Lookup<'_>,
+        streams: &[(usize, usize, usize)],
+        cursors: &mut [usize],
+        heap: &mut std::collections::BinaryHeap<std::cmp::Reverse<(u64, u64, usize)>>,
+        visitor: &mut impl for<'v> FnMut(usize, Time, ValueRef<'v>, Position) -> ControlFlow<B>,
+    ) -> Option<Result<ControlFlow<B>>> {
+        use std::cmp::Reverse;
+
         let mut delivered = false;
         while let Some(Reverse((time, offset, stream))) = heap.pop() {
             let signal_index = streams[stream].0;
-            let value = match self.indexed_value(&mut lookup, offset, signal_index) {
-                Some(value) => value,
-                None if delivered => {
-                    return Some(Err(malformed("indexed record cannot be decoded")));
+            let block = lookup.index.in_block(offset);
+            let decoded = match self.decode_into(lookup, offset, signal_index) {
+                Ok(Some(decoded)) => decoded,
+                Ok(None) if delivered => {
+                    return Some(Err(malformed(
+                        "indexed record does not match its validated position",
+                    )));
                 }
-                None => return None,
+                Ok(None) => return None,
+                Err(error) => return Some(Err(Error::Io(error))),
             };
             delivered = true;
             if let ControlFlow::Break(value) = visitor(
                 signal_index,
                 Time::from_ticks(time),
-                value.as_ref(),
+                decoded.as_ref(),
                 Position {
                     offset,
                     time,
-                    block: index.in_block(offset),
+                    block,
                 },
             ) {
                 return Some(Ok(ControlFlow::Break(value)));
             }
+            #[cfg(all(test, unix))]
+            {
+                lookup.scratch.borrowed += 1;
+            }
             cursors[stream] += 1;
             if cursors[stream] < streams[stream].2 {
-                let entry = index.entries(signal_index)[cursors[stream]];
+                let entry = lookup.index.entries(signal_index)[cursors[stream]];
                 heap.push(Reverse((entry.time, entry.offset, stream)));
             }
         }
         Some(Ok(ControlFlow::Continue(())))
     }
 
-    /// Decodes one record at a validated source offset.
+    /// Decodes one record at a validated source offset into shared scratch.
     #[cfg(unix)]
-    fn indexed_value(
+    fn decode_into<'a>(
         &self,
-        lookup: &mut Lookup<'_>,
+        lookup: &'a mut Lookup<'_>,
         offset: u64,
         expected: usize,
-    ) -> Option<Value> {
-        let next = read_word(
-            lookup.file,
-            lookup.file_len,
-            offset,
-            &mut lookup.scratch.word,
-            &mut lookup.scratch.buffer,
-        )?;
-        let prefix = lookup.scratch.word.first()?.to_ascii_lowercase();
+    ) -> io::Result<Option<Decoded<'a>>> {
+        let next = match lookup
+            .scratch
+            .read_token(lookup.file, lookup.file_len, offset, false)?
+        {
+            Some(next) => next,
+            None => return Ok(None),
+        };
+        let Some(prefix) = lookup.scratch.word.first().copied() else {
+            return Ok(None);
+        };
+        let prefix = prefix.to_ascii_lowercase();
         let (payload, id): (&[u8], &[u8]) = if matches!(prefix, b'b' | b'r' | b's') {
-            read_word(
-                lookup.file,
-                lookup.file_len,
-                next,
-                &mut lookup.scratch.id,
-                &mut lookup.scratch.buffer,
-            )?;
+            if lookup
+                .scratch
+                .read_token(lookup.file, lookup.file_len, next, true)?
+                .is_none()
+            {
+                return Ok(None);
+            }
             (&lookup.scratch.word[1..], lookup.scratch.id.as_slice())
         } else {
             (&lookup.scratch.word[..1], &lookup.scratch.word[1..])
@@ -1207,41 +1303,68 @@ impl Reader {
             identifier_number(id)
                 .and_then(|number| self.dense_ids.get(number).copied().flatten())
                 .or_else(|| self.ids.get(id).copied())
-        }?;
+        };
+        let Some(index) = index else {
+            return Ok(None);
+        };
         if index != expected {
-            return None;
+            return Ok(None);
         }
         match (self.encodings[index], prefix) {
-            (Encoding::Real, b'r') => Some(Value::Real(real(payload).ok()?)),
+            (Encoding::Real, b'r') => match real(payload) {
+                Ok(real) => Ok(Some(Decoded::Real(real))),
+                Err(_) => Ok(None),
+            },
             (Encoding::Event, _) if !matches!(prefix, b'r' | b's') => {
                 if payload.is_empty() || BitsRef::from_ascii(payload).is_none() {
-                    return None;
+                    return Ok(None);
                 }
-                Some(Value::Event { occurrences: 1 })
+                Ok(Some(Decoded::Event))
             }
             (Encoding::Bits { width }, _) if !matches!(prefix, b'r' | b's') => {
                 if payload.is_empty() || BitsRef::from_ascii(payload).is_none() {
-                    return None;
+                    return Ok(None);
                 }
                 let width = width as usize;
                 let fill = match payload[0].to_ascii_lowercase() {
                     b'0' | b'1' => b'0',
                     other => other,
                 };
-                let mut bits = vec![fill; width.saturating_sub(payload.len())];
-                bits.extend_from_slice(&payload[payload.len().saturating_sub(width)..]);
-                Some(Value::Bits(crate::Bits::from_validated_ascii(bits)))
+                lookup.scratch.bits.clear();
+                lookup
+                    .scratch
+                    .bits
+                    .resize(width.saturating_sub(payload.len()), fill);
+                lookup
+                    .scratch
+                    .bits
+                    .extend_from_slice(&payload[payload.len().saturating_sub(width)..]);
+                Ok(Some(Decoded::Bits(&lookup.scratch.bits)))
             }
-            _ => None,
+            _ => Ok(None),
         }
+    }
+
+    /// Owned decode used by the bounded prefix proof.
+    #[cfg(unix)]
+    fn indexed_value(
+        &self,
+        lookup: &mut Lookup<'_>,
+        offset: u64,
+        expected: usize,
+    ) -> io::Result<Option<Value>> {
+        Ok(self
+            .decode_into(lookup, offset, expected)?
+            .map(|decoded| decoded.to_owned()))
     }
 
     /// Proves the tick that established the current value.
     ///
     /// The search compares tick-final values, so an excursion that returns to
-    /// the entering value does not advance `changed_at`. `Some(None)` means no
-    /// preceding observation proves an earlier state. `None` means the bounded
-    /// proof ran out; the caller must keep the chronological attribution.
+    /// the entering value does not advance `changed_at`. `Ok(Some(None))` means
+    /// no preceding observation proves an earlier state. `Ok(None)` means the
+    /// bounded proof or a required decode was unavailable; the caller keeps the
+    /// chronological attribution. IO failures keep their type.
     #[cfg(unix)]
     fn indexed_changed_at(
         &self,
@@ -1249,23 +1372,26 @@ impl Reader {
         signal: usize,
         mut at: usize,
         value: &Value,
-    ) -> Option<Option<Time>> {
+    ) -> io::Result<Option<Option<Time>>> {
         for _ in 0..PROOF_STEPS {
             let time = lookup.index.entries(signal)[at].time;
             let before =
                 lookup.index.entries(signal)[..at].partition_point(|entry| entry.time < time);
             let Some(previous) = before.checked_sub(1) else {
-                return Some(None);
+                return Ok(Some(None));
             };
             let offset = lookup.index.entries(signal)[previous].offset;
-            let earlier = self.indexed_value(lookup, offset, signal)?;
+            let earlier = match self.decode_into(lookup, offset, signal)? {
+                Some(earlier) => earlier,
+                None => return Ok(None),
+            };
             if earlier.as_ref().same_value(value.as_ref()) {
                 at = previous;
                 continue;
             }
-            return Some(Some(Time::from_ticks(time)));
+            return Ok(Some(Some(Time::from_ticks(time))));
         }
-        None
+        Ok(None)
     }
 
     #[cfg(all(test, unix))]
@@ -1306,7 +1432,7 @@ impl Reader {
         }
         self.tokens.offset = start;
         self.position = None;
-        let mut records = index::Builder::new(BUILDER_BYTES);
+        let mut records = index::Builder::new(self.encodings.len(), BUILDER_BYTES);
         let _ = self.walk(
             u64::MAX,
             None,
@@ -1461,6 +1587,14 @@ impl Reader {
                     traversal_queries: AtomicUsize::new(0),
                     #[cfg(all(test, unix))]
                     traversal_records: AtomicUsize::new(0),
+                    #[cfg(all(test, unix))]
+                    read_calls: AtomicUsize::new(0),
+                    #[cfg(all(test, unix))]
+                    window_refills: AtomicUsize::new(0),
+                    #[cfg(all(test, unix))]
+                    borrowed_decodes: AtomicUsize::new(0),
+                    #[cfg(all(test, unix))]
+                    fail_read_at: None,
                     parallel: None,
                 };
                 let stop = range[1] as u64;
@@ -1752,7 +1886,7 @@ impl Reader {
                         records
                             .as_deref_mut()
                             .expect("indexing needs a builder")
-                            .record(index, time, offset);
+                            .record(index, time, offset, (word.len() as u64, id.len() as u64));
                     }
                     value
                 }
@@ -1762,7 +1896,7 @@ impl Reader {
                         records
                             .as_deref_mut()
                             .expect("indexing needs a builder")
-                            .record(index, time, offset);
+                            .record(index, time, offset, (word.len() as u64, id.len() as u64));
                     }
                     ValueRef::String(&string)
                 }
@@ -1784,7 +1918,12 @@ impl Reader {
                                 records
                                     .as_deref_mut()
                                     .expect("indexing needs a builder")
-                                    .record(index, time, offset);
+                                    .record(
+                                        index,
+                                        time,
+                                        offset,
+                                        (word.len() as u64, id.len() as u64),
+                                    );
                             }
                             continue;
                         }
@@ -1804,7 +1943,7 @@ impl Reader {
                             records
                                 .as_deref_mut()
                                 .expect("indexing needs a builder")
-                                .record(index, time, offset);
+                                .record(index, time, offset, (word.len() as u64, id.len() as u64));
                         }
                         ValueRef::Event { occurrences: 1 }
                     }
@@ -1840,13 +1979,23 @@ impl Reader {
     }
 }
 
-/// Reusable token and IO scratch for position lookups.
+/// One bounded reusable source window and decoded scratch for position lookups.
 #[cfg(unix)]
 #[derive(Default)]
 struct Scratch {
+    window: Vec<u8>,
+    window_start: u64,
     word: Vec<u8>,
     id: Vec<u8>,
-    buffer: Vec<u8>,
+    bits: Vec<u8>,
+    #[cfg(test)]
+    reads: usize,
+    #[cfg(test)]
+    refills: usize,
+    #[cfg(test)]
+    borrowed: usize,
+    #[cfg(test)]
+    fail_at: Option<usize>,
 }
 
 /// One validated position lookup context.
@@ -1858,74 +2007,143 @@ struct Lookup<'a> {
     scratch: Scratch,
 }
 
-/// Reads one whitespace-delimited token from a validated source position.
-///
-/// Returns the offset of the first byte after the token. A short read before
-/// the end of the file is not a token boundary, so the window grows instead.
-/// A token that does not fit a bounded window or an unexplained short read
-/// returns `None`, keeping the chronological path.
 #[cfg(unix)]
-fn read_word(
-    file: &File,
-    file_len: u64,
-    offset: u64,
-    word: &mut Vec<u8>,
-    buffer: &mut Vec<u8>,
-) -> Option<u64> {
-    const FIRST: usize = 128;
-    const LIMIT: usize = 64 * 1024;
-    let mut window = FIRST;
-    loop {
-        let remaining = file_len.checked_sub(offset)?;
-        if remaining == 0 {
-            return None;
+impl Scratch {
+    fn covers(&self, at: u64) -> bool {
+        at >= self.window_start && at < self.window_start + self.window.len() as u64
+    }
+
+    fn refill(&mut self, file: &File, file_len: u64, at: u64) -> io::Result<usize> {
+        let take = ((file_len.saturating_sub(at)).min(READ_WINDOW as u64)) as usize;
+        if self.window.len() < take {
+            self.window.resize(take, 0);
         }
-        let take = window.min(remaining as usize);
-        if buffer.len() < take {
-            buffer.resize(take, 0);
-        }
-        let count = file.read_at(&mut buffer[..take], offset).ok()?;
-        if count == 0 {
-            return None;
-        }
-        let end_of_file = offset + count as u64 >= file_len;
-        if count < take && !end_of_file {
-            if window >= LIMIT || take == remaining as usize {
-                return None;
-            }
-            window *= 2;
-            continue;
-        }
-        let Some(start) = buffer[..count]
-            .iter()
-            .position(|byte| !byte.is_ascii_whitespace())
-        else {
-            if end_of_file || window >= LIMIT {
-                return None;
-            }
-            window *= 2;
-            continue;
-        };
-        match buffer[start..count]
-            .iter()
-            .position(|byte| byte.is_ascii_whitespace())
+        #[cfg(test)]
         {
-            Some(len) => {
-                word.clear();
-                word.extend_from_slice(&buffer[start..start + len]);
-                return Some(offset + (start + len) as u64);
+            self.reads += 1;
+            if self.fail_at == Some(self.reads) {
+                return Err(io::Error::other("injected VCD read failure"));
             }
-            None if end_of_file => {
-                word.clear();
-                word.extend_from_slice(&buffer[start..count]);
-                return Some(offset + count as u64);
+        }
+        let count = file.read_at(&mut self.window[..take], at)?;
+        if count == 0 && at < file_len {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "short VCD read",
+            ));
+        }
+        self.window.truncate(count);
+        self.window_start = at;
+        #[cfg(test)]
+        {
+            self.refills += 1;
+        }
+        Ok(count)
+    }
+
+    /// Reads one whitespace-delimited token, borrowing the retained window
+    /// across the payload, the identifier and adjacent records.
+    ///
+    /// `Ok(None)` means no token at a validated position. IO and allocation
+    /// failures keep their type; there is no fixed token-length refusal.
+    fn read_token(
+        &mut self,
+        file: &File,
+        file_len: u64,
+        offset: u64,
+        identifier: bool,
+    ) -> io::Result<Option<u64>> {
+        let mut buffer = if identifier {
+            std::mem::take(&mut self.id)
+        } else {
+            std::mem::take(&mut self.word)
+        };
+        let result = self.read_token_into(file, file_len, offset, &mut buffer);
+        if identifier {
+            self.id = buffer;
+        } else {
+            self.word = buffer;
+        }
+        result
+    }
+
+    fn read_token_into(
+        &mut self,
+        file: &File,
+        file_len: u64,
+        offset: u64,
+        buffer: &mut Vec<u8>,
+    ) -> io::Result<Option<u64>> {
+        let mut cursor = offset;
+        loop {
+            if cursor >= file_len {
+                return Ok(None);
             }
-            None => {
-                if window >= LIMIT {
-                    return None;
+            if !self.covers(cursor) && self.refill(file, file_len, cursor)? == 0 {
+                return Ok(None);
+            }
+            let start = (cursor - self.window_start) as usize;
+            let slice = &self.window[start..];
+            if let Some(skip) = slice.iter().position(|byte| !byte.is_ascii_whitespace()) {
+                cursor += skip as u64;
+                break;
+            }
+            cursor += slice.len() as u64;
+        }
+        buffer.clear();
+        loop {
+            let at = cursor + buffer.len() as u64;
+            if at >= file_len {
+                return Ok(Some(cursor + buffer.len() as u64));
+            }
+            if !self.covers(at) && self.refill(file, file_len, at)? == 0 {
+                return Ok(Some(cursor + buffer.len() as u64));
+            }
+            let start = (at - self.window_start) as usize;
+            let slice = &self.window[start..];
+            match slice.iter().position(|byte| byte.is_ascii_whitespace()) {
+                Some(end) => {
+                    buffer.try_reserve(end).map_err(allocation)?;
+                    buffer.extend_from_slice(&slice[..end]);
+                    return Ok(Some(cursor + buffer.len() as u64));
                 }
-                window *= 2;
+                None => {
+                    buffer.try_reserve(slice.len()).map_err(allocation)?;
+                    buffer.extend_from_slice(slice);
+                }
             }
+        }
+    }
+}
+
+#[cfg(unix)]
+fn allocation(_: std::collections::TryReserveError) -> io::Error {
+    io::Error::other("VCD token allocation failed")
+}
+
+/// A decoded record that can borrow the shared bit scratch.
+#[cfg(unix)]
+enum Decoded<'a> {
+    Bits(&'a [u8]),
+    Real(f64),
+    Event,
+}
+
+#[cfg(unix)]
+impl Decoded<'_> {
+    fn as_ref(&self) -> ValueRef<'_> {
+        match self {
+            Self::Bits(bits) => ValueRef::Bits(BitsRef::from_validated_ascii(bits)),
+            Self::Real(real) => ValueRef::Real(*real),
+            Self::Event => ValueRef::Event { occurrences: 1 },
+        }
+    }
+
+    fn to_owned(&self) -> Value {
+        match self {
+            Self::Bits(bits) => Value::Bits(crate::Bits::from_validated_ascii(bits.to_vec())),
+            Self::Real(real) => Value::Real(*real),
+            Self::Event => Value::Event { occurrences: 1 },
         }
     }
 }
@@ -2821,6 +3039,16 @@ mod replay_tests {
     }
 
     #[cfg(unix)]
+    fn render_value(value: ValueRef<'_>) -> String {
+        match value {
+            ValueRef::Bits(bits) => bits.to_string(),
+            ValueRef::Real(real) => format!("{:016x}", real.to_bits()),
+            ValueRef::String(text) => format!("{text:?}"),
+            ValueRef::Event { occurrences } => format!("event:{occurrences}"),
+        }
+    }
+
+    #[cfg(unix)]
     fn traversal_records(
         reader: &mut Reader,
         signals: &[Signal],
@@ -2831,7 +3059,7 @@ mod replay_tests {
         let mut records = Vec::new();
         let _ = reader
             .read_from(signals, end, position, |index, time, value, _| {
-                records.push((index, time.ticks(), format!("{value:?}")));
+                records.push((index, time.ticks(), render_value(value)));
                 if stop_after.is_some_and(|limit| records.len() >= limit) {
                     ControlFlow::Break(())
                 } else {
@@ -2911,10 +3139,20 @@ mod replay_tests {
                 false,
             ),
             (None, Time::from_ticks(6), false),
+            (
+                Some(Position {
+                    offset: second_tick_five,
+                    time: 5,
+                    block: false,
+                }),
+                Time::from_ticks(7),
+                true,
+            ),
             (body_position, Time::from_ticks(7), true),
         ] {
             let before = indexed.traversal_queries.load(Ordering::Relaxed);
             let before_records = indexed.traversal_records.load(Ordering::Relaxed);
+            let before_borrowed = indexed.borrowed_decodes.load(Ordering::Relaxed);
             let observed = traversal_records(&mut indexed, &signals, end, position, None);
             assert!(!observed.is_empty());
             assert_eq!(
@@ -2926,6 +3164,11 @@ mod replay_tests {
                 assert_eq!(
                     indexed.traversal_records.load(Ordering::Relaxed) - before_records,
                     observed.len()
+                );
+                assert_eq!(
+                    indexed.borrowed_decodes.load(Ordering::Relaxed) - before_borrowed,
+                    observed.len(),
+                    "delivered records borrow the shared scratch"
                 );
             }
             assert_eq!(
@@ -2975,6 +3218,370 @@ mod replay_tests {
             indexed.traversal_queries.load(Ordering::Relaxed),
             before,
             "a dense selection must keep the walk"
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn long_record_source() -> Vec<u8> {
+        let long_id = "!".repeat(70_000);
+        let mut source = Vec::new();
+        source.extend_from_slice(
+            format!(
+                "$var wire 1 ! a $end $var wire 1 n noise $end \
+                 $var wire 1 {long_id} long $end $enddefinitions $end #0 0!\n#1 "
+            )
+            .as_bytes(),
+        );
+        for _ in 0..200_000 {
+            source.extend_from_slice(b"0n ");
+        }
+        source.extend_from_slice(format!("\n#2 b{}1 ! ", "0".repeat(99_999)).as_bytes());
+        source.extend_from_slice(&[b' '; 80_000]);
+        // No trailing separator: the last token ends at EOF.
+        source.extend_from_slice(format!("0{long_id}").as_bytes());
+        source
+    }
+
+    #[cfg(unix)]
+    fn sparse_pair_source() -> Vec<u8> {
+        let mut source = Vec::from(
+            b"$var wire 1 ! a $end $var wire 1 n noise $end $enddefinitions $end #0 0!\n#1 "
+                as &[u8],
+        );
+        for _ in 0..150_000 {
+            source.extend_from_slice(b"0n ");
+        }
+        source.extend_from_slice(b"\n#2 1!\n");
+        source
+    }
+
+    #[cfg(unix)]
+    fn clustered_after_gap_source() -> Vec<u8> {
+        let mut source = Vec::from(
+            b"$var wire 1 ! a $end $var wire 1 \" b $end $var wire 1 n noise $end \
+              $enddefinitions $end #0 " as &[u8],
+        );
+        for _ in 0..120_000 {
+            source.extend_from_slice(b"0n ");
+        }
+        source.extend_from_slice(b"\n#1 0! 1\"\n");
+        source
+    }
+
+    #[cfg(unix)]
+    fn wide_dense_source() -> Vec<u8> {
+        let value = "0".repeat(60_000);
+        format!("$var wire 60000 ! wide $end $enddefinitions $end #0 b{value} !\n#1 b{value} !\n")
+            .into_bytes()
+    }
+
+    #[cfg(unix)]
+    fn real_source() -> Vec<u8> {
+        let mut source = Vec::from(
+            b"$var wire 1 ! a $end $var wire 1 n noise $end $var real 1 $ r $end \
+              $enddefinitions $end #0 0! r-0.0 $\n#1 " as &[u8],
+        );
+        for _ in 0..100_000 {
+            source.extend_from_slice(b"0n ");
+        }
+        source.extend_from_slice(b"\n#2 r1.5 $ 1!\n");
+        source
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn indexed_traversal_accepts_legal_long_records() {
+        use std::sync::atomic::Ordering;
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tmp")
+            .join(format!("traversal-long-{}.vcd", std::process::id()));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let source = long_record_source();
+        std::fs::write(&path, &source).unwrap();
+        let open = |path: &std::path::Path| {
+            let (mut reader, hierarchy, _) = Reader::open(
+                Box::new(BufReader::new(File::open(path).unwrap())),
+                "long.vcd".into(),
+                None,
+            )
+            .unwrap();
+            reader.force_parallel_for_test(File::open(path).unwrap(), vec![source.len()], 2);
+            (reader, hierarchy)
+        };
+        let (mut indexed, hierarchy) = open(&path);
+        let (mut walked, _) = open(&path);
+        walked.disable_index();
+        let signals = ["a", "long"].map(|name| hierarchy.signal(name).unwrap());
+        let body = Some(Position {
+            offset: indexed.body,
+            time: 0,
+            block: false,
+        });
+        let before = indexed.traversal_queries.load(Ordering::Relaxed);
+        let before_borrowed = indexed.borrowed_decodes.load(Ordering::Relaxed);
+        let observed = traversal_records(&mut indexed, &signals, Time::from_ticks(2), body, None);
+        assert!(indexed.traversal_queries.load(Ordering::Relaxed) > before);
+        assert_eq!(
+            observed,
+            [
+                (0, 0, "0".to_string()),
+                (0, 2, "1".to_string()),
+                (2, 2, "0".to_string())
+            ],
+            "a short first record, a legal over-width payload and a long identifier"
+        );
+        assert_eq!(
+            indexed.borrowed_decodes.load(Ordering::Relaxed) - before_borrowed,
+            observed.len()
+        );
+        assert_eq!(
+            observed,
+            traversal_records(&mut walked, &signals, Time::from_ticks(2), body, None)
+        );
+        // A repeat delivers the same records once, not a duplicated prefix.
+        assert_eq!(
+            traversal_records(&mut indexed, &signals, Time::from_ticks(2), body, None),
+            observed
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn indexed_traversal_keeps_typed_io_and_recovers() {
+        use std::{io::ErrorKind, sync::atomic::Ordering};
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tmp")
+            .join(format!("traversal-io-{}.vcd", std::process::id()));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let source = sparse_pair_source();
+        std::fs::write(&path, &source).unwrap();
+        let (mut reader, hierarchy, _) = Reader::open(
+            Box::new(BufReader::new(File::open(&path).unwrap())),
+            "io.vcd".into(),
+            None,
+        )
+        .unwrap();
+        let signal = hierarchy.signal("a").unwrap();
+        reader.force_parallel_for_test(File::open(&path).unwrap(), vec![source.len()], 2);
+        let body = Some(Position {
+            offset: reader.body,
+            time: 0,
+            block: false,
+        });
+        // The second source refill fails after the first record was delivered.
+        reader.fail_read_at = Some(2);
+        let error = reader
+            .read_from(&[signal], Time::from_ticks(2), body, |_, _, _, _| {
+                ControlFlow::<()>::Continue(())
+            })
+            .unwrap_err();
+        match error {
+            Error::Io(error) => assert_eq!(error.kind(), ErrorKind::Other),
+            other => panic!("expected the injected IO error, got {other:?}"),
+        }
+        assert!(
+            reader.position().is_none(),
+            "no reusable state after an IO error"
+        );
+        reader.fail_read_at = None;
+        let before = reader.traversal_queries.load(Ordering::Relaxed);
+        let observed = traversal_records(&mut reader, &[signal], Time::from_ticks(2), body, None);
+        assert!(reader.traversal_queries.load(Ordering::Relaxed) > before);
+        assert_eq!(observed, [(0, 0, "0".to_string()), (0, 2, "1".to_string())]);
+        let (mut walked, _, _) = Reader::open(
+            Box::new(BufReader::new(File::open(&path).unwrap())),
+            "io-walk.vcd".into(),
+            None,
+        )
+        .unwrap();
+        walked.force_parallel_for_test(File::open(&path).unwrap(), vec![source.len()], 2);
+        walked.disable_index();
+        assert_eq!(
+            observed,
+            traversal_records(&mut walked, &[signal], Time::from_ticks(2), body, None)
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn indexed_traversal_reuses_the_window() {
+        use std::sync::atomic::Ordering;
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tmp")
+            .join(format!("traversal-window-{}.vcd", std::process::id()));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let source = clustered_after_gap_source();
+        std::fs::write(&path, &source).unwrap();
+        let open = |path: &std::path::Path| {
+            let (mut reader, hierarchy, _) = Reader::open(
+                Box::new(BufReader::new(File::open(path).unwrap())),
+                "window.vcd".into(),
+                None,
+            )
+            .unwrap();
+            reader.force_parallel_for_test(File::open(path).unwrap(), vec![source.len()], 2);
+            (reader, hierarchy)
+        };
+        let (mut indexed, hierarchy) = open(&path);
+        let (mut walked, _) = open(&path);
+        walked.disable_index();
+        let signals = ["a", "b"].map(|name| hierarchy.signal(name).unwrap());
+        let body = Some(Position {
+            offset: indexed.body,
+            time: 0,
+            block: false,
+        });
+        let reads = indexed.read_calls.load(Ordering::Relaxed);
+        let refills = indexed.window_refills.load(Ordering::Relaxed);
+        let borrowed = indexed.borrowed_decodes.load(Ordering::Relaxed);
+        let observed = traversal_records(&mut indexed, &signals, Time::from_ticks(1), body, None);
+        assert_eq!(observed, [(0, 1, "0".to_string()), (1, 1, "1".to_string())]);
+        assert_eq!(
+            indexed.read_calls.load(Ordering::Relaxed) - reads,
+            1,
+            "one source range serves both records"
+        );
+        assert_eq!(indexed.window_refills.load(Ordering::Relaxed) - refills, 1);
+        assert_eq!(
+            indexed.borrowed_decodes.load(Ordering::Relaxed) - borrowed,
+            observed.len()
+        );
+        assert_eq!(
+            observed,
+            traversal_records(&mut walked, &signals, Time::from_ticks(1), body, None)
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn indexed_traversal_wide_dense_keeps_the_walk() {
+        use std::sync::atomic::Ordering;
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tmp")
+            .join(format!("traversal-wide-{}.vcd", std::process::id()));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let source = wide_dense_source();
+        std::fs::write(&path, &source).unwrap();
+        let open = |path: &std::path::Path| {
+            let (mut reader, hierarchy, _) = Reader::open(
+                Box::new(BufReader::new(File::open(path).unwrap())),
+                "wide.vcd".into(),
+                None,
+            )
+            .unwrap();
+            reader.force_parallel_for_test(File::open(path).unwrap(), vec![source.len()], 1);
+            (reader, hierarchy)
+        };
+        let (mut indexed, hierarchy) = open(&path);
+        let (mut walked, _) = open(&path);
+        walked.disable_index();
+        let signal = hierarchy.signal("wide").unwrap();
+        let body = Some(Position {
+            offset: indexed.body,
+            time: 0,
+            block: false,
+        });
+        let before = indexed.traversal_queries.load(Ordering::Relaxed);
+        let observed = traversal_records(&mut indexed, &[signal], Time::from_ticks(1), body, None);
+        assert_eq!(
+            indexed.traversal_queries.load(Ordering::Relaxed),
+            before,
+            "dense wide records keep the walk"
+        );
+        assert_eq!(observed.len(), 2);
+        assert!(observed.iter().all(|(_, _, value)| value.len() == 60_000));
+        assert_eq!(
+            observed,
+            traversal_records(&mut walked, &[signal], Time::from_ticks(1), body, None)
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn indexed_traversal_real_and_dump_checkpoint() {
+        use std::sync::atomic::Ordering;
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tmp")
+            .join(format!("traversal-real-{}.vcd", std::process::id()));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let source = real_source();
+        std::fs::write(&path, &source).unwrap();
+        let open = |path: &std::path::Path| {
+            let (mut reader, hierarchy, _) = Reader::open(
+                Box::new(BufReader::new(File::open(path).unwrap())),
+                "real.vcd".into(),
+                None,
+            )
+            .unwrap();
+            reader.force_parallel_for_test(File::open(path).unwrap(), vec![source.len()], 2);
+            (reader, hierarchy)
+        };
+        let (mut indexed, hierarchy) = open(&path);
+        let (mut walked, _) = open(&path);
+        walked.disable_index();
+        let signals = ["a", "r"].map(|name| hierarchy.signal(name).unwrap());
+        let body = Some(Position {
+            offset: indexed.body,
+            time: 0,
+            block: false,
+        });
+        let observed = traversal_records(&mut indexed, &signals, Time::from_ticks(2), body, None);
+        assert_eq!(
+            observed[1],
+            (2, 0, "8000000000000000".to_string()),
+            "-0.0 sign"
+        );
+        assert_eq!(observed[2], (2, 2, "3ff8000000000000".to_string()), "1.5");
+        assert_eq!(observed[3], (0, 2, "1".to_string()));
+        assert_eq!(
+            observed,
+            traversal_records(&mut walked, &signals, Time::from_ticks(2), body, None)
+        );
+        std::fs::remove_file(path).unwrap();
+
+        // A checkpoint inside a dump block keeps the block context.
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tmp")
+            .join(format!("traversal-block-{}.vcd", std::process::id()));
+        let source = traversal_test_source();
+        std::fs::write(&path, &source).unwrap();
+        let open = |path: &std::path::Path| {
+            let (mut reader, hierarchy, _) = Reader::open(
+                Box::new(BufReader::new(File::open(path).unwrap())),
+                "block.vcd".into(),
+                None,
+            )
+            .unwrap();
+            reader.force_parallel_for_test(File::open(path).unwrap(), vec![source.len()], 7);
+            (reader, hierarchy)
+        };
+        let (mut indexed, hierarchy) = open(&path);
+        let (mut walked, _) = open(&path);
+        walked.disable_index();
+        let signals = ["a", "b", "e"].map(|name| hierarchy.signal(name).unwrap());
+        let block_offset = source.windows(3).position(|bytes| bytes == b"0n ").unwrap() as u64;
+        let position = Some(Position {
+            offset: block_offset,
+            time: 0,
+            block: true,
+        });
+        let before = indexed.traversal_queries.load(Ordering::Relaxed);
+        let observed =
+            traversal_records(&mut indexed, &signals, Time::from_ticks(7), position, None);
+        assert!(indexed.traversal_queries.load(Ordering::Relaxed) > before);
+        assert_eq!(
+            observed,
+            traversal_records(&mut walked, &signals, Time::from_ticks(7), position, None)
         );
         std::fs::remove_file(path).unwrap();
     }

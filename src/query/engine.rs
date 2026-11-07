@@ -338,14 +338,16 @@ impl<'w> Selection<'w> {
     /// its times and values and can outlive this selection and waveform.
     ///
     /// The implementation reads the requested window in one chronological
-    /// traversal. For the VCD reader it starts from a validated entering state
-    /// at the earliest requested tick and does not reuse an earlier selection's
-    /// replay. Other readers traverse from the beginning through the latest
-    /// requested tick. It does not use point-read shortcuts per requested time
-    /// or cached query replay. No full history or candidate list is collected.
-    /// Additional scheduling state grows with the number of requested times.
-    /// Working values grow with the selection and its composition dependencies.
-    /// Returned values, input storage and reader/index/SDK memory are separate costs.
+    /// traversal. An eligible VCD batch can start that traversal from a
+    /// validated entering state at the earliest requested tick; byte, small,
+    /// serial or fallback inputs and unsupported, event, computed or unproven
+    /// selections keep the reader's body start. It does not read one point per
+    /// requested time and does not reuse an earlier selection's replay. Other
+    /// readers traverse from the beginning through the latest requested tick.
+    /// No full history or candidate list is collected. Additional scheduling
+    /// state grows with the number of requested times. Working values grow with
+    /// the selection and its composition dependencies. Returned values, input
+    /// storage and reader/index/SDK memory are separate costs.
     ///
     /// Selected payload may fail decoding while advancing, including at ticks
     /// not requested in `times`. On any error, returns no partial batch. Successful
@@ -1645,7 +1647,7 @@ mod tests {
         let crate::backends::Reader::Vcd(reader) = &mut wave.reader else {
             unreachable!()
         };
-        reader.force_parallel_for_test(std::fs::File::open(&path).unwrap(), vec![source.len()], 7);
+        reader.force_parallel_for_test(std::fs::File::open(&path).unwrap(), vec![source.len()], 10);
         let mut selection = wave.select(&[signal]).unwrap();
         fn value(value: crate::ValueRef<'_>) -> String {
             match value {
@@ -1729,6 +1731,22 @@ mod tests {
             before,
             "a dense selection must keep the walk"
         );
+        // A computed slice of the same sparse bases keeps the normalization.
+        let b = wave.hierarchy().signal("b").unwrap();
+        let reference_b = serial.hierarchy().signal("b").unwrap();
+        let bus = wave.concat(&[signal, b]).unwrap();
+        let reference_bus = serial.concat(&[reference, reference_b]).unwrap();
+        let mut computed = wave.select(&[bus.slice(2, 1).unwrap()]).unwrap();
+        let mut computed_reference = serial
+            .select(&[reference_bus.slice(2, 1).unwrap()])
+            .unwrap();
+        let computed_expected = scan(&mut computed_reference);
+        let before = computed.vcd_traversal_queries().unwrap();
+        assert_eq!(scan(&mut computed), computed_expected);
+        assert!(
+            computed.vcd_traversal_queries().unwrap() > before,
+            "a computed scan reads its sparse bases through the traversal"
+        );
         std::fs::remove_file(path).unwrap();
     }
 
@@ -1750,7 +1768,7 @@ mod tests {
         let crate::backends::Reader::Vcd(reader) = &mut wave.reader else {
             unreachable!()
         };
-        reader.force_parallel_for_test(std::fs::File::open(&path).unwrap(), vec![source.len()], 7);
+        reader.force_parallel_for_test(std::fs::File::open(&path).unwrap(), vec![source.len()], 10);
         let mut selection = wave.select(&[signal]).unwrap();
         let render = |rows: &[(Time, Vec<crate::Sample>)]| {
             rows.iter()

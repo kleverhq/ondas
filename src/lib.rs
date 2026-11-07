@@ -249,10 +249,11 @@ Source files must remain unchanged while open.
 A chunked file opening can retain a bounded index of validated record positions.
 A late point or prefix decodes indexed records and proves change times from
 earlier records. A sparse selection can read those records in tick order, with
-the byte offset as the consumed boundary. Dense selections and unsupported
-encodings keep the walk. It keeps the chronological replay when a proof or a
-resource bound is insufficient. The index stores no values, source bytes or
-query state, and other inputs retain no index.
+the byte offset as the consumed boundary and one bounded source window. Dense
+selections, unsupported encodings and records above the indexed working state
+keep the walk, which still supports them. It keeps the chronological replay
+when a proof or a resource bound is insufficient. The index stores no values,
+source bytes or query state, and other inputs retain no index.
 
 - The reader preserves aliases, exact ranges, nine-state bits, real signed zero,
   strings and ordinary repeated events. Strings decode escapes and retain ASCII,

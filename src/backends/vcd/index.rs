@@ -12,6 +12,7 @@ pub(super) const LIST_BYTES: usize = size_of::<Vec<Entry>>();
 const TICK_BYTES: usize = size_of::<(u32, u64)>();
 const BLOCK_BYTES: usize = size_of::<(u64, u64)>();
 const RECORD_BYTES: usize = size_of::<u32>() + size_of::<u64>();
+const CAPABILITY_BYTES: usize = size_of::<u64>();
 
 /// The validated time and source offset of one record token.
 #[derive(Clone, Copy)]
@@ -24,15 +25,19 @@ pub(super) struct Entry {
 ///
 /// A record keeps its signal and offset; the tick table turns consecutive
 /// records with equal time into one `(first record, time)` pair. A record costs
-/// 12 bytes and a recorded tick or dump block costs 16 bytes. The budget covers
-/// the actual capacities, not the current lengths, so an input with a new tick
-/// on every record or with many blocks cannot overrun it.
+/// 12 bytes, a recorded tick or dump block costs 16 bytes, and one raw-token
+/// high-water mark per declared signal costs 8 bytes. The budget covers the
+/// actual capacities, not the current lengths, so an input with a new tick on
+/// every record or with many blocks cannot overrun it.
 #[derive(Default)]
 pub(super) struct Builder {
     signals: Vec<u32>,
     offsets: Vec<u64>,
     ticks: Vec<(u32, u64)>,
     blocks: Vec<(u64, u64)>,
+    /// Largest raw payload/identifier token length seen per declared signal.
+    max_payload: Vec<u64>,
+    max_identifier: u64,
     time: u64,
     allocated: usize,
     limit: usize,
@@ -40,14 +45,24 @@ pub(super) struct Builder {
 }
 
 impl Builder {
-    pub(super) fn new(limit: usize) -> Self {
-        Self {
+    pub(super) fn new(signals: usize, limit: usize) -> Self {
+        let mut builder = Self {
             limit,
             ..Self::default()
+        };
+        let bytes = signals.saturating_mul(CAPABILITY_BYTES);
+        let mut max_payload = Vec::new();
+        if builder.exceeds(bytes) || max_payload.try_reserve_exact(signals).is_err() {
+            builder.overflow = true;
+            return builder;
         }
+        max_payload.resize(signals, 0);
+        builder.max_payload = max_payload;
+        builder.allocated = bytes;
+        builder
     }
 
-    pub(super) fn record(&mut self, signal: usize, time: u64, offset: u64) {
+    pub(super) fn record(&mut self, signal: usize, time: u64, offset: u64, token: (u64, u64)) {
         if self.overflow {
             return;
         }
@@ -55,6 +70,12 @@ impl Builder {
             self.abandon();
             return;
         };
+        let Some(max_payload) = self.max_payload.get_mut(signal as usize) else {
+            self.abandon();
+            return;
+        };
+        *max_payload = (*max_payload).max(token.0);
+        self.max_identifier = self.max_identifier.max(token.1);
         if self.time != time || self.signals.is_empty() {
             let Ok(next) = u32::try_from(self.offsets.len()) else {
                 self.abandon();
@@ -138,6 +159,7 @@ impl Builder {
         self.offsets = Vec::new();
         self.ticks = Vec::new();
         self.blocks = Vec::new();
+        self.max_payload = Vec::new();
         self.allocated = 0;
     }
 
@@ -150,6 +172,8 @@ impl Builder {
             offsets: self.offsets,
             ticks: self.ticks,
             blocks: self.blocks,
+            max_payload: self.max_payload,
+            max_identifier: self.max_identifier,
         })
     }
 }
@@ -159,6 +183,8 @@ struct Part {
     offsets: Vec<u64>,
     ticks: Vec<(u32, u64)>,
     blocks: Vec<(u64, u64)>,
+    max_payload: Vec<u64>,
+    max_identifier: u64,
 }
 
 impl Part {
@@ -167,6 +193,7 @@ impl Part {
             + self.offsets.capacity() * size_of::<u64>()
             + self.ticks.capacity() * TICK_BYTES
             + self.blocks.capacity() * BLOCK_BYTES
+            + self.max_payload.capacity() * CAPABILITY_BYTES
     }
 }
 
@@ -174,6 +201,8 @@ impl Part {
 pub(super) struct Index {
     signals: Vec<Vec<Entry>>,
     blocks: Vec<(u64, u64)>,
+    max_payload: Vec<u64>,
+    max_identifier: u64,
 }
 
 impl Index {
@@ -197,19 +226,34 @@ impl Index {
         // per declaration. An impossible list table or peak refuses here.
         let list_floor = signals.checked_mul(LIST_BYTES)?;
         let counts_bytes = signals.checked_mul(size_of::<u32>())?;
+        let capability_bytes = signals.checked_mul(CAPABILITY_BYTES)?;
         let mut held = 0_usize;
         for part in &parts {
             held = held.checked_add(part.held())?;
         }
-        if list_floor > limit || held.checked_add(counts_bytes)? > peak {
+        if list_floor.checked_add(capability_bytes)? > limit
+            || held
+                .checked_add(counts_bytes)?
+                .checked_add(capability_bytes)?
+                > peak
+        {
             return None;
         }
         let mut counts = Vec::new();
         counts.try_reserve_exact(signals).ok()?;
         counts.resize(signals, 0_u32);
+        let mut max_payload = Vec::new();
+        max_payload.try_reserve_exact(signals).ok()?;
+        max_payload.resize(signals, 0_u64);
+        let mut max_identifier = 0_u64;
         let mut blocks_len = 0_usize;
         for part in &parts {
             blocks_len = blocks_len.checked_add(part.blocks.len())?;
+            max_identifier = max_identifier.max(part.max_identifier);
+            for (signal, &payload) in part.max_payload.iter().enumerate() {
+                let slot = max_payload.get_mut(signal)?;
+                *slot = (*slot).max(payload);
+            }
             for &signal in &part.signals {
                 let count = counts.get_mut(signal as usize)?;
                 *count = count.checked_add(1)?;
@@ -221,7 +265,8 @@ impl Index {
         let retained = entries
             .checked_mul(ENTRY_BYTES)?
             .checked_add(list_floor)?
-            .checked_add(blocks_len.checked_mul(BLOCK_BYTES)?)?;
+            .checked_add(blocks_len.checked_mul(BLOCK_BYTES)?)?
+            .checked_add(capability_bytes)?;
         if retained > limit || held.checked_add(retained)?.checked_add(counts_bytes)? > peak {
             return None;
         }
@@ -250,11 +295,23 @@ impl Index {
         Some(Self {
             signals: lists,
             blocks,
+            max_payload,
+            max_identifier,
         })
     }
 
     pub(super) fn entries(&self, signal: usize) -> &[Entry] {
         &self.signals[signal]
+    }
+
+    /// Largest raw record token seen for this signal during opening validation.
+    ///
+    /// This is the payload token plus the identifier and a separator; leading
+    /// whitespace is skipped without retention and is not part of the bound.
+    pub(super) fn max_token(&self, signal: usize) -> u64 {
+        self.max_payload[signal]
+            .saturating_add(self.max_identifier)
+            .saturating_add(2)
     }
 
     /// Returns the index of the last recorded entry at or before `time`.
@@ -283,10 +340,10 @@ impl Index {
 mod tests {
     use super::*;
 
-    fn part(records: &[(u32, u64, u64)], blocks: &[(u64, u64)]) -> Builder {
-        let mut builder = Builder::new(usize::MAX / 2);
+    fn part(signals: usize, records: &[(u32, u64, u64)], blocks: &[(u64, u64)]) -> Builder {
+        let mut builder = Builder::new(signals, usize::MAX / 2);
         for &(signal, time, offset) in records {
-            builder.record(signal as usize, time, offset);
+            builder.record(signal as usize, time, offset, (8, 2));
         }
         for &(start, end) in blocks {
             builder.block(start, end);
@@ -296,8 +353,8 @@ mod tests {
 
     #[test]
     fn merge_keeps_source_order_per_signal_and_tick_context() {
-        let first = part(&[(1, 2, 10), (0, 2, 11), (1, 5, 30)], &[(4, 8)]);
-        let second = part(&[(1, 5, 31), (0, 9, 50)], &[]);
+        let first = part(2, &[(1, 2, 10), (0, 2, 11), (1, 5, 30)], &[(4, 8)]);
+        let second = part(2, &[(1, 5, 31), (0, 9, 50)], &[]);
         let index = Index::build([first, second], 2, usize::MAX, usize::MAX).unwrap();
         let one = index.entries(1);
         assert_eq!(
@@ -311,28 +368,29 @@ mod tests {
         assert_eq!(index.first_after(1, 5), 3);
         assert!(index.in_block(5));
         assert!(!index.in_block(8));
+        assert_eq!(index.max_token(1), 8 + 2 + 2);
     }
 
     #[test]
     fn record_budget_counts_actual_capacities() {
-        let mut builder = Builder::new(4 * RECORD_BYTES);
+        let mut builder = Builder::new(1, 4 * RECORD_BYTES);
         for offset in 0..1024 {
-            builder.record(0, 0, offset);
+            builder.record(0, 0, offset, (8, 2));
         }
         assert!(Index::build([builder], 1, usize::MAX, usize::MAX).is_none());
-        let exact = part(&[(0, 1, 4)], &[]);
+        let exact = part(1, &[(0, 1, 4)], &[]);
         assert!(Index::build([exact], 1, 0, usize::MAX).is_none());
         // Retained entries fit, while the transient minimum capacities only
         // count against the peak.
-        assert!(Index::build([part(&[(0, 1, 4)], &[])], 1, 1024, usize::MAX).is_some());
+        assert!(Index::build([part(1, &[(0, 1, 4)], &[])], 1, 1024, usize::MAX).is_some());
     }
 
     #[test]
     fn tick_and_block_budgets_are_bounded() {
         // The same 1024 records in one tick fit the records and one tick entry.
-        let mut same_tick = Builder::new(32 * 1024);
+        let mut same_tick = Builder::new(1, 32 * 1024);
         for offset in 0..1024 {
-            same_tick.record(0, 7, offset);
+            same_tick.record(0, 7, offset, (8, 2));
         }
         assert!(!same_tick.overflow);
         assert_eq!(same_tick.signals.len(), 1024);
@@ -340,22 +398,22 @@ mod tests {
         assert!(Index::build([same_tick], 1, usize::MAX, usize::MAX).is_some());
         // One tick per record keeps the same record capacities but must exhaust
         // the tick budget, which an implementation that ignored ticks would not.
-        let mut ticks = Builder::new(32 * 1024);
+        let mut ticks = Builder::new(1, 32 * 1024);
         for tick in 0..1024 {
-            ticks.record(0, tick, tick);
+            ticks.record(0, tick, tick, (8, 2));
         }
         assert!(ticks.overflow);
         assert!(Index::build([ticks], 1, usize::MAX, usize::MAX).is_none());
         // An empty block on every tick is also retained state.
-        let mut blocks = Builder::new(8 * BLOCK_BYTES);
+        let mut blocks = Builder::new(1, 8 * BLOCK_BYTES);
         for tick in 0..1024 {
             blocks.block(tick, tick + 1);
         }
         assert!(Index::build([blocks], 1, usize::MAX, usize::MAX).is_none());
         // Retained state stays available inside a budget that covers it.
-        let mut small = Builder::new(64 * 1024);
+        let mut small = Builder::new(1, 64 * 1024);
         for tick in 0..4 {
-            small.record(0, tick, tick);
+            small.record(0, tick, tick, (8, 2));
             small.block(tick, tick + 1);
         }
         assert!(Index::build([small], 1, 4096, usize::MAX).is_some());
@@ -364,17 +422,25 @@ mod tests {
     #[test]
     fn impossible_lower_bounds_refuse_before_counting() {
         // The per-signal list table alone exceeds the retained limit.
-        let builder = part(&[], &[]);
-        assert!(Index::build([builder], 1024, 1024 * LIST_BYTES - 1, usize::MAX).is_none());
+        let builder = part(1024, &[], &[]);
+        assert!(
+            Index::build(
+                [builder],
+                1024,
+                1024 * (LIST_BYTES + CAPABILITY_BYTES) - 1,
+                usize::MAX
+            )
+            .is_none()
+        );
         // The transient parts plus the counters exceed the merge peak.
-        let builder = part(&[(0, 1, 4)], &[]);
+        let builder = part(1024, &[(0, 1, 4)], &[]);
         let held = builder.into_parts().unwrap().held();
         assert!(
             Index::build(
-                [part(&[(0, 1, 4)], &[])],
+                [part(1024, &[(0, 1, 4)], &[])],
                 1024,
                 usize::MAX,
-                held + 1024 * 4 - 1
+                held + 1024 * (4 + CAPABILITY_BYTES) - 1
             )
             .is_none()
         );
@@ -382,12 +448,12 @@ mod tests {
 
     #[test]
     fn build_peak_covers_parts_counts_and_retained_lists() {
-        let builder = part(&[(0, 1, 4), (1, 1, 5), (0, 2, 6)], &[]);
+        let builder = part(3, &[(0, 1, 4), (1, 1, 5), (0, 2, 6)], &[]);
         let index = Index::build([builder], 3, usize::MAX, usize::MAX).unwrap();
         assert_eq!(index.entries(0).len(), 2);
         assert_eq!(index.entries(1).len(), 1);
         assert!(index.entries(2).is_empty());
-        let builder = part(&[(0, 1, 4), (1, 1, 5), (0, 2, 6)], &[]);
+        let builder = part(3, &[(0, 1, 4), (1, 1, 5), (0, 2, 6)], &[]);
         assert!(Index::build([builder], 3, usize::MAX, 1).is_none());
     }
 }
