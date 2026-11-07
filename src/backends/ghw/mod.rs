@@ -123,6 +123,7 @@ impl Reader {
         let declarations = hierarchy::read(&mut wire, &types)?;
         wire.marker(b"EOH\0")?;
         let body_start = wire.offset;
+        let total = wire.len.saturating_sub(body_start);
         let mut index = index::Index::new(declarations.active.len());
         let (_, time_span) = body::walk(
             &mut wire,
@@ -130,13 +131,25 @@ impl Reader {
             &declarations.active,
             Time::from_ticks(u64::MAX),
             |event| {
-                if let body::Event::Scalar {
-                    rank, time, offset, ..
-                } = event
-                    && let Some(positions) = &mut index
-                    && !positions.push(rank, time, offset)
-                {
-                    index = None;
+                let Some(positions) = &mut index else {
+                    return ControlFlow::<()>::Continue(());
+                };
+                match event {
+                    body::Event::Scalar {
+                        rank,
+                        time,
+                        offset,
+                        cyclic,
+                        ..
+                    } => {
+                        if !positions.push(rank, time, offset, cyclic)
+                            || positions.projected_overrun(offset, total)
+                        {
+                            index = None;
+                        }
+                    }
+                    body::Event::ListEnd(_) => positions.list_end(),
+                    body::Event::Tick(_) => {}
                 }
                 ControlFlow::<()>::Continue(())
             },
@@ -293,7 +306,6 @@ impl Reader {
                 ControlFlow::Continue(())
             }
         };
-        // Broad selections keep the sequential path without a many-chain merge.
         if let Some(index) = &self.index
             && !broad
         {

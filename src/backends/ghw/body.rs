@@ -21,6 +21,8 @@ pub(super) enum Event {
         time: Time,
         offset: u64,
         value: Scalar,
+        /// True for cycle lists, where every record carries a rank delta.
+        cyclic: bool,
     },
     ListEnd(Time),
     Tick(Time),
@@ -132,6 +134,7 @@ pub(super) fn walk<B>(
                         time: Time::from_ticks(time as u64),
                         offset,
                         value,
+                        cyclic: false,
                     }) {
                         return Ok((ControlFlow::Break(value), clock.span()));
                     }
@@ -169,6 +172,7 @@ pub(super) fn walk<B>(
                             time: Time::from_ticks(time as u64),
                             offset,
                             value,
+                            cyclic: true,
                         }) {
                             return Ok((ControlFlow::Break(value), clock.span()));
                         }
