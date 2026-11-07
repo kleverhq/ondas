@@ -1,5 +1,8 @@
 use std::{cmp::Reverse, collections::BinaryHeap, ops::ControlFlow};
 
+#[cfg(test)]
+use std::sync::atomic::Ordering;
+
 use super::{
     body,
     types::{Storage, Types},
@@ -62,18 +65,20 @@ pub(super) struct Index {
     pending_delta: Vec<u32>,
     pending_run: Vec<u32>,
     // Query work counters, kept separate from the retained size.
+    // Query diagnostics stay inside the immutable representation so a completed index can be
+    // shared between logical opens without a lock; only tests write them.
     #[cfg(test)]
-    frames_scanned: usize,
+    frames_scanned: std::sync::atomic::AtomicUsize,
     #[cfg(test)]
-    payloads_decoded: usize,
+    payloads_decoded: std::sync::atomic::AtomicUsize,
     #[cfg(test)]
-    payloads_skipped: usize,
+    payloads_skipped: std::sync::atomic::AtomicUsize,
 }
 
 /// Query work of the last indexed read.
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) struct Work {
+pub(crate) struct Work {
     pub(super) frames_scanned: usize,
     pub(super) payloads_decoded: usize,
     pub(super) payloads_skipped: usize,
@@ -131,11 +136,11 @@ impl Index {
             pending_delta,
             pending_run,
             #[cfg(test)]
-            frames_scanned: 0,
+            frames_scanned: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(test)]
-            payloads_decoded: 0,
+            payloads_decoded: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(test)]
-            payloads_skipped: 0,
+            payloads_skipped: std::sync::atomic::AtomicUsize::new(0),
         })
     }
 
@@ -199,7 +204,6 @@ impl Index {
     }
 
     /// Retained bytes of the completed representation.
-    #[cfg(test)]
     pub(super) fn retained_bytes(&self) -> usize {
         self.retained()
     }
@@ -207,9 +211,9 @@ impl Index {
     #[cfg(test)]
     pub(super) fn work(&self) -> Work {
         Work {
-            frames_scanned: self.frames_scanned,
-            payloads_decoded: self.payloads_decoded,
-            payloads_skipped: self.payloads_skipped,
+            frames_scanned: self.frames_scanned.load(Ordering::Relaxed),
+            payloads_decoded: self.payloads_decoded.load(Ordering::Relaxed),
+            payloads_skipped: self.payloads_skipped.load(Ordering::Relaxed),
         }
     }
 
@@ -331,7 +335,7 @@ impl Index {
     /// `None` means the query scratch could not be reserved and the caller
     /// must use the sequential walker instead.
     pub(super) fn read<B>(
-        &mut self,
+        &self,
         wire: &mut Wire,
         types: &Types,
         active: &[(u32, usize)],
@@ -341,9 +345,9 @@ impl Index {
     ) -> Result<Option<ControlFlow<B>>> {
         #[cfg(test)]
         {
-            self.frames_scanned = 0;
-            self.payloads_decoded = 0;
-            self.payloads_skipped = 0;
+            self.frames_scanned.store(0, Ordering::Relaxed);
+            self.payloads_decoded.store(0, Ordering::Relaxed);
+            self.payloads_skipped.store(0, Ordering::Relaxed);
         }
         let mut ranks = Vec::new();
         if ranks.try_reserve_exact(ids.len()).is_err() {
@@ -500,7 +504,7 @@ impl Index {
 
     /// Decode the records of one group in one frame, reporting selected ranks.
     fn scan<B>(
-        &mut self,
+        &self,
         wire: &mut Wire,
         sources: Sources<'_>,
         frame: Frame,
@@ -516,7 +520,7 @@ impl Index {
         }
         #[cfg(test)]
         {
-            self.frames_scanned += 1;
+            self.frames_scanned.fetch_add(1, Ordering::Relaxed);
         }
         wire.seek_value(cursor.offset)?;
         loop {
@@ -526,7 +530,7 @@ impl Index {
                 let value = body::scalar(wire, sources.types, ty)?;
                 #[cfg(test)]
                 {
-                    self.payloads_decoded += 1;
+                    self.payloads_decoded.fetch_add(1, Ordering::Relaxed);
                 }
                 if let ControlFlow::Break(value) = visitor(body::Event::Scalar {
                     id,
@@ -542,7 +546,7 @@ impl Index {
                 skip(wire, sources.types, ty)?;
                 #[cfg(test)]
                 {
-                    self.payloads_skipped += 1;
+                    self.payloads_skipped.fetch_add(1, Ordering::Relaxed);
                 }
             }
             if !frame.cyclic {

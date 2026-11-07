@@ -26,6 +26,12 @@ use crate::{
 ///
 /// File and decoder errors are returned where the decoder reports them. See
 /// the crate-level reader limitations for malformed inputs that can panic.
+///
+/// GHW opening validates the whole body. A later open of byte-identical content
+/// can reuse the declarations and positions that an earlier checked open
+/// validated. The reuse requires a complete content identity of the current
+/// input. It stores no values, source bytes, input handles or query state, and
+/// every open has its own hierarchy identity and source name.
 pub fn open(path: impl AsRef<Path>) -> Result<Waveform> {
     open_file(path.as_ref(), None)
 }
@@ -67,7 +73,7 @@ fn read_metadata_path(path: &Path) -> Result<Metadata> {
     match format {
         Format::Fst => fst::Reader::open(input, name).map(|(_, _, metadata)| metadata),
         Format::Vcd => vcd::Reader::open(input, name, vcd_file).map(|(_, _, metadata)| metadata),
-        Format::Ghw => ghw::Reader::open(input, name).map(|(_, _, metadata)| metadata),
+        Format::Ghw => ghw::Reader::metadata(input, name),
         #[cfg(feature = "fsdb-lib")]
         Format::Fsdb => crate::backends::fsdb::read_metadata(path, name),
         #[cfg(feature = "shm-lib")]

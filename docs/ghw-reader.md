@@ -18,6 +18,8 @@ Equal ticks can cross snapshot and cycle sections. Indexed reads must combine al
 
 Opening validates the whole body. Metadata-only reading uses the same path. It is not a header-only SDK operation. An optional bounded index stores scalar payload offsets and ticks, not values. Footer offsets do not control seeking. If index capacity is exhausted or allocation fails, validation continues. Queries then use sequential replay.
 
+A later open of byte-identical content can reuse the declarations and positions that an earlier checked open validated. The reuse needs a complete cryptographic identity of the current input, not a path, size or timestamp. A failed or short identity means a normal checked parse. The cache keeps one bounded result of metadata and positions. It never keeps values, source bytes, input handles or query state. Each open keeps its own hierarchy identity, and the current source name. A metadata-only request leaves no reused result behind.
+
 Small selections can read indexed scalar dependencies. Broad selections replay sequentially. Both paths need earlier observations to establish state. A narrow vector slice still needs its whole source recipe. Overlapping recipes can share decoded source scalars. A reused waveform can therefore use its opening index without retaining full selected histories.
 
 Historical producer output does not automatically define supported grammar. The issue-538 fixture omits required inner bounds. It fails instead of using the next type entry as a range. Empty derived layouts also need a checked expansion limit. Otherwise, a compact array of empty elements could create an unbounded hierarchy without a large value payload.

@@ -75,6 +75,11 @@ impl Wire {
     /// covered length to [`Self::consume_window`]. The reported length must
     /// cover every byte they used so that `offset` stays exact; whatever they
     /// leave out is decoded again by the checked single-field readers.
+    /// The input at its current position, used when an open decides not to reuse.
+    pub(super) fn into_input(self) -> Box<dyn Input> {
+        self.input.into_inner()
+    }
+
     pub(super) fn window(&mut self) -> Result<&[u8]> {
         Ok(self.input.fill_buf()?)
     }
