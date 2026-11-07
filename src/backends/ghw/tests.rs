@@ -23,8 +23,11 @@ fn indexed_scalar_stops_before_later_selected_values_and_skips_noise() {
             panic!("GHW")
         };
         assert!(reader.index.is_some());
-        // One source segment replays the records of one chain of active ranks.
-        assert!(reader.records_read <= super::index::RANKS_PER_CHAIN);
+        // Indexed reads decode selected ranks only and skip the rest of the frame.
+        assert!(reader.records_read <= 2, "{}", reader.records_read);
+        let work = reader.index.as_ref().unwrap().work();
+        assert_eq!(work.payloads_decoded, reader.records_read);
+        assert!(work.frames_scanned > 0);
         assert_eq!(reader.assembly_bytes, 1);
         let sample = wave.sample(control, Time::from_ticks(1)).unwrap();
         assert!(
@@ -65,7 +68,7 @@ fn indexed_values_preserve_final_tick_states_across_tiny_buffers() {
         let mut actual = BTreeMap::new();
         let _ = reader
             .index
-            .as_ref()
+            .as_mut()
             .unwrap()
             .read(
                 &mut reader.wire,

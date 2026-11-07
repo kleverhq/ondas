@@ -123,7 +123,6 @@ impl Reader {
         let declarations = hierarchy::read(&mut wire, &types)?;
         wire.marker(b"EOH\0")?;
         let body_start = wire.offset;
-        let total = wire.len.saturating_sub(body_start);
         let mut index = index::Index::new(declarations.active.len());
         let (_, time_span) = body::walk(
             &mut wire,
@@ -142,9 +141,7 @@ impl Reader {
                         cyclic,
                         ..
                     } => {
-                        if !positions.push(rank, time, offset, cyclic)
-                            || positions.projected_overrun(offset, total)
-                        {
+                        if !positions.push(rank, time, offset, cyclic) {
                             index = None;
                         }
                     }
@@ -154,6 +151,15 @@ impl Reader {
                 ControlFlow::<()>::Continue(())
             },
         )?;
+        let complete = match &mut index {
+            Some(positions) => positions.finish(),
+            None => true,
+        };
+        if !complete {
+            // An incomplete representation is discarded: the sequential walker
+            // answers instead, and opening validation already finished.
+            index = None;
+        }
         let metadata = Metadata {
             source_name,
             timescale: None,
@@ -244,7 +250,7 @@ impl Reader {
         let routes = broad.then(|| dependency_ranges(&self.active, &dependencies));
         // The block permits the closure attribute on MSRV. Force scalar-event
         // specialization in the walker instead of a per-record callback.
-        let consume = {
+        let mut consume = {
             #[inline(always)]
             |event| {
                 match event {
@@ -306,21 +312,21 @@ impl Reader {
                 ControlFlow::Continue(())
             }
         };
-        if let Some(index) = &self.index
+        if let Some(index) = &mut self.index
             && !broad
-        {
-            index.read(
+            && let Some(flow) = index.read(
                 &mut self.wire,
                 &self.types,
                 &self.active,
                 &ids,
                 end,
-                consume,
-            )
-        } else {
-            let (flow, _) = body::walk(&mut self.wire, &self.types, &self.active, end, consume)?;
-            Ok(flow)
+                &mut consume,
+            )?
+        {
+            return Ok(flow);
         }
+        let (flow, _) = body::walk(&mut self.wire, &self.types, &self.active, end, consume)?;
+        Ok(flow)
     }
 }
 
