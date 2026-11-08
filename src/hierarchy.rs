@@ -680,6 +680,53 @@ impl Hierarchy {
         let Some((name, scopes)) = path.components.split_last() else {
             return Err(LookupError::NotFound { path: path.clone() });
         };
+        // The common warm path has one scope candidate per component. Follow it
+        // without building a frontier vector. A second candidate can still hold
+        // the target in another branch, so hand that case to the full frontier
+        // search instead of reporting an early ambiguity.
+        let mut parent = None;
+        for name in scopes {
+            let mut candidates = self
+                .declarations_named(parent, name)
+                .iter()
+                .copied()
+                .filter(|index| *index < self.data.scopes.len());
+            let Some(first) = candidates.next() else {
+                return Err(LookupError::NotFound { path: path.clone() });
+            };
+            if candidates.next().is_some() {
+                return self.variable_path_frontier(path);
+            }
+            parent = Some(first);
+        }
+        let mut matches = self
+            .declarations_named(parent, name)
+            .iter()
+            .copied()
+            .filter_map(|index| index.checked_sub(self.data.scopes.len()))
+            .map(|index| Variable {
+                hierarchy: self,
+                index,
+            });
+        let first = matches.next();
+        match (first, matches.count()) {
+            (None, _) => Err(LookupError::NotFound { path: path.clone() }),
+            (Some(variable), 0) => Ok(variable),
+            (_, remaining) => Err(LookupError::Ambiguous {
+                path: path.clone(),
+                matches: remaining + 1,
+            }),
+        }
+    }
+
+    /// Complete frontier search for a path with several scope branches.
+    fn variable_path_frontier(
+        &self,
+        path: &HierarchyPath,
+    ) -> std::result::Result<Variable<'_>, LookupError> {
+        let Some((name, scopes)) = path.components.split_last() else {
+            return Err(LookupError::NotFound { path: path.clone() });
+        };
         let mut parents = vec![None];
         for name in scopes {
             parents = parents
