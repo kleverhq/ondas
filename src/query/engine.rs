@@ -1830,6 +1830,77 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn vcd_full_range_batch_uses_one_traversal() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tmp")
+            .join(format!("full-range-batch-{}.vcd", std::process::id()));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut source = Vec::from(
+            b"$var wire 1 ! a $end $var wire 1 n noise $end $enddefinitions $end #0 0! " as &[u8],
+        );
+        for _ in 0..30_000 {
+            source.extend_from_slice(b"0n ");
+        }
+        source.extend_from_slice(b"\n#1 1!\n");
+        std::fs::write(&path, &source).unwrap();
+        let mut wave = crate::open_with(&path, "vcd-native").unwrap();
+        let mut serial =
+            crate::open_bytes_with("serial.vcd", source.as_slice().into(), "vcd-native").unwrap();
+        let signal = wave.hierarchy().signal("a").unwrap();
+        let reference = serial.hierarchy().signal("a").unwrap();
+        let crate::backends::Reader::Vcd(reader) = &mut wave.reader else {
+            unreachable!()
+        };
+        reader.force_parallel_for_test(std::fs::File::open(&path).unwrap(), vec![source.len()], 1);
+        let render = |rows: &[(Time, Vec<crate::Sample>)]| {
+            rows.iter()
+                .map(|(time, samples)| {
+                    (
+                        time.ticks(),
+                        samples
+                            .iter()
+                            .map(|sample| match sample {
+                                crate::Sample::Value {
+                                    value, changed_at, ..
+                                } => format!("{value:?}@{changed_at:?}"),
+                                crate::Sample::Missing { .. } => "missing".into(),
+                                crate::Sample::Event { occurrences, .. } => {
+                                    format!("event:{occurrences}")
+                                }
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let times = [0, 1, 1, 0].map(Time::from_ticks);
+        let mut selection = wave.select(&[signal]).unwrap();
+        let mut reference_selection = serial.select(&[reference]).unwrap();
+        let seeded = selection.vcd_index_queries().unwrap();
+        let before = selection.vcd_traversal_queries().unwrap();
+        let rows = selection.samples_at(&times).unwrap();
+        assert_eq!(
+            selection.vcd_traversal_queries().unwrap() - before,
+            1,
+            "one traversal for the whole full-range batch"
+        );
+        assert_eq!(selection.vcd_index_queries().unwrap(), seeded);
+        assert_eq!(
+            render(&rows),
+            render(&reference_selection.samples_at(&times).unwrap())
+        );
+        // A repeated batch traverses again and stays equal.
+        let before = selection.vcd_traversal_queries().unwrap();
+        assert_eq!(
+            render(&selection.samples_at(&times).unwrap()),
+            render(&rows)
+        );
+        assert!(selection.vcd_traversal_queries().unwrap() > before);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn vcd_samples_at_seeds_the_window_without_reusing_replay() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tmp")

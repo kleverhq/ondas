@@ -201,6 +201,8 @@ pub(crate) struct Reader {
     #[cfg(all(test, unix))]
     pub(crate) borrowed_decodes: AtomicUsize,
     #[cfg(all(test, unix))]
+    pub(crate) full_queries: AtomicUsize,
+    #[cfg(all(test, unix))]
     pub(crate) fail_read_at: Option<usize>,
     #[cfg(unix)]
     parallel: Option<ParallelSource>,
@@ -604,6 +606,8 @@ impl Reader {
             #[cfg(all(test, unix))]
             borrowed_decodes: AtomicUsize::new(0),
             #[cfg(all(test, unix))]
+            full_queries: AtomicUsize::new(0),
+            #[cfg(all(test, unix))]
             fail_read_at: None,
             #[cfg(unix)]
             parallel: None,
@@ -725,6 +729,8 @@ impl Reader {
                             window_refills: AtomicUsize::new(0),
                             #[cfg(all(test, unix))]
                             borrowed_decodes: AtomicUsize::new(0),
+                            #[cfg(all(test, unix))]
+                            full_queries: AtomicUsize::new(0),
                             #[cfg(all(test, unix))]
                             fail_read_at: None,
                             parallel: None,
@@ -901,6 +907,8 @@ impl Reader {
                             window_refills: AtomicUsize::new(0),
                             #[cfg(all(test, unix))]
                             borrowed_decodes: AtomicUsize::new(0),
+                            #[cfg(all(test, unix))]
+                            full_queries: AtomicUsize::new(0),
                             #[cfg(all(test, unix))]
                             fail_read_at: None,
                             parallel: None,
@@ -1186,6 +1194,7 @@ impl Reader {
         signals: &[Signal],
         end: Time,
         lower: u64,
+        full: bool,
         visitor: &mut impl for<'v> FnMut(usize, Time, ValueRef<'v>, Position) -> ControlFlow<B>,
     ) -> Option<Result<ControlFlow<B>>> {
         use std::{cmp::Reverse, collections::BinaryHeap};
@@ -1244,7 +1253,20 @@ impl Reader {
         if records == 0 {
             return Some(Ok(ControlFlow::Continue(())));
         }
-        if estimate >= last.saturating_sub(lower) {
+        // Full-range requests compete with the parallel full walker. The
+        // factor is a conservative selection heuristic for that walker's
+        // multi-worker whole-body parse, not a CPU or I/O model and not a
+        // platform limit.
+        const PARALLEL_FACTOR: u64 = 8;
+        let (scaled, bound) = if full {
+            (
+                estimate.saturating_mul(PARALLEL_FACTOR),
+                file_len.saturating_sub(lower),
+            )
+        } else {
+            (estimate, last.saturating_sub(lower))
+        };
+        if scaled >= bound {
             return None;
         }
         let mut lookup = Lookup {
@@ -1546,12 +1568,17 @@ impl Reader {
         position: Option<Position>,
         mut visitor: impl for<'v> FnMut(usize, Time, ValueRef<'v>, Position) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>> {
+        // A default-position read through the last recorded tick can be a
+        // sparse indexed traversal; the parallel full walker remains the
+        // fallback and the choice is made before the first callback.
         #[cfg(unix)]
-        if position.is_none()
-            && let Some(result) = self.parallel_full(signals, end, &mut visitor)
-        {
-            return result;
-        }
+        let full = position.is_none()
+            && self
+                .parallel
+                .as_ref()
+                .is_some_and(|source| end.ticks() >= source.last_time);
+        #[cfg(not(unix))]
+        let full = false;
         let position = position.unwrap_or(Position {
             offset: self.body,
             time: 0,
@@ -1559,7 +1586,13 @@ impl Reader {
         });
         self.position = None;
         #[cfg(unix)]
-        if let Some(result) = self.indexed_traversal(signals, end, position.offset, &mut visitor) {
+        if let Some(result) =
+            self.indexed_traversal(signals, end, position.offset, full, &mut visitor)
+        {
+            return result;
+        }
+        #[cfg(unix)]
+        if full && let Some(result) = self.parallel_full(signals, end, &mut visitor) {
             return result;
         }
         self.tokens.input.seek(SeekFrom::Start(position.offset))?;
@@ -1616,6 +1649,8 @@ impl Reader {
         if batch_len == 0 {
             return None;
         }
+        #[cfg(all(test, unix))]
+        self.full_queries.fetch_add(1, Ordering::Relaxed);
         let selected = Arc::new(signals.iter().map(|s| s.index()).collect::<HashSet<_>>());
         let canceled = Arc::new(AtomicBool::new(false));
         let active_chunk = Arc::new(AtomicUsize::new(0));
@@ -1661,6 +1696,8 @@ impl Reader {
                     window_refills: AtomicUsize::new(0),
                     #[cfg(all(test, unix))]
                     borrowed_decodes: AtomicUsize::new(0),
+                    #[cfg(all(test, unix))]
+                    full_queries: AtomicUsize::new(0),
                     #[cfg(all(test, unix))]
                     fail_read_at: None,
                     parallel: None,
@@ -3291,6 +3328,115 @@ mod replay_tests {
         assert_eq!(
             observed,
             traversal_digest(&mut walked, &[signal], Time::from_ticks(2), body)
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn indexed_traversal_precedes_parallel_full_for_sparse_ranges() {
+        use std::sync::atomic::Ordering;
+
+        let mut sparse = Vec::from(
+            b"$var wire 1 ! a $end $var wire 1 n noise $end $enddefinitions $end #0 0! " as &[u8],
+        );
+        for _ in 0..30_000 {
+            sparse.extend_from_slice(b"0n ");
+        }
+        sparse.extend_from_slice(b"\n#1 1!\n");
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tmp")
+            .join(format!("traversal-full-sparse-{}.vcd", std::process::id()));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, &sparse).unwrap();
+        let open = |path: &std::path::Path, source: &[u8], last: u64| {
+            let (mut reader, hierarchy, _) = Reader::open(
+                Box::new(BufReader::new(File::open(path).unwrap())),
+                "full-sparse.vcd".into(),
+                None,
+            )
+            .unwrap();
+            reader.force_parallel_for_test(File::open(path).unwrap(), vec![source.len()], last);
+            (reader, hierarchy)
+        };
+        let (mut indexed, hierarchy) = open(&path, &sparse, 1);
+        let (mut walked, _, _) = Reader::open(
+            Box::new(BufReader::new(File::open(&path).unwrap())),
+            "full-sparse-walk.vcd".into(),
+            None,
+        )
+        .unwrap();
+        let signal = hierarchy.signal("a").unwrap();
+        let expected = traversal_digest(&mut walked, &[signal], Time::from_ticks(1), None);
+        assert_eq!(expected.0, 2);
+        // A true default-position full-range request now reaches the traversal.
+        let before = indexed.traversal_queries.load(Ordering::Relaxed);
+        let full_before = indexed.full_queries.load(Ordering::Relaxed);
+        let observed = traversal_digest(&mut indexed, &[signal], Time::from_ticks(1), None);
+        assert_eq!(observed, expected);
+        assert!(indexed.traversal_queries.load(Ordering::Relaxed) > before);
+        assert_eq!(
+            indexed.full_queries.load(Ordering::Relaxed),
+            full_before,
+            "the sparse full range must not fall back to parallel_full"
+        );
+        // A repeated request traverses again.
+        let before = indexed.traversal_queries.load(Ordering::Relaxed);
+        assert_eq!(
+            traversal_digest(&mut indexed, &[signal], Time::from_ticks(1), None),
+            expected
+        );
+        assert!(indexed.traversal_queries.load(Ordering::Relaxed) > before);
+        // A Break stops the traversal and a later full request is fresh.
+        let mut first = None;
+        let _ = indexed
+            .read_from(
+                &[signal],
+                Time::from_ticks(1),
+                None,
+                |index, time, value, _| {
+                    first = Some((index, time.ticks(), render_value(value)));
+                    ControlFlow::Break(())
+                },
+            )
+            .unwrap();
+        assert_eq!(first, Some((0, 0, "0".to_string())));
+        assert_eq!(
+            traversal_digest(&mut indexed, &[signal], Time::from_ticks(1), None),
+            expected
+        );
+        std::fs::remove_file(&path).unwrap();
+
+        // A dense full range keeps parallel_full and matches a serial walk.
+        let mut dense = Vec::from(b"$var wire 1 ! a $end $enddefinitions $end " as &[u8]);
+        for tick in 0..1000 {
+            dense.extend_from_slice(format!("#{tick} {}! ", tick % 2).as_bytes());
+        }
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tmp")
+            .join(format!("traversal-full-dense-{}.vcd", std::process::id()));
+        std::fs::write(&path, &dense).unwrap();
+        let (mut indexed, hierarchy) = open(&path, &dense, 999);
+        let (mut walked, _, _) = Reader::open(
+            Box::new(BufReader::new(File::open(&path).unwrap())),
+            "full-dense-walk.vcd".into(),
+            None,
+        )
+        .unwrap();
+        let signal = hierarchy.signal("a").unwrap();
+        let expected = traversal_digest(&mut walked, &[signal], Time::from_ticks(999), None);
+        let before = indexed.traversal_queries.load(Ordering::Relaxed);
+        let full_before = indexed.full_queries.load(Ordering::Relaxed);
+        let observed = traversal_digest(&mut indexed, &[signal], Time::from_ticks(999), None);
+        assert_eq!(observed, expected);
+        assert_eq!(
+            indexed.traversal_queries.load(Ordering::Relaxed),
+            before,
+            "a dense full range must keep the parallel walker"
+        );
+        assert!(
+            indexed.full_queries.load(Ordering::Relaxed) > full_before,
+            "the dense full range must reach parallel_full"
         );
         std::fs::remove_file(path).unwrap();
     }
