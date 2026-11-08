@@ -1577,8 +1577,6 @@ impl Reader {
                 .parallel
                 .as_ref()
                 .is_some_and(|source| end.ticks() >= source.last_time);
-        #[cfg(not(unix))]
-        let full = false;
         let position = position.unwrap_or(Position {
             offset: self.body,
             time: 0,
