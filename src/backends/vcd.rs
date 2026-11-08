@@ -1227,11 +1227,20 @@ impl Reader {
         let mut records = 0_u64;
         let mut estimate = 0_u64;
         let mut last = lower;
+        let mut first_time = None;
+        let mut after = None;
         for &signal_index in &selected {
             let list = index.entries(signal_index);
             let start = list.partition_point(|entry| entry.offset < lower);
             let end_at = list.partition_point(|entry| entry.time <= end.ticks());
             let stop = end_at.max(start);
+            if start < list.len() {
+                let time = list[start].time;
+                first_time = Some(first_time.map_or(time, |first: u64| first.min(time)));
+            }
+            if let Some(entry) = list.get(stop) {
+                after = Some(after.map_or(entry.offset, |offset: u64| offset.min(entry.offset)));
+            }
             if stop > start {
                 let count = (stop - start) as u64;
                 records = records.checked_add(count)?;
@@ -1258,16 +1267,25 @@ impl Reader {
         // multi-worker whole-body parse, not a CPU or I/O model and not a
         // platform limit.
         const PARALLEL_FACTOR: u64 = 8;
-        let (scaled, bound) = if full {
-            (
-                estimate.saturating_mul(PARALLEL_FACTOR),
-                file_len.saturating_sub(lower),
-            )
-        } else {
-            (estimate, last.saturating_sub(lower))
-        };
-        if scaled >= bound {
-            return None;
+        const WALK_MARGIN: u64 = 8;
+        if full {
+            if estimate.saturating_mul(PARALLEL_FACTOR) >= file_len.saturating_sub(lower) {
+                return None;
+            }
+        } else if estimate >= last.saturating_sub(lower) {
+            // The old bounded span did not prove a win. The first selected
+            // record strictly after `end` is at or after the parser's next
+            // `#time` stop, so its offset is a source upper bound; an absent
+            // such record uses the file end. Keep a point fallback and require
+            // a clear margin because the real parser stop can be earlier.
+            let first_time = first_time?;
+            if end.ticks() <= first_time {
+                return None;
+            }
+            let upper = after.unwrap_or(file_len).saturating_sub(lower);
+            if estimate.saturating_mul(WALK_MARGIN) >= upper {
+                return None;
+            }
         }
         let mut lookup = Lookup {
             index,
@@ -2534,6 +2552,21 @@ pub(crate) fn traversal_test_source() -> Vec<u8> {
     source
 }
 
+/// A bounded source with one selected record, an unselected tail and a later
+/// selected record after the request end.
+#[cfg(all(test, unix))]
+pub(crate) fn bounded_tail_test_source() -> Vec<u8> {
+    let mut source = Vec::from(
+        b"$var wire 1 ! a $end $var wire 1 n noise $end $enddefinitions $end #0 0!\n#1 1!\n#2 "
+            as &[u8],
+    );
+    for _ in 0..30_000 {
+        source.extend_from_slice(b"0n ");
+    }
+    source.extend_from_slice(b"\n#10 0!\n");
+    source
+}
+
 #[cfg(test)]
 mod replay_tests {
     use super::*;
@@ -3435,6 +3468,90 @@ mod replay_tests {
         assert!(
             indexed.full_queries.load(Ordering::Relaxed) > full_before,
             "the dense full range must reach parallel_full"
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn indexed_traversal_uses_the_after_end_source_bound() {
+        use std::sync::atomic::Ordering;
+
+        let source = bounded_tail_test_source();
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tmp")
+            .join(format!("traversal-tail-{}.vcd", std::process::id()));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, &source).unwrap();
+        let (mut indexed, hierarchy, _) = Reader::open(
+            Box::new(BufReader::new(File::open(&path).unwrap())),
+            "tail.vcd".into(),
+            None,
+        )
+        .unwrap();
+        indexed.force_parallel_for_test(File::open(&path).unwrap(), vec![source.len()], 10);
+        let (mut walked, _, _) = Reader::open(
+            Box::new(BufReader::new(File::open(&path).unwrap())),
+            "tail-walk.vcd".into(),
+            None,
+        )
+        .unwrap();
+        let a = hierarchy.signal("a").unwrap();
+        let noise = hierarchy.signal("noise").unwrap();
+        let lower = (source
+            .windows(5)
+            .position(|bytes| bytes == b"#1 1!")
+            .unwrap()
+            + 2) as u64;
+        let position = Some(Position {
+            offset: lower,
+            time: 1,
+            block: false,
+        });
+        let end = Time::from_ticks(2);
+        // The selected record is at `lower`, but a later selected record after
+        // `end` bounds the parser stop; a point keeps the old walk fallback.
+        let expected = traversal_digest(&mut walked, &[a], end, position);
+        assert_eq!(expected.0, 1);
+        let before = indexed.traversal_queries.load(Ordering::Relaxed);
+        assert_eq!(
+            traversal_digest(&mut indexed, &[a], end, position),
+            expected
+        );
+        assert!(indexed.traversal_queries.load(Ordering::Relaxed) > before);
+        let before = indexed.traversal_queries.load(Ordering::Relaxed);
+        assert_eq!(
+            traversal_digest(&mut indexed, &[a], Time::from_ticks(1), position),
+            expected
+        );
+        assert_eq!(
+            indexed.traversal_queries.load(Ordering::Relaxed),
+            before,
+            "a point keeps the walk"
+        );
+        let dense_expected = traversal_digest(&mut walked, &[a, noise], end, position);
+        assert_eq!(dense_expected.0, 30_001);
+        let before = indexed.traversal_queries.load(Ordering::Relaxed);
+        assert_eq!(
+            traversal_digest(&mut indexed, &[a, noise], end, position),
+            dense_expected
+        );
+        assert_eq!(
+            indexed.traversal_queries.load(Ordering::Relaxed),
+            before,
+            "a dense tail keeps the walk"
+        );
+        let mut first = None;
+        let _ = indexed
+            .read_from(&[a], end, position, |_, time, value, _| {
+                first = Some((time.ticks(), render_value(value)));
+                ControlFlow::Break(())
+            })
+            .unwrap();
+        assert_eq!(first, Some((1, "1".to_string())));
+        assert_eq!(
+            traversal_digest(&mut indexed, &[a], end, position),
+            expected
         );
         std::fs::remove_file(path).unwrap();
     }

@@ -1901,6 +1901,124 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn vcd_bounded_tail_scan_and_batch_use_the_traversal() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tmp")
+            .join(format!("bounded-tail-{}.vcd", std::process::id()));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let source = crate::backends::vcd::bounded_tail_test_source();
+        std::fs::write(&path, &source).unwrap();
+        let mut wave = crate::open_with(&path, "vcd-native").unwrap();
+        let mut serial =
+            crate::open_bytes_with("serial.vcd", source.as_slice().into(), "vcd-native").unwrap();
+        let signal = wave.hierarchy().signal("a").unwrap();
+        let reference = serial.hierarchy().signal("a").unwrap();
+        let crate::backends::Reader::Vcd(reader) = &mut wave.reader else {
+            unreachable!()
+        };
+        reader.force_parallel_for_test(std::fs::File::open(&path).unwrap(), vec![source.len()], 10);
+        fn value(value: crate::ValueRef<'_>) -> String {
+            match value {
+                crate::ValueRef::Bits(bits) => bits.to_string(),
+                other => format!("{other:?}"),
+            }
+        }
+        let scan = |selection: &mut crate::Selection<'_>| {
+            let mut records = Vec::new();
+            let _ = selection
+                .scan(
+                    TimeRange::closed(Time::from_ticks(1), Time::from_ticks(2)),
+                    |record| {
+                        records.push(match record {
+                            ScanRef::Initial {
+                                value: observed,
+                                changed_at,
+                                ..
+                            } => format!("initial:{}@{changed_at:?}", value(observed)),
+                            ScanRef::Change {
+                                time,
+                                value: observed,
+                                ..
+                            } => format!("change:{}:{}", time.ticks(), value(observed)),
+                        });
+                        ControlFlow::<()>::Continue(())
+                    },
+                )
+                .unwrap();
+            records
+        };
+        // Duplicate handles share one base and one traversal.
+        let handles = [signal; 100];
+        let references = [reference; 100];
+        let mut selection = wave.select(&handles).unwrap();
+        let mut reference_selection = serial.select(&references).unwrap();
+        let expected = scan(&mut reference_selection);
+        assert_eq!(expected.len(), 200);
+        let before = selection.vcd_traversal_queries().unwrap();
+        assert_eq!(scan(&mut selection), expected);
+        assert!(
+            selection.vcd_traversal_queries().unwrap() > before,
+            "a bounded tail must use the traversal"
+        );
+        // A point at the first selected tick keeps the walk fallback.
+        let before = selection.vcd_traversal_queries().unwrap();
+        let point = selection.samples(Time::from_ticks(1)).unwrap();
+        assert_eq!(
+            selection.vcd_traversal_queries().unwrap(),
+            before,
+            "a point keeps the walk"
+        );
+        assert_eq!(point.len(), 100);
+        assert!(point.iter().all(|sample| matches!(
+            sample,
+            crate::Sample::Value { value: crate::Value::Bits(bits), .. }
+                if bits.as_ref().to_string() == "1"
+        )));
+        drop(selection);
+
+        // A full-range batch over the same bounded window traverses once.
+        let times = [0, 1, 2].map(Time::from_ticks);
+        let mut batch = wave.select(&[signal]).unwrap();
+        let mut batch_reference = serial.select(&[reference]).unwrap();
+        let seeded = batch.vcd_index_queries().unwrap();
+        let before = batch.vcd_traversal_queries().unwrap();
+        let rows = batch.samples_at(&times).unwrap();
+        assert_eq!(
+            batch.vcd_traversal_queries().unwrap() - before,
+            1,
+            "one traversal for the whole batch"
+        );
+        assert_eq!(batch.vcd_index_queries().unwrap(), seeded);
+        let render = |rows: &[(Time, Vec<crate::Sample>)]| {
+            rows.iter()
+                .map(|(time, samples)| {
+                    (
+                        time.ticks(),
+                        samples
+                            .iter()
+                            .map(|sample| match sample {
+                                crate::Sample::Value {
+                                    value, changed_at, ..
+                                } => format!("{value:?}@{changed_at:?}"),
+                                crate::Sample::Missing { .. } => "missing".into(),
+                                crate::Sample::Event { occurrences, .. } => {
+                                    format!("event:{occurrences}")
+                                }
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            render(&rows),
+            render(&batch_reference.samples_at(&times).unwrap())
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn vcd_samples_at_seeds_the_window_without_reusing_replay() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tmp")
