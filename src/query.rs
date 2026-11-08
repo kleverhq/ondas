@@ -95,6 +95,32 @@ impl Selection<'_> {
         &self.signals
     }
 
+    /// Test probe: successful VCD position-index seeds for this retained selection.
+    #[cfg(all(test, unix))]
+    pub(crate) fn vcd_index_queries(&self) -> Option<usize> {
+        match &self.waveform.reader {
+            crate::backends::Reader::Vcd(reader) => Some(
+                reader
+                    .index_queries
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            ),
+            _ => None,
+        }
+    }
+
+    /// Test probe: VCD indexed traversals for this retained selection.
+    #[cfg(all(test, unix))]
+    pub(crate) fn vcd_traversal_queries(&self) -> Option<usize> {
+        match &self.waveform.reader {
+            crate::backends::Reader::Vcd(reader) => Some(
+                reader
+                    .traversal_queries
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            ),
+            _ => None,
+        }
+    }
+
     /// Returns the hierarchy associated with the selected waveform.
     pub fn hierarchy(&self) -> &Hierarchy {
         self.waveform.hierarchy()
@@ -250,6 +276,12 @@ impl Selection<'_> {
             .unwrap_or(Time::from_ticks(u64::MAX));
         if let crate::backends::Reader::Fst(reader) = &mut self.waveform.reader {
             return reader.read_candidate_times(&self.bases, range.start(), end, visitor);
+        }
+        if let crate::backends::Reader::Vcd(reader) = &self.waveform.reader
+            && let Some(result) =
+                reader.candidate_times(&self.bases, range.start(), end, &mut visitor)
+        {
+            return Ok(result);
         }
         let mut last = None;
         self.scan(range, |record| {

@@ -381,6 +381,149 @@ fn component_lookup_matches_linear_lookup_across_duplicate_scope_paths() {
 }
 
 #[test]
+fn unique_lookup_and_branching_duplicates_preserve_outcomes() {
+    let hierarchy = fixture();
+    let data = HierarchyPath::from_components(["tb", "dut", "data"]);
+    let variable = hierarchy.variable_path(&data).unwrap();
+    assert_eq!(variable.index, 0);
+    assert_eq!(
+        hierarchy.clone().variable_path(&data).unwrap().index,
+        variable.index
+    );
+    assert_eq!(
+        hierarchy
+            .variable_path(&HierarchyPath::from_components(["tb", "dut", "data[7:0]"]))
+            .unwrap()
+            .index,
+        2
+    );
+    assert_eq!(
+        hierarchy
+            .variable_path(&HierarchyPath::from_components(["tb", "dut", "with space"]))
+            .unwrap()
+            .index,
+        7
+    );
+    assert!(matches!(
+        hierarchy.variable_path(&HierarchyPath::from_components(["tb", "dut", "absent"])),
+        Err(LookupError::NotFound { .. })
+    ));
+    assert!(matches!(
+        hierarchy.variable_path(&HierarchyPath::from_components([] as [&str; 0])),
+        Err(LookupError::NotFound { .. })
+    ));
+    assert!(matches!(
+        hierarchy.variable_path(&HierarchyPath::from_components(["tb", "dut", "duplicate"])),
+        Err(LookupError::Ambiguous { matches: 2, .. })
+    ));
+    assert!(matches!(
+        hierarchy.signal_path(&HierarchyPath::from_components(["tb", "dut", "no_history"])),
+        Err(LookupError::NoSignal { .. })
+    ));
+
+    // A single root variable uses the same unique path without a frontier.
+    let root_variable = VariableData {
+        name: "root".into(),
+        reader_name: None,
+        name_was_escaped: false,
+        parent: None,
+        kind: "wire".into(),
+        direction: Direction::Input,
+        range: Some(BitRange::new(0, 0)),
+        is_constant: false,
+        type_name: None,
+        signedness: None,
+        logic_domain: None,
+        enumeration: None,
+        signal: Some(0),
+    };
+    let root = Hierarchy::new(
+        vec![],
+        vec![root_variable],
+        vec![Encoding::Bits { width: 1 }],
+    );
+    assert_eq!(
+        root.variable_path(&HierarchyPath::from_components(["root"]))
+            .unwrap()
+            .index,
+        0
+    );
+
+    // Two root scopes share the first component, but the target exists under
+    // only one branch: the full frontier must find it instead of reporting an
+    // early ambiguity.
+    let mut data = Arc::try_unwrap(fixture().data).ok().unwrap();
+    let first = data.scopes.len();
+    for _ in 0..2 {
+        data.scopes.push(ScopeData {
+            name: "branch".into(),
+            name_was_escaped: false,
+            parent: None,
+            kind: "module".into(),
+            definition_name: None,
+            packing: None,
+            is_hidden: false,
+        });
+    }
+    data.variables.push(VariableData {
+        name: "target".into(),
+        reader_name: None,
+        name_was_escaped: false,
+        parent: Some(first),
+        kind: "wire".into(),
+        direction: Direction::Input,
+        range: Some(BitRange::new(0, 0)),
+        is_constant: false,
+        type_name: None,
+        signedness: None,
+        logic_domain: None,
+        enumeration: None,
+        signal: Some(0),
+    });
+    let one_branch = Hierarchy::new(data.scopes, data.variables, data.encodings);
+    let path = HierarchyPath::from_components(["branch", "target"]);
+    let found = one_branch.variable_path(&path).unwrap();
+    assert_eq!(found.parent().unwrap().name(), "branch");
+
+    // The same path with the target under both branches is ambiguous.
+    let mut data = Arc::try_unwrap(fixture().data).ok().unwrap();
+    let first = data.scopes.len();
+    for _ in 0..2 {
+        data.scopes.push(ScopeData {
+            name: "branch".into(),
+            name_was_escaped: false,
+            parent: None,
+            kind: "module".into(),
+            definition_name: None,
+            packing: None,
+            is_hidden: false,
+        });
+    }
+    for parent in [first, first + 1] {
+        data.variables.push(VariableData {
+            name: "target".into(),
+            reader_name: None,
+            name_was_escaped: false,
+            parent: Some(parent),
+            kind: "wire".into(),
+            direction: Direction::Input,
+            range: Some(BitRange::new(0, 0)),
+            is_constant: false,
+            type_name: None,
+            signedness: None,
+            logic_domain: None,
+            enumeration: None,
+            signal: Some(0),
+        });
+    }
+    let two_branches = Hierarchy::new(data.scopes, data.variables, data.encodings);
+    assert!(matches!(
+        two_branches.variable_path(&path),
+        Err(LookupError::Ambiguous { matches: 2, .. })
+    ));
+}
+
+#[test]
 fn hierarchy_views_aliases_and_metadata() {
     let hierarchy = fixture();
     assert_eq!(hierarchy.roots().count(), 1);

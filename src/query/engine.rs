@@ -337,13 +337,17 @@ impl<'w> Selection<'w> {
     /// one empty row per time. Neither case reads the source. The result owns
     /// its times and values and can outlive this selection and waveform.
     ///
-    /// The current implementation reads from the beginning through the latest
-    /// requested tick in one chronological traversal. It does not use point-read
-    /// seek shortcuts or cached replay. No full history or candidate list is
-    /// collected. Additional scheduling state grows with
-    /// the number of requested times. Working values grow with the selection
-    /// and its composition dependencies. Returned values, input storage and
-    /// reader/index/SDK memory are separate costs.
+    /// The implementation reads the requested window in one chronological
+    /// traversal. An eligible VCD batch can start that traversal from a
+    /// validated entering state at the earliest requested tick; byte, small,
+    /// serial or fallback inputs and unsupported, event, computed or unproven
+    /// selections keep the reader's body start. It does not read one point per
+    /// requested time and does not reuse an earlier selection's replay. Other
+    /// readers traverse from the beginning through the latest requested tick.
+    /// No full history or candidate list is collected. Additional scheduling
+    /// state grows with the number of requested times. Working values grow with
+    /// the selection and its composition dependencies. Returned values, input
+    /// storage and reader/index/SDK memory are separate costs.
     ///
     /// Selected payload may fail decoding while advancing, including at ticks
     /// not requested in `times`. On any error, returns no partial batch. Successful
@@ -390,7 +394,17 @@ impl<'w> Selection<'w> {
                 .map(|(&signal, &index)| slots[index].sample(signal, tick).to_owned())
                 .collect()
         };
-        let _ = self.read_ticks_from(None, end, &mut slots, true, |time, signals, slots| {
+        // A VCD batch starts from a validated entering state at the earliest
+        // requested tick. The documented fresh traversal does not reuse an
+        // earlier selection replay; other readers keep the body start.
+        let start = if matches!(&self.waveform.reader, crate::backends::Reader::Vcd(_)) {
+            self.replay = None;
+            self.checkpoint = None;
+            Some(times[order[0]])
+        } else {
+            None
+        };
+        let _ = self.read_ticks_from(start, end, &mut slots, true, |time, signals, slots| {
             while next < order.len() && times[order[next]] <= time {
                 let index = order[next];
                 rows[index].1 = observe(signals, slots, (times[index] == time).then_some(time));
@@ -1253,8 +1267,8 @@ impl<'w> Selection<'w> {
         }
         #[cfg(unix)]
         if self.computations.is_empty()
-            && self.replay.is_none()
-            && self.checkpoint.is_none()
+            && !self.replay.as_ref().is_some_and(eligible)
+            && !self.checkpoint.as_ref().is_some_and(eligible)
             && let Some(start) = start.filter(|start| *start > Time::ZERO)
             && !self.retained_signals.iter().any(|signal| signal.is_slice())
             && let crate::backends::Reader::Vcd(reader) = &self.waveform.reader
@@ -1616,6 +1630,476 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn vcd_candidate_times_are_an_activity_superset() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tmp")
+            .join(format!("candidate-times-{}.vcd", std::process::id()));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let source = b"$var wire 2 ! a $end $var wire 1 \" b $end $enddefinitions $end \
+            #0 b00 ! 0\"\n#1 b00 !\n#2 b01 ! 1\"\n#2 b00 !\n#3 b01 !\n#3 b00 ! 1\"\n#4 b01 !\n";
+        std::fs::write(&path, source).unwrap();
+        let mut wave = crate::open_with(&path, "vcd-native").unwrap();
+        let mut serial =
+            crate::open_bytes_with("serial.vcd", source.as_slice().into(), "vcd-native").unwrap();
+        let signal = wave.hierarchy().signal("a").unwrap();
+        let reference = serial.hierarchy().signal("a").unwrap();
+        let crate::backends::Reader::Vcd(reader) = &mut wave.reader else {
+            unreachable!()
+        };
+        reader.force_parallel_for_test(std::fs::File::open(&path).unwrap(), vec![source.len()], 4);
+        let range = TimeRange::closed(Time::from_ticks(0), Time::from_ticks(4));
+        let candidates = |selection: &mut crate::Selection<'_>| {
+            let mut times = Vec::new();
+            let _ = selection
+                .scan_candidate_times(range, |time| {
+                    times.push(time.ticks());
+                    ControlFlow::<()>::Continue(())
+                })
+                .unwrap();
+            times
+        };
+        let mut selection = wave.select(&[signal]).unwrap();
+        let superset = candidates(&mut selection);
+        assert!(superset.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(superset.iter().all(|time| *time <= 4));
+        // Requirement: every change tick of the normalized scan is present.
+        let mut changes = Vec::new();
+        let mut last = None;
+        let mut reference_selection = serial.select(&[reference]).unwrap();
+        let _ = reference_selection
+            .scan(range, |record| {
+                if let ScanRef::Change { time, .. } = record
+                    && last != Some(time)
+                {
+                    last = Some(time);
+                    changes.push(time.ticks());
+                }
+                ControlFlow::<()>::Continue(())
+            })
+            .unwrap();
+        for time in &changes {
+            assert!(superset.contains(time), "missing change {time}");
+        }
+        // Tick 1 has an identical record, so activity is a strict superset.
+        assert!(superset.contains(&1));
+        assert!(!changes.contains(&1));
+        // A Break stops the candidate visit without touching reader state.
+        let mut first = None;
+        let outcome = selection
+            .scan_candidate_times(range, |time| {
+                first = Some(time.ticks());
+                ControlFlow::Break(())
+            })
+            .unwrap();
+        assert!(outcome.is_break());
+        assert_eq!(first, Some(0));
+        assert_eq!(candidates(&mut selection), superset);
+        drop(selection);
+        // A slice passes its whole base; base activity covers projected changes.
+        let slice = signal.slice(1, 1).unwrap();
+        let mut slice_selection = wave.select(&[slice]).unwrap();
+        let slice_candidates = candidates(&mut slice_selection);
+        assert!(!slice_candidates.is_empty());
+        // Without the position index the generic scan answers.
+        let mut byte_selection = serial.select(&[reference]).unwrap();
+        assert_eq!(candidates(&mut byte_selection), changes);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn vcd_indexed_traversal_keeps_selection_semantics() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tmp")
+            .join(format!("indexed-scan-{}.vcd", std::process::id()));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let source = crate::backends::vcd::traversal_test_source();
+        std::fs::write(&path, &source).unwrap();
+        let mut wave = crate::open_with(&path, "vcd-native").unwrap();
+        let mut serial =
+            crate::open_bytes_with("serial.vcd", source.as_slice().into(), "vcd-native").unwrap();
+        let signal = wave.hierarchy().signal("a").unwrap();
+        let noise = wave.hierarchy().signal("noise").unwrap();
+        let reference = serial.hierarchy().signal("a").unwrap();
+        let reference_noise = serial.hierarchy().signal("noise").unwrap();
+        let crate::backends::Reader::Vcd(reader) = &mut wave.reader else {
+            unreachable!()
+        };
+        reader.force_parallel_for_test(std::fs::File::open(&path).unwrap(), vec![source.len()], 10);
+        let mut selection = wave.select(&[signal]).unwrap();
+        fn value(value: crate::ValueRef<'_>) -> String {
+            match value {
+                crate::ValueRef::Bits(bits) => bits.to_string(),
+                other => format!("{other:?}"),
+            }
+        }
+        let scan = |selection: &mut crate::Selection<'_>| {
+            let mut records = Vec::new();
+            let _ = selection
+                .scan(
+                    TimeRange::closed(Time::from_ticks(5), Time::from_ticks(7)),
+                    |record| {
+                        records.push(match record {
+                            ScanRef::Initial {
+                                value: observed,
+                                changed_at,
+                                ..
+                            } => format!("initial:{}@{changed_at:?}", value(observed)),
+                            ScanRef::Change {
+                                time,
+                                value: observed,
+                                ..
+                            } => format!("change:{}:{}", time.ticks(), value(observed)),
+                        });
+                        ControlFlow::<()>::Continue(())
+                    },
+                )
+                .unwrap();
+            records
+        };
+        let expected = {
+            let mut reference_selection = serial.select(&[reference]).unwrap();
+            scan(&mut reference_selection)
+        };
+        assert_eq!(
+            expected,
+            ["initial:01@Some(Time(3))", "change:7:00"],
+            "the range has no net change at tick 5"
+        );
+        let before = selection.vcd_traversal_queries().unwrap();
+        assert_eq!(scan(&mut selection), expected);
+        assert!(
+            selection.vcd_traversal_queries().unwrap() > before,
+            "a sparse selection must use the indexed traversal"
+        );
+        // A Break on the Initial record keeps the same entering state.
+        let mut initial = None;
+        let _ = selection
+            .scan(
+                TimeRange::closed(Time::from_ticks(5), Time::from_ticks(7)),
+                |record| {
+                    if let ScanRef::Initial {
+                        value: observed,
+                        changed_at,
+                        ..
+                    } = record
+                    {
+                        initial = Some(format!("{}@{changed_at:?}", value(observed)));
+                        return ControlFlow::Break(());
+                    }
+                    ControlFlow::Continue(())
+                },
+            )
+            .unwrap();
+        assert_eq!(initial.as_deref(), Some("01@Some(Time(3))"));
+        let before = selection.vcd_traversal_queries().unwrap();
+        assert_eq!(scan(&mut selection), expected);
+        assert!(
+            selection.vcd_traversal_queries().unwrap() > before,
+            "a repeat after a stop must traverse again"
+        );
+        // A dense selection across the same gap keeps the walk and the same records.
+        let mut dense = wave.select(&[signal, noise]).unwrap();
+        let mut dense_reference = serial.select(&[reference, reference_noise]).unwrap();
+        let dense_expected = scan(&mut dense_reference);
+        let before = dense.vcd_traversal_queries().unwrap();
+        assert_eq!(scan(&mut dense), dense_expected);
+        assert_eq!(
+            dense.vcd_traversal_queries().unwrap(),
+            before,
+            "a dense selection must keep the walk"
+        );
+        // A computed slice of the same sparse bases keeps the normalization.
+        let b = wave.hierarchy().signal("b").unwrap();
+        let reference_b = serial.hierarchy().signal("b").unwrap();
+        let bus = wave.concat(&[signal, b]).unwrap();
+        let reference_bus = serial.concat(&[reference, reference_b]).unwrap();
+        let mut computed = wave.select(&[bus.slice(2, 1).unwrap()]).unwrap();
+        let mut computed_reference = serial
+            .select(&[reference_bus.slice(2, 1).unwrap()])
+            .unwrap();
+        let computed_expected = scan(&mut computed_reference);
+        let before = computed.vcd_traversal_queries().unwrap();
+        assert_eq!(scan(&mut computed), computed_expected);
+        assert!(
+            computed.vcd_traversal_queries().unwrap() > before,
+            "a computed scan reads its sparse bases through the traversal"
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn vcd_full_range_batch_uses_one_traversal() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tmp")
+            .join(format!("full-range-batch-{}.vcd", std::process::id()));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut source = Vec::from(
+            b"$var wire 1 ! a $end $var wire 1 n noise $end $enddefinitions $end #0 0! " as &[u8],
+        );
+        for _ in 0..30_000 {
+            source.extend_from_slice(b"0n ");
+        }
+        source.extend_from_slice(b"\n#1 1!\n");
+        std::fs::write(&path, &source).unwrap();
+        let mut wave = crate::open_with(&path, "vcd-native").unwrap();
+        let mut serial =
+            crate::open_bytes_with("serial.vcd", source.as_slice().into(), "vcd-native").unwrap();
+        let signal = wave.hierarchy().signal("a").unwrap();
+        let reference = serial.hierarchy().signal("a").unwrap();
+        let crate::backends::Reader::Vcd(reader) = &mut wave.reader else {
+            unreachable!()
+        };
+        reader.force_parallel_for_test(std::fs::File::open(&path).unwrap(), vec![source.len()], 1);
+        let render = |rows: &[(Time, Vec<crate::Sample>)]| {
+            rows.iter()
+                .map(|(time, samples)| {
+                    (
+                        time.ticks(),
+                        samples
+                            .iter()
+                            .map(|sample| match sample {
+                                crate::Sample::Value {
+                                    value, changed_at, ..
+                                } => format!("{value:?}@{changed_at:?}"),
+                                crate::Sample::Missing { .. } => "missing".into(),
+                                crate::Sample::Event { occurrences, .. } => {
+                                    format!("event:{occurrences}")
+                                }
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let times = [0, 1, 1, 0].map(Time::from_ticks);
+        let mut selection = wave.select(&[signal]).unwrap();
+        let mut reference_selection = serial.select(&[reference]).unwrap();
+        let seeded = selection.vcd_index_queries().unwrap();
+        let before = selection.vcd_traversal_queries().unwrap();
+        let rows = selection.samples_at(&times).unwrap();
+        assert_eq!(
+            selection.vcd_traversal_queries().unwrap() - before,
+            1,
+            "one traversal for the whole full-range batch"
+        );
+        assert_eq!(selection.vcd_index_queries().unwrap(), seeded);
+        assert_eq!(
+            render(&rows),
+            render(&reference_selection.samples_at(&times).unwrap())
+        );
+        // A repeated batch traverses again and stays equal.
+        let before = selection.vcd_traversal_queries().unwrap();
+        assert_eq!(
+            render(&selection.samples_at(&times).unwrap()),
+            render(&rows)
+        );
+        assert!(selection.vcd_traversal_queries().unwrap() > before);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn vcd_bounded_tail_scan_and_batch_use_the_traversal() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tmp")
+            .join(format!("bounded-tail-{}.vcd", std::process::id()));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let source = crate::backends::vcd::bounded_tail_test_source();
+        std::fs::write(&path, &source).unwrap();
+        let mut wave = crate::open_with(&path, "vcd-native").unwrap();
+        let mut serial =
+            crate::open_bytes_with("serial.vcd", source.as_slice().into(), "vcd-native").unwrap();
+        let signal = wave.hierarchy().signal("a").unwrap();
+        let reference = serial.hierarchy().signal("a").unwrap();
+        let crate::backends::Reader::Vcd(reader) = &mut wave.reader else {
+            unreachable!()
+        };
+        reader.force_parallel_for_test(std::fs::File::open(&path).unwrap(), vec![source.len()], 10);
+        fn value(value: crate::ValueRef<'_>) -> String {
+            match value {
+                crate::ValueRef::Bits(bits) => bits.to_string(),
+                other => format!("{other:?}"),
+            }
+        }
+        let scan = |selection: &mut crate::Selection<'_>| {
+            let mut records = Vec::new();
+            let _ = selection
+                .scan(
+                    TimeRange::closed(Time::from_ticks(1), Time::from_ticks(2)),
+                    |record| {
+                        records.push(match record {
+                            ScanRef::Initial {
+                                value: observed,
+                                changed_at,
+                                ..
+                            } => format!("initial:{}@{changed_at:?}", value(observed)),
+                            ScanRef::Change {
+                                time,
+                                value: observed,
+                                ..
+                            } => format!("change:{}:{}", time.ticks(), value(observed)),
+                        });
+                        ControlFlow::<()>::Continue(())
+                    },
+                )
+                .unwrap();
+            records
+        };
+        // Duplicate handles share one base and one traversal.
+        let handles = [signal; 100];
+        let references = [reference; 100];
+        let mut selection = wave.select(&handles).unwrap();
+        let mut reference_selection = serial.select(&references).unwrap();
+        let expected = scan(&mut reference_selection);
+        assert_eq!(expected.len(), 200);
+        let before = selection.vcd_traversal_queries().unwrap();
+        assert_eq!(scan(&mut selection), expected);
+        assert!(
+            selection.vcd_traversal_queries().unwrap() > before,
+            "a bounded tail must use the traversal"
+        );
+        // A point at the first selected tick keeps the walk fallback.
+        let before = selection.vcd_traversal_queries().unwrap();
+        let point = selection.samples(Time::from_ticks(1)).unwrap();
+        assert_eq!(
+            selection.vcd_traversal_queries().unwrap(),
+            before,
+            "a point keeps the walk"
+        );
+        assert_eq!(point.len(), 100);
+        assert!(point.iter().all(|sample| matches!(
+            sample,
+            crate::Sample::Value { value: crate::Value::Bits(bits), .. }
+                if bits.as_ref().to_string() == "1"
+        )));
+        drop(selection);
+
+        // A full-range batch over the same bounded window traverses once.
+        let times = [0, 1, 2].map(Time::from_ticks);
+        let mut batch = wave.select(&[signal]).unwrap();
+        let mut batch_reference = serial.select(&[reference]).unwrap();
+        let seeded = batch.vcd_index_queries().unwrap();
+        let before = batch.vcd_traversal_queries().unwrap();
+        let rows = batch.samples_at(&times).unwrap();
+        assert_eq!(
+            batch.vcd_traversal_queries().unwrap() - before,
+            1,
+            "one traversal for the whole batch"
+        );
+        assert_eq!(batch.vcd_index_queries().unwrap(), seeded);
+        let render = |rows: &[(Time, Vec<crate::Sample>)]| {
+            rows.iter()
+                .map(|(time, samples)| {
+                    (
+                        time.ticks(),
+                        samples
+                            .iter()
+                            .map(|sample| match sample {
+                                crate::Sample::Value {
+                                    value, changed_at, ..
+                                } => format!("{value:?}@{changed_at:?}"),
+                                crate::Sample::Missing { .. } => "missing".into(),
+                                crate::Sample::Event { occurrences, .. } => {
+                                    format!("event:{occurrences}")
+                                }
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            render(&rows),
+            render(&batch_reference.samples_at(&times).unwrap())
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn vcd_samples_at_seeds_the_window_without_reusing_replay() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tmp")
+            .join(format!("samples-at-{}.vcd", std::process::id()));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let source = b"$var wire 2 ! a $end $enddefinitions $end \
+            #2 b00 !\n#3 b01 !\n#5 b11 !\n#5 b01 !\n#7 b11 !\n#7 b00 !\n";
+        std::fs::write(&path, source).unwrap();
+        let mut wave = crate::open_with(&path, "vcd-native").unwrap();
+        let mut serial =
+            crate::open_bytes_with("serial.vcd", source.as_slice().into(), "vcd-native").unwrap();
+        let signal = wave.hierarchy().signal("a").unwrap();
+        let reference = serial.hierarchy().signal("a").unwrap();
+        let crate::backends::Reader::Vcd(reader) = &mut wave.reader else {
+            unreachable!()
+        };
+        reader.force_parallel_for_test(std::fs::File::open(&path).unwrap(), vec![source.len()], 10);
+        let mut selection = wave.select(&[signal]).unwrap();
+        let render = |rows: &[(Time, Vec<crate::Sample>)]| {
+            rows.iter()
+                .map(|(time, samples)| {
+                    let samples = samples
+                        .iter()
+                        .map(|sample| match sample {
+                            crate::Sample::Value {
+                                value, changed_at, ..
+                            } => match value {
+                                crate::Value::Bits(bits) => {
+                                    format!("{}@{:?}", bits.as_ref(), changed_at.map(Time::ticks))
+                                }
+                                other => format!("{other:?}@{changed_at:?}"),
+                            },
+                            crate::Sample::Missing { .. } => "missing".into(),
+                            crate::Sample::Event { occurrences, .. } => {
+                                format!("event:{occurrences}")
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    (time.ticks(), samples)
+                })
+                .collect::<Vec<_>>()
+        };
+        // A completed point installs a replay; the batch must ignore it and seed once.
+        let _ = selection.samples(Time::from_ticks(7)).unwrap();
+        let probe = |selection: &crate::Selection<'_>| selection.vcd_index_queries().unwrap();
+        let seeded = probe(&selection);
+        let times = [5, 3, 5, 4, 100, 6].map(Time::from_ticks);
+        let rows = selection.samples_at(&times).unwrap();
+        assert_eq!(
+            probe(&selection) - seeded,
+            1,
+            "one seed for the whole VCD batch"
+        );
+        let expected = [
+            (5, vec!["01@Some(3)".to_string()]),
+            (3, vec!["01@Some(3)".to_string()]),
+            (5, vec!["01@Some(3)".to_string()]),
+            (4, vec!["01@Some(3)".to_string()]),
+            (100, vec!["00@Some(7)".to_string()]),
+            (6, vec!["01@Some(3)".to_string()]),
+        ];
+        assert_eq!(render(&rows), expected);
+        assert_eq!(
+            render(&rows),
+            render(&serial.samples_at(&[reference], &times).unwrap()),
+            "batch must match the chronological reference"
+        );
+        // A requested tick before the first record stays Missing.
+        let early = [Time::from_ticks(1), Time::from_ticks(3)];
+        assert_eq!(
+            render(&selection.samples_at(&early).unwrap()),
+            [
+                (1, vec!["missing".to_string()]),
+                (3, vec!["01@Some(3)".to_string()])
+            ]
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn vcd_parallel_prefix_preserves_points_and_narrow_traces() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tmp")
@@ -1644,6 +2128,8 @@ mod tests {
             vec![cut(b"\n#2"), cut(b"\n#4"), source.len()],
             6,
         );
+        // The position index answered the base-prefix points below.
+        assert!(reader.has_index());
         let names = ["a", "b", "e"];
         let selected = names.map(|name| wave.hierarchy().signal(name).unwrap());
         let reference = names.map(|name| serial.hierarchy().signal(name).unwrap());
@@ -1813,10 +2299,17 @@ mod tests {
                 .unwrap();
             times
         };
-        assert_eq!(
-            collect(&mut wave, &selected),
-            collect(&mut serial, &reference)
-        );
+        // The indexed backend may visit extra activity; every generic scan
+        // change must still be present and the order must be strict.
+        let indexed_candidates = collect(&mut wave, &selected);
+        let reference_changes = collect(&mut serial, &reference);
+        assert!(indexed_candidates.windows(2).all(|pair| pair[0] < pair[1]));
+        for time in &reference_changes {
+            assert!(
+                indexed_candidates.contains(time),
+                "missing candidate {time:?}"
+            );
+        }
         let first = |wave: &mut crate::Waveform, signals: &[crate::Signal]| {
             wave.scan(signals, TimeRange::all(), |record| match record {
                 ScanRef::Change { time, .. } => ControlFlow::Break(time),

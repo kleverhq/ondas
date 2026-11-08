@@ -72,7 +72,9 @@ fn read_metadata_path(path: &Path) -> Result<Metadata> {
     let format = detect_format(&mut *input, &name, Some(path))?;
     match format {
         Format::Fst => fst::Reader::open(input, name).map(|(_, _, metadata)| metadata),
-        Format::Vcd => vcd::Reader::open(input, name, vcd_file).map(|(_, _, metadata)| metadata),
+        Format::Vcd => {
+            vcd::Reader::open_metadata(input, name, vcd_file).map(|(_, _, metadata)| metadata)
+        }
         Format::Ghw => ghw::Reader::metadata(input, name),
         #[cfg(feature = "fsdb-lib")]
         Format::Fsdb => crate::backends::fsdb::read_metadata(path, name),

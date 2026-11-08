@@ -6,6 +6,7 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ### Changed
 
+- Speed up late VCD points and prefixes with a bounded index of validated record positions, read sparse selections in tick order from those positions, and seed explicit-time VCD batches from the earliest requested tick.
 - Speed up GHW reads and reuse validated metadata when reopening identical content.
 - Reuse a validated WDB reader for sequential opens of an unchanged file. Release history indexes and temporary storage on drop.
 - Load large WDB byte-history batches with bounded local workers.
