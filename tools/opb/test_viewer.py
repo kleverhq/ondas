@@ -249,6 +249,9 @@ class ViewerTests(unittest.TestCase):
             self.assertEqual(cell['synthetic_source']['backend'], backend)
             self.assertEqual(cell['synthetic_source']['job'], job)
             self.assertEqual(cell['log'], winner['log'])
+            for field in ('input_hash', 'input_summary', 'artifact', 'raw_directory'):
+                self.assertEqual(cell[field], winner[field])
+            self.assertEqual(cell['synthetic_source']['manifest'], source['href'])
             self.assertEqual(cell['verification']['status'], 'source passed')
         viewer.comparisons([source, derived])
         self.assertEqual(ideal['cells']['OPB-POINT-028']['comparisons'][1]['ratio'], 1)
@@ -302,6 +305,49 @@ class ViewerTests(unittest.TestCase):
         self.assertEqual((root / 'run.json').read_bytes(), before)
         with self.assertRaisesRegex(ValueError, 'exactly one input'):
             viewer.render([root], self.output, self.root / 'not-an-input')
+
+    def test_ideal_preserves_repeated_backend_configurations_from_a_later_input(self):
+        other, _, _ = self.save('other')
+        root, data = self.matrix('repeated', {'fst-lib': {'OPB-POINT-028': 80}})
+        configuration = copy.deepcopy(data['configurations'][0])
+        configuration.update(label='second configuration', sdk_home='/absent/second-sdk')
+        data['configurations'].append(configuration)
+        job = copy.deepcopy(data['jobs'][0])
+        job['configuration'] = 1
+        job['raw'] = 'raw/0001'
+        job['measurement']['raw_files'] = [name.replace('raw/0000', job['raw'])
+                                           for name in job['measurement']['raw_files']]
+        shutil.copytree(root / 'raw/0000', root / job['raw'])
+        raw = root / job['raw'] / 'fst-lib/OPB-POINT-028/new'
+        (raw / 'sample.json').write_text(json.dumps(dict(times=[40, 80], iters=[2, 4])))
+        (raw / 'estimates.json').write_text(json.dumps(dict(
+            mean=dict(point_estimate=20, confidence_interval=dict(
+                lower_bound=18, upper_bound=22, confidence_level=.95)),
+            std_dev=dict(point_estimate=2))))
+        data['jobs'].append(job)
+        self.update(root, data)
+        source = self.read(root)
+        winner = source['rows'][1]['cells']['OPB-POINT-028']
+        derived = viewer.ideal_run(source, 1)
+        ideal = derived['rows'][-1]['cells']['OPB-POINT-028']
+        self.assertEqual(ideal['timing'], winner['timing'])
+        self.assertEqual(ideal['synthetic_source'], dict(
+            backend='fst-lib', label='second configuration', job=1, manifest=source['href']))
+        self.assertEqual(ideal['raw_directory'], winner['raw_directory'])
+        viewer.render([other, root], self.output, root)
+        embedded = json.loads(self.output.read_text().split(
+            '<script id="opb-data" type="application/json">')[1].split('</script>')[0])
+        _, saved_source, saved_derived = embedded['runs']
+        self.assertEqual(saved_derived['rows_from'], 1)
+        self.assertEqual(len(saved_derived['rows']), 1)
+        restored = saved_source['rows'] + saved_derived['rows']
+        self.assertEqual([row['config'] for row in restored[:-1]], data['configurations'])
+        self.assertEqual([row['cells']['OPB-POINT-028']['timing']['mean'] for row in restored],
+                         [80, 20, 20])
+        cell = restored[-1]['cells']['OPB-POINT-028']
+        self.assertEqual(cell['job'], 1)
+        self.assertEqual(cell['timing']['raw_prefix'],
+                         restored[1]['cells']['OPB-POINT-028']['timing']['raw_prefix'])
 
 
 if __name__ == '__main__':
