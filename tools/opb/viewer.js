@@ -1,6 +1,9 @@
 "use strict";
 const D = JSON.parse(document.getElementById("opb-data").textContent),
   $ = (id) => document.getElementById(id);
+for (const saved of D.runs)
+  if (saved.rows_from != null)
+    saved.rows = [...D.runs[saved.rows_from].rows, ...saved.rows];
 const TOP = 52,
   ROW = 38;
 let rows = [],
@@ -11,6 +14,9 @@ let rows = [],
   ignoreClick = false,
   width = 1,
   cw = 1;
+const relativeLimits = { faster: 64, slower: 64 };
+const hasTiming = (cell) =>
+  cell?.timing && ["passed", "synthetic"].includes(cell.status);
 const def = (cell) => (cell ? D.definitions[cell.case_hash] : null),
   group = (id) => id.split("-")[1];
 function option(select, value, label) {
@@ -52,7 +58,7 @@ function cellAt(row, id) {
 }
 function metric(row, id, mode = $("mode").value) {
   const c = cellAt(row, id);
-  if (!c || c.status !== "passed" || !c.timing)
+  if (!hasTiming(c))
     return { value: null, reason: c?.status || "Not recorded in this run" };
   if (mode === "absolute") return { value: c.timing.mean };
   if (mode === "run") {
@@ -65,7 +71,7 @@ function metric(row, id, mode = $("mode").value) {
   }
   const reference = rows[+$("reference").value],
     b = cellAt(reference, id);
-  if (!b || b.status !== "passed" || !b.timing)
+  if (!hasTiming(b))
     return { value: null, reason: "Reference has no verified measurement" };
   if (c.case_hash !== b.case_hash)
     return { value: null, reason: "Case parameters / timer boundary differ" };
@@ -116,7 +122,7 @@ function rangeSummary() {
   for (const id of ids) {
     const c = cellAt(row, id);
     if (c?.status === "timeout") timeouts++;
-    if (c?.status === "passed" && c.timing) times.push(c.timing.mean);
+    if (hasTiming(c)) times.push(c.timing.mean);
     const ratio = metric(row, id, mode).value;
     if (ratio > 0 && Number.isFinite(ratio)) ratios.push(ratio);
   }
@@ -170,11 +176,16 @@ function rowSet() {
     result = [];
   for (const backend of D.backends) {
     const found = r.rows.filter((row) => row.backend === backend);
+    if (backend === "ideal" && !found.length) continue;
     result.push(
       ...(found.length
         ? found.map((row) => ({
             ...row,
-            label: found.length === 1 ? backend : row.label,
+            label: row.synthetic
+              ? row.label
+              : found.length === 1
+                ? backend
+                : row.label,
           }))
         : [{ backend, label: backend, cells: {}, missing: true }]),
     );
@@ -212,7 +223,9 @@ function describe() {
   factsItem(
     $("mode").value === "absolute" ? "Process wall time" : "Relative effect",
     $("mode").value === "absolute"
-      ? c.measurement.wall_seconds?.toFixed(3) + " s"
+      ? c.measurement.wall_seconds == null
+        ? "—"
+        : c.measurement.wall_seconds.toFixed(3) + " s"
       : relativeEffect(m.value),
   );
   if (c.timing) {
@@ -247,6 +260,11 @@ function describe() {
       " – " +
       time(m.reference.upper) +
       ".";
+  if (c.synthetic_source)
+    message +=
+      " Synthetic minimum of verified backend means. Source: " +
+      c.synthetic_source.label +
+      ". Samples and CI belong to that measurement; the ideal backend was not measured or independently replayed.";
   $("explanation").textContent = message;
   if (c.timing) {
     const max = Math.max(...c.timing.samples);
@@ -268,7 +286,7 @@ function describe() {
       $("samples").append(sample);
     });
   }
-  link($("links"), "Original run.json · job " + c.job, run().href);
+  link($("links"), "Source run.json · job " + c.job, run().href);
   link($("links"), "Measurement log", c.log);
   link($("links"), "Raw directory", c.raw_directory);
   if (c.timing)
@@ -282,6 +300,7 @@ function describe() {
       artifact: D.artifacts[c.artifact],
       measurement: c.measurement,
       verification: c.verification,
+      synthetic_source: c.synthetic_source,
       data_error: c.data_error,
       link_error: c.link_error,
       samples_ns_per_operation: c.timing?.samples,
@@ -292,6 +311,26 @@ function describe() {
 }
 function mix(a, b, t) {
   return a.map((v, i) => Math.round(v + (b[i] - v) * t));
+}
+function relativePosition(value) {
+  const limit = value < 1 ? relativeLimits.faster : relativeLimits.slower;
+  return 0.5 + Math.log2(value) / (2 * Math.log2(limit));
+}
+function updateRelativeLimits() {
+  let valid = true;
+  for (const side of ["faster", "slower"]) {
+    const input = $(side + "Limit"),
+      value = input.valueAsNumber,
+      accepted = Number.isFinite(value) && value > 1;
+    input.setCustomValidity(
+      accepted ? "" : "Enter a finite factor greater than 1.",
+    );
+    input.setAttribute("aria-invalid", String(!accepted));
+    if (accepted) relativeLimits[side] = value;
+    else valid = false;
+  }
+  $("scaleError").hidden = valid;
+  draw();
 }
 function colour(value, min, max) {
   const absolute = $("mode").value === "absolute";
@@ -310,7 +349,7 @@ function colour(value, min, max) {
     ? max === min
       ? 0.5
       : (Math.log10(value) - min) / (max - min)
-    : (Math.log2(value) + 6) / 12;
+    : relativePosition(value);
   const t = Math.max(0, Math.min(1, position));
   return (
     "rgb(" +
@@ -342,18 +381,19 @@ function draw() {
   const min = values.length ? Math.log10(Math.min(...values)) : 0,
     max = values.length ? Math.log10(Math.max(...values)) : 1;
   $("scale").classList.toggle("absolute", $("mode").value === "absolute");
+  $("relativeScaleControls").hidden = $("mode").value === "absolute";
   $("scaleText").textContent =
     $("mode").value === "absolute"
       ? values.length
         ? time(10 ** min)
         : "No numeric cells"
-      : "+64× or faster";
+      : "+" + relativeLimits.faster + "× or faster";
   $("scaleEnd").textContent =
     $("mode").value === "absolute"
       ? values.length
         ? time(10 ** max) + " · log scale"
         : ""
-      : "−64× or slower · 1× at green · log₂ scale";
+      : "−" + relativeLimits.slower + "× or slower · 1× at green · log₂ scale";
   let start = 0;
   while (start < columns.length) {
     let end = start + 1;
@@ -469,7 +509,7 @@ function render() {
             ? (metric(r, id).value ?? -Infinity)
             : order === "spread"
               ? (c?.timing?.cv ?? -Infinity)
-              : c?.status === "passed"
+              : hasTiming(c)
                 ? c.timing.mean
                 : -Infinity;
         }),
@@ -489,7 +529,7 @@ function render() {
   rows.forEach((row) => {
     const label = document.createElement("div");
     label.textContent = row.label + (row.missing ? " · absent" : "");
-    label.title = row.config?.sdk_home || row.backend;
+    label.title = row.synthetic ? row.label : row.config?.sdk_home || row.backend;
     $("labels").append(label);
   });
   const all = run().rows.flatMap((r) => Object.values(r.cells)),
@@ -497,7 +537,7 @@ function render() {
   all.forEach((c) => (counts[c.status] = (counts[c.status] || 0) + 1));
   $("summary").textContent =
     all.length +
-    " saved jobs · " +
+    (run().meta.derivation ? " display cells · " : " saved jobs · ") +
     Object.entries(counts)
       .map(([k, v]) => v + " " + k)
       .join(" · ") +
@@ -520,6 +560,14 @@ function render() {
   $("runLinks").replaceChildren();
   link($("runLinks"), "Original manifest", run().href);
   link($("runLinks"), "Experiment context", run().context);
+  if (run().meta.derivation) {
+    const note = document.createElement("p");
+    note.className = "notice";
+    note.textContent =
+      "Synthetic ideal: each case uses the smallest verified backend mean in the source run. " +
+      "The real rows are unchanged. The ideal is not a measured backend or a prediction of attainable performance.";
+    $("runLinks").append(note);
+  }
   draw();
   describe();
 }
@@ -708,6 +756,7 @@ for (const g of new Set(D.columns.map(group))) option($("group"), g, g);
 for (const p of new Set(Object.values(D.definitions).map((c) => c.fixture)))
   option($("profile"), p, p);
 $("compare").value = D.runs.length > 1 ? "1" : "0";
+$("run").value = D.runs.at(-1).rows_from != null ? String(D.runs.length - 1) : "0";
 refreshReferences();
 for (const id of ["mode", "reference", "compare", "group", "profile", "order"])
   $(id).addEventListener("change", render);
@@ -718,6 +767,13 @@ $("run").addEventListener("change", () => {
 });
 $("search").addEventListener("input", render);
 $("zoom").addEventListener("input", draw);
+for (const side of ["faster", "slower"])
+  $(side + "Limit").addEventListener("input", updateRelativeLimits);
+$("resetScale").addEventListener("click", () => {
+  $("fasterLimit").value = "64";
+  $("slowerLimit").value = "64";
+  updateRelativeLimits();
+});
 $("fit").addEventListener("click", () => {
   rangeSelection = null;
   $("zoom").value = "1";

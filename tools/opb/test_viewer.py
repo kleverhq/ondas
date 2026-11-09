@@ -1,6 +1,7 @@
 import copy
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -16,29 +17,52 @@ class ViewerTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.output = self.root / 'report.html'
 
-    def save(self, name, mean=100):
+    def save(self, name, mean=100, backend='fst-lib', case_id='OPB-POINT-028'):
         root = self.root / name
-        raw = root / 'raw/0000/fst-lib/OPB-POINT-028/new'
+        raw = root / 'raw/0000' / backend / case_id / 'new'
         raw.mkdir(parents=True)
-        case = dict(id='OPB-POINT-028', fixture='S', boundary='P', workload='point', parameters={'k': 1})
+        case = dict(id=case_id, fixture='S', boundary='P', workload='point', parameters={'k': 1})
+        artifact = 'waveform.' + backend.split('-')[0]
         job = dict(case_id=case['id'], configuration=0, raw='raw/0000',
-                   input=dict(case=case, backend='fst-lib', artifact='/absent/waveform.fst', source_ids=['data'], times=[1]),
-                   artifact_identity=dict(file='waveform.fst', size=1, sha256='payload'),
+                   input=dict(case=case, backend=backend, artifact='/absent/' + artifact, source_ids=['data'], times=[1]),
+                   artifact_identity=dict(file=artifact, size=1, sha256='payload'),
                    measurement=dict(status='measured', wall_seconds=1, log='measure.log', raw_files=[
                        str((raw / n).relative_to(root)) for n in ('sample.json', 'estimates.json', 'benchmark.json')]),
                    verification=dict(status='passed', records=1))
         data = dict(schema=1, workload_version='opb-core-2', source_revision=name,
                     fixtures_revision='fixtures', finished_at='2026-01-01T00:00:00+00:00',
                     source_files={'benches/profile.rs': 'workload', 'src/lib.rs': name},
-                    criterion=dict(sample_size=2), configurations=[dict(backend='fst-lib', sdk_home='/absent/sdk')], jobs=[job])
+                    criterion=dict(sample_size=2), configurations=[dict(backend=backend, sdk_home='/absent/sdk')], jobs=[job])
         (root / 'measure.log').write_text('saved diagnostic\n')
         (root / 'run.json').write_text(json.dumps(data))
         (raw / 'sample.json').write_text(json.dumps(dict(times=[mean * 2, mean * 4], iters=[2, 4])))
-        (raw / 'benchmark.json').write_text(json.dumps(dict(full_id='fst-lib/OPB-POINT-028')))
+        (raw / 'benchmark.json').write_text(json.dumps(dict(full_id=backend + '/' + case_id)))
         (raw / 'estimates.json').write_text(json.dumps(dict(
             mean=dict(point_estimate=mean, confidence_interval=dict(lower_bound=mean * .9, upper_bound=mean * 1.1, confidence_level=.95)),
             std_dev=dict(point_estimate=mean * .1))))
         return root, data, raw
+
+    def matrix(self, name, means):
+        root = self.root / name
+        root.mkdir()
+        data = None
+        for position, (backend, values) in enumerate(means.items()):
+            for case_id, mean in values.items():
+                _, part, raw = self.save(f'{name}-part-{position}-{case_id}', mean, backend, case_id)
+                if data is None:
+                    data = {**part, 'configurations': [], 'jobs': []}
+                if len(data['configurations']) == position:
+                    data['configurations'].append(part['configurations'][0])
+                job = part['jobs'][0]
+                prefix = f"raw/{len(data['jobs']):04d}"
+                shutil.copytree(raw, root / prefix / backend / case_id / 'new')
+                job['configuration'] = position
+                job['raw'] = prefix
+                job['measurement']['raw_files'] = [name.replace('raw/0000', prefix) for name in job['measurement']['raw_files']]
+                data['jobs'].append(job)
+        (root / 'measure.log').write_text('saved diagnostics\n')
+        self.update(root, data)
+        return root, data
 
     def read(self, root):
         return viewer.read_run(root, self.output)
@@ -169,7 +193,7 @@ class ViewerTests(unittest.TestCase):
         self.assertTrue(any(c['parameters'].get('note') == text for c in embedded['definitions'].values()))
         script = ("import sys,runpy; sys.modules['tools.opb.runner']=None; "
                   "sys.modules['tools.opb.bindings']=None; "
-                  f"sys.argv=['tools.opb','view',{str(root)!r},'--output',{str(self.output)!r}]; "
+                  f"sys.argv=['tools.opb','view',{str(root)!r},'--ideal-of',{str(root)!r},'--output',{str(self.output)!r}]; "
                   "runpy.run_module('tools.opb',run_name='__main__')")
         result = subprocess.run([sys.executable, '-B', '-c', script], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -205,6 +229,125 @@ class ViewerTests(unittest.TestCase):
             before = output.read_bytes()
             viewer.render([root], output)
             self.assertEqual(output.read_bytes(), before)
+
+    def test_ideal_selects_each_case_and_keeps_winner_evidence_without_mutating_source(self):
+        root, _ = self.matrix('ideal', {'fst-lib': {'OPB-POINT-028': 80, 'OPB-POINT-029': 40},
+                                      'vcd-native': {'OPB-POINT-028': 20, 'OPB-POINT-029': 60}})
+        source = self.read(root)
+        before = copy.deepcopy(source)
+        derived = viewer.ideal_run(source, 0)
+        self.assertEqual(source, before)
+        self.assertEqual(derived['rows'][:-1], source['rows'])
+        ideal = derived['rows'][-1]
+        for case_id, mean, backend, job in [('OPB-POINT-028', 20, 'vcd-native', 2),
+                                           ('OPB-POINT-029', 40, 'fst-lib', 1)]:
+            cell = ideal['cells'][case_id]
+            winner = next(row for row in source['rows'] if row['backend'] == backend)['cells'][case_id]
+            self.assertEqual(cell['status'], 'synthetic')
+            self.assertEqual(cell['timing'], winner['timing'])
+            self.assertEqual(cell['timing']['mean'], mean)
+            self.assertEqual(cell['synthetic_source']['backend'], backend)
+            self.assertEqual(cell['synthetic_source']['job'], job)
+            self.assertEqual(cell['log'], winner['log'])
+            for field in ('input_hash', 'input_summary', 'artifact', 'raw_directory'):
+                self.assertEqual(cell[field], winner[field])
+            self.assertEqual(cell['synthetic_source']['manifest'], source['href'])
+            self.assertEqual(cell['verification']['status'], 'source passed')
+        viewer.comparisons([source, derived])
+        self.assertEqual(ideal['cells']['OPB-POINT-028']['comparisons'][1]['ratio'], 1)
+        self.assertNotIn('ratio', ideal['cells']['OPB-POINT-028']['comparisons'][0])
+
+    def test_ideal_excludes_unqualified_timings_and_does_not_invent_missing_cases(self):
+        for status in ('failed', 'unchecked', 'invalid raw'):
+            root, data = self.matrix('exclude-' + status, {'fst-lib': {'OPB-POINT-028': 80},
+                                                          'vcd-native': {'OPB-POINT-028': 20}})
+            job = data['jobs'][1]
+            if status == 'failed':
+                job['measurement'].update(status='failed', reason='timeout')
+                job['verification']['status'] = 'not-run'
+            elif status == 'unchecked':
+                job['verification']['status'] = 'unchecked'
+            else:
+                (root / job['measurement']['raw_files'][0]).unlink()
+            self.update(root, data)
+            ideal = viewer.ideal_run(self.read(root), 0)['rows'][-1]
+            self.assertEqual(ideal['cells']['OPB-POINT-028']['timing']['mean'], 80)
+        root, data = self.matrix('missing', {'fst-lib': {'OPB-POINT-028': 80, 'OPB-POINT-029': 40}})
+        data['jobs'][0]['verification']['status'] = 'unchecked'
+        self.update(root, data)
+        self.assertEqual(set(viewer.ideal_run(self.read(root), 0)['rows'][-1]['cells']), {'OPB-POINT-029'})
+        data['jobs'][1]['verification']['status'] = 'unchecked'
+        self.update(root, data)
+        with self.assertRaisesRegex(ValueError, 'verified timing'):
+            viewer.ideal_run(self.read(root), 0)
+
+    def test_ideal_ties_follow_source_order_and_different_case_definitions_are_rejected(self):
+        root, data = self.matrix('ties', {'fst-lib': {'OPB-POINT-028': 20},
+                                        'vcd-native': {'OPB-POINT-028': 20}})
+        cell = viewer.ideal_run(self.read(root), 0)['rows'][-1]['cells']['OPB-POINT-028']
+        self.assertEqual(cell['synthetic_source']['backend'], 'fst-lib')
+        data['jobs'][1]['input']['case']['parameters']['k'] = 2
+        self.update(root, data)
+        with self.assertRaisesRegex(ValueError, 'different case definitions'):
+            viewer.ideal_run(self.read(root), 0)
+
+    def test_ideal_render_reuses_source_rows_and_requires_a_supplied_input(self):
+        root, _ = self.matrix('render-ideal', {'fst-lib': {'OPB-POINT-028': 80},
+                                              'vcd-native': {'OPB-POINT-028': 20}})
+        before = (root / 'run.json').read_bytes()
+        viewer.render([root], self.output, root / 'run.json')
+        data = json.loads(self.output.read_text().split('<script id="opb-data" type="application/json">')[1].split('</script>')[0])
+        source, derived = data['runs']
+        self.assertEqual(derived['rows_from'], 0)
+        self.assertEqual(len(derived['rows']), 1)
+        self.assertEqual(len(source['rows'] + derived['rows']), 3)
+        self.assertEqual(derived['rows'][0]['cells']['OPB-POINT-028']['timing']['mean'], 20)
+        self.assertEqual((root / 'run.json').read_bytes(), before)
+        with self.assertRaisesRegex(ValueError, 'exactly one input'):
+            viewer.render([root], self.output, self.root / 'not-an-input')
+
+    def test_ideal_preserves_repeated_backend_configurations_from_a_later_input(self):
+        other, _, _ = self.save('other')
+        root, data = self.matrix('repeated', {'fst-lib': {'OPB-POINT-028': 80}})
+        configuration = copy.deepcopy(data['configurations'][0])
+        configuration.update(label='second configuration', sdk_home='/absent/second-sdk')
+        data['configurations'].append(configuration)
+        job = copy.deepcopy(data['jobs'][0])
+        job['configuration'] = 1
+        job['raw'] = 'raw/0001'
+        job['measurement']['raw_files'] = [name.replace('raw/0000', job['raw'])
+                                           for name in job['measurement']['raw_files']]
+        shutil.copytree(root / 'raw/0000', root / job['raw'])
+        raw = root / job['raw'] / 'fst-lib/OPB-POINT-028/new'
+        (raw / 'sample.json').write_text(json.dumps(dict(times=[40, 80], iters=[2, 4])))
+        (raw / 'estimates.json').write_text(json.dumps(dict(
+            mean=dict(point_estimate=20, confidence_interval=dict(
+                lower_bound=18, upper_bound=22, confidence_level=.95)),
+            std_dev=dict(point_estimate=2))))
+        data['jobs'].append(job)
+        self.update(root, data)
+        source = self.read(root)
+        winner = source['rows'][1]['cells']['OPB-POINT-028']
+        derived = viewer.ideal_run(source, 1)
+        ideal = derived['rows'][-1]['cells']['OPB-POINT-028']
+        self.assertEqual(ideal['timing'], winner['timing'])
+        self.assertEqual(ideal['synthetic_source'], dict(
+            backend='fst-lib', label='second configuration', job=1, manifest=source['href']))
+        self.assertEqual(ideal['raw_directory'], winner['raw_directory'])
+        viewer.render([other, root], self.output, root)
+        embedded = json.loads(self.output.read_text().split(
+            '<script id="opb-data" type="application/json">')[1].split('</script>')[0])
+        _, saved_source, saved_derived = embedded['runs']
+        self.assertEqual(saved_derived['rows_from'], 1)
+        self.assertEqual(len(saved_derived['rows']), 1)
+        restored = saved_source['rows'] + saved_derived['rows']
+        self.assertEqual([row['config'] for row in restored[:-1]], data['configurations'])
+        self.assertEqual([row['cells']['OPB-POINT-028']['timing']['mean'] for row in restored],
+                         [80, 20, 20])
+        cell = restored[-1]['cells']['OPB-POINT-028']
+        self.assertEqual(cell['job'], 1)
+        self.assertEqual(cell['timing']['raw_prefix'],
+                         restored[1]['cells']['OPB-POINT-028']['timing']['raw_prefix'])
 
 
 if __name__ == '__main__':
