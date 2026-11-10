@@ -4,13 +4,25 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-11-10
+
+### Added
+
+- Offline OPB heat map for saved results, with backend and run comparisons, selected-case summaries, adjustable colour limits and a synthetic view of the best verified mean for each case.
+
 ### Changed
 
 - Speed up late VCD points and prefixes with a bounded index of validated record positions, read sparse selections in tick order from those positions, and seed explicit-time VCD batches from the earliest requested tick.
 - Speed up GHW reads and reuse validated metadata when reopening identical content.
+- Reduce WLF query and sequential-open overhead with bounded batching, deferred bit conversion and reusable readers.
+- Reduce retained-capacity bookkeeping for SHM queries and prepare WDB point requests without building cursors.
 - Reuse a validated WDB reader for sequential opens of an unchanged file. Release history indexes and temporary storage on drop.
 - Load large WDB byte-history batches with bounded local workers.
 - Speed up decoding and slice change detection for qualified packed WDB `logic` and `reg` arrays.
+
+### Fixed
+
+- Preserve a completed WLF tick when decoding the following record fails.
 
 ## [2.0.0] - 2026-10-30
 
@@ -114,7 +126,8 @@ Initial release of Ondas, a read-only Rust library for waveform analysis.
 - Final-tick state normalization and event occurrence counts, with documented reader limits.
 - Fixture-backed conformance tests, performance benchmarks, and automated release checks.
 
-[Unreleased]: https://github.com/kleverhq/ondas/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/kleverhq/ondas/compare/v2.1.0...HEAD
+[2.1.0]: https://github.com/kleverhq/ondas/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/kleverhq/ondas/compare/v1.1.1...v2.0.0
 [1.1.1]: https://github.com/kleverhq/ondas/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/kleverhq/ondas/compare/v1.0.2...v1.1.0
