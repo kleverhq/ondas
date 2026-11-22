@@ -90,6 +90,15 @@ impl From<&PathComponent> for PathComponent {
     }
 }
 
+/// The text style used to format a hierarchy path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathStyle {
+    /// Canonical Ondas syntax. Quotes preserve any name.
+    Logical,
+    /// SystemVerilog syntax with escapes where required.
+    Sv,
+}
+
 /// An owned, immutable sequence of exact hierarchy components.
 ///
 /// Identity includes each component's name and optional index. Paths start at
@@ -117,17 +126,17 @@ impl From<&PathComponent> for PathComponent {
 /// escapes, and unescaped `U+0000..=U+001F` characters produce [`PathError`]. These
 /// rules apply inside quotes, not to SystemVerilog escaped identifiers.
 ///
-/// [`Display`](fmt::Display) produces canonical Ondas syntax. Parsing that output
-/// recovers the same components. Empty names and names containing separators,
-/// whitespace, brackets, quotes, backslashes or `U+0000..=U+001F` are quoted.
+/// [`Display`](fmt::Display) and [`PathStyle::Logical`] produce the same
+/// canonical Ondas syntax. Parsing that output recovers the same components.
+/// Empty names and names containing separators, whitespace, brackets,
+/// quotes, backslashes or control characters are quoted.
 /// The array index follows the name. Inside quotes, canonical output uses `\"`
 /// and `\\`, the short escapes `\b`, `\f`, `\n`, `\r`, and `\t`, and lowercase
 /// `\u00xx` for the remaining `U+0000..=U+001F` characters. All other characters,
 /// including `/` and non-ASCII Unicode, are written literally. Output does not
 /// normalize Unicode. Thus `tb."a\u000Ab"` canonicalizes to `tb."a\nb"`.
 ///
-/// [`Self::to_verilog`] instead produces lossless SystemVerilog-compatible text
-/// or a [`PathFormatError`].
+/// Use [`Self::format`] to select a style at runtime.
 ///
 /// # Path versus selector
 ///
@@ -197,13 +206,48 @@ impl HierarchyPath {
         path
     }
 
-    /// Formats the path losslessly using SystemVerilog-compatible spelling.
+    /// Formats the path in the selected style. Parsing the output restores the
+    /// same path.
     ///
-    /// Returns [`PathFormatError::NotRepresentable`] if a component cannot be
-    /// represented without loss. Ondas quoted syntax remains available through
-    /// [`Display`](fmt::Display).
+    /// [`PathStyle::Logical`] matches [`Display`](fmt::Display) and supports every
+    /// name. [`PathStyle::Sv`] escapes names where required, including keywords.
+    /// It ends each escaped name with an ASCII space, including at the end of a
+    /// path. An array index follows the name and any terminating space.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PathFormatError::NotRepresentable`] for [`PathStyle::Sv`] if a
+    /// name is empty or contains a character outside ASCII `0x21..=0x7e`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// use ondas::{HierarchyPath, PathStyle};
+    ///
+    /// let literal = HierarchyPath::parse(r#"top."u_reg[0]".q"#)?;
+    /// assert_eq!(literal, HierarchyPath::parse(r"top.\u_reg[0] .q")?);
+    /// assert_eq!(literal.format(PathStyle::Logical)?, r#"top."u_reg[0]".q"#);
+    /// assert_eq!(literal.format(PathStyle::Sv)?, r"top.\u_reg[0] .q");
+    ///
+    /// let indexed = HierarchyPath::parse("top.u_reg[0].q")?;
+    /// assert_ne!(indexed, literal);
+    /// assert_eq!(indexed.format(PathStyle::Sv)?, "top.u_reg[0].q");
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn format(&self, style: PathStyle) -> std::result::Result<String, PathFormatError> {
+        match style {
+            PathStyle::Logical => Ok(self.to_string()),
+            PathStyle::Sv => path::to_verilog(&self.components),
+        }
+    }
+
+    /// Formats the path with [`PathStyle::Sv`].
+    ///
+    /// See [`Self::format`] for the spelling rules and errors.
     pub fn to_verilog(&self) -> std::result::Result<String, PathFormatError> {
-        path::to_verilog(&self.components)
+        self.format(PathStyle::Sv)
     }
 }
 

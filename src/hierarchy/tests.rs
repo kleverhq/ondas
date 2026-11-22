@@ -1146,6 +1146,80 @@ fn indexed_components_keep_literal_names_and_numeric_indices_distinct() {
 }
 
 #[test]
+fn path_styles_round_trip_contract_examples() {
+    let bar = HierarchyPath::parse("bar").unwrap();
+    let cases = [
+        (
+            &["bar.foo", r#"bar."foo""#, r"bar.\foo "][..],
+            "bar.foo",
+            "bar.foo",
+            bar.join("foo"),
+        ),
+        (
+            &[r#"bar."foo.baz""#, r"bar.\foo.baz "][..],
+            r#"bar."foo.baz""#,
+            r"bar.\foo.baz ",
+            bar.join("foo.baz"),
+        ),
+        (
+            &["bar.foo[0].baz"][..],
+            "bar.foo[0].baz",
+            "bar.foo[0].baz",
+            bar.join(PathComponent::indexed("foo", 0)).join("baz"),
+        ),
+        (
+            &[r#"bar."foo[0]".baz"#, r"bar.\foo[0] .baz"][..],
+            r#"bar."foo[0]".baz"#,
+            r"bar.\foo[0] .baz",
+            bar.join("foo[0]").join("baz"),
+        ),
+    ];
+
+    for (inputs, logical, sv, expected) in cases {
+        for input in inputs {
+            assert_eq!(HierarchyPath::parse(input).unwrap(), expected, "{input:?}");
+            assert_eq!(
+                input.parse::<HierarchyPath>().unwrap(),
+                expected,
+                "{input:?}"
+            );
+        }
+        for (style, spelling) in [(PathStyle::Logical, logical), (PathStyle::Sv, sv)] {
+            let output = expected.format(style).unwrap();
+            assert_eq!(output, spelling, "{style:?}");
+            assert_eq!(HierarchyPath::parse(&output).unwrap(), expected);
+        }
+        assert_eq!(expected.to_string(), logical);
+        assert_eq!(expected.to_verilog().unwrap(), sv);
+    }
+}
+
+#[test]
+fn path_styles_handle_sv_escape_boundaries_and_errors() {
+    let top = HierarchyPath::parse("top").unwrap();
+    let keyword = top.join("module");
+    assert_eq!(keyword.format(PathStyle::Sv).unwrap(), r"top.\module ");
+    let indexed_keyword = top.join(PathComponent::indexed("module", 0));
+    assert_eq!(
+        indexed_keyword.format(PathStyle::Sv).unwrap(),
+        r"top.\module [0]"
+    );
+
+    let unterminated = r"top.\u_reg[0].q";
+    assert_eq!(
+        HierarchyPath::parse(unterminated).unwrap_err().offset,
+        unterminated.len()
+    );
+
+    let spaced = top.join("a b");
+    assert_eq!(spaced.format(PathStyle::Logical).unwrap(), r#"top."a b""#);
+    assert!(matches!(
+        spaced.format(PathStyle::Sv),
+        Err(PathFormatError::NotRepresentable { component }) if component == "a b"
+    ));
+}
+
+#[test]
 fn exact_unicode_paths_do_not_normalize_names() {
     let names = ["é", "e\u{301}"];
     let hierarchy = Hierarchy::new(
