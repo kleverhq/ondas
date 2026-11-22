@@ -8,7 +8,8 @@ use fst_reader::{
 
 use crate::{
     BitRange, BitsRef, Direction, Encoding, Error, Format, Hierarchy, LogicDomain, Metadata,
-    Packing, Result, Signal, Signedness, Time, TimeSpan, TimeUnit, Timescale, ValueRef,
+    Packing, PathComponent, Result, Signal, Signedness, Time, TimeSpan, TimeUnit, Timescale,
+    ValueRef,
     hierarchy::{EnumerationData, ScopeData, VariableData},
 };
 
@@ -164,7 +165,7 @@ impl Reader {
                         } else {
                             let id = scopes.len();
                             scopes.push(ScopeData {
-                                name,
+                                component: PathComponent::from_reader_name(name, !name_was_escaped),
                                 name_was_escaped,
                                 parent,
                                 kind,
@@ -237,7 +238,10 @@ impl Reader {
                             EnumerationData::for_encoding(name, variants, encoding)
                         });
                         variables.push(VariableData {
-                            name,
+                            component: PathComponent::from_reader_name(
+                                name,
+                                !name_was_escaped && vhdl_kind == FstVhdlVarType::None,
+                            ),
                             reader_name: None,
                             name_was_escaped,
                             parent: stack.last().copied(),

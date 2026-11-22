@@ -188,7 +188,7 @@ fn selector_results_preserve_aliases_projection_and_output_roundtrip() {
             Some((msb, lsb)) => {
                 let base = path
                     .components()
-                    .map(|c| serde_json::to_string(c).unwrap())
+                    .map(|c| serde_json::to_string(c.name()).unwrap())
                     .collect::<Vec<_>>()
                     .join(".");
                 format!("{base}[{msb}:{lsb}]")

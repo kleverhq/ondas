@@ -14,15 +14,105 @@ use std::{
 
 use crate::{LookupError, PathError, PathFormatError, Result, SliceError};
 
+/// One logical hierarchy name and an optional array index.
+///
+/// A literal `u_reg[0]` and index `0` of `u_reg` are distinct components.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PathComponent {
+    name: String,
+    index: Option<i64>,
+}
+
+impl PathComponent {
+    /// Creates a literal component. The name is used exactly as given.
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            index: None,
+        }
+    }
+
+    /// Creates a component for one element of an array.
+    pub fn indexed(name: impl Into<String>, index: i64) -> Self {
+        Self {
+            name: name.into(),
+            index: Some(index),
+        }
+    }
+
+    /// Returns the logical name, without the array index.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the array index, if present.
+    pub fn index(&self) -> Option<i64> {
+        self.index
+    }
+
+    pub(crate) fn from_index_spelling(mut name: String) -> Self {
+        if let Some((base, index)) = path::split_index(&name) {
+            name.truncate(base.len());
+            Self::indexed(name, index)
+        } else {
+            Self::new(name)
+        }
+    }
+
+    pub(crate) fn from_reader_name(name: String, recognize_index: bool) -> Self {
+        if recognize_index {
+            Self::from_index_spelling(name)
+        } else {
+            Self::new(name)
+        }
+    }
+
+    #[cfg(any(feature = "wdb-lib", feature = "wlf-lib"))]
+    pub(crate) fn from_array_spelling(mut name: String, base_len: usize) -> Self {
+        if let Some(index) = path::index_suffix(&name[base_len..]) {
+            name.truncate(base_len);
+            Self::indexed(name, index)
+        } else {
+            Self::new(name)
+        }
+    }
+}
+
+impl From<String> for PathComponent {
+    fn from(name: String) -> Self {
+        Self::new(name)
+    }
+}
+
+impl From<&str> for PathComponent {
+    fn from(name: &str) -> Self {
+        Self::new(name)
+    }
+}
+
+impl From<&String> for PathComponent {
+    fn from(name: &String) -> Self {
+        Self::new(name)
+    }
+}
+
+impl From<&PathComponent> for PathComponent {
+    fn from(component: &PathComponent) -> Self {
+        component.clone()
+    }
+}
+
 /// An owned, immutable sequence of exact hierarchy components.
 ///
-/// Identity is the exact component sequence. Escaping affects only text
-/// representations. Paths start at the hierarchy root. Relative paths and the
+/// Identity includes each component's name and optional index. Paths start at
+/// the hierarchy root. Relative paths and the
 /// navigation components `.` and `..` are not supported.
 ///
 /// # Accepted text forms
 ///
 /// - Ordinary components: `tb.dut.data`.
+/// - Indexed components: `tb.u_reg[0].data`. Quote or escape the name to
+///   include literal brackets, as in `tb."u_reg[0]".data`.
 /// - SystemVerilog escaped identifiers: `tb.\gen.blk[0] .data`. A leading
 ///   backslash starts the identifier. Whitespace ends it. Embedded dots and
 ///   brackets do not split the path.
@@ -53,30 +143,30 @@ use crate::{LookupError, PathError, PathFormatError, Result, SliceError};
 ///
 /// # Path versus selector
 ///
-/// Brackets do not specify array indices or bit slices here. `tb.mem[0]` may name
-/// an actual declaration. [`Hierarchy::signal`] and [`Hierarchy::resolve_signal`] interpret an optional
-/// trailing `[msb:lsb]` as a projection after exact lookup fails.
+/// A signed decimal index selects an array element at one hierarchy level.
+/// [`Hierarchy::signal`] and [`Hierarchy::resolve_signal`] interpret an optional
+/// trailing `[msb:lsb]` as a bit projection after exact lookup fails.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct HierarchyPath {
-    components: Vec<String>,
+    components: Vec<PathComponent>,
 }
 
 impl HierarchyPath {
     /// Parses the accepted text forms described on [`HierarchyPath`].
     ///
-    /// Returns [`PathError`] with a byte offset for invalid syntax. This parses
-    /// exact components, not a signal-slice expression.
+    /// Returns [`PathError`] with a byte offset for invalid syntax.
     pub fn parse(text: &str) -> std::result::Result<Self, PathError> {
         path::parse(text).map(|components| Self { components })
     }
 
     /// Builds a path from exact, unescaped hierarchy components.
     ///
-    /// Component contents are names, not text to parse or unescape.
-    pub fn from_components<I, S>(components: I) -> Self
+    /// String inputs are literal names. Use [`PathComponent::indexed`] for
+    /// an array element.
+    pub fn from_components<I, C>(components: I) -> Self
     where
-        I: IntoIterator<Item = S>,
-        S: Into<String>,
+        I: IntoIterator<Item = C>,
+        C: Into<PathComponent>,
     {
         Self {
             components: components.into_iter().map(Into::into).collect(),
@@ -84,8 +174,8 @@ impl HierarchyPath {
     }
 
     /// Returns the exact hierarchy components in order.
-    pub fn components(&self) -> impl ExactSizeIterator<Item = &str> + '_ {
-        self.components.iter().map(String::as_str)
+    pub fn components(&self) -> impl ExactSizeIterator<Item = &PathComponent> + '_ {
+        self.components.iter()
     }
 
     /// Returns the number of hierarchy components.
@@ -98,9 +188,9 @@ impl HierarchyPath {
         self.components.is_empty()
     }
 
-    /// Returns the final component, if any.
+    /// Returns the logical name of the final component, if any.
     pub fn name(&self) -> Option<&str> {
-        self.components.last().map(String::as_str)
+        self.components.last().map(PathComponent::name)
     }
 
     /// Returns the path without its final component, if any.
@@ -110,10 +200,10 @@ impl HierarchyPath {
         })
     }
 
-    /// Returns a new path with one exact component appended, leaving this path unchanged.
+    /// Returns a new path with one exact component appended.
     ///
-    /// The component is not parsed as a path or selector.
-    pub fn join(&self, component: impl Into<String>) -> Self {
+    /// A string supplies a literal name, including its brackets.
+    pub fn join(&self, component: impl Into<PathComponent>) -> Self {
         let mut path = self.clone();
         path.components.push(component.into());
         path
@@ -124,25 +214,8 @@ impl HierarchyPath {
     /// Returns [`PathFormatError::NotRepresentable`] if a component cannot be
     /// represented without loss. Ondas quoted syntax remains available through
     /// [`Display`](fmt::Display).
-    ///
-    /// Every component is escaped, including keywords and simple identifiers.
     pub fn to_verilog(&self) -> std::result::Result<String, PathFormatError> {
-        let mut output = String::new();
-        for component in &self.components {
-            // IEEE 1800-2017 5.6.1: printable ASCII, terminated by whitespace.
-            if component.is_empty() || !component.bytes().all(|b| (33..=126).contains(&b)) {
-                return Err(PathFormatError::NotRepresentable {
-                    component: component.clone(),
-                });
-            }
-            if !output.is_empty() {
-                output.push('.');
-            }
-            output.push('\\');
-            output.push_str(component);
-            output.push(' ');
-        }
-        Ok(output)
+        path::to_verilog(&self.components)
     }
 }
 
@@ -162,14 +235,18 @@ impl fmt::Display for HierarchyPath {
             if index != 0 {
                 formatter.write_str(".")?;
             }
-            if component.is_empty()
-                || component.chars().any(|c| {
+            let name = component.name();
+            if name.is_empty()
+                || name.chars().any(|c| {
                     c.is_whitespace() || c.is_control() || matches!(c, '.' | '[' | ']' | '"' | '\\')
                 })
             {
-                formatter.write_str(&serde_json::to_string(component).map_err(|_| fmt::Error)?)?;
+                formatter.write_str(&serde_json::to_string(name).map_err(|_| fmt::Error)?)?;
             } else {
-                formatter.write_str(component)?;
+                formatter.write_str(name)?;
+            }
+            if let Some(index) = component.index() {
+                write!(formatter, "[{index}]")?;
             }
         }
         Ok(())
@@ -216,7 +293,7 @@ pub struct Hierarchy {
 }
 
 pub(crate) struct ScopeData {
-    pub(crate) name: String,
+    pub(crate) component: PathComponent,
     pub(crate) name_was_escaped: bool,
     pub(crate) parent: Option<usize>,
     pub(crate) kind: String,
@@ -226,7 +303,7 @@ pub(crate) struct ScopeData {
 }
 
 pub(crate) struct VariableData {
-    pub(crate) name: String,
+    pub(crate) component: PathComponent,
     pub(crate) reader_name: Option<String>,
     pub(crate) name_was_escaped: bool,
     pub(crate) parent: Option<usize>,
@@ -513,7 +590,7 @@ impl Hierarchy {
         let mut bytes = std::mem::size_of::<HierarchyData>();
         bytes = bytes.saturating_add(vec_bytes::<ScopeData>(data.scopes.capacity()));
         for scope in &data.scopes {
-            bytes = bytes.saturating_add(scope.name.capacity());
+            bytes = bytes.saturating_add(scope.component.name.capacity());
             bytes = bytes.saturating_add(scope.kind.capacity());
             bytes = bytes.saturating_add(
                 scope
@@ -524,7 +601,7 @@ impl Hierarchy {
         }
         bytes = bytes.saturating_add(vec_bytes::<VariableData>(data.variables.capacity()));
         for variable in &data.variables {
-            bytes = bytes.saturating_add(variable.name.capacity());
+            bytes = bytes.saturating_add(variable.component.name.capacity());
             bytes = bytes.saturating_add(variable.kind.capacity());
             bytes = bytes.saturating_add(
                 variable
@@ -690,7 +767,7 @@ impl Hierarchy {
         let mut components = Vec::new();
         while let Some(current) = index {
             let scope = &self.data.scopes[current];
-            components.push(scope.name.clone());
+            components.push(scope.component.clone());
             index = scope.parent;
         }
         components.reverse();
@@ -858,9 +935,9 @@ impl Hierarchy {
     /// Returns [`LookupError::Ambiguous`] when distinct scopes share the path.
     /// Those scopes remain accessible through [`Self::scopes`] and [`Scope::children`].
     pub fn scope_path(&self, path: &HierarchyPath) -> std::result::Result<Scope<'_>, LookupError> {
-        let mut matches = self
-            .scopes()
-            .filter(|scope| Some(scope.name()) == path.name() && scope.path() == *path);
+        let mut matches = self.scopes().filter(|scope| {
+            Some(&scope.data().component) == path.components.last() && scope.path() == *path
+        });
         let first = matches.next();
         match (first, matches.count()) {
             (None, _) => Err(LookupError::NotFound { path: path.clone() }),
@@ -959,17 +1036,17 @@ impl Hierarchy {
         }
     }
 
-    fn declaration_key(&self, index: usize) -> (Option<usize>, &str) {
+    fn declaration_key(&self, index: usize) -> (Option<usize>, &PathComponent) {
         if index < self.data.scopes.len() {
             let scope = &self.data.scopes[index];
-            (scope.parent, &scope.name)
+            (scope.parent, &scope.component)
         } else {
             let variable = &self.data.variables[index - self.data.scopes.len()];
-            (variable.parent, &variable.name)
+            (variable.parent, &variable.component)
         }
     }
 
-    fn declarations_named(&self, parent: Option<usize>, name: &str) -> &[usize] {
+    fn declarations_named(&self, parent: Option<usize>, name: &PathComponent) -> &[usize] {
         // Keep only declaration indices. Full paths duplicate every ancestor's
         // name for each variable and are unnecessary for component lookup.
         let index = self.data.declarations_by_name.get_or_init(|| {
@@ -1051,9 +1128,9 @@ impl<'h> Scope<'h> {
         &self.hierarchy.data.scopes[self.index]
     }
 
-    /// Returns the scope's exact local name.
+    /// Returns the scope's logical local name, without the array index.
     pub fn name(&self) -> &'h str {
-        &self.data().name
+        self.data().component.name()
     }
 
     /// Returns the scope's owned, root-based path.
@@ -1129,13 +1206,13 @@ impl<'h> Variable<'h> {
         &self.hierarchy.data.variables[self.index]
     }
 
-    /// Returns the declaration's exact logical local name.
+    /// Returns the declaration's logical local name, without the array index.
     ///
     /// Recognized Verilog escape syntax is excluded. Literal backslashes,
-    /// brackets, dots and whitespace remain component data. Use this name for
-    /// lookup; do not parse [`Self::reader_name`] to construct a path.
+    /// brackets, dots and whitespace remain name data. Use [`Self::path`] for
+    /// lookup.
     pub fn name(&self) -> &'h str {
-        &self.data().name
+        self.data().component.name()
     }
 
     /// Returns the reader-provided local declaration spelling, if retained.
@@ -1167,9 +1244,9 @@ impl<'h> Variable<'h> {
 
     /// Returns the declaration's owned, root-based path.
     pub fn path(&self) -> HierarchyPath {
-        self.hierarchy
-            .scope_path_at(self.data().parent)
-            .join(self.name())
+        let mut path = self.hierarchy.scope_path_at(self.data().parent);
+        path.components.push(self.data().component.clone());
+        path
     }
 
     /// Returns the containing scope, if any.

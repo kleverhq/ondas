@@ -1,8 +1,8 @@
 //! Private file-only WLF adapter. Vendor objects stay on a process-wide worker.
 mod worker;
 use crate::{
-    Direction, Encoding, Error, Hierarchy, LogicDomain, Metadata, Result, Signal, Signedness, Time,
-    ValueRef,
+    Direction, Encoding, Error, Hierarchy, LogicDomain, Metadata, PathComponent, Result, Signal,
+    Signedness, Time, ValueRef,
     hierarchy::{EnumerationData, ScopeData, VariableData},
 };
 use std::{
@@ -74,7 +74,8 @@ impl Reader {
             }
         }
         for (index, d) in opened.declarations.into_iter().enumerate() {
-            let (name, reader_name) = declaration_name(d.name, d.verilog_name, d.array_base_len)?;
+            let (component, reader_name) =
+                declaration_name(d.name, d.verilog_name, d.array_base_len)?;
             let name_was_escaped = reader_name.is_some();
             let parent = d
                 .parent
@@ -88,7 +89,7 @@ impl Reader {
             if d.scope {
                 parents.insert(index, scopes.len());
                 scopes.push(ScopeData {
-                    name,
+                    component,
                     name_was_escaped,
                     parent,
                     kind: d.kind,
@@ -114,7 +115,7 @@ impl Reader {
                 };
                 variables.push(VariableData {
                     reader_name,
-                    name,
+                    component,
                     name_was_escaped,
                     parent,
                     kind: d.kind,
@@ -225,18 +226,28 @@ fn declaration_name(
     name: String,
     verilog: bool,
     base_len: usize,
-) -> Result<(String, Option<String>)> {
+) -> Result<(PathComponent, Option<String>)> {
     if base_len == 0 {
-        return Ok(logical_name(name, verilog));
+        let (name, spelling) = logical_name(name, verilog);
+        let component = PathComponent::from_reader_name(name, verilog && spelling.is_none());
+        return Ok((component, spelling));
     }
-    let (base, suffix) = name
-        .split_at_checked(base_len)
+    let base = name
+        .get(..base_len)
         .ok_or_else(|| backend_error("invalid WLF array component boundary"))?;
-    let (logical, spelling) = logical_name(base.to_owned(), verilog);
-    if spelling.is_some() {
-        Ok((format!("{logical}{suffix}"), Some(name)))
+    if !verilog {
+        return Ok((PathComponent::from_array_spelling(name, base_len), None));
+    }
+    let (mut logical, spelling) = logical_name(base.to_owned(), verilog);
+    if spelling.is_none() {
+        Ok((PathComponent::from_array_spelling(name, base_len), None))
     } else {
-        Ok((name, None))
+        let boundary = logical.len();
+        logical.push_str(&name[base_len..]);
+        Ok((
+            PathComponent::from_array_spelling(logical, boundary),
+            Some(name),
+        ))
     }
 }
 fn logical_name(name: String, verilog: bool) -> (String, Option<String>) {
@@ -262,13 +273,25 @@ mod tests {
         ] {
             for suffix in ["[0]", "[1][2]"] {
                 let raw = format!("{base}{suffix}");
+                let expected = if suffix == "[0]" {
+                    PathComponent::indexed(logical, 0)
+                } else {
+                    PathComponent::new(format!("{logical}{suffix}"))
+                };
                 assert_eq!(
                     declaration_name(raw.clone(), true, base.len()).unwrap(),
-                    (format!("{logical}{suffix}"), Some(raw.clone()))
+                    (expected, Some(raw.clone()))
                 );
                 assert_eq!(
                     declaration_name(raw.clone(), false, base.len()).unwrap(),
-                    (raw, None)
+                    (
+                        if suffix == "[0]" {
+                            PathComponent::indexed(base, 0)
+                        } else {
+                            raw.into()
+                        },
+                        None
+                    )
                 );
             }
         }

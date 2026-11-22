@@ -2,6 +2,7 @@
 #include "shm_sst2.h"
 #include "shm_value.h"
 #include <algorithm>
+#include <charconv>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -287,7 +288,13 @@ void hierarchy(SstHandle parent, std::vector<Declaration> &out,
         scope.name = text(0x10a, child);
         int kind = da_get(0x113, child);
         if (kind == 10) { hierarchy(child, out, identities, nodes, node, scope.name); continue; }
-        if (!scope_array.empty()) scope.name = scope_array + "[" + scope.name + "]";
+        if (!scope_array.empty()) {
+            const char *end = scope.name.data() + scope.name.size();
+            const auto index = std::from_chars(scope.name.data(), end, scope.descriptor.array_index);
+            require(index.ec == std::errc{} && index.ptr == end, "invalid SHM scope array index");
+            scope.descriptor.has_array_index = 1;
+            scope.name = scope_array;
+        }
         scope.kind = kind == 6 ? "module" : kind == 3 ? "architecture" : "shm:scope:" + std::to_string(kind);
         SstHandle definition = da_handle(0x14e, child);
         scope.definition = text(0x10a, definition);

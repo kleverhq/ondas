@@ -1,6 +1,6 @@
 use std::{fs, path::PathBuf};
 
-use ondas::{HierarchyPath, Signal, Time, TimeRange, Trace, Waveform};
+use ondas::{HierarchyPath, PathComponent, Signal, Time, TimeRange, Trace, Waveform};
 use serde_json::Value;
 
 pub struct Job {
@@ -36,7 +36,18 @@ pub struct Job {
 }
 
 fn path(v: &Value) -> HierarchyPath {
-    HierarchyPath::from_components(v.as_array().unwrap().iter().map(|s| s.as_str().unwrap()))
+    HierarchyPath::from_components(v.as_array().unwrap().iter().map(|s| {
+        let name = s.as_str().unwrap();
+        // OPB bindings use bare signed index suffixes for array elements.
+        if let Some((base, index)) = name.strip_suffix(']').and_then(|s| s.rsplit_once('['))
+            && !base.is_empty()
+            && !base.contains(['[', ']'])
+            && let Ok(index) = index.parse::<i64>()
+        {
+            return PathComponent::indexed(base, index);
+        }
+        PathComponent::new(name)
+    }))
 }
 fn paths(v: &Value) -> Vec<HierarchyPath> {
     v.as_array().unwrap().iter().map(path).collect()

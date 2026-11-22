@@ -1,6 +1,9 @@
 //! Logical component names must not require reader-specific lookup syntax.
 use ondas::{Hierarchy, HierarchyPath, Item, Sample, Time, Value, Variable, Waveform};
 
+#[path = "support/indexed_paths.rs"]
+mod indexed_paths;
+
 #[cfg(feature = "fsdb-lib")]
 #[path = "support/fsdb_compatibility.rs"]
 mod fsdb_compatibility;
@@ -66,6 +69,53 @@ b00000101 %
         wave.hierarchy().signal(r#"top."literal[7:0]""#).unwrap(),
         wave.hierarchy().signal("top.literal").unwrap()
     );
+}
+
+#[test]
+fn vcd_indexed_variables_keep_separate_histories_and_ranges() {
+    use ondas::PathComponent;
+    let bytes = br#"$scope module top $end
+$var wire 1 p \plain $end
+$var wire 2 ! bus[0] [3:2] $end
+$var wire 2 " bus[1] [1:0] $end
+$var wire 2 # \bus[0] [3:2] $end
+$upscope $end
+$enddefinitions $end
+#0
+1p
+b10 !
+b01 "
+b11 #
+"#;
+    let mut wave =
+        ondas::open_bytes_with("arrays.vcd", bytes.as_slice().into(), "vcd-native").unwrap();
+    let hierarchy = wave.hierarchy().clone();
+    let plain = hierarchy.variable("top.plain").unwrap();
+    assert!(plain.name_was_escaped());
+    assert_eq!(plain.path().to_string(), "top.plain");
+    assert_eq!(plain.path().to_verilog().unwrap(), "top.plain");
+    for (text, component, value, msb, lsb) in [
+        ("top.bus[0]", PathComponent::indexed("bus", 0), "10", 3, 2),
+        ("top.bus[1]", PathComponent::indexed("bus", 1), "01", 1, 0),
+        (r#"top."bus[0]""#, PathComponent::new("bus[0]"), "11", 3, 2),
+    ] {
+        let variable = hierarchy.variable(text).unwrap();
+        assert_eq!(variable.name(), component.name());
+        assert_eq!(variable.path().components().last(), Some(&component));
+        assert_eq!(variable.range(), Some(ondas::BitRange::new(msb, lsb)));
+        let selected = hierarchy
+            .resolve_signal(&format!("{text}[1:0]"), None)
+            .unwrap();
+        assert!(selected.declaration() == variable);
+        let Sample::Value {
+            value: Value::Bits(bits),
+            ..
+        } = wave.sample(selected.signal(), Time::ZERO).unwrap()
+        else {
+            panic!("expected recorded bits for {text}");
+        };
+        assert_eq!(bits.as_ref().to_string(), value);
+    }
 }
 
 #[test]
@@ -173,7 +223,7 @@ fn fsdb_logical_names() {
 
 // All producers record the same HDL declarations. These expected components
 // and values come from the authored source, independently of SDK spelling.
-fn common_logical_names(mut wave: Waveform) {
+fn common_logical_names(mut wave: Waveform, escaped_scope: bool) {
     let hierarchy = wave.hierarchy().clone();
     let mut cases = Vec::new();
     for (index, name) in [
@@ -245,13 +295,10 @@ fn common_logical_names(mut wave: Waveform) {
             declaration.logic_domain()
         );
         if declaration.name() == "leaf[0]" {
-            // An indexed literal base followed by a range, as in mem[0][7:0].
-            let indexed = hierarchy
-                .resolve_signal("leaf[0][7:0]", Some(&parent))
-                .unwrap();
-            assert!(indexed.declaration() == declaration);
-            assert_eq!(indexed.projection(), Some((7, 0)));
-            assert_eq!(indexed.signal(), signal);
+            assert!(matches!(
+                hierarchy.resolve_signal("leaf[0][7:0]", Some(&parent)),
+                Err(ondas::LookupError::NotFound { .. })
+            ));
         }
         for (tick, expected) in [0, 4, 9].into_iter().zip(values) {
             let Sample::Value {
@@ -268,6 +315,8 @@ fn common_logical_names(mut wave: Waveform) {
             );
         }
     }
+    indexed_paths::check_q(&mut wave, "top", true, escaped_scope, "1");
+    indexed_paths::check_q(&mut wave, "top", false, false, "0");
 }
 
 #[test]
@@ -275,6 +324,7 @@ fn common_logical_names(mut wave: Waveform) {
 fn vcd_common_logical_names() {
     common_logical_names(
         ondas::open_with(fixture("vcd", "vcd0099-logical-names"), "vcd-native").unwrap(),
+        true,
     );
 }
 
@@ -283,6 +333,7 @@ fn vcd_common_logical_names() {
 fn fst_common_logical_names() {
     common_logical_names(
         ondas::open_with(fixture("fst", "fst0088-logical-names"), "fst-lib").unwrap(),
+        true,
     );
 }
 
@@ -294,16 +345,16 @@ fn fsdb_common_logical_names() {
     let Some(wave) = fsdb_compatibility::open(ondas::open_with(&path, "fsdb-lib"), &path) else {
         return;
     };
-    common_logical_names(wave);
+    common_logical_names(wave, true);
 }
 
 #[cfg(feature = "shm-lib")]
 #[test]
 #[ignore = "requires Xcelium and installed logical-name fixtures"]
 fn shm_common_logical_names() {
-    common_logical_names(
-        ondas::open_with(fixture("shm", "shm0092-logical-names"), "shm-lib").unwrap(),
-    );
+    let wave = ondas::open_with(fixture("shm", "shm0092-logical-names"), "shm-lib").unwrap();
+    assert!(!variable(wave.hierarchy(), &["top", r"\leading"]).name_was_escaped());
+    common_logical_names(wave, false);
 }
 
 #[cfg(feature = "wlf-lib")]
@@ -312,6 +363,7 @@ fn shm_common_logical_names() {
 fn wlf_common_logical_names() {
     common_logical_names(
         ondas::open_with(fixture("wlf", "wlf0082-logical-names"), "wlf-lib").unwrap(),
+        true,
     );
 }
 

@@ -22,8 +22,8 @@ use std::{
 
 use super::Input;
 use crate::{
-    BitRange, BitsRef, Direction, Encoding, Error, Format, Hierarchy, Metadata, Result, Signal,
-    Time, TimeSpan, TimeUnit, Timescale, ValueRef,
+    BitRange, BitsRef, Direction, Encoding, Error, Format, Hierarchy, Metadata, PathComponent,
+    Result, Signal, Time, TimeSpan, TimeUnit, Timescale, ValueRef,
     hierarchy::{ScopeData, VariableData},
 };
 
@@ -463,7 +463,7 @@ impl Reader {
                     } else {
                         let index = scopes.len();
                         scopes.push(ScopeData {
-                            name,
+                            component: PathComponent::from_reader_name(name, !name_was_escaped),
                             name_was_escaped,
                             parent,
                             kind,
@@ -543,7 +543,7 @@ impl Reader {
                         range.map(|r| (r.msb(), r.lsb())),
                     )) {
                         variables.push(VariableData {
-                            name,
+                            component: PathComponent::from_reader_name(name, !name_was_escaped),
                             reader_name: None,
                             name_was_escaped,
                             parent,

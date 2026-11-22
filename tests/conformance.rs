@@ -139,6 +139,44 @@ fn path(value: &Json) -> HierarchyPath {
     )
 }
 
+// Version 1 oracles store flattened names. Match this spelling during
+// enumeration, then use the declaration's typed path to verify lookup.
+fn oracle_path(path: HierarchyPath) -> HierarchyPath {
+    if path
+        .components()
+        .all(|component| component.index().is_none())
+    {
+        return path;
+    }
+    HierarchyPath::from_components(path.components().map(|component| match component.index() {
+        Some(index) => format!("{}[{index}]", component.name()),
+        None => component.name().to_owned(),
+    }))
+}
+
+fn oracle_variables<'h>(
+    hierarchy: &'h ondas::Hierarchy,
+    wanted: &HashSet<HierarchyPath>,
+) -> HashMap<HierarchyPath, ondas::Variable<'h>> {
+    let names: HashSet<_> = wanted
+        .iter()
+        .filter_map(HierarchyPath::name)
+        .flat_map(|name| [Some(name), name.rsplit_once('[').map(|(base, _)| base)])
+        .flatten()
+        .collect();
+    let mut variables = HashMap::new();
+    for variable in hierarchy.variables().filter(|v| names.contains(v.name())) {
+        let path = oracle_path(variable.path());
+        if wanted.contains(&path) {
+            assert!(
+                variables.insert(path.clone(), variable).is_none(),
+                "ambiguous variable {path}"
+            );
+        }
+    }
+    variables
+}
+
 fn value_json(value: ValueRef<'_>) -> Json {
     match value {
         ValueRef::Bits(bits) => json!({"bits": bits.to_string()}),
@@ -669,13 +707,9 @@ fn hierarchy(wave: &Waveform, oracle: &Json, check_lookups: bool) -> BTreeMap<St
         .iter()
         .map(|v| path(&v["path"]))
         .collect();
-    let variable_names: HashSet<_> = wanted_variables
-        .iter()
-        .filter_map(HierarchyPath::name)
-        .collect();
     let mut scopes = HashMap::new();
     for scope in hierarchy.scopes() {
-        let path = scope.path();
+        let path = oracle_path(scope.path());
         if wanted_scopes.contains(&path) {
             assert!(
                 scopes.insert(path.clone(), scope).is_none(),
@@ -683,30 +717,18 @@ fn hierarchy(wave: &Waveform, oracle: &Json, check_lookups: bool) -> BTreeMap<St
             );
         }
     }
-    let mut variables = HashMap::new();
-    for variable in hierarchy
-        .variables()
-        .filter(|v| variable_names.contains(v.name()))
-    {
-        let path = variable.path();
-        if wanted_variables.contains(&path) {
-            assert!(
-                variables.insert(path.clone(), variable).is_none(),
-                "ambiguous variable {path}"
-            );
-        }
-    }
+    let variables = oracle_variables(hierarchy, &wanted_variables);
     for expected in list(&oracle["hierarchy"], "scopes") {
         let path = path(&expected["path"]);
         let scope = scopes
             .get(&path)
             .unwrap_or_else(|| panic!("missing scope {path}"));
-        assert_eq!(scope.path(), path);
-        assert_eq!(scope.name(), path.name().unwrap());
         assert_eq!(
-            scope.parent().map(|p| p.path()),
+            scope.parent().map(|p| oracle_path(p.path())),
             path.parent().filter(|p| !p.is_empty())
         );
+        let path = scope.path();
+        assert_eq!(scope.name(), path.name().unwrap());
         if check_lookups {
             assert!(
                 hierarchy.scope_path(&path).unwrap() == *scope,
@@ -748,12 +770,12 @@ fn hierarchy(wave: &Waveform, oracle: &Json, check_lookups: bool) -> BTreeMap<St
         let variable = variables
             .get(&path)
             .unwrap_or_else(|| panic!("missing variable {path}"));
-        assert_eq!(variable.path(), path);
-        assert_eq!(variable.name(), path.name().unwrap());
         assert_eq!(
-            variable.parent().map(|p| p.path()),
+            variable.parent().map(|p| oracle_path(p.path())),
             path.parent().filter(|p| !p.is_empty())
         );
+        let path = variable.path();
+        assert_eq!(variable.name(), path.name().unwrap());
         if check_lookups {
             assert!(
                 hierarchy.variable_path(&path).unwrap() == *variable,
@@ -3570,25 +3592,29 @@ fn wdb_changed_type_conformance() {
         inspected += 1;
         metadata(&wave, &fixture.oracle["metadata"], false, &fixture);
         hierarchy(&wave, &fixture.oracle, false);
-        let hierarchy = wave.hierarchy();
+        let items = list(&fixture.oracle["hierarchy"], "variables");
+        let variables = oracle_variables(
+            wave.hierarchy(),
+            &items.iter().map(|item| path(&item["path"])).collect(),
+        );
         let mut selected = BTreeSet::new();
-        for item in list(&fixture.oracle["hierarchy"], "variables") {
+        for item in items {
             let Some(id) = item.get("signal").and_then(Json::as_str) else {
                 continue;
             };
             let path = path(&item["path"]);
-            let affected = match hierarchy.variable_path(&path) {
-                Ok(variable) => {
+            let affected = match variables.get(&path) {
+                Some(variable) => {
                     variable.kind() == "integer"
                         || variable.kind() == "real"
                         || (variable.kind() == "array"
                             && (variable.type_name().is_some() || variable.range().is_none()))
-                        || (variable.enumeration().is_some() && variable.name().contains('['))
+                        || (variable.enumeration().is_some() && path.name().unwrap().contains('['))
                         || variable
                             .signal()
                             .is_none_or(|signal| signal.encoding() == Encoding::Unsupported)
                 }
-                Err(_) => true,
+                None => true,
             };
             if affected {
                 selected.insert(id.to_owned());

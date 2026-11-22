@@ -46,7 +46,7 @@ fn groups(variables: &[VariableData], encodings: &[Encoding]) -> Vec<Vec<usize>>
     let mut candidates = HashMap::<_, Vec<usize>>::new();
     for (index, variable) in variables.iter().enumerate() {
         candidates
-            .entry((variable.parent, variable.name.as_str()))
+            .entry((variable.parent, &variable.component))
             .or_default()
             .push(index);
     }
@@ -115,7 +115,7 @@ mod tests {
 
     fn variable(signal: usize, range: Option<(i64, i64)>) -> VariableData {
         VariableData {
-            name: "bus".into(),
+            component: "bus".into(),
             reader_name: None,
             name_was_escaped: false,
             parent: None,

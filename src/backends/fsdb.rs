@@ -10,8 +10,8 @@ use std::{
 };
 
 use crate::{
-    BitRange, BitsRef, Direction, Encoding, Error, Format, Hierarchy, Metadata, Result, Signal,
-    Time, TimeSpan, Timescale, ValueRef,
+    BitRange, BitsRef, Direction, Encoding, Error, Format, Hierarchy, Metadata, PathComponent,
+    Result, Signal, Time, TimeSpan, Timescale, ValueRef,
     hierarchy::{EnumerationData, ScopeData, VariableData},
 };
 
@@ -312,6 +312,10 @@ impl Reader {
                         // as a merge key. Equal logical paths are not identity.
                         let key = (parent, name.clone(), d.entry);
                         let (name, name_was_escaped) = logical_name(name, d.verilog_name != 0);
+                        let component = PathComponent::from_reader_name(
+                            name,
+                            d.verilog_name != 0 && !name_was_escaped,
+                        );
                         let definition_name = string(d.definition)?;
                         let packing = match d.packing {
                             0 => None,
@@ -350,8 +354,8 @@ impl Reader {
                                 let path = crate::HierarchyPath::from_components(
                                     stack
                                         .iter()
-                                        .map(|&parent| scopes[parent].name.as_str())
-                                        .chain(std::iter::once(name.as_str())),
+                                        .map(|&parent| &scopes[parent].component)
+                                        .chain(std::iter::once(&component)),
                                 );
                                 return Err(Error::Malformed {
                                     format: Format::Fsdb,
@@ -369,7 +373,7 @@ impl Reader {
                         } else {
                             let id = scopes.len();
                             scopes.push(ScopeData {
-                                name,
+                                component,
                                 name_was_escaped,
                                 parent,
                                 kind,
@@ -452,7 +456,10 @@ impl Reader {
                             EnumerationData::for_encoding(type_name.clone(), variants, encoding)
                         };
                         variables.push(VariableData {
-                            name,
+                            component: PathComponent::from_reader_name(
+                                name,
+                                d.verilog_name != 0 && !name_was_escaped,
+                            ),
                             reader_name: Some(reader_name),
                             name_was_escaped,
                             parent: stack.last().copied(),
@@ -1006,7 +1013,7 @@ mod tests {
                 let (name, range) = declared_name(raw.into(), range, encodings[index]);
                 let (name, name_was_escaped) = logical_name(name, true);
                 VariableData {
-                    name,
+                    component: name.into(),
                     reader_name: Some(raw.into()),
                     name_was_escaped,
                     parent: None,

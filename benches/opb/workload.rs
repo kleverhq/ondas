@@ -498,7 +498,8 @@ fn browse<C: Consumer>(job: &Job, wave: &Waveform, out: &mut C) {
         for item in scope.children() {
             out.item(&item);
             if let Item::Scope(s) = item
-                && s.name() == part
+                && s.name() == part.name()
+                && s.path().components().last() == Some(part)
             {
                 next = Some(s);
             }
