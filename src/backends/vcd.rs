@@ -22,8 +22,8 @@ use std::{
 
 use super::Input;
 use crate::{
-    BitRange, BitsRef, Direction, Encoding, Error, Format, Hierarchy, Metadata, Result, Signal,
-    Time, TimeSpan, TimeUnit, Timescale, ValueRef,
+    BitRange, BitsRef, Direction, Encoding, Error, Format, Hierarchy, Metadata, PathComponent,
+    Result, Signal, Time, TimeSpan, TimeUnit, Timescale, ValueRef,
     hierarchy::{ScopeData, VariableData},
 };
 
@@ -447,14 +447,28 @@ impl Reader {
                     break start;
                 }
                 b"$scope" => {
-                    let kind = scope_kind(&utf8(&tokens.required()?)?)?;
+                    let raw_kind = utf8(&tokens.required()?)?;
+                    let kind = scope_kind(&raw_kind)?;
+                    let is_vhdl = raw_kind.starts_with("vhdl_")
+                        || matches!(
+                            kind.as_str(),
+                            "architecture"
+                                | "procedure"
+                                | "record"
+                                | "process"
+                                | "block"
+                                | "for-generate"
+                                | "if-generate"
+                        );
                     let spelling = tokens.required()?;
                     let name_was_escaped = spelling.starts_with(b"\\");
                     let name = name(&spelling)?;
                     tokens.end()?;
-                    let parent = stack.last().copied();
-                    // Coalesce repeated source spellings, not equal logical paths.
-                    let key = (parent, spelling);
+                    let parent = stack.last().map(|&(index, _)| index);
+                    let component =
+                        PathComponent::from_reader_name(name, !name_was_escaped && !is_vhdl);
+                    // VHDL and Verilog can give the same spelling different meanings.
+                    let key = (parent, spelling, component.index().is_some());
                     let index = if let Some(&index) = scope_ids.get(&key) {
                         if scopes[index].kind != kind {
                             return Err(tokens.error("conflicting scope kind"));
@@ -463,7 +477,7 @@ impl Reader {
                     } else {
                         let index = scopes.len();
                         scopes.push(ScopeData {
-                            name,
+                            component,
                             name_was_escaped,
                             parent,
                             kind,
@@ -474,7 +488,7 @@ impl Reader {
                         scope_ids.insert(key, index);
                         index
                     };
-                    stack.push(index);
+                    stack.push((index, is_vhdl));
                 }
                 b"$upscope" => {
                     tokens.end()?;
@@ -533,7 +547,9 @@ impl Reader {
                     };
                     let (name, range) = reference_name(&reference, &suffix, encoding)?;
                     let name_was_escaped = reference.starts_with(b"\\");
-                    let parent = stack.last().copied();
+                    let (parent, is_vhdl) = stack
+                        .last()
+                        .map_or((None, false), |&(index, is_vhdl)| (Some(index), is_vhdl));
                     let kind = kind.replace('_', "-");
                     if declarations.insert((
                         parent,
@@ -543,7 +559,10 @@ impl Reader {
                         range.map(|r| (r.msb(), r.lsb())),
                     )) {
                         variables.push(VariableData {
-                            name,
+                            component: PathComponent::from_reader_name(
+                                name,
+                                !name_was_escaped && !is_vhdl,
+                            ),
                             reader_name: None,
                             name_was_escaped,
                             parent,

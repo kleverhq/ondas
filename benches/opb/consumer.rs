@@ -129,6 +129,16 @@ fn bits(value: ValueRef<'_>) -> String {
     }
 }
 
+// The OPB record format uses flattened component strings for paths and names.
+fn wire_path(path: &HierarchyPath) -> Vec<String> {
+    path.components()
+        .map(|component| match component.index() {
+            Some(index) => format!("{}[{index}]", component.name()),
+            None => component.name().to_owned(),
+        })
+        .collect()
+}
+
 impl<W: Write> Consumer for Verify<W> {
     fn sample(&mut self, slot: usize, time: Time, sample: SampleRef<'_>) {
         let SampleRef::Value {
@@ -151,12 +161,10 @@ impl<W: Write> Consumer for Verify<W> {
     }
     fn item(&mut self, item: &Item<'_>) {
         match item {
-            Item::Scope(scope) => self
-                .scopes
-                .push(scope.path().components().map(str::to_owned).collect()),
+            Item::Scope(scope) => self.scopes.push(wire_path(&scope.path())),
             Item::Variable(var) => {
                 self.variables += 1;
-                self.emit(json!({"kind":"variable", "path":var.path().components().collect::<Vec<_>>(), "width":var.signal().and_then(Signal::width)}));
+                self.emit(json!({"kind":"variable", "path":wire_path(&var.path()), "width":var.signal().and_then(Signal::width)}));
             }
         }
     }
@@ -182,13 +190,7 @@ impl<W: Write> Consumer for Verify<W> {
             .aliases(signal)
             .unwrap()
             .find(|variable| variable.path() == *path)
-            .map(|variable| {
-                variable
-                    .path()
-                    .components()
-                    .map(str::to_owned)
-                    .collect::<Vec<_>>()
-            });
+            .map(|variable| wire_path(&variable.path()));
         self.emit(json!({"kind":"lookup", "path":observed, "width":signal.width()}));
     }
     fn selection(&mut self, requested: &[Signal], signals: &[Signal]) {
@@ -200,15 +202,25 @@ impl<W: Write> Consumer for Verify<W> {
         self.emit(json!({"kind":"selection", "slots":signals.len(), "bases":bases, "widths":signals.iter().map(|s| s.width()).collect::<Vec<_>>(), "same_order":signals == requested}));
     }
     fn scope(&mut self, scope: Scope<'_>) {
-        self.emit(json!({"kind":"scope", "path":scope.path().components().collect::<Vec<_>>() }));
+        self.emit(json!({"kind":"scope", "path":wire_path(&scope.path())}));
     }
     fn missing(&mut self, missing: bool) {
         self.emit(json!({"kind":"missing", "missing":missing}));
     }
     fn metadata(&mut self, item: &Item<'_>) {
         match item {
-            Item::Scope(s) => self.emit(json!({"kind":"metadata", "object":"scope", "path":s.path().components().collect::<Vec<_>>(), "name":s.name(), "parent":s.parent().map(|p| p.path().components().map(str::to_owned).collect::<Vec<_>>()), "native_kind":s.kind()})),
-            Item::Variable(v) => self.emit(json!({"kind":"metadata", "object":"variable", "path":v.path().components().collect::<Vec<_>>(), "name":v.name(), "parent":v.parent().map(|p| p.path().components().map(str::to_owned).collect::<Vec<_>>()), "native_kind":v.kind(), "width":v.signal().and_then(Signal::width), "encoding":v.signal().map(|s|format!("{:?}",s.encoding())), "range":v.range().map(|r|format!("{:?}",r)), "direction":format!("{:?}",v.direction()), "signedness":v.signedness().map(|s|format!("{:?}",s)), "logic_domain":v.logic_domain().map(|s|format!("{:?}",s)), "has_enum":v.enumeration().is_some()})),
+            Item::Scope(s) => {
+                let path = s.path();
+                assert_eq!(Some(s.name()), path.name());
+                let path = wire_path(&path);
+                self.emit(json!({"kind":"metadata", "object":"scope", "name":path.last(), "path":path, "parent":s.parent().map(|p| wire_path(&p.path())), "native_kind":s.kind()}));
+            }
+            Item::Variable(v) => {
+                let path = v.path();
+                assert_eq!(Some(v.name()), path.name());
+                let path = wire_path(&path);
+                self.emit(json!({"kind":"metadata", "object":"variable", "name":path.last(), "path":path, "parent":v.parent().map(|p| wire_path(&p.path())), "native_kind":v.kind(), "width":v.signal().and_then(Signal::width), "encoding":v.signal().map(|s|format!("{:?}",s.encoding())), "range":v.range().map(|r|format!("{:?}",r)), "direction":format!("{:?}",v.direction()), "signedness":v.signedness().map(|s|format!("{:?}",s)), "logic_domain":v.logic_domain().map(|s|format!("{:?}",s)), "has_enum":v.enumeration().is_some()}));
+            }
         }
     }
     fn sources(&mut self, wave: &Waveform, signals: &[Signal]) {
@@ -226,7 +238,7 @@ impl<W: Write> Consumer for Verify<W> {
             if let Some(signal) = variable.signal() {
                 declared.insert(signal);
                 if returned.contains(&signal) {
-                    self.emit(json!({"kind":"signal", "path":variable.path().components().collect::<Vec<_>>(), "width":signal.width()}));
+                    self.emit(json!({"kind":"signal", "path":wire_path(&variable.path()), "width":signal.width()}));
                 }
             }
         }
@@ -257,14 +269,6 @@ fn observation_paths(wave: &Waveform, signals: &[Signal]) -> Vec<Vec<String>> {
     }
     signals
         .iter()
-        .map(|signal| {
-            declarations
-                .get(signal)
-                .unwrap()
-                .path()
-                .components()
-                .map(str::to_owned)
-                .collect()
-        })
+        .map(|signal| wire_path(&declarations.get(signal).unwrap().path()))
         .collect()
 }

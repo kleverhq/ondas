@@ -203,7 +203,7 @@ impl Mapper<'_> {
         }
         let index = self.scopes.len();
         self.scopes.push(ScopeData {
-            name,
+            component: name.into(),
             name_was_escaped: false,
             parent,
             kind: kind.into(),
@@ -332,7 +332,7 @@ impl Mapper<'_> {
             );
         }
         self.variables.push(VariableData {
-            name,
+            component: name.into(),
             reader_name: None,
             name_was_escaped: false,
             parent,

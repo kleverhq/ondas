@@ -10,6 +10,8 @@ A path or a native history ID cannot identify a declaration. FSDB can contain a 
 
 Name conversion needs evidence about the source language and spelling. A leading backslash can be Verilog syntax, a literal character or a conversion artifact. Range metadata does not permit removal of brackets from an escaped identifier. A converter can lose a component boundary or truncate a name. Ondas cannot recover that information. Similar spelling and equal histories do not prove a structural relationship.
 
+Path components keep the logical name and array index separately. An escaped instance named `u_reg[0]` and element 0 of `u_reg` can share a parent. When the reader exposes only a common indexed spelling, lookup uses the indexed path and reports the count if several declarations share it. The declaration's escape flag records reader spelling independently of this lookup rule.
+
 ## Recorded state is not circuit state
 
 The common layer observes completed source ticks. Results do not depend on record order across signals. Intermediate writes are not separate circuit states. A snapshot or a recording-resume record establishes an observation. It does not establish the time of an unrecorded transition. The first observed value can therefore have an unknown change time. Event counts preserve what the reader exposes. They cannot recover events collapsed by the producer or identify initialization that the reader cannot distinguish.

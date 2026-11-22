@@ -2,6 +2,7 @@
 #include "shm_sst2.h"
 #include "shm_value.h"
 #include <algorithm>
+#include <charconv>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -153,6 +154,17 @@ struct Declaration {
     int type_kind = -1;
     SstHandle variable = 0; // only valid within this declaration's Session
 };
+std::string array_element_spelling(const std::string &array, const std::string &element) {
+    return array + "[" + element + "]";
+}
+bool read_array_index(Declaration &declaration) {
+    const char *begin = declaration.name.data();
+    const char *end = begin + declaration.name.size();
+    auto &d = declaration.descriptor;
+    const auto index = std::from_chars(begin, end, d.array_index);
+    d.has_array_index = index.ec == std::errc{} && index.ptr == end;
+    return d.has_array_index != 0;
+}
 std::int64_t index_left(SstHandle type) {
     SstHandle index = da_handle(0x1de, type);
     int width = 0;
@@ -166,11 +178,11 @@ std::int64_t index_left(SstHandle type) {
     for (int i = 0; i < width / 8; ++i) value = (value << 8) | static_cast<unsigned char>(bytes[i]);
     return width == 32 ? static_cast<std::int32_t>(value) : static_cast<std::int64_t>(value);
 }
-Declaration describe_variable(SstHandle variable, const std::string &prefix) {
+Declaration describe_variable(SstHandle variable) {
     Declaration declaration;
     auto &d = declaration.descriptor;
     declaration.variable = variable;
-    declaration.name = prefix.empty() ? text(0x10a, variable) : prefix + "[" + text(0x10a, variable) + "]";
+    declaration.name = text(0x10a, variable);
     declaration.kind = "shm:decl:" + std::to_string(da_get(0x143, variable));
     d.entry = 2;
     d.is_constant = da_get(0x122, variable) > 0;
@@ -237,8 +249,15 @@ void import_enumeration(Declaration &declaration) {
 }
 void import_variable(SstHandle variable, const std::string &prefix, std::vector<Declaration> &out,
                      std::unordered_map<SstHandle, std::uint64_t> &identities,
-                     std::vector<SourceNode> &nodes, size_t source) {
-    Declaration declaration = describe_variable(variable, prefix);
+                     std::vector<SourceNode> &nodes, size_t source, bool first_index = false) {
+    Declaration declaration = describe_variable(variable);
+    std::string child_prefix = declaration.name;
+    if (!prefix.empty()) {
+        child_prefix = array_element_spelling(prefix, declaration.name);
+        // Each component represents one index. Keep the full source spelling
+        // for descendants reached through multiple array dimensions.
+        declaration.name = first_index && read_array_index(declaration) ? prefix : child_prefix;
+    }
     import_enumeration(declaration);
     declaration.source = source;
     auto &d = declaration.descriptor;
@@ -256,7 +275,6 @@ void import_variable(SstHandle variable, const std::string &prefix, std::vector<
     d.id = out.size();
     (void)identities;
 #endif
-    std::string child_prefix = declaration.name;
     const int kind = declaration.type_kind;
     out.push_back(std::move(declaration));
     if (kind == 8) {
@@ -265,7 +283,7 @@ void import_variable(SstHandle variable, const std::string &prefix, std::vector<
             size_t ordinal = 0;
             for (SstHandle child; (child = children.next()); ++ordinal) {
                 const auto node = source_node(nodes, source, property, ordinal, child);
-                import_variable(child, child_prefix, out, identities, nodes, node);
+                import_variable(child, child_prefix, out, identities, nodes, node, prefix.empty());
             }
         }
     }
@@ -287,7 +305,9 @@ void hierarchy(SstHandle parent, std::vector<Declaration> &out,
         scope.name = text(0x10a, child);
         int kind = da_get(0x113, child);
         if (kind == 10) { hierarchy(child, out, identities, nodes, node, scope.name); continue; }
-        if (!scope_array.empty()) scope.name = scope_array + "[" + scope.name + "]";
+        if (!scope_array.empty()) {
+            scope.name = read_array_index(scope) ? scope_array : array_element_spelling(scope_array, scope.name);
+        }
         scope.kind = kind == 6 ? "module" : kind == 3 ? "architecture" : "shm:scope:" + std::to_string(kind);
         SstHandle definition = da_handle(0x14e, child);
         scope.definition = text(0x10a, definition);
@@ -368,7 +388,7 @@ std::vector<Declaration> selected_declarations(SstHandle file, const uint64_t *i
     declarations.reserve(count);
     for (size_t i = 0; i < count; ++i) {
         const auto &expected = original[ids[i]];
-        auto current = describe_variable(resolved.at(expected.source), "");
+        auto current = describe_variable(resolved.at(expected.source));
         const auto &a = expected.descriptor;
         const auto &b = current.descriptor;
         require(a.encoding == b.encoding && a.width == b.width &&

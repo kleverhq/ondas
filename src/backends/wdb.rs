@@ -1,7 +1,7 @@
 //! Private file-only adapter. Vendor calls and destruction use the same lock.
 use crate::{
     BitRange, BitsRef, Direction, Encoding, Error, Format, Hierarchy, LogicDomain, Metadata,
-    Packing, Result, Signal, Time, TimeSpan, TimeUnit, Timescale, ValueRef,
+    Packing, PathComponent, Result, Signal, Time, TimeSpan, TimeUnit, Timescale, ValueRef,
     hierarchy::{EnumerationData, ScopeData, VariableData},
 };
 use sha2::{Digest, Sha256};
@@ -765,14 +765,21 @@ fn build_presentation(handle: &Handle) -> Result<Presentation> {
                 let parent = (d.parent != usize::MAX).then_some(d.parent);
                 let declaration_name_text =
                     string(d.name)?.ok_or_else(|| backend_error("missing native name"))?;
-                let (name, name_was_escaped) =
-                    declaration_name(declaration_name_text, d.name_syntax, d.base_len)?;
                 let reader_name = string(d.reader_name)?;
-                let kind = declaration_kind(string(d.kind)?.unwrap_or_default(), d.encoding);
+                let native_kind = string(d.kind)?.unwrap_or_default();
+                // Synthesized record containers carry their data kind.
+                let native_scope = d.scope != 0 && native_kind == "scope";
+                let (component, name_was_escaped) = declaration_component(
+                    declaration_name_text,
+                    d.name_syntax,
+                    d.base_len,
+                    native_scope,
+                )?;
+                let kind = declaration_kind(native_kind, d.encoding);
                 if d.scope != 0 {
                     *scope_index = Some(scopes.len());
                     scopes.push(ScopeData {
-                        name,
+                        component,
                         name_was_escaped,
                         parent,
                         kind,
@@ -824,7 +831,7 @@ fn build_presentation(handle: &Handle) -> Result<Presentation> {
                 };
                 variables.push(VariableData {
                     reader_name,
-                    name,
+                    component,
                     name_was_escaped,
                     parent,
                     kind,
@@ -1106,31 +1113,80 @@ fn declaration_kind(mut kind: String, encoding: u32) -> String {
     }
 }
 
-fn declaration_name(mut name: String, syntax: u32, base_len: usize) -> Result<(String, bool)> {
+fn declaration_component(
+    mut name: String,
+    syntax: u32,
+    base_len: usize,
+    native_scope: bool,
+) -> Result<(PathComponent, bool)> {
     let boundary = if base_len == 0 { name.len() } else { base_len };
     let base = name
         .get(..boundary)
         .ok_or_else(|| backend_error("invalid native array name boundary"))?;
+    let suffix_len = name.len() - boundary;
+    let escaped =
+        syntax == 1 && base.starts_with('\\') && base.ends_with(|c: char| c.is_ascii_whitespace());
     if syntax == 2 && base.len() >= 2 && base.starts_with('\\') && base.ends_with('\\') {
         let logical = base[1..base.len() - 1].replace("\\\\", "\\");
         name.replace_range(..boundary, &logical);
-        return Ok((name, false));
+    } else if escaped {
+        let end = base
+            .trim_end_matches(|c: char| c.is_ascii_whitespace())
+            .len();
+        name.replace_range(end..boundary, "");
+        name.remove(0);
     }
-    if syntax != 1 || !base.starts_with('\\') || !base.ends_with(|c: char| c.is_ascii_whitespace())
-    {
-        return Ok((name, false));
-    }
-    let end = base
-        .trim_end_matches(|c: char| c.is_ascii_whitespace())
-        .len();
-    name.replace_range(end..boundary, "");
-    name.remove(0);
-    Ok((name, true))
+    // Native Verilog scopes use escaped spelling for both an indexed
+    // instance and a literal name with brackets. Keep the SDK escape flag.
+    let component = if base_len == 0 {
+        PathComponent::from_reader_name(name, syntax == 1 && (native_scope || !escaped))
+    } else {
+        let boundary = name.len() - suffix_len;
+        PathComponent::from_array_spelling(name, boundary)
+    };
+    Ok((component, escaped))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wdb_declaration_components_use_scope_and_member_evidence() {
+        let literal = PathComponent::new("u_reg[0]");
+        let indexed = PathComponent::indexed("u_reg", 0);
+        let escaped_sv = r"\u_reg[0] ";
+        let escaped_vhdl = r"\u_reg[0]\";
+        for (raw, syntax, base_len, native_scope, expected, escaped) in [
+            (escaped_sv, 1, 0, true, indexed.clone(), true),
+            (escaped_sv, 1, 0, false, literal.clone(), true),
+            ("u_reg[0]", 1, 0, false, indexed, false),
+            ("u_reg[0]", 0, 0, true, literal.clone(), false),
+            (escaped_vhdl, 2, 0, false, literal, false),
+            (
+                r"\u_reg[0] [-2]",
+                1,
+                escaped_sv.len(),
+                false,
+                PathComponent::indexed("u_reg[0]", -2),
+                true,
+            ),
+            (
+                r"\u_reg[0]\[3]",
+                2,
+                escaped_vhdl.len(),
+                false,
+                PathComponent::indexed("u_reg[0]", 3),
+                false,
+            ),
+        ] {
+            assert_eq!(
+                declaration_component(raw.into(), syntax, base_len, native_scope).unwrap(),
+                (expected, escaped),
+                "{raw}"
+            );
+        }
+    }
 
     unsafe extern "C" {
         fn ondas_wdb_index_count(reader: *mut c_void) -> usize;

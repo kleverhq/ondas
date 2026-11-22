@@ -13,6 +13,8 @@ typedef struct {
     const char *name, *kind, *definition;
     size_t variant_count;
     const char *enum_name;
+    int64_t array_index;
+    uint32_t has_array_index;
 } ondas_shm_decl;
 typedef struct {
     const char *encoded, *label;

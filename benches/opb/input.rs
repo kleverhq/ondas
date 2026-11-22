@@ -1,6 +1,6 @@
 use std::{fs, path::PathBuf};
 
-use ondas::{HierarchyPath, Signal, Time, TimeRange, Trace, Waveform};
+use ondas::{HierarchyPath, PathComponent, Signal, Time, TimeRange, Trace, Waveform};
 use serde_json::Value;
 
 pub struct Job {
@@ -36,7 +36,16 @@ pub struct Job {
 }
 
 fn path(v: &Value) -> HierarchyPath {
-    HierarchyPath::from_components(v.as_array().unwrap().iter().map(|s| s.as_str().unwrap()))
+    HierarchyPath::from_components(v.as_array().unwrap().iter().map(|s| {
+        let name = s.as_str().unwrap();
+        // The OPB model flattens the word generate index in its bindings.
+        if let Some(index) = name.strip_prefix("word[").and_then(|s| s.strip_suffix(']'))
+            && let Ok(index) = index.parse::<i64>()
+        {
+            return PathComponent::indexed("word", index);
+        }
+        PathComponent::new(name)
+    }))
 }
 fn paths(v: &Value) -> Vec<HierarchyPath> {
     v.as_array().unwrap().iter().map(path).collect()
@@ -48,6 +57,15 @@ impl Job {
         let job = &run["jobs"][index];
         let input = &job["input"];
         let case = &input["case"];
+        let lookup_path = &input["lookup_path"];
+        // Keep the escaped text used by the text-lookup benchmarks.
+        let lookup_text = lookup_path
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|name| format!(r"\{} ", name.as_str().unwrap()))
+            .collect::<Vec<_>>()
+            .join(".");
         let time = |key: &str| Time::from_ticks(input[key].as_u64().unwrap());
         Self {
             backend: input["backend"].as_str().unwrap().into(),
@@ -59,8 +77,8 @@ impl Job {
             history: case["history"].as_str().unwrap().into(),
             api: case["api"].as_str().unwrap().into(),
             paths: paths(&input["paths"]),
-            lookup: path(&input["lookup_path"]),
-            lookup_text: path(&input["lookup_path"]).to_verilog().unwrap(),
+            lookup: path(lookup_path),
+            lookup_text,
             scope: path(&input["scope_path"]),
             lookup_many: paths(&input["lookup_paths"]),
             metadata: paths(&input["metadata_paths"]),

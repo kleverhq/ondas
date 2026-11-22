@@ -1,10 +1,12 @@
 //! Directed checks for the optional native reader.
 #![cfg(feature = "wdb-lib")]
-use ondas::{Error, Format, Sample, Time, TimeRange, Value};
+use ondas::{Error, Format, LookupError, Sample, Time, TimeRange, Value};
 use std::{ops::ControlFlow, path::PathBuf, sync::Arc};
 
 #[path = "support/fixtures.rs"]
 mod fixture_support;
+#[path = "support/indexed_paths.rs"]
+mod indexed_paths;
 #[allow(dead_code)]
 #[path = "support/normalized_oracle.rs"]
 mod normalized_oracle;
@@ -27,6 +29,42 @@ fn bits(sample: Sample) -> String {
         panic!("expected recorded bits")
     };
     bits.as_ref().to_string()
+}
+
+#[test]
+#[ignore = "requires the selected WDB reader and published logical-name fixtures"]
+fn wdb_scope_indices_preserve_the_sdk_escape_flag() {
+    for (id, cases) in [
+        ("wdb0319-logical-names-literal-scope", &[("top", "1")][..]),
+        ("wdb0320-logical-names-indexed-scope", &[("top", "0")][..]),
+        (
+            "wdb0321-logical-names-separated-scopes",
+            &[("top.u_literal", "1"), ("top.u_indexed", "0")][..],
+        ),
+    ] {
+        let path = fixture_path(&format!("wdb/{id}"));
+        let Some(mut wave) = wdb_compatibility::open(ondas::open_with(&path, "wdb-lib"), &path)
+        else {
+            continue;
+        };
+        for &(parent, value) in cases {
+            indexed_paths::check_q(&mut wave, parent, false, true, value);
+            for scope in [
+                format!(r#"{parent}."u_reg[0]""#),
+                format!(r"{parent}.\u_reg[0] "),
+            ] {
+                assert!(matches!(
+                    wave.hierarchy().scope(&scope),
+                    Err(LookupError::NotFound { .. })
+                ));
+                assert!(matches!(
+                    wave.hierarchy().signal(&format!("{scope}.q")),
+                    Err(LookupError::NotFound { .. })
+                ));
+            }
+        }
+        eprintln!("PASS {id}: typed scope and q lookup");
+    }
 }
 
 #[test]

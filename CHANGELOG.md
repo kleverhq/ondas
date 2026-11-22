@@ -4,6 +4,11 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+### Breaking changes
+
+- Hierarchy paths use typed components with a logical name and an optional array index. Iterate over `PathComponent` values and use `PathComponent::indexed` to construct an array element. Quote or escape literal names with brackets in text paths. Declaration `name()` returns the logical name without the array index.
+- `HierarchyPath::to_verilog()` writes simple identifiers without escapes and writes structural indices after the identifier.
+
 ## [2.2.0] - 2026-11-20
 
 ### Added

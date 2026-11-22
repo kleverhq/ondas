@@ -1,8 +1,8 @@
 //! Private build-selected SST2 adapter. Vendor state is serialized and suspended
 //! before another operation changes the shared files or global time unit.
 use crate::{
-    BitRange, BitsRef, Direction, Encoding, Error, Hierarchy, Metadata, Result, Signal, Time,
-    TimeSpan, TimeUnit, Timescale, ValueRef,
+    BitRange, BitsRef, Direction, Encoding, Error, Hierarchy, Metadata, PathComponent, Result,
+    Signal, Time, TimeSpan, TimeUnit, Timescale, ValueRef,
     hierarchy::{EnumerationData, ScopeData, VariableData},
 };
 use std::{
@@ -37,6 +37,8 @@ struct Declaration {
     definition: *const c_char,
     variant_count: usize,
     enum_name: *const c_char,
+    array_index: i64,
+    has_array_index: u32,
 }
 #[repr(C)]
 #[derive(Default)]
@@ -310,12 +312,17 @@ impl Reader {
                 let mut d = Declaration::default();
                 ondas_shm_declaration(handle.0.as_ptr(), index, &mut d);
                 let name = string(d.name)?.unwrap_or_default();
+                let component = if d.has_array_index != 0 {
+                    PathComponent::indexed(name, d.array_index)
+                } else {
+                    PathComponent::new(name)
+                };
                 let kind = string(d.kind)?.unwrap_or_default();
                 match d.entry {
                     0 => {
                         let id = scopes.len();
                         scopes.push(ScopeData {
-                            name,
+                            component,
                             name_was_escaped: false,
                             parent: stack.last().copied(),
                             kind,
@@ -367,7 +374,7 @@ impl Reader {
                         let enumeration =
                             EnumerationData::for_encoding(string(d.enum_name)?, variants, encoding);
                         variables.push(VariableData {
-                            name,
+                            component,
                             reader_name: None,
                             name_was_escaped: false,
                             parent: stack.last().copied(),

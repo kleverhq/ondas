@@ -8,7 +8,8 @@ use fst_reader::{
 
 use crate::{
     BitRange, BitsRef, Direction, Encoding, Error, Format, Hierarchy, LogicDomain, Metadata,
-    Packing, Result, Signal, Signedness, Time, TimeSpan, TimeUnit, Timescale, ValueRef,
+    Packing, PathComponent, Result, Signal, Signedness, Time, TimeSpan, TimeUnit, Timescale,
+    ValueRef,
     hierarchy::{EnumerationData, ScopeData, VariableData},
 };
 
@@ -129,15 +130,20 @@ impl Reader {
                     FstHierarchyEntry::Scope {
                         tpe,
                         name,
-                        component,
+                        component: definition,
                     } => {
                         let parent = stack.last().copied();
-                        // Repeated source spellings are distinct from equal
-                        // logical paths after identifier syntax is removed.
-                        let key = (parent, name.clone());
+                        let spelling = name.clone();
                         let (name, name_was_escaped) = crate::hierarchy::normalize_name(name);
+                        let component = PathComponent::from_reader_name(
+                            name,
+                            !name_was_escaped && !vhdl_scope(tpe),
+                        );
+                        // The source spelling alone cannot distinguish a literal
+                        // VHDL name from an indexed Verilog name.
+                        let key = (parent, spelling, component.index().is_some());
                         let kind = scope_kind(tpe);
-                        let definition_name = (!component.is_empty()).then_some(component);
+                        let definition_name = (!definition.is_empty()).then_some(definition);
                         let packing = pending_packing.take();
                         let id = if let Some(&id) = scope_ids.get(&key) {
                             let scope: &mut ScopeData = &mut scopes[id];
@@ -149,6 +155,7 @@ impl Reader {
                                     && packing.is_some()
                                     && scope.packing != packing)
                             {
+                                let name = key.1.strip_prefix('\\').unwrap_or(&key.1);
                                 error = Some(malformed(format!(
                                     "conflicting scope declaration: {name}"
                                 )));
@@ -164,7 +171,7 @@ impl Reader {
                         } else {
                             let id = scopes.len();
                             scopes.push(ScopeData {
-                                name,
+                                component,
                                 name_was_escaped,
                                 parent,
                                 kind,
@@ -236,8 +243,18 @@ impl Reader {
                         let enumeration = pending_enum.take().and_then(|(name, variants)| {
                             EnumerationData::for_encoding(name, variants, encoding)
                         });
+                        // Keep single-bit suffixes printed as a separate token
+                        // in the literal declaration name.
+                        let separated_suffix = name
+                            .rsplit_once('[')
+                            .is_some_and(|(base, _)| base.ends_with(char::is_whitespace));
                         variables.push(VariableData {
-                            name,
+                            component: PathComponent::from_reader_name(
+                                name,
+                                !name_was_escaped
+                                    && vhdl_kind == FstVhdlVarType::None
+                                    && !separated_suffix,
+                            ),
                             reader_name: None,
                             name_was_escaped,
                             parent: stack.last().copied(),
@@ -441,6 +458,23 @@ fn var_kind(kind: FstVarType) -> String {
         FstVarType::RealParameter => "real-parameter".into(),
         _ => format!("{kind:?}").to_ascii_lowercase(),
     }
+}
+
+fn vhdl_scope(kind: fst_reader::FstScopeType) -> bool {
+    use fst_reader::FstScopeType::*;
+    matches!(
+        kind,
+        VhdlArchitecture
+            | VhdlProcedure
+            | VhdlFunction
+            | VhdlRecord
+            | VhdlProcess
+            | VhdlBlock
+            | VhdlForGenerate
+            | VhdlIfGenerate
+            | VhdlGenerate
+            | VhdlPackage
+    )
 }
 
 fn scope_kind(kind: fst_reader::FstScopeType) -> String {

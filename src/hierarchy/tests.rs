@@ -6,7 +6,7 @@ fn child_links_preserve_identity_order_and_share_lazy_storage() {
     data.scopes = [Some(2), None, None, Some(2), Some(1)]
         .into_iter()
         .map(|parent| ScopeData {
-            name: "same".into(),
+            component: "same".into(),
             name_was_escaped: false,
             parent,
             kind: "module".into(),
@@ -118,7 +118,7 @@ fn enum_keys_match_whole_bits_without_guessing_or_restricting_labels() {
 fn fixture() -> Hierarchy {
     let scopes = vec![
         ScopeData {
-            name: "tb".into(),
+            component: "tb".into(),
             name_was_escaped: false,
             parent: None,
             kind: "module".into(),
@@ -127,7 +127,7 @@ fn fixture() -> Hierarchy {
             is_hidden: false,
         },
         ScopeData {
-            name: "dut".into(),
+            component: "dut".into(),
             name_was_escaped: false,
             parent: Some(0),
             kind: "struct".into(),
@@ -150,7 +150,7 @@ fn fixture() -> Hierarchy {
     .map(|(name, signal)| {
         let width = if signal == Some(1) { 8 } else { 32 };
         VariableData {
-            name: name.into(),
+            component: name.into(),
             reader_name: None,
             name_was_escaped: false,
             parent: Some(1),
@@ -197,7 +197,7 @@ fn identity_keeps_same_path_objects_and_their_children_separate() {
     data.scopes = [None, None, Some(0), Some(1)]
         .into_iter()
         .map(|parent| ScopeData {
-            name: if parent.is_none() { "same" } else { "leaf" }.into(),
+            component: if parent.is_none() { "same" } else { "leaf" }.into(),
             name_was_escaped: false,
             parent,
             kind: "module".into(),
@@ -208,7 +208,7 @@ fn identity_keeps_same_path_objects_and_their_children_separate() {
         .collect();
     // Identical metadata and a shared history still describe separate objects.
     for (index, variable) in data.variables.iter_mut().enumerate() {
-        variable.name = "same declaration".into();
+        variable.component = "same declaration".into();
         variable.parent = Some(index / 2);
         variable.signal = (index < 4).then_some(0);
     }
@@ -319,7 +319,7 @@ fn component_lookup_matches_linear_lookup_across_duplicate_scope_paths() {
     let mut data = Arc::try_unwrap(fixture().data).ok().unwrap();
     for parent in [None, Some(2)] {
         data.scopes.push(ScopeData {
-            name: if parent.is_none() { "tb" } else { "dut" }.into(),
+            component: if parent.is_none() { "tb" } else { "dut" }.into(),
             name_was_escaped: false,
             parent,
             kind: "module".into(),
@@ -329,7 +329,7 @@ fn component_lookup_matches_linear_lookup_across_duplicate_scope_paths() {
         });
     }
     let variable = data.variables.last_mut().unwrap();
-    variable.name = "data".into();
+    variable.component = "data".into();
     variable.parent = Some(3);
     let hierarchy = Hierarchy::new(data.scopes, data.variables, data.encodings);
     let paths = hierarchy
@@ -423,7 +423,7 @@ fn unique_lookup_and_branching_duplicates_preserve_outcomes() {
 
     // A single root variable uses the same unique path without a frontier.
     let root_variable = VariableData {
-        name: "root".into(),
+        component: "root".into(),
         reader_name: None,
         name_was_escaped: false,
         parent: None,
@@ -456,7 +456,7 @@ fn unique_lookup_and_branching_duplicates_preserve_outcomes() {
     let first = data.scopes.len();
     for _ in 0..2 {
         data.scopes.push(ScopeData {
-            name: "branch".into(),
+            component: "branch".into(),
             name_was_escaped: false,
             parent: None,
             kind: "module".into(),
@@ -466,7 +466,7 @@ fn unique_lookup_and_branching_duplicates_preserve_outcomes() {
         });
     }
     data.variables.push(VariableData {
-        name: "target".into(),
+        component: "target".into(),
         reader_name: None,
         name_was_escaped: false,
         parent: Some(first),
@@ -502,7 +502,7 @@ fn unique_lookup_and_branching_duplicates_preserve_outcomes() {
     let first = data.scopes.len();
     for _ in 0..2 {
         data.scopes.push(ScopeData {
-            name: "branch".into(),
+            component: "branch".into(),
             name_was_escaped: false,
             parent: None,
             kind: "module".into(),
@@ -513,7 +513,7 @@ fn unique_lookup_and_branching_duplicates_preserve_outcomes() {
     }
     for parent in [first, first + 1] {
         data.variables.push(VariableData {
-            name: "target".into(),
+            component: "target".into(),
             reader_name: None,
             name_was_escaped: false,
             parent: Some(parent),
@@ -626,7 +626,7 @@ fn interpretation_belongs_to_declarations_not_shared_histories() {
         cases
             .iter()
             .map(|&(name, signal, signedness, logic_domain)| VariableData {
-                name: name.into(),
+                component: name.into(),
                 reader_name: None,
                 name_was_escaped: false,
                 parent: None,
@@ -715,7 +715,7 @@ fn exact_lookup_precedes_selectors() {
         data.slice(15, 8).unwrap()
     );
     assert_eq!(
-        hierarchy.signal("tb.dut.mem[0][7:0]").unwrap(),
+        hierarchy.signal(r#"tb.dut."mem[0]"[7:0]"#).unwrap(),
         data.slice(7, 0).unwrap()
     );
     assert_eq!(
@@ -783,8 +783,8 @@ fn resolved_selectors_keep_paths_and_explicit_normalized_projections() {
         ("tb.dut.data[7:0]", "data[7:0]", None, 8),
         (r#"tb.dut."data[7:0]""#, "data[7:0]", None, 8),
         (r#"tb.dut."data"[7:0]"#, "data", Some((7, 0)), 8),
-        ("tb.dut.mem[0]", "mem[0]", None, 32),
-        ("tb.dut.mem[0][7:0]", "mem[0]", Some((7, 0)), 8),
+        (r#"tb.dut."mem[0]""#, "mem[0]", None, 32),
+        (r#"tb.dut."mem[0]"[7:0]"#, "mem[0]", Some((7, 0)), 8),
         (r#"tb.dut."with space"[0:0]"#, "with space", Some((0, 0)), 1),
     ] {
         let resolved = h.resolve_signal(selector, None).unwrap();
@@ -828,7 +828,7 @@ fn scoped_selectors_preserve_syntax_and_component_prefixes() {
         ("data[7:0]", "tb.dut.data[7:0]"),
         (r#""data"[7:0]"#, r#"tb.dut."data"[7:0]"#),
         ("data[15:8]", "tb.dut.data[15:8]"),
-        ("mem[0][7:0]", "tb.dut.mem[0][7:0]"),
+        (r#""mem[0]"[7:0]"#, r#"tb.dut."mem[0]"[7:0]"#),
         (r#"\data [15:8]"#, "tb.dut.data[15:8]"),
     ] {
         let expected = h.resolve_signal(absolute, None).unwrap();
@@ -869,7 +869,7 @@ fn scoped_selectors_preserve_syntax_and_component_prefixes() {
 #[test]
 fn scoped_empty_paths_cannot_select_the_prefix_declaration() {
     let mut data = Arc::try_unwrap(fixture().data).ok().unwrap();
-    data.variables[0].name = "tb".into();
+    data.variables[0].component = "tb".into();
     data.variables[0].parent = None;
     let h = Hierarchy::new(data.scopes, data.variables, data.encodings);
     let scope = HierarchyPath::from_components(["tb"]);
@@ -881,7 +881,7 @@ fn scoped_empty_paths_cannot_select_the_prefix_declaration() {
         );
     }
     let mut data = Arc::try_unwrap(h.data).ok().unwrap();
-    data.variables[1].name = "[3:0]".into();
+    data.variables[1].component = "[3:0]".into();
     data.variables[1].parent = Some(0);
     let h = Hierarchy::new(data.scopes, data.variables, data.encodings);
     let literal = h.resolve_signal("[3:0]", Some(&scope)).unwrap();
@@ -897,7 +897,7 @@ fn resolved_selector_errors_keep_exact_first_precedence() {
     for ambiguous in [false, true] {
         let mut data = Arc::try_unwrap(fixture().data).ok().unwrap();
         if ambiguous {
-            data.variables[5].name = "data[7:0]".into();
+            data.variables[5].component = "data[7:0]".into();
         } else {
             data.variables[2].signal = None;
         }
@@ -1014,7 +1014,7 @@ fn root_declarations_duplicate_scopes_and_extreme_ranges() {
     let hierarchy = Hierarchy::new(
         vec![
             ScopeData {
-                name: "same".into(),
+                component: "same".into(),
                 parent: None,
                 kind: "module".into(),
                 definition_name: None,
@@ -1023,7 +1023,7 @@ fn root_declarations_duplicate_scopes_and_extreme_ranges() {
                 name_was_escaped: false,
             },
             ScopeData {
-                name: "same".into(),
+                component: "same".into(),
                 parent: None,
                 kind: "module".into(),
                 definition_name: None,
@@ -1033,7 +1033,7 @@ fn root_declarations_duplicate_scopes_and_extreme_ranges() {
             },
         ],
         vec![VariableData {
-            name: "root".into(),
+            component: "root".into(),
             reader_name: None,
             name_was_escaped: false,
             parent: None,
@@ -1083,7 +1083,9 @@ fn paths_round_trip_and_keep_exact_components() {
     assert_eq!(root.to_verilog().unwrap(), "");
     let path = HierarchyPath::parse(r#"tb.\gen.blk[0] ."имя сигнала"."""#).unwrap();
     assert_eq!(
-        path.components().collect::<Vec<_>>(),
+        path.components()
+            .map(PathComponent::name)
+            .collect::<Vec<_>>(),
         ["tb", "gen.blk[0]", "имя сигнала", ""]
     );
     assert_eq!(path.to_string(), r#"tb."gen.blk[0]"."имя сигнала"."""#);
@@ -1101,6 +1103,49 @@ fn paths_round_trip_and_keep_exact_components() {
 }
 
 #[test]
+fn indexed_components_keep_literal_names_and_numeric_indices_distinct() {
+    let root = HierarchyPath::parse("top").unwrap();
+    let literal = root.join("u_reg[0]");
+    assert_eq!(root.join(std::borrow::Cow::Borrowed("u_reg[0]")), literal);
+    assert_eq!(
+        HierarchyPath::from_components([Box::<str>::from("top"), "u_reg[0]".into()]),
+        literal
+    );
+    let indexed = root.join(PathComponent::indexed("u_reg", 0));
+    assert_ne!(literal, indexed);
+    assert_eq!(
+        std::collections::HashSet::from([&literal, &indexed]).len(),
+        2
+    );
+    assert_eq!(literal.name(), Some("u_reg[0]"));
+    assert_eq!(indexed.name(), Some("u_reg"));
+    assert_eq!(indexed.parent().as_ref(), Some(&root));
+    assert_eq!(literal, HierarchyPath::parse(r#"top."u_reg[0]""#).unwrap());
+    assert_eq!(literal, HierarchyPath::parse(r"top.\u_reg[0] ").unwrap());
+    assert_eq!(indexed, "top.u_reg[0]".parse().unwrap());
+    for component in [
+        PathComponent::indexed("a.b", i64::MIN),
+        PathComponent::indexed("a[0]", i64::MAX),
+        PathComponent::indexed("a", -1),
+        PathComponent::indexed("module", 0),
+    ] {
+        let path = root.join(component);
+        assert_eq!(HierarchyPath::from_components(path.components()), path);
+        assert_eq!(HierarchyPath::parse(&path.to_string()).unwrap(), path);
+        assert_eq!(
+            HierarchyPath::parse(&path.to_verilog().unwrap()).unwrap(),
+            path
+        );
+    }
+    assert_eq!(root.join("module").to_verilog().unwrap(), r"top.\module ");
+    assert_eq!(HierarchyPath::parse("[0]").unwrap().name(), Some("[0]"));
+    assert_eq!(
+        root.join("arr[10][0]"),
+        HierarchyPath::parse("top.arr[10][0]").unwrap()
+    );
+}
+
+#[test]
 fn exact_unicode_paths_do_not_normalize_names() {
     let names = ["é", "e\u{301}"];
     let hierarchy = Hierarchy::new(
@@ -1109,7 +1154,7 @@ fn exact_unicode_paths_do_not_normalize_names() {
             .iter()
             .enumerate()
             .map(|(index, name)| VariableData {
-                name: (*name).into(),
+                component: (*name).into(),
                 reader_name: None,
                 name_was_escaped: false,
                 parent: None,
