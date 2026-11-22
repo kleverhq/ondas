@@ -210,11 +210,15 @@ impl<W: Write> Consumer for Verify<W> {
     fn metadata(&mut self, item: &Item<'_>) {
         match item {
             Item::Scope(s) => {
-                let path = wire_path(&s.path());
+                let path = s.path();
+                assert_eq!(Some(s.name()), path.name());
+                let path = wire_path(&path);
                 self.emit(json!({"kind":"metadata", "object":"scope", "name":path.last(), "path":path, "parent":s.parent().map(|p| wire_path(&p.path())), "native_kind":s.kind()}));
             }
             Item::Variable(v) => {
-                let path = wire_path(&v.path());
+                let path = v.path();
+                assert_eq!(Some(v.name()), path.name());
+                let path = wire_path(&path);
                 self.emit(json!({"kind":"metadata", "object":"variable", "name":path.last(), "path":path, "parent":v.parent().map(|p| wire_path(&p.path())), "native_kind":v.kind(), "width":v.signal().and_then(Signal::width), "encoding":v.signal().map(|s|format!("{:?}",s.encoding())), "range":v.range().map(|r|format!("{:?}",r)), "direction":format!("{:?}",v.direction()), "signedness":v.signedness().map(|s|format!("{:?}",s)), "logic_domain":v.logic_domain().map(|s|format!("{:?}",s)), "has_enum":v.enumeration().is_some()}));
             }
         }

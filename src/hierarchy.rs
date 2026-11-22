@@ -78,20 +78,8 @@ impl PathComponent {
     }
 }
 
-impl From<String> for PathComponent {
-    fn from(name: String) -> Self {
-        Self::new(name)
-    }
-}
-
-impl From<&str> for PathComponent {
-    fn from(name: &str) -> Self {
-        Self::new(name)
-    }
-}
-
-impl From<&String> for PathComponent {
-    fn from(name: &String) -> Self {
+impl<T: Into<String>> From<T> for PathComponent {
+    fn from(name: T) -> Self {
         Self::new(name)
     }
 }

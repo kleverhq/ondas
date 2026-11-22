@@ -57,6 +57,15 @@ impl Job {
         let job = &run["jobs"][index];
         let input = &job["input"];
         let case = &input["case"];
+        let lookup_path = &input["lookup_path"];
+        // Keep the escaped text used by the text-lookup benchmarks.
+        let lookup_text = lookup_path
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|name| format!(r"\{} ", name.as_str().unwrap()))
+            .collect::<Vec<_>>()
+            .join(".");
         let time = |key: &str| Time::from_ticks(input[key].as_u64().unwrap());
         Self {
             backend: input["backend"].as_str().unwrap().into(),
@@ -68,8 +77,8 @@ impl Job {
             history: case["history"].as_str().unwrap().into(),
             api: case["api"].as_str().unwrap().into(),
             paths: paths(&input["paths"]),
-            lookup: path(&input["lookup_path"]),
-            lookup_text: path(&input["lookup_path"]).to_verilog().unwrap(),
+            lookup: path(lookup_path),
+            lookup_text,
             scope: path(&input["scope_path"]),
             lookup_many: paths(&input["lookup_paths"]),
             metadata: paths(&input["metadata_paths"]),

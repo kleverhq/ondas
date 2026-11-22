@@ -288,8 +288,8 @@ impl Reader {
         let mut scopes: Vec<ScopeData> = Vec::new();
         let mut variables = Vec::new();
         let mut seen_variables = HashSet::new();
-        let mut stack = Vec::new();
-        let mut scope_ids: HashMap<(Option<usize>, String, u32), usize> = HashMap::new();
+        let mut stack = Vec::<usize>::new();
+        let mut scope_ids = HashMap::<_, usize>::new();
         let mut ids = Vec::new();
         let mut indices = HashMap::new();
         let mut encodings = Vec::new();
@@ -308,13 +308,21 @@ impl Reader {
                 match d.entry {
                     0 | 3 => {
                         let parent = stack.last().copied();
-                        // Repeated SDK declarations use their original spelling
-                        // as a merge key. Equal logical paths are not identity.
-                        let key = (parent, name.clone(), d.entry);
-                        let (name, name_was_escaped) = logical_name(name, d.verilog_name != 0);
+                        // The same source spelling can denote different
+                        // components under the two language rules.
+                        let verilog_name = d.verilog_name != 0;
+                        let spelling = name.clone();
+                        let (name, name_was_escaped) = logical_name(name, verilog_name);
                         let component = PathComponent::from_reader_name(
                             name,
-                            d.verilog_name != 0 && !name_was_escaped,
+                            verilog_name && !name_was_escaped,
+                        );
+                        let key = (
+                            parent,
+                            spelling,
+                            d.entry,
+                            component.index().is_some(),
+                            name_was_escaped,
                         );
                         let definition_name = string(d.definition)?;
                         let packing = match d.packing {

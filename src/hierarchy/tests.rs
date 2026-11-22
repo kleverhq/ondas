@@ -1106,6 +1106,11 @@ fn paths_round_trip_and_keep_exact_components() {
 fn indexed_components_keep_literal_names_and_numeric_indices_distinct() {
     let root = HierarchyPath::parse("top").unwrap();
     let literal = root.join("u_reg[0]");
+    assert_eq!(root.join(std::borrow::Cow::Borrowed("u_reg[0]")), literal);
+    assert_eq!(
+        HierarchyPath::from_components([Box::<str>::from("top"), "u_reg[0]".into()]),
+        literal
+    );
     let indexed = root.join(PathComponent::indexed("u_reg", 0));
     assert_ne!(literal, indexed);
     assert_eq!(

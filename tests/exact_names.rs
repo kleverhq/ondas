@@ -195,6 +195,87 @@ fn fst_vhdl_scope_keeps_brackets_in_its_name() {
     ));
 }
 
+#[test]
+#[ignore = "requires installed VCD fixtures; run just conformance"]
+fn vcd_vhdl_names_keep_literal_brackets() {
+    let wave = ondas::open_with(fixture("vcd", "vcd0061-manytypes2"), "vcd-native").unwrap();
+    let hierarchy = wave.hierarchy();
+    let scope = hierarchy
+        .scope(r#"comprehensive2_tb."rec_array_signal[0]""#)
+        .unwrap();
+    assert_eq!(scope.kind(), "record");
+    assert_eq!(scope.name(), "rec_array_signal[0]");
+    assert_eq!(scope.path().components().last().unwrap().index(), None);
+    let declaration = variable(hierarchy, &["comprehensive2_tb", "array_signal[0]"]);
+    assert_eq!(declaration.range(), Some(ondas::BitRange::new(7, 0)));
+    assert!(matches!(
+        hierarchy.scope("comprehensive2_tb.rec_array_signal[0]"),
+        Err(ondas::LookupError::NotFound { .. })
+    ));
+    assert!(matches!(
+        hierarchy.variable("comprehensive2_tb.array_signal[0]"),
+        Err(ondas::LookupError::NotFound { .. })
+    ));
+}
+
+#[test]
+fn vcd_mixed_language_scopes_keep_separate_children() {
+    let text = br#"$scope module top $end
+$scope generate g[0] $end
+$var wire 1 ! q[0] $end
+$upscope $end
+$scope vhdl_generate g[0] $end
+$var wire 1 " q[0] $end
+$upscope $end
+$upscope $end
+$enddefinitions $end
+#0
+0!
+1"
+"#;
+    let wave = ondas::open_bytes_with("mixed.vcd", text.as_slice().into(), "vcd-native").unwrap();
+    let hierarchy = wave.hierarchy();
+    let indexed = hierarchy.scope("top.g[0]").unwrap();
+    let literal = hierarchy.scope(r#"top."g[0]""#).unwrap();
+    assert_eq!(indexed.children().count(), 1);
+    assert_eq!(literal.children().count(), 1);
+    assert_ne!(
+        hierarchy.signal("top.g[0].q[0]").unwrap(),
+        hierarchy.signal(r#"top."g[0]"."q[0]""#).unwrap()
+    );
+}
+
+#[test]
+fn vcd_repeated_record_declarations_share_a_scope() {
+    let text = br#"$scope vhdl_architecture top $end
+$scope record r[0] $end
+$var wire 1 ! a[0] $end
+$upscope $end
+$scope vhdl_record r[0] $end
+$var wire 1 " b[0] $end
+$upscope $end
+$upscope $end
+$enddefinitions $end
+#0
+0!
+1"
+"#;
+    let wave = ondas::open_bytes_with("record.vcd", text.as_slice().into(), "vcd-native").unwrap();
+    let hierarchy = wave.hierarchy();
+    let scope = hierarchy.scope(r#"top."r[0]""#).unwrap();
+    assert_eq!(scope.children().count(), 2);
+    variable(hierarchy, &["top", "r[0]", "a[0]"]);
+    variable(hierarchy, &["top", "r[0]", "b[0]"]);
+}
+
+#[test]
+#[ignore = "requires installed FST fixtures; run just conformance"]
+fn fst_separated_bit_suffix_stays_in_the_literal_name() {
+    let wave =
+        ondas::open_with(fixture("fst", "fst0066-scope-with-comment-vcd"), "fst-lib").unwrap();
+    variable(wave.hierarchy(), &["clkdiv2n_tb", "t1", "r_nxt [2]"]);
+}
+
 #[cfg(feature = "wlf-lib")]
 #[test]
 #[ignore = "requires Questa and installed WLF fixtures"]
