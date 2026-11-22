@@ -291,9 +291,12 @@ void hierarchy(SstHandle parent, std::vector<Declaration> &out,
         if (!scope_array.empty()) {
             const char *end = scope.name.data() + scope.name.size();
             const auto index = std::from_chars(scope.name.data(), end, scope.descriptor.array_index);
-            require(index.ec == std::errc{} && index.ptr == end, "invalid SHM scope array index");
-            scope.descriptor.has_array_index = 1;
-            scope.name = scope_array;
+            if (index.ec == std::errc{} && index.ptr == end) {
+                scope.descriptor.has_array_index = 1;
+                scope.name = scope_array;
+            } else {
+                scope.name = scope_array + "[" + scope.name + "]";
+            }
         }
         scope.kind = kind == 6 ? "module" : kind == 3 ? "architecture" : "shm:scope:" + std::to_string(kind);
         SstHandle definition = da_handle(0x14e, child);

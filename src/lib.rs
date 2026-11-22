@@ -263,7 +263,7 @@ values, source bytes or query state, and other inputs retain no index.
   including NUL and padding. Non-ASCII values return [`Error::NonAsciiString`].
   A real declaration with string records is
   classified as string storage before signal handles are returned.
-- Split declarations with one exact name and owning scope form one variable
+- Split declarations with one exact path component and owning scope form one variable
   when every part has a valid bit range, compatible kind, direction, constancy
   and name escaping, and their ranges cover one span without gaps or overlaps.
   The parts need not be adjacent or ordered in the header. Multi-bit ranges

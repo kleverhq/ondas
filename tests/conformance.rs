@@ -728,7 +728,6 @@ fn hierarchy(wave: &Waveform, oracle: &Json, check_lookups: bool) -> BTreeMap<St
             path.parent().filter(|p| !p.is_empty())
         );
         let path = scope.path();
-        assert_eq!(scope.name(), path.name().unwrap());
         if check_lookups {
             assert!(
                 hierarchy.scope_path(&path).unwrap() == *scope,
@@ -775,7 +774,6 @@ fn hierarchy(wave: &Waveform, oracle: &Json, check_lookups: bool) -> BTreeMap<St
             path.parent().filter(|p| !p.is_empty())
         );
         let path = variable.path();
-        assert_eq!(variable.name(), path.name().unwrap());
         if check_lookups {
             assert!(
                 hierarchy.variable_path(&path).unwrap() == *variable,

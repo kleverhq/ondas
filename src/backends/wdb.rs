@@ -767,11 +767,13 @@ fn build_presentation(handle: &Handle) -> Result<Presentation> {
                     string(d.name)?.ok_or_else(|| backend_error("missing native name"))?;
                 let reader_name = string(d.reader_name)?;
                 let native_kind = string(d.kind)?.unwrap_or_default();
+                // Synthesized record containers carry their data kind.
+                let native_scope = d.scope != 0 && native_kind == "scope";
                 let (component, name_was_escaped) = declaration_component(
                     declaration_name_text,
                     d.name_syntax,
                     d.base_len,
-                    d.scope != 0 && native_kind == "scope",
+                    native_scope,
                 )?;
                 let kind = declaration_kind(native_kind, d.encoding);
                 if d.scope != 0 {
@@ -1148,6 +1150,43 @@ fn declaration_component(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wdb_declaration_components_use_scope_and_member_evidence() {
+        let literal = PathComponent::new("u_reg[0]");
+        let indexed = PathComponent::indexed("u_reg", 0);
+        let escaped_sv = r"\u_reg[0] ";
+        let escaped_vhdl = r"\u_reg[0]\";
+        for (raw, syntax, base_len, native_scope, expected, escaped) in [
+            (escaped_sv, 1, 0, true, indexed.clone(), true),
+            (escaped_sv, 1, 0, false, literal.clone(), true),
+            ("u_reg[0]", 1, 0, false, indexed, false),
+            ("u_reg[0]", 0, 0, true, literal.clone(), false),
+            (escaped_vhdl, 2, 0, false, literal, false),
+            (
+                r"\u_reg[0] [-2]",
+                1,
+                escaped_sv.len(),
+                false,
+                PathComponent::indexed("u_reg[0]", -2),
+                true,
+            ),
+            (
+                r"\u_reg[0]\[3]",
+                2,
+                escaped_vhdl.len(),
+                false,
+                PathComponent::indexed("u_reg[0]", 3),
+                false,
+            ),
+        ] {
+            assert_eq!(
+                declaration_component(raw.into(), syntax, base_len, native_scope).unwrap(),
+                (expected, escaped),
+                "{raw}"
+            );
+        }
+    }
 
     unsafe extern "C" {
         fn ondas_wdb_index_count(reader: *mut c_void) -> usize;

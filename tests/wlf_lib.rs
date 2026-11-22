@@ -40,6 +40,7 @@ fn wlf_enum_tables_and_samples() {
                 continue;
             }
             tables += 1;
+            // The published v1 oracle spells these array elements as flat names.
             let path =
                 ondas::HierarchyPath::from_components(
                     variable["path"].as_array().unwrap().iter().map(|p| {

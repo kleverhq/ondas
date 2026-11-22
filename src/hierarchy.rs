@@ -105,8 +105,8 @@ impl From<&PathComponent> for PathComponent {
 /// An owned, immutable sequence of exact hierarchy components.
 ///
 /// Identity includes each component's name and optional index. Paths start at
-/// the hierarchy root. Relative paths and the
-/// navigation components `.` and `..` are not supported.
+/// the hierarchy root. Relative paths and navigation components `.` and `..`
+/// are not supported.
 ///
 /// # Accepted text forms
 ///
@@ -130,9 +130,9 @@ impl From<&PathComponent> for PathComponent {
 /// rules apply inside quotes, not to SystemVerilog escaped identifiers.
 ///
 /// [`Display`](fmt::Display) produces canonical Ondas syntax. Parsing that output
-/// recovers the same components. Empty components and components containing
-/// separators, whitespace, brackets, quotes, backslashes, `U+0000..=U+001F`, or
-/// slice-like spelling are quoted. Inside quotes, canonical output uses `\"`
+/// recovers the same components. Empty names and names containing separators,
+/// whitespace, brackets, quotes, backslashes or `U+0000..=U+001F` are quoted.
+/// The array index follows the name. Inside quotes, canonical output uses `\"`
 /// and `\\`, the short escapes `\b`, `\f`, `\n`, `\r`, and `\t`, and lowercase
 /// `\u00xx` for the remaining `U+0000..=U+001F` characters. All other characters,
 /// including `/` and non-ASCII Unicode, are written literally. Output does not

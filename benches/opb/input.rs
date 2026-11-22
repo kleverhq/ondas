@@ -38,13 +38,11 @@ pub struct Job {
 fn path(v: &Value) -> HierarchyPath {
     HierarchyPath::from_components(v.as_array().unwrap().iter().map(|s| {
         let name = s.as_str().unwrap();
-        // OPB bindings use bare signed index suffixes for array elements.
-        if let Some((base, index)) = name.strip_suffix(']').and_then(|s| s.rsplit_once('['))
-            && !base.is_empty()
-            && !base.contains(['[', ']'])
+        // The OPB model flattens the word generate index in its bindings.
+        if let Some(index) = name.strip_prefix("word[").and_then(|s| s.strip_suffix(']'))
             && let Ok(index) = index.parse::<i64>()
         {
-            return PathComponent::indexed(base, index);
+            return PathComponent::indexed("word", index);
         }
         PathComponent::new(name)
     }))
