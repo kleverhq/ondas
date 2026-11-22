@@ -1,6 +1,6 @@
 //! Directed SDK integration checks; ordinary CI requires no vendor installation.
 #![cfg(feature = "wlf-lib")]
-use ondas::{Error, Format, Sample, Time, TimeRange, Value};
+use ondas::{Error, Format, PathComponent, Sample, Time, TimeRange, Value};
 use std::{ops::ControlFlow, path::PathBuf, sync::Arc};
 fn path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -40,13 +40,16 @@ fn wlf_enum_tables_and_samples() {
                 continue;
             }
             tables += 1;
-            let path = ondas::HierarchyPath::from_components(
-                variable["path"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|p| p.as_str().unwrap()),
-            );
+            let path =
+                ondas::HierarchyPath::from_components(
+                    variable["path"].as_array().unwrap().iter().map(|p| {
+                        match p.as_str().unwrap() {
+                            "array_values[0]" => PathComponent::indexed("array_values", 0),
+                            "array_values[1]" => PathComponent::indexed("array_values", 1),
+                            name => PathComponent::new(name),
+                        }
+                    }),
+                );
             let declaration = hierarchy.variable_path(&path).unwrap();
             let signal = declaration.signal().unwrap();
             let table = declaration.enumeration().unwrap();

@@ -1013,7 +1013,7 @@ mod tests {
                 let (name, range) = declared_name(raw.into(), range, encodings[index]);
                 let (name, name_was_escaped) = logical_name(name, true);
                 VariableData {
-                    component: name.into(),
+                    component: PathComponent::from_reader_name(name, !name_was_escaped),
                     reader_name: Some(raw.into()),
                     name_was_escaped,
                     parent: None,
@@ -1050,7 +1050,16 @@ mod tests {
                 .range(),
             Some(BitRange::new(31, 0))
         );
-        assert!(hierarchy.variable("awaddr[0]").unwrap().name_was_escaped());
+        assert!(
+            hierarchy
+                .variable(r#""awaddr[0]""#)
+                .unwrap()
+                .name_was_escaped()
+        );
+        assert!(matches!(
+            hierarchy.variable("awaddr[0]"),
+            Err(crate::LookupError::NotFound { .. })
+        ));
         assert_eq!(
             hierarchy.variable("maprom[0]").unwrap().reader_name(),
             Some("maprom[0][7:0]")
