@@ -312,16 +312,17 @@ impl Reader {
                 let mut d = Declaration::default();
                 ondas_shm_declaration(handle.0.as_ptr(), index, &mut d);
                 let name = string(d.name)?.unwrap_or_default();
+                let component = if d.has_array_index != 0 {
+                    PathComponent::indexed(name, d.array_index)
+                } else {
+                    PathComponent::new(name)
+                };
                 let kind = string(d.kind)?.unwrap_or_default();
                 match d.entry {
                     0 => {
                         let id = scopes.len();
                         scopes.push(ScopeData {
-                            component: if d.has_array_index != 0 {
-                                PathComponent::indexed(name, d.array_index)
-                            } else {
-                                PathComponent::new(name)
-                            },
+                            component,
                             name_was_escaped: false,
                             parent: stack.last().copied(),
                             kind,
@@ -373,7 +374,7 @@ impl Reader {
                         let enumeration =
                             EnumerationData::for_encoding(string(d.enum_name)?, variants, encoding);
                         variables.push(VariableData {
-                            component: name.into(),
+                            component,
                             reader_name: None,
                             name_was_escaped: false,
                             parent: stack.last().copied(),

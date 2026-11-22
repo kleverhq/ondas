@@ -970,6 +970,7 @@ void import(Reader& reader) {
             Declaration container;
             container.scope = true; container.name = parent.name; container.kind = parent.kind;
             container.type_name = parent.type_name; container.name_syntax = parent.name_syntax;
+            container.base_len = parent.base_len;
             container.parent = parent.parent; container.packing = parent.packing;
             scope = reader.declarations.size();
             append(std::move(container));

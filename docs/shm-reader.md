@@ -10,7 +10,7 @@ SHM supports readers with and without the libsst2.so SONAME. A library without S
 
 The base TRN and numbered components open in numeric order. SST2 selects the latest matching recording and joins its split intervals. It does not concatenate every design in a directory. Components that report No matching design are omitted. Other component errors fail. The exact DSN/TRN set is therefore part of fixture identity. `fixture-conformance.md` explains that identity.
 
-Native names already contain logical components. These can include literal backslashes. Some VCD imports preserve an escape marker. The exposed language metadata cannot distinguish that marker from a native literal. A numeric child name under a native scope array gives one indexed component. Other child names keep the array and child name in their literal bracket spelling. Packed values and unpacked indexed elements also need proven layout.
+Native names already contain logical components. These can include literal backslashes. Some VCD imports preserve an escape marker. The exposed language metadata cannot distinguish that marker from a native literal. A numeric child of a native scope array or a one-dimensional variable array gives one indexed component. Named children and nested variable indices keep their bracket spelling. Packed values and unpacked indexed elements also need proven layout.
 
 Enum codes use their declaration's type for formatting. The adapter does not infer codes from label positions or observed occurrences. Quoted string transport supplies byte escapes, also for embedded zero. Malformed quoting is a transport error. It differs from a valid non-ASCII value that the common string contract rejects.
 

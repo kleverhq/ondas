@@ -165,7 +165,10 @@ impl Reader {
                         } else {
                             let id = scopes.len();
                             scopes.push(ScopeData {
-                                component: PathComponent::from_reader_name(name, !name_was_escaped),
+                                component: PathComponent::from_reader_name(
+                                    name,
+                                    !name_was_escaped && !vhdl_scope(tpe),
+                                ),
                                 name_was_escaped,
                                 parent,
                                 kind,
@@ -445,6 +448,23 @@ fn var_kind(kind: FstVarType) -> String {
         FstVarType::RealParameter => "real-parameter".into(),
         _ => format!("{kind:?}").to_ascii_lowercase(),
     }
+}
+
+fn vhdl_scope(kind: fst_reader::FstScopeType) -> bool {
+    use fst_reader::FstScopeType::*;
+    matches!(
+        kind,
+        VhdlArchitecture
+            | VhdlProcedure
+            | VhdlFunction
+            | VhdlRecord
+            | VhdlProcess
+            | VhdlBlock
+            | VhdlForGenerate
+            | VhdlIfGenerate
+            | VhdlGenerate
+            | VhdlPackage
+    )
 }
 
 fn scope_kind(kind: fst_reader::FstScopeType) -> String {

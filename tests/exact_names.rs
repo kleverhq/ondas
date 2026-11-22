@@ -175,6 +175,26 @@ fn fst_logical_names() {
     }
 }
 
+#[test]
+#[ignore = "requires installed FST fixtures; run just conformance"]
+fn fst_vhdl_scope_keeps_brackets_in_its_name() {
+    let wave = ondas::open_with(fixture("fst", "fst0060-manytypes2"), "fst-lib").unwrap();
+    let hierarchy = wave.hierarchy();
+    let scope = hierarchy
+        .scope(r#"comprehensive2_tb."rec_array_signal[0]""#)
+        .unwrap();
+    assert_eq!(scope.kind(), "record");
+    assert_eq!(scope.name(), "rec_array_signal[0]");
+    assert_eq!(
+        scope.path().components().last(),
+        Some(&ondas::PathComponent::new("rec_array_signal[0]"))
+    );
+    assert!(matches!(
+        hierarchy.scope("comprehensive2_tb.rec_array_signal[0]"),
+        Err(ondas::LookupError::NotFound { .. })
+    ));
+}
+
 #[cfg(feature = "wlf-lib")]
 #[test]
 #[ignore = "requires Questa and installed WLF fixtures"]

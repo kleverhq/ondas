@@ -58,6 +58,15 @@ fn shm_enum_nine_state_keys_match_values() {
 #[test]
 #[ignore = "requires Xcelium and installed fixtures"]
 fn shm_enum_tables_match_whole_values() {
+    let enum_path = |value: &Json| {
+        HierarchyPath::from_components(value.as_array().unwrap().iter().map(|component| {
+            match component.as_str().unwrap() {
+                "array_values[0]" => ondas::PathComponent::indexed("array_values", 0),
+                "array_values[1]" => ondas::PathComponent::indexed("array_values", 1),
+                name => ondas::PathComponent::new(name),
+            }
+        }))
+    };
     let (mut tables, mut variants, mut unlabelled) = (0, 0, 0);
     for id in ["shm0093-enum-core", "shm0094-enum-xz"] {
         let name = format!("shm/{id}");
@@ -71,10 +80,15 @@ fn shm_enum_tables_match_whole_values() {
             let Some(expected) = declaration.get("enumeration").filter(|v| !v.is_null()) else {
                 continue;
             };
-            let variable = hierarchy
-                .variable_path(&path(&declaration["path"]))
-                .unwrap();
+            let path = enum_path(&declaration["path"]);
+            let variable = hierarchy.variable_path(&path).unwrap();
             let signal = variable.signal().unwrap();
+            if path.components().last().unwrap().index().is_some() {
+                assert_eq!(variable.name(), "array_values");
+                assert_eq!(variable.path(), path);
+                assert!(!variable.name_was_escaped());
+                assert_eq!(hierarchy.signal(&path.to_string()).unwrap(), signal);
+            }
             let table = variable.enumeration().unwrap();
             tables += 1;
             variants += table.variants().count();
@@ -121,7 +135,7 @@ fn shm_enum_tables_match_whole_values() {
                 continue;
             };
             let variable = hierarchy
-                .variable_path(&path(&declaration["path"]))
+                .variable_path(&enum_path(&declaration["path"]))
                 .unwrap();
             let table = variable.enumeration().expect("retained enum table");
             let retained = table
