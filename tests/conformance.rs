@@ -1816,20 +1816,28 @@ fn static_composition_queries(
 // The published SystemC windows describe the explicitly selected digital SHM
 // component. The sidecars express all coordinates on the external VWDB grid.
 fn systemc_embedded_shm(fixture: &Fixture) -> Fixture {
-    let path = fixture.path.join("waves_ida.shm");
-    let embedded = ondas::read_metadata(&path).expect("embedded SystemC SHM metadata");
-    let scale = embedded.timescale().expect("embedded SystemC SHM grid");
-    let (unit, unit_fs) = match scale.unit() {
-        TimeUnit::Femtosecond => ("fs", 1),
-        TimeUnit::Picosecond => ("ps", 1000),
-        other => panic!("unexpected embedded SystemC SHM unit {other:?}"),
+    // Embedded grid from the independent recording qualification.
+    let name = fixture.path.parent().unwrap().file_name().unwrap();
+    let (unit, denominator) = match name.to_str().unwrap() {
+        "vwdb0076-systemc-ace-ace-example"
+        | "vwdb0077-systemc-ace-axi-example"
+        | "vwdb0080-systemc-axi-axi-example"
+        | "vwdb0081-systemc-axi4-tlm-pin-tlm-example"
+        | "vwdb0082-systemc-axi4lite-tlm-pin-tlm-example"
+        | "vwdb0084-systemc-lwtr4axi-example"
+        | "vwdb0087-systemc-simple-system" => ("fs", 1),
+        "vwdb0078-systemc-ahb-bfm"
+        | "vwdb0079-systemc-apb-bfm"
+        | "vwdb0083-systemc-cxs-channel"
+        | "vwdb0085-systemc-lwtr4tlm2"
+        | "vwdb0086-systemc-scc-tlm-target-bfs-example" => ("ps", 1000),
+        other => panic!("unqualified embedded SystemC SHM grid for {other}"),
     };
     assert_eq!(
         fixture.oracle["metadata"]["timescale"],
         json!({"factor":1,"unit":"ps"})
     );
     let mut oracle = fixture.oracle.clone();
-    let denominator = u128::from(scale.factor()) * unit_fs;
     let convert = |row: &mut Json, fields: &[&str]| {
         for &key in fields {
             if let Some(value) = row.get_mut(key).filter(|v| !v.is_null()) {
@@ -1843,7 +1851,7 @@ fn systemc_embedded_shm(fixture: &Fixture) -> Fixture {
             }
         }
     };
-    oracle["metadata"]["timescale"] = json!({"factor":scale.factor(),"unit":unit});
+    oracle["metadata"]["timescale"] = json!({"factor":1,"unit":unit});
     convert(&mut oracle["metadata"]["time_span"], &["first", "last"]);
     for signal in oracle["signals"].as_object_mut().unwrap().values_mut() {
         if let Some(samples) = signal.get_mut("samples").and_then(Json::as_array_mut) {
@@ -1862,7 +1870,7 @@ fn systemc_embedded_shm(fixture: &Fixture) -> Fixture {
         }
     }
     Fixture {
-        path,
+        path: fixture.path.join("waves_ida.shm"),
         oracle,
         format: Format::Shm,
         non_ascii: BTreeMap::new(),

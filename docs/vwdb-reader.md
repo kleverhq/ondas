@@ -6,7 +6,7 @@
 
 Open the directory that contains `vwdb_info.json` and the native design components. Older recordings can use a `.shm` suffix. The native layout takes priority over the suffix. A combined recording can contain a separate SHM directory. Some SystemC recordings store digital histories there. Select that directory with the SHM reader to access those histories, using its own time grid.
 
-Ondas rejects native hierarchies that reach its traversal depth limit of 256. Native array containers are visible scopes. The first numeric index of a confirmed array uses a typed component. Its parent is the container's parent. When a container already has an index, its children keep separate native name components. Native names can contain literal brackets or backslashes. A VHDL architecture can have an empty root component. Its logical path starts with `""`. Declaration identity is local to an opened hierarchy. Each declaration has a separate signal handle because the reader has no qualified alias key.
+Ondas returns `UnsupportedFeature` when the native hierarchy reaches its traversal depth limit of 256. Native array containers are visible scopes. The first numeric index of a confirmed array uses a typed component. Its parent is the container's parent. When a container already has an index, its children keep separate native name components. Native names can contain literal brackets or backslashes. A VHDL architecture can have an empty root component. Its logical path starts with `""`. Declaration identity is local to an opened hierarchy. Each declaration has a separate signal handle because the reader has no qualified alias key.
 
 ## Keep the selected runtime separate
 
@@ -20,7 +20,7 @@ The adapter merges cursors by tick and sends copied batches to the common normal
 
 ## An unavailable interval removes the held value
 
-Point and batch samples and query contexts report Missing for persistent values while an explicit gap is active. Event counts reflect recorded occurrences and are zero in a gap. After a gap, the first observed value establishes state with unknown change time. A scan or trace returns `UnsupportedFeature` if a selected persistent result loses known state inside the range. Its records carry values and have no representation for that transition. An earlier successful scan callback remains valid. An interval that starts after the loss can have an absent initial value.
+Point and batch samples and query contexts report Missing for persistent values while an explicit gap is active. Event counts reflect recorded occurrences and are zero in a gap. After a gap, the first observed value establishes state with unknown change time. A scan or trace returns `UnsupportedFeature` if a selected persistent result loses known state inside the range. Its records carry values and have no representation for that transition. An earlier successful scan callback remains valid. An interval that starts after the loss can have an absent initial value. A candidate time scan can visit the ticks that mark the loss and restoration of the value.
 
 The reader exposes recorded bit representations, qualified enum keys, binary64 reals, binary32 reals widened to binary64, and recorded event occurrences. Dynamic SystemVerilog strings can be absent from the inventory. A declared type or width reflects the recording's representation. Source-language types can have a different width. Unsupported value classes retain their declarations.
 

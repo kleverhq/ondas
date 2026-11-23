@@ -1198,6 +1198,34 @@ impl<'w> Selection<'w> {
         self.scan_each_with_point_seed(range, true, "scan", visitor)
     }
 
+    pub(super) fn candidate_times_from_history<B>(
+        &mut self,
+        range: TimeRange,
+        end: Time,
+        mut visitor: impl FnMut(Time) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B>> {
+        if range.is_empty() || range.start() > end || self.signals.is_empty() {
+            return Ok(ControlFlow::Continue(()));
+        }
+        let mut slots = vec![Slot::default(); self.retained_signals.len()];
+        let slot_indices = self.slot_indices.clone();
+        self.read_ticks_from(
+            Some(range.start()),
+            end,
+            &mut slots,
+            true,
+            |time, _, slots| {
+                if slot_indices.iter().any(|&index| {
+                    let slot = &slots[index];
+                    slot.changed || slot.events > 0
+                }) {
+                    return Ok(visitor(time));
+                }
+                Ok(ControlFlow::Continue(()))
+            },
+        )
+    }
+
     pub(super) fn scan_each_with_point_seed<B>(
         &mut self,
         range: TimeRange,

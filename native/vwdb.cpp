@@ -25,6 +25,10 @@ class Unavailable : public std::runtime_error {
     using std::runtime_error::runtime_error;
 };
 
+class Unsupported : public std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
+
 void require(bool condition, const char *message) {
     if (!condition) throw std::runtime_error(message);
 }
@@ -207,7 +211,7 @@ void import_enum(Declaration &decl, Native type) {
 
 void inventory(Native owner, std::vector<Declaration> &decls, size_t parent = root,
                size_t depth = 0) {
-    require(depth < 256, "VWDB hierarchy exceeds 256 levels");
+    if (depth >= 256) throw Unsupported("VWDB hierarchy exceeds 256 levels");
     for (int relation : {Scopes, Variables}) {
         Iterator children(relation, owner);
         for (size_t ordinal = 0; auto child = children.next(); ++ordinal) {
@@ -511,6 +515,9 @@ int report(Operation operation, char *error, size_t cap) {
     catch (const Unavailable &failure) {
         if (cap) std::snprintf(error, cap, "%s", failure.what());
         return -3;
+    } catch (const Unsupported &failure) {
+        if (cap) std::snprintf(error, cap, "%s", failure.what());
+        return -2;
     } catch (const std::exception &failure) {
         if (cap) std::snprintf(error, cap, "%s", failure.what());
     } catch (...) {

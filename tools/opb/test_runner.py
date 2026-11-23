@@ -44,6 +44,38 @@ class RunnerTests(unittest.TestCase):
         for value in ('0', '-1'):
             with self.assertRaises(argparse.ArgumentTypeError):
                 runner.positive(value)
+
+    def test_vwdb_build_checks_reader_after_sdk_link_changes(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            homes = [root / name for name in ('one', 'two')]
+            readers = [home / 'tools/lib/64bit/libvwdbr_analog.so' for home in homes]
+            for reader in readers:
+                reader.parent.mkdir(parents=True)
+                reader.touch()
+            link = root / 'sdk'
+            link.symlink_to(homes[0], target_is_directory=True)
+            config = dict(backend='vwdb-lib', sdk_variable='XCELIUM_HOME', sdk_home=str(link), position=1)
+            executable = Path(__file__)
+            selected = readers[0]
+
+            def process(command, env, log):
+                self.assertEqual(env['XCELIUM_HOME'], str(link.resolve()))
+                if command[0] == 'cargo':
+                    log.write(json.dumps(dict(reason='compiler-artifact', target=dict(name='profile'), executable=str(executable))) + '\n')
+                if command[-1] == 'ready':
+                    log.write(f'OPB VWDB reader: {selected}\n')
+
+            with patch.object(runner, 'process', side_effect=process):
+                runner.build(config, root)
+                self.assertEqual(config['runtime_libraries'], [str(readers[0])])
+                link.unlink()
+                link.symlink_to(homes[1], target_is_directory=True)
+                with self.assertRaisesRegex(ValueError, 'differs from selected reader'):
+                    runner.build(config, root)
+                selected = readers[1]
+                runner.build(config, root)
+                self.assertEqual(config['runtime_libraries'], [str(readers[1])])
         self.assertEqual(runner.positive('64'), 64)
 
     def test_cli_measurement_deadline_default_override_and_disable(self):

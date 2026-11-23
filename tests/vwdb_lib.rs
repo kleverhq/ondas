@@ -90,6 +90,16 @@ fn exact_paths_and_independent_handles() {
     ]);
     assert_eq!(HierarchyPath::parse(&path.to_string()).unwrap(), path);
     assert!(vhdl.hierarchy().signal_path(&path).is_ok());
+    let nested = ondas::open(fixture(
+        "vwdb/vwdb0088-tb-complex-types-complete/waveform.vwdb",
+    ))
+    .unwrap();
+    let path = HierarchyPath::from_components([
+        PathComponent::new("tb_complex_types"),
+        PathComponent::indexed("unpacked_2d1", 1),
+        PathComponent::new("2"),
+    ]);
+    assert!(nested.hierarchy().signal_path(&path).is_ok());
     let wave = gap_wave();
     let h = wave.hierarchy();
     let signals = [
@@ -181,6 +191,20 @@ fn gap_point_batch_query_and_scan() {
             .scan(crosses_gap, |_| ControlFlow::Break("initial"))
             .unwrap(),
         ControlFlow::Break("initial")
+    );
+    let mut candidates = Vec::new();
+    let _ = selection
+        .scan_candidate_times(crosses_gap, |time| {
+            candidates.push(time);
+            ControlFlow::<()>::Continue(())
+        })
+        .unwrap();
+    assert_eq!(candidates, [times[1], times[3]]);
+    assert_eq!(
+        selection
+            .scan_candidate_times(crosses_gap, ControlFlow::Break)
+            .unwrap(),
+        ControlFlow::Break(times[1])
     );
     let mut at_loss = false;
     let _ = selection

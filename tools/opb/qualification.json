@@ -2064,6 +2064,6 @@
       }
     }
   ],
-  "scope_digest_source": "Independent qualified artifact-bound source mappings (native scope prefixes plus declared empty scopes); VWDB and WDB scope digests from independent inventory.",
+  "scope_digest_source": "Independent qualified artifact-bound source mappings (native scope prefixes plus declared empty scopes). VWDB and WDB full and per-position scope digests come from independent native inventories of the bound artifacts.",
   "variable_checksum": "sum modulo 2^256 of big-endian SHA256(compact ASCII JSON literal native variable path), with declaration counts checked separately"
 }

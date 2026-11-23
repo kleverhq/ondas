@@ -26,6 +26,8 @@ fn main() {
     if args.get(1).map(String::as_str) == Some("ready") {
         // Executable/loader readiness only. No waveform API here.
         println!("OPB ready");
+        #[cfg(feature = "vwdb-lib")]
+        println!("OPB VWDB reader: {}", env!("ONDAS_VWDB_READER"));
         return;
     }
     assert!(args.len() == 4, "profile measure|verify run.json job-index");

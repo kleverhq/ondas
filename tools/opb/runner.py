@@ -122,6 +122,8 @@ def environment(config):
         home = Path(config['sdk_home'])
         if not config['sdk_home'] or not home.is_dir():
             raise ValueError(f"{key} must select an available SDK")
+        if config['backend'] == 'vwdb-lib':
+            home = home.resolve(strict=True)
         env[key] = str(home)
         env.pop(sweep_variable(key), None)
         target /= str(config['position'])
@@ -254,6 +256,10 @@ def runtime_libraries(output):
 
 def build(config, directory):
     env = environment(config)
+    vwdb_reader = None
+    if config['backend'] == 'vwdb-lib':
+        reader = Path(env[config['sdk_variable']]) / 'tools/lib/64bit/libvwdbr_analog.so'
+        vwdb_reader = str(reader.resolve(strict=True))
     command = ['cargo', 'bench', '--locked', '--bench', 'profile', '--no-run', '--message-format=json']
     if config['sdk_variable']:
         command += ['--features', config['backend']]
@@ -272,11 +278,15 @@ def build(config, directory):
     with output.open('a') as log:
         process([binary, 'ready'], env, log)
         process(['ldd', binary], env, log)
-    libraries = runtime_libraries(output.read_text())
-    if config['backend'] == 'vwdb-lib':
-        # The shim loads the selected reader on first use, outside ldd's view.
-        reader = Path(config['sdk_home']) / 'tools/lib/64bit/libvwdbr_analog.so'
-        libraries = sorted({*libraries, str(reader.resolve(strict=True))})
+    output_text = output.read_text()
+    libraries = runtime_libraries(output_text)
+    if vwdb_reader is not None:
+        # The shim loads its build-time reader on first use, outside ldd's view.
+        prefix = 'OPB VWDB reader: '
+        selected = [line.removeprefix(prefix) for line in output_text.splitlines() if line.startswith(prefix)]
+        if selected != [vwdb_reader]:
+            raise ValueError(f'profile VWDB reader {selected!r} differs from selected reader {vwdb_reader!r}')
+        libraries = sorted({*libraries, vwdb_reader})
     config.update(binary=binary, binary_sha256=sha256(binary), build_log=output.name,
                   runtime_libraries=libraries)
     # Keep exact local identities in this ignored run, never in the catalog.

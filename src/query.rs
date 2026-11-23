@@ -257,6 +257,7 @@ impl Selection<'_> {
     /// times are allowed. For a slice, these may include changes to other bits of
     /// its base signal. A backend may use an activity index for these candidates,
     /// but callers must not assume that the operation avoids decoding values.
+    /// Explicit loss and restoration of a known state can contribute times.
     ///
     /// Initial states do not contribute timestamps. The union does not identify the
     /// changing signal or event count. Repeated handles and multiple occurrences at
@@ -283,16 +284,7 @@ impl Selection<'_> {
         {
             return Ok(result);
         }
-        let mut last = None;
-        self.scan(range, |record| {
-            if let ScanRef::Change { time, .. } = record
-                && last != Some(time)
-            {
-                last = Some(time);
-                return visitor(time);
-            }
-            ControlFlow::Continue(())
-        })
+        self.candidate_times_from_history(range, end, visitor)
     }
 }
 
@@ -305,7 +297,7 @@ impl Selection<'_> {
 /// An unreliable timestamp is `None`. Changes that return to the entering value
 /// within one tick do not advance this timestamp.
 ///
-/// [`Self::Missing`] means no persistent value is known at or before that time,
+/// [`Self::Missing`] means no persistent value is known at the sampled time,
 /// not a read error or an HDL unknown logic value. Events have no persistent
 /// state and never use `Missing`. [`Self::Event`] counts occurrences at exactly
 /// the requested tick, including zero. The FST reader can expose initialization

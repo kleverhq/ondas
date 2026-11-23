@@ -1,8 +1,8 @@
 //! Private native reader. Native cursors and sessions are mutually exclusive.
 //! The Rust visitor runs unlocked with an owned, bounded batch.
 use crate::{
-    BitRange, BitsRef, Direction, Encoding, Error, Hierarchy, Metadata, PathComponent, Result,
-    Signal, Time, TimeSpan, Timescale, ValueRef,
+    BitRange, BitsRef, Direction, Encoding, Error, Format, Hierarchy, Metadata, PathComponent,
+    Result, Signal, Time, TimeSpan, Timescale, ValueRef,
     hierarchy::{EnumerationData, ScopeData, VariableData},
 };
 use std::{
@@ -116,13 +116,18 @@ fn status(code: c_int, operation: &'static str, buffer: &[c_char; 512]) -> Resul
     let message = unsafe { CStr::from_ptr(buffer.as_ptr()) }
         .to_string_lossy()
         .into_owned();
-    Err(if code == -3 {
-        Error::BackendUnavailable {
+    Err(match code {
+        -3 => Error::BackendUnavailable {
             backend: BACKEND.into(),
             message,
-        }
-    } else {
-        error(operation, message)
+        },
+        -2 => Error::UnsupportedFeature {
+            format: Format::Vwdb,
+            backend: BACKEND.into(),
+            operation,
+            message,
+        },
+        _ => error(operation, message),
     })
 }
 

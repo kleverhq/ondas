@@ -396,7 +396,7 @@ def check_local(case, job_input, rows):
         else:
             raise ValueError('unexpected local hierarchy observation')
     want = dict(kind='hierarchy',scopes=len(expected_scopes),variables=len(expected_variables),scope_sha256=digest(expected_scopes))
-    if 'local_children' in qualified:
+    if backend in ('vwdb-lib', 'wdb-lib'):
         key = 'browse' if case['workload'] == 'browse-deep' else case['parameters']['position']
         local = qualified['local_children'][key]
         want.update(scopes=local['scopes'], scope_sha256=local['scope_sha256'])
