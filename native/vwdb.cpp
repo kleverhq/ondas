@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstring>
 #include <dlfcn.h>
+#include <filesystem>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -44,12 +45,15 @@ F load(void *library, const char *symbol) {
     return fn;
 }
 
-const Abi &abi(const char *path = nullptr) {
+const Abi &abi(const char *path = nullptr, const char **resolved_path = nullptr) {
     // The reader needs zlib symbols but does not list zlib in DT_NEEDED.
     // Reference zlib here so downstream --as-needed keeps the dependency.
-    static const Abi api = [path] {
+    static const auto loaded = [path] {
         if (!zlibVersion()) throw Unavailable("cannot initialize zlib");
-        void *library = dlopen(path, RTLD_NOW | RTLD_LOCAL | RTLD_DEEPBIND);
+        std::error_code error;
+        auto canonical = std::filesystem::canonical(path, error);
+        if (error) throw Unavailable("cannot resolve VWDB reader: " + error.message());
+        void *library = dlopen(canonical.c_str(), RTLD_NOW | RTLD_LOCAL | RTLD_DEEPBIND);
         if (!library) throw Unavailable(dlerror());
         try {
 #define BIND(field, symbol) load<decltype(Abi::field)>(library, symbol)
@@ -71,13 +75,14 @@ const Abi &abi(const char *path = nullptr) {
 #undef BIND
             a.init();
             // Initialization establishes process-lifetime SDK state.
-            return a;
+            return std::pair{a, std::move(canonical)};
         } catch (...) {
             dlclose(library);
             throw;
         }
     }();
-    return api;
+    if (resolved_path) *resolved_path = loaded.second.c_str();
+    return loaded.first;
 }
 
 struct Delete {
@@ -534,9 +539,11 @@ struct ondas_vwdb {
     std::unique_ptr<Stream> stream;
 };
 
-extern "C" int ondas_vwdb_ready(const char *library, char *error, size_t cap) {
+extern "C" int ondas_vwdb_ready(const char *library, const char **resolved_path,
+                                char *error, size_t cap) {
+    *resolved_path = nullptr;
     return report([&] {
-        abi(library);
+        abi(library, resolved_path);
         return 0;
     }, error, cap);
 }

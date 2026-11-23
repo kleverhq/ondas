@@ -68,8 +68,9 @@ let sample = wave.sample(signal, ondas::Time::from_ticks(10))?;
 
 Enable `vwdb-lib` and set `XCELIUM_HOME` to the selected installation when
 building on Linux x86_64 GNU. The build needs a C++17 compiler and zlib development
-files. The reader library must remain at its selected path. Ondas loads it when
-opening VWDB and reports a failed load as [`Error::BackendUnavailable`].
+files. Ondas resolves the selected reader path on first use in each process.
+The process keeps that reader for its lifetime. A new process follows changes
+to a symlink on the selected path. A failed load returns [`Error::BackendUnavailable`].
 The `shm-lib` and `vwdb-lib` features can be enabled together.
 
 Pass the directory containing the native VWDB recording, such as

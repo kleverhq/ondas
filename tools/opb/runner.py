@@ -295,7 +295,7 @@ def build(config, directory):
     output_text = output.read_text()
     libraries = runtime_libraries(output_text)
     if vwdb_reader is not None:
-        # The shim loads its build-time reader on first use, outside ldd's view.
+        # Readiness reports the reader the shim actually loaded, outside ldd's view.
         prefix = 'OPB VWDB reader: '
         selected = [line.removeprefix(prefix) for line in output_text.splitlines() if line.startswith(prefix)]
         if selected != [vwdb_reader]:

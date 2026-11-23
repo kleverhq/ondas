@@ -10,7 +10,7 @@ Ondas returns `UnsupportedFeature` when the native hierarchy reaches its travers
 
 ## Keep the selected runtime separate
 
-The build selects the reader under `XCELIUM_HOME`. The shim loads it at its canonical path on first use. Some native entry points have the same exported names as the SHM reader. A local, deep-bound load and handle-scoped symbol lookup keep each reader's calls on its own ABI. Keep the runtime at its build-time path. The shim needs a compatible system C++ runtime and zlib. A failed runtime load returns `BackendUnavailable`. The reader can write a diagnostic log in the working directory.
+The build stores the absolute reader path under `XCELIUM_HOME`. The shim resolves that path and loads the reader on first use. A new process follows changes to a symlink on the selected path. A process that already loaded the reader keeps it for its lifetime. Select an installation by its canonical path for a fixed deployment. Some native entry points have the same exported names as the SHM reader. A local, deep-bound load and handle-scoped symbol lookup keep each reader's calls on its own ABI. The shim needs a compatible system C++ runtime and zlib. A failed runtime load returns `BackendUnavailable`. The reader can write a diagnostic log in the working directory.
 
 ## Traverse selected histories in time order
 

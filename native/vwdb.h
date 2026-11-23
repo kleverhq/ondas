@@ -29,7 +29,7 @@ typedef struct {
     size_t len;
 } ondas_vwdb_record;
 
-int ondas_vwdb_ready(const char *, char *, size_t);
+int ondas_vwdb_ready(const char *, const char **, char *, size_t);
 int ondas_vwdb_open(const char *, const char *, int, ondas_vwdb **, char *, size_t);
 void ondas_vwdb_close(ondas_vwdb *);
 void ondas_vwdb_metadata(const ondas_vwdb *, ondas_vwdb_meta *);

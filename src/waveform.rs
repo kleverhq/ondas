@@ -372,7 +372,17 @@ fn directory_format(path: &Path) -> Result<Format> {
             Some("trn") => [0xa1, 0x95, 0x11, 0xbf, 0, 0, 0, 4],
             _ => continue,
         };
-        if !component.is_file() {
+        let kind = entry.file_type()?;
+        let regular = if kind.is_symlink() {
+            match component.metadata() {
+                Ok(metadata) => metadata.is_file(),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+                Err(error) => return Err(error.into()),
+            }
+        } else {
+            kind.is_file()
+        };
+        if !regular {
             continue;
         }
         let mut header = [0; 8];
