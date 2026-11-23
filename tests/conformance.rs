@@ -3291,7 +3291,7 @@ fn oracle_comparison_rules() {
 
 #[cfg(all(feature = "shm-lib", feature = "vwdb-lib"))]
 #[test]
-#[ignore = "requires installed VWDB fixtures and both native readers"]
+#[ignore = "requires installed VWDB fixtures and the SHM and VWDB features"]
 fn full_vwdb_pool() {
     full_pool("vwdb");
 }
