@@ -101,7 +101,7 @@ fn shm() {
 
 #[cfg(feature = "vwdb-lib")]
 fn vwdb() {
-    use std::{env, path::PathBuf};
+    use std::{collections::BTreeSet, env, fs, path};
 
     println!("cargo:rerun-if-env-changed=XCELIUM_HOME");
     for source in ["native/vwdb.cpp", "native/vwdb.h", "native/vwdb_abi.h"] {
@@ -112,20 +112,35 @@ fn vwdb() {
         "x86_64-unknown-linux-gnu",
         "vwdb-lib requires x86_64-unknown-linux-gnu"
     );
-    let home = PathBuf::from(env::var_os("XCELIUM_HOME").expect("vwdb-lib requires XCELIUM_HOME"));
-    let library = home
-        .join("tools/lib/64bit/libvwdbr_analog.so")
+    let home = env::var_os("XCELIUM_HOME").expect("vwdb-lib requires XCELIUM_HOME");
+    let selected = path::absolute(home)
+        .expect("vwdb-lib: resolve XCELIUM_HOME")
+        .join("tools/lib/64bit/libvwdbr_analog.so");
+    let library = selected
         .canonicalize()
         .expect("vwdb-lib: missing XCELIUM_HOME/tools/lib/64bit/libvwdbr_analog.so");
-    let path = library
-        .to_str()
-        .expect("vwdb-lib: library path must be UTF-8");
-    assert!(
-        !path.contains(['\n', '\r']),
-        "vwdb-lib: newline in library path"
-    );
-    println!("cargo:rerun-if-changed={path}");
-    println!("cargo:rustc-env=ONDAS_VWDB_READER={path}");
+    // The SDK can be selected through links. Cargo must also see each link
+    // change when both the environment string and the old reader are unchanged.
+    let mut paths = vec![selected];
+    let mut links = BTreeSet::new();
+    while let Some(path) = paths.pop() {
+        for prefix in path.ancestors() {
+            if let Ok(target) = fs::read_link(prefix)
+                && links.insert(prefix.to_path_buf())
+            {
+                paths.push(prefix.parent().expect("SDK link parent").join(target));
+            }
+        }
+    }
+    for path in links.iter().chain(std::iter::once(&library)) {
+        let path = path.to_str().expect("vwdb-lib: SDK path must be UTF-8");
+        assert!(
+            !path.contains(['\n', '\r']),
+            "vwdb-lib: newline in SDK path"
+        );
+        println!("cargo:rerun-if-changed={path}");
+    }
+    println!("cargo:rustc-env=ONDAS_VWDB_READER={}", library.display());
     cc::Build::new()
         .cpp(true)
         .std("c++17")

@@ -98,6 +98,18 @@ class ModelTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'observation'):
             oracle.check(c, i, [row, dict(kind='done')])
 
+    def test_vwdb_signal_count_checks_independent_declarations(self):
+        c = case('OPB-CACHE-014')
+        backend = 'vwdb-lib'
+        job = bindings.inputs(c, backend, '/unused')
+        rows = [dict(kind='signal', path=bindings.native_path(d['path'], backend), width=d['width'])
+                for d in model.inventory(c['fixture'])]
+        summary = dict(kind='signals', count=len(rows), unique=True, same_set=True)
+        self.assertEqual(oracle.check(c, job, [*rows, summary, dict(kind='done')])['signals'], len(rows))
+        summary['count'] -= 1
+        with self.assertRaisesRegex(ValueError, 'one signal handle per recorded declaration'):
+            oracle.check(c, job, [*rows, summary, dict(kind='done')])
+
     def test_grid_and_query_follow_absolute_schedule(self):
         c = case('OPB-SESSION-003')
         i = bindings.inputs(c, 'fst-lib', '/unused')

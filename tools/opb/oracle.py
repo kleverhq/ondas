@@ -504,6 +504,8 @@ def check_signals(case, job_input, rows):
         else:raise ValueError('unexpected signal inventory record')
     if expected or seen!=count or summary is None or set(summary)!={'kind','count','unique','same_set'} or not 0 < summary['count'] <= seen or not summary['unique'] or not summary['same_set']:
         raise ValueError(f'signal inventory differs: {summary}; missing={len(expected)}, declarations={seen}/{count}')
+    if job_input['backend'] == 'vwdb-lib' and summary['count'] != qualified['recorded']:
+        raise ValueError('VWDB requires one signal handle per recorded declaration')
     if job_input['backend']=='wdb-lib' and checksum_hex(total)!=qualified['variable_path_checksum']:
         raise ValueError('signal declaration identity differs')
     return dict(records=seen,signals=summary['count'])

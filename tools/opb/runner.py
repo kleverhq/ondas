@@ -8,6 +8,7 @@ import multiprocessing
 import os
 from pathlib import Path
 import signal
+from stat import S_ISDIR, S_ISREG
 import subprocess
 import sys
 import tempfile
@@ -100,8 +101,21 @@ def input_ready(binding):
         raise ValueError(f"fixture metadata differs from pinned OPB input: {binding['fixture']}")
     path = directory / artifact['file']
     if 'files' in artifact:
-        wanted = {c['file'] for c in artifact['files']}
-        actual = {str(p.relative_to(path)) for p in path.rglob('*') if p.is_file()}
+        if path.is_symlink() or not path.is_dir():
+            raise ValueError('directory artifact must be a real directory')
+        wanted = {Path(c['file']) for c in artifact['files']}
+        directories = {parent for file in wanted for parent in file.parents if parent != Path('.')}
+        actual = set()
+        for item in path.rglob('*'):
+            relative = item.relative_to(path)
+            mode = item.lstat().st_mode
+            if S_ISDIR(mode):
+                if relative not in directories:
+                    raise ValueError(f'extra directory component: {relative}')
+            elif S_ISREG(mode):
+                actual.add(relative)
+            else:
+                raise ValueError(f'non-regular directory component: {relative}')
         if actual != wanted:
             raise ValueError('directory component set differs')
         for component in artifact['files']:

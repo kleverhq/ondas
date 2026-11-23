@@ -10,7 +10,7 @@ struct DString { char *string; int length, space; char storage[200]; };
 static_assert(sizeof(Stamp) == 16 && sizeof(DString) == 216, "VWDB ABI layout");
 
 enum Property {
-    Error = 0x12, EndOptions = 0x10, ErrorMessage = 0x1a, Language = 0x103,
+    Error = 0x12, EndOptions = 0x10, ErrorMessage = 0x1a,
     IsConstant = 0x122, Name = 0x10a, RawValue = 0x10b, ScopeKind = 0x113,
     FirstIndex = 0x11b, Load = 0x12f, Time = 0x136, Unload = 0x13f,
     FormattedValue = 0x15a, RawBits = 0x164, TypeKind = 0x173, NextValue = 0x17f,

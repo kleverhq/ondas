@@ -78,6 +78,30 @@ class RunnerTests(unittest.TestCase):
                 self.assertEqual(config['runtime_libraries'], [str(readers[1])])
         self.assertEqual(runner.positive('64'), 64)
 
+    def test_vwdb_directory_manifest_rejects_extra_directory_and_symlink(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            fixture = root / 'fixtures/vwdb/test'
+            path = fixture / 'waveform.vwdb'
+            component = path / 'dsn_0/design'
+            component.parent.mkdir(parents=True)
+            component.write_bytes(b'design')
+            artifact = dict(file=path.name, files=[dict(file='dsn_0/design', size=6, sha256=runner.sha256(component))])
+            (fixture / 'fixture.json').write_text(json.dumps(dict(artifact=artifact)))
+            binding = dict(fixture='vwdb/test', artifact=artifact)
+            with patch.object(runner, 'ROOT', root):
+                self.assertEqual(runner.input_ready(binding), path)
+                extra = path / 'waves_ida.shm'
+                extra.mkdir()
+                with self.assertRaisesRegex(ValueError, 'extra directory component'):
+                    runner.input_ready(binding)
+                extra.rmdir()
+                external = root / 'design'
+                component.rename(external)
+                component.symlink_to(external)
+                with self.assertRaisesRegex(ValueError, 'non-regular directory component'):
+                    runner.input_ready(binding)
+
     def test_cli_measurement_deadline_default_override_and_disable(self):
         for flags, expected in (([], 600), (['--timeout', '7'], 7), (['--no-timeout'], None)):
             with self.subTest(flags=flags), patch.object(runner, 'run', return_value=0) as run, patch.object(runner.signal, 'signal'):

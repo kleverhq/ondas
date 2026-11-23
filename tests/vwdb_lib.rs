@@ -61,6 +61,25 @@ fn directory_formats_and_pure_vwdb() {
 
 #[test]
 #[ignore = "requires installed VWDB fixtures"]
+fn vhdl_ranges_are_declaration_indices() {
+    let wave = ondas::open(fixture(
+        "vwdb/vwdb0003-fsdb-nine-state-ranges/waveform.vwdb",
+    ))
+    .unwrap();
+    for (name, msb, lsb) in [("ascending", 3, 11), ("descending", 12, 4)] {
+        let variable = wave.hierarchy().variable(&format!(r#""".{name}"#)).unwrap();
+        assert_eq!(variable.range(), Some(ondas::BitRange::new(msb, lsb)));
+    }
+    let wave = ondas::open(fixture("vwdb/vwdb0011-ghw-types/waveform.vwdb")).unwrap();
+    for (name, width) in [("i32", 32), ("i64", 32), ("p32", 64), ("p64", 64)] {
+        let variable = wave.hierarchy().variable(&format!(r#""".{name}"#)).unwrap();
+        assert_eq!(variable.range(), None);
+        assert_eq!(variable.signal().unwrap().width(), Some(width));
+    }
+}
+
+#[test]
+#[ignore = "requires installed VWDB fixtures"]
 fn exact_paths_and_independent_handles() {
     for (slug, cases) in [
         (
@@ -399,6 +418,25 @@ fn coexist_in_both_orders_and_resume() {
             ..
         })
     ));
+    let linked_components = directory.join("linked.vwdb");
+    fs::create_dir(&linked_components).unwrap();
+    for entry in fs::read_dir(renamed_shm).unwrap() {
+        let entry = entry.unwrap();
+        std::os::unix::fs::symlink(entry.path(), linked_components.join(entry.file_name()))
+            .unwrap();
+    }
+    assert_eq!(
+        ondas::open(&linked_components).unwrap().format(),
+        Format::Shm
+    );
+    let named = ondas::open_with(&linked_components, "shm-lib").unwrap();
+    assert_eq!(named.format(), Format::Shm);
+    assert_eq!(
+        ondas::read_metadata(&linked_components)
+            .unwrap()
+            .timescale(),
+        named.metadata().timescale()
+    );
 }
 
 #[test]

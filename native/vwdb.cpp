@@ -172,10 +172,10 @@ struct Declaration {
     std::vector<std::pair<std::string, std::string>> variants;
 };
 
-void import_range(Declaration &decl, Native object, Native type) {
+void import_range(Declaration &decl, Native type) {
     auto &d = decl.descriptor;
     if (decl.type_kind != Vector || abi().get(PackedLayout, type) != 0 ||
-        !(abi().get(HasRange, type) > 0 || abi().get(Language, object) == 7)) return;
+        abi().get(HasRange, type) <= 0) return;
     auto index = checked(abi().handle(IndexType, type));
     if (!index || index.get() == success) return;
     const int width = extent(RawBits, index.get());
@@ -239,7 +239,7 @@ void inventory(Native owner, std::vector<Declaration> &decls, size_t parent = ro
                 if ((kind == Scalar || kind == Enum || kind == Vector || kind == Character) && width > 0) {
                     d.encoding = bits;
                     d.width = static_cast<uint32_t>(width);
-                    import_range(decl, child.get(), type.get());
+                    import_range(decl, type.get());
                 } else if (kind == Real && (decl.raw_bits == 32 || decl.raw_bits == 64)) {
                     d.encoding = real;
                 } else if (kind == Event) {
@@ -533,6 +533,13 @@ struct ondas_vwdb {
     std::vector<Declaration> decls;
     std::unique_ptr<Stream> stream;
 };
+
+extern "C" int ondas_vwdb_ready(const char *library, char *error, size_t cap) {
+    return report([&] {
+        abi(library);
+        return 0;
+    }, error, cap);
+}
 
 extern "C" int ondas_vwdb_open(const char *path, const char *library, int metadata_only,
                                ondas_vwdb **out, char *error, size_t cap) {

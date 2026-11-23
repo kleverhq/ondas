@@ -372,7 +372,7 @@ fn directory_format(path: &Path) -> Result<Format> {
             Some("trn") => [0xa1, 0x95, 0x11, 0xbf, 0, 0, 0, 4],
             _ => continue,
         };
-        if !entry.file_type()?.is_file() {
+        if !component.is_file() {
             continue;
         }
         let mut header = [0; 8];

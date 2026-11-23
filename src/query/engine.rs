@@ -280,11 +280,12 @@ fn complete_tick<B>(
     active_slots: &mut Vec<usize>,
     time: Time,
     visit_from: Option<Time>,
-    visitor: &mut impl FnMut(Time, &[Signal], &[Slot]) -> Result<ControlFlow<B>>,
+    visitor: &mut impl FnMut(Time, &[Signal], &[Slot], bool) -> Result<ControlFlow<B>>,
 ) -> Result<ControlFlow<B>> {
     for computation in computations {
         computation.complete(slots, active_slots);
     }
+    let mut lost_value = false;
     for &index in active_slots.iter() {
         #[cfg(test)]
         streaming_tests::comparison_visit();
@@ -294,12 +295,16 @@ fn complete_tick<B>(
                 .state
                 .as_ref()
                 .is_some_and(|state| state.value.as_ref().same_value(value.as_ref())),
-            Some(Update::Missing) => slot.state.is_some(),
+            Some(Update::Missing) => {
+                let changed = slot.state.is_some();
+                lost_value |= changed;
+                changed
+            }
             None => false,
         };
     }
     if visit_from.is_none_or(|start| time >= start)
-        && let ControlFlow::Break(value) = visitor(time, signals, slots)?
+        && let ControlFlow::Break(value) = visitor(time, signals, slots, lost_value)?
     {
         return Ok(ControlFlow::Break(value));
     }
@@ -418,7 +423,7 @@ impl<'w> Selection<'w> {
         } else {
             None
         };
-        let _ = self.read_ticks_from(start, end, &mut slots, true, |time, signals, slots| {
+        let _ = self.read_ticks_from(start, end, &mut slots, true, |time, signals, slots, _| {
             while next < order.len() && times[order[next]] <= time {
                 let index = order[next];
                 rows[index].1 = observe(signals, slots, (times[index] == time).then_some(time));
@@ -618,7 +623,7 @@ impl<'w> Selection<'w> {
             end,
             &mut slots,
             true,
-            |time, signals, slots| {
+            |time, signals, slots, _| {
                 if time >= range.start()
                     && drivers.iter().any(|&index| {
                         let slot = &slots[slot_indices[index]];
@@ -973,13 +978,28 @@ impl<'w> Selection<'w> {
     ) -> Result<ControlFlow<B>> {
         #[cfg(feature = "vwdb-lib")]
         if matches!(self.waveform.reader, crate::backends::Reader::Vwdb(_)) {
-            let (_, samples) = self.samples_at(&[time])?.pop().expect("one requested time");
-            for sample in &samples {
-                if let ControlFlow::Break(value) = visitor(sample.as_ref()) {
-                    return Ok(ControlFlow::Break(value));
+            let indices = self.slot_indices.clone();
+            let mut slots = vec![Slot::default(); self.retained_signals.len()];
+            let mut observe = |signals: &[Signal], slots: &[Slot], tick| {
+                for (&signal, &index) in signals.iter().zip(&indices) {
+                    visitor(slots[index].sample(signal, tick))?;
                 }
+                ControlFlow::Continue(())
+            };
+            // At the end tick, the visitor can borrow final values and event
+            // counts directly. At a quiet tick, use the committed state.
+            if let ControlFlow::Break(result) = self.read_ticks_from(
+                Some(time),
+                time,
+                &mut slots,
+                false,
+                |tick, signals, slots, _| {
+                    Ok(ControlFlow::Break(observe(signals, slots, Some(tick))))
+                },
+            )? {
+                return Ok(result);
             }
-            return Ok(ControlFlow::Continue(()));
+            return Ok(observe(&self.signals, &slots, None));
         }
         #[cfg(feature = "shm-lib")]
         if let Some(result) = self.shm_replay_sample_visit(time, &mut visitor) {
@@ -1214,7 +1234,7 @@ impl<'w> Selection<'w> {
             end,
             &mut slots,
             true,
-            |time, _, slots| {
+            |time, _, slots, _| {
                 if slot_indices.iter().any(|&index| {
                     let slot = &slots[index];
                     slot.changed || slot.events > 0
@@ -1257,7 +1277,7 @@ impl<'w> Selection<'w> {
             end,
             &mut slots,
             seed_point,
-            |time, signals, slots| {
+            |time, signals, slots, lost_value| {
                 if !emitted_initials {
                     emitted_initials = true;
                     if let ControlFlow::Break(value) =
@@ -1266,10 +1286,12 @@ impl<'w> Selection<'w> {
                         return Ok(ControlFlow::Break(value));
                     }
                 }
-                if slot_indices.iter().any(|&index| {
-                    let slot = &slots[index];
-                    slot.changed && matches!(slot.pending, Some(Update::Missing))
-                }) {
+                if lost_value
+                    && slot_indices.iter().any(|&index| {
+                        let slot = &slots[index];
+                        slot.changed && matches!(slot.pending, Some(Update::Missing))
+                    })
+                {
                     return Err(Error::UnsupportedFeature {
                         format,
                         backend: backend.clone(),
@@ -1305,9 +1327,11 @@ impl<'w> Selection<'w> {
         &mut self,
         end: Time,
         slots: &mut [Slot],
-        visitor: impl FnMut(Time, &[Signal], &[Slot]) -> Result<ControlFlow<B>>,
+        mut visitor: impl FnMut(Time, &[Signal], &[Slot]) -> Result<ControlFlow<B>>,
     ) -> Result<ControlFlow<B>> {
-        self.read_ticks_from(None, end, slots, true, visitor)
+        self.read_ticks_from(None, end, slots, true, |time, signals, slots, _| {
+            visitor(time, signals, slots)
+        })
     }
 
     fn read_ticks_from<B>(
@@ -1316,7 +1340,7 @@ impl<'w> Selection<'w> {
         end: Time,
         slots: &mut [Slot],
         seed_point: bool,
-        mut visitor: impl FnMut(Time, &[Signal], &[Slot]) -> Result<ControlFlow<B>>,
+        mut visitor: impl FnMut(Time, &[Signal], &[Slot], bool) -> Result<ControlFlow<B>>,
     ) -> Result<ControlFlow<B>> {
         let eligible =
             |replay: &Replay| start.is_some_and(|start| replay.start <= start) && replay.end <= end;
@@ -3975,7 +3999,8 @@ mod tests {
             &mut vec![0],
             Time::from_ticks(1),
             None,
-            &mut |_, _, slots| {
+            &mut |_, _, slots, lost_value| {
+                assert!(!lost_value);
                 assert!(matches!(
                     slots[0].state.as_ref().unwrap().value.as_ref(),
                     ValueRef::String("old")

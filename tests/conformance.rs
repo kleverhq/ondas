@@ -1911,6 +1911,15 @@ fn pool_queries(fixture: &Fixture, bytes: bool, context: &str) -> bool {
         return true;
     };
     metadata(&wave, &fixture.oracle["metadata"], bytes, fixture);
+    if fixture.format == Format::Vwdb
+        && fixture.path.parent().and_then(Path::file_name) == Some("vwdb0000-enum-core".as_ref())
+    {
+        let hierarchy = wave.hierarchy();
+        let parent = hierarchy.scope("top").unwrap();
+        for path in ["top.array_values[0]", "top.array_values[1]"] {
+            assert!(hierarchy.variable(path).unwrap().parent().as_ref() == Some(&parent));
+        }
+    }
     let signals = hierarchy(&wave, &fixture.oracle, false);
     string_rejections(&mut wave, fixture, &signals);
     let mut samples = BTreeMap::<_, Vec<_>>::new();
