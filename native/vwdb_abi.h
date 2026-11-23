@@ -19,10 +19,14 @@ enum Property {
     EnumElements = 0x1fe, FormatOptions = 0x204, History = 0x22e,
     Scopes = 0x2ae, Variables = 0x2be, AllowSummary = 0x302, Width = 0x3d4,
 };
+enum ScopeType { ArchitectureScope = 3, ModuleScope = 6, ArrayScope = 10 };
 enum TypeKind { Event = 1, Scalar, Enum, Vector, Real, Character = 7, Array, Record };
 
 constexpr int binary_format = 1;
 constexpr int full_width = 0x8000;
+constexpr int tcl_dont_wait = 1 << 1;
+constexpr int tcl_timer_events = 1 << 4;
+constexpr int tcl_idle_events = 1 << 5;
 
 // Keep every private entry point local to the selected DSO.
 struct Abi {
@@ -45,6 +49,7 @@ struct Abi {
     void (*drop)(Native);
     void (*string_init)(DString *);
     void (*string_free)(DString *);
+    int (*process_event)(int);
 };
 }
 #endif

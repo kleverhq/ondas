@@ -357,6 +357,10 @@ fn directory_format(path: &Path) -> Result<Format> {
     if path.join("vwdb_info.json").is_file() && path.join("dsn_0").is_dir() {
         return Ok(Format::Vwdb);
     }
+    let extension = path.extension().unwrap_or_default();
+    if extension.eq_ignore_ascii_case("shm") {
+        return Ok(Format::Shm);
+    }
     // Confirmed SST2 DSN/TRN headers, independent of the directory suffix.
     let mut designs = 0;
     let mut transitions = 0;
@@ -383,10 +387,7 @@ fn directory_format(path: &Path) -> Result<Format> {
     if designs == 1 && transitions > 0 {
         return Ok(Format::Shm);
     }
-    let extension = path.extension().unwrap_or_default();
-    if extension.eq_ignore_ascii_case("shm") {
-        Ok(Format::Shm)
-    } else if extension.eq_ignore_ascii_case("vwdb") {
+    if extension.eq_ignore_ascii_case("vwdb") {
         Ok(Format::Vwdb)
     } else {
         Err(Error::UnknownFormat)

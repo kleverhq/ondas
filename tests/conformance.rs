@@ -3289,10 +3289,13 @@ fn oracle_comparison_rules() {
     );
 }
 
-#[cfg(all(feature = "shm-lib", feature = "vwdb-lib"))]
+#[cfg(feature = "vwdb-lib")]
 #[test]
 #[ignore = "requires installed VWDB fixtures and the SHM and VWDB features"]
 fn full_vwdb_pool() {
+    #[cfg(not(feature = "shm-lib"))]
+    panic!("SystemC digital histories require shm-lib. Run just conformance-vwdb.");
+    #[cfg(feature = "shm-lib")]
     full_pool("vwdb");
 }
 

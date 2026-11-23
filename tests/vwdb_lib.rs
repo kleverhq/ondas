@@ -171,7 +171,7 @@ fn gap_point_batch_query_and_scan() {
         wave.trace(glitch, crosses_gap),
         Err(Error::UnsupportedFeature {
             format: Format::Vwdb,
-            operation: "scan",
+            operation: "trace",
             ..
         })
     ));
@@ -375,4 +375,41 @@ fn coexist_in_both_orders_and_resume() {
             ..
         })
     ));
+}
+
+#[test]
+#[ignore = "requires installed VWDB fixtures"]
+fn waveform_owners_move_across_threads() {
+    let mut short = gap_wave();
+    let mut long = ondas::open(fixture("vwdb/vwdb0013-history-long/waveform.vwdb")).unwrap();
+    let a = short.hierarchy().signal("top.glitch").unwrap();
+    let b = long.hierarchy().signal("top.phase_0").unwrap();
+    let ready = std::sync::Barrier::new(2);
+    std::thread::scope(|scope| {
+        let ready = &ready;
+        let gap_reader = scope.spawn(move || {
+            ready.wait();
+            for _ in 0..8 {
+                assert!(matches!(
+                    short.sample(a, Time::from_ticks(2)).unwrap().as_ref(),
+                    SampleRef::Missing { .. }
+                ));
+                assert_eq!(
+                    bits(short.sample(a, Time::from_ticks(4)).unwrap().as_ref()).as_deref(),
+                    Some("0")
+                );
+            }
+        });
+        let history_reader = scope.spawn(move || {
+            ready.wait();
+            for tick in 128..144 {
+                assert_eq!(
+                    bits(long.sample(b, Time::from_ticks(tick)).unwrap().as_ref()).unwrap(),
+                    (tick % 2).to_string(),
+                );
+            }
+        });
+        gap_reader.join().unwrap();
+        history_reader.join().unwrap();
+    });
 }

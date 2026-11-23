@@ -14,9 +14,9 @@ typedef struct {
 } ondas_vwdb_meta;
 typedef struct {
     size_t parent;
-    const char *name;
-    int32_t scope_kind, type_kind, encoding;
-    uint32_t width, has_range, is_constant;
+    const char *name, *kind;
+    int32_t native_kind, encoding;
+    uint32_t width, has_range, is_constant, indexed_children;
     int64_t msb, lsb;
     size_t variant_count;
 } ondas_vwdb_decl;

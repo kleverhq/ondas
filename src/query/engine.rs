@@ -723,7 +723,7 @@ impl<'w> Selection<'w> {
             slot.state = slot.pending.take().map(|update| State {
                 value: match update {
                     Update::Value(value) => value,
-                    Update::Missing => unreachable!("SHM point does not encode missing updates"),
+                    Update::Missing => unreachable!("point lookup does not encode missing updates"),
                 },
                 changed_at: source.changed_at,
             });
@@ -1016,6 +1016,7 @@ impl<'w> Selection<'w> {
             let _ = self.scan_each_with_point_seed(
                 TimeRange::point(time),
                 seed_point,
+                "sample",
                 |index, record| {
                     match record {
                         ScanRef::Initial {
@@ -1194,13 +1195,14 @@ impl<'w> Selection<'w> {
         range: TimeRange,
         visitor: impl for<'v> FnMut(usize, ScanRef<'v>) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>> {
-        self.scan_each_with_point_seed(range, true, visitor)
+        self.scan_each_with_point_seed(range, true, "scan", visitor)
     }
 
-    fn scan_each_with_point_seed<B>(
+    pub(super) fn scan_each_with_point_seed<B>(
         &mut self,
         range: TimeRange,
         seed_point: bool,
+        operation: &'static str,
         mut visitor: impl for<'v> FnMut(usize, ScanRef<'v>) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>> {
         let end = range
@@ -1243,7 +1245,7 @@ impl<'w> Selection<'w> {
                     return Err(Error::UnsupportedFeature {
                         format,
                         backend: backend.clone(),
-                        operation: "scan",
+                        operation,
                         message: format!(
                             "selected value becomes unavailable at tick {}",
                             time.ticks()

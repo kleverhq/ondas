@@ -62,6 +62,7 @@ const Abi &abi(const char *path = nullptr) {
                 BIND(handle, "da_handle"), BIND(configure, "da_handle_pl"),
                 BIND(iterate, "da_iterate"), BIND(scan, "da_scan"), BIND(drop, "da_delete"),
                 BIND(string_init, "Tcl_DStringInit"), BIND(string_free, "Tcl_DStringFree"),
+                BIND(process_event, "Tcl_DoOneEvent"),
             };
 #undef BIND
             a.init();
@@ -107,19 +108,26 @@ public:
     }
 };
 
+void close_database(Native database) {
+    abi().close(database);
+    // The SDK defers handle reclamation to its Tcl scheduler. Run its ready
+    // cleanup events so later sessions can reuse the released handle slots.
+    while (abi().process_event(tcl_dont_wait | tcl_timer_events | tcl_idle_events)) {}
+}
+
 class Session {
     Native database = nullptr;
 public:
     explicit Session(const std::string &path) {
         const int status = abi().open(path.c_str(), &database, nullptr, nullptr);
         if (status != 0 || !database) {
-            if (database) abi().close(database);
+            if (database) close_database(database);
             throw std::runtime_error("cannot open VWDB (SDK status " + std::to_string(status) + ")");
         }
     }
     Session(const Session &) = delete;
     Session &operator=(const Session &) = delete;
-    ~Session() { abi().close(database); }
+    ~Session() { close_database(database); }
     Native get() const { return database; }
 };
 
@@ -154,7 +162,7 @@ Handle object_type(Native object) {
 
 struct Declaration {
     ondas_vwdb_decl descriptor{};
-    int relation, raw_bits = -1;
+    int relation, type_kind = -1, raw_bits = -1;
     size_t ordinal;
     std::string name;
     std::vector<std::pair<std::string, std::string>> variants;
@@ -162,7 +170,7 @@ struct Declaration {
 
 void import_range(Declaration &decl, Native object, Native type) {
     auto &d = decl.descriptor;
-    if (d.type_kind != Vector || abi().get(PackedLayout, type) != 0 ||
+    if (decl.type_kind != Vector || abi().get(PackedLayout, type) != 0 ||
         !(abi().get(HasRange, type) > 0 || abi().get(Language, object) == 7)) return;
     auto index = checked(abi().handle(IndexType, type));
     if (!index || index.get() == success) return;
@@ -210,14 +218,20 @@ void inventory(Native owner, std::vector<Declaration> &decls, size_t parent = ro
             decl.name = name(child.get());
             auto &d = decl.descriptor;
             d.parent = parent;
-            d.type_kind = type_kind(type.get());
-            const bool scope = relation == Scopes || d.type_kind == Array || d.type_kind == Record;
-            d.scope_kind = scope ? abi().get(ScopeKind, child.get()) : -1;
+            decl.type_kind = type_kind(type.get());
+            const bool scope = relation == Scopes || decl.type_kind == Array || decl.type_kind == Record;
+            d.native_kind = scope ? abi().get(ScopeKind, child.get()) : decl.type_kind;
             d.encoding = scope ? -1 : 0;
-            if (!scope && type) {
+            if (scope) {
+                d.indexed_children = d.native_kind == ArrayScope || decl.type_kind == Array;
+                if (d.indexed_children) d.kind = "array";
+                else if (decl.type_kind == Record) d.kind = "record";
+                else if (d.native_kind == ArchitectureScope) d.kind = "architecture";
+                else if (d.native_kind == ModuleScope) d.kind = "module";
+            } else if (type) {
                 decl.raw_bits = extent(RawBits, type.get());
                 const int width = extent(Width, type.get());
-                const int kind = d.type_kind;
+                const int kind = decl.type_kind;
                 if ((kind == Scalar || kind == Enum || kind == Vector || kind == Character) && width > 0) {
                     d.encoding = bits;
                     d.width = static_cast<uint32_t>(width);
@@ -437,7 +451,7 @@ struct Stream {
                 const auto &decl = decls[history.id];
                 auto signal = resolved.at(history.id).get();
                 auto type = object_type(signal);
-                require(type_kind(type.get()) == decl.descriptor.type_kind && type &&
+                require(type_kind(type.get()) == decl.type_kind && type &&
                         extent(RawBits, type.get()) == decl.raw_bits &&
                         (decl.descriptor.encoding != bits ||
                          extent(Width, type.get()) == static_cast<int>(decl.descriptor.width)),

@@ -35,12 +35,13 @@ struct Meta {
 struct Declaration {
     parent: usize,
     name: *const c_char,
-    scope_kind: i32,
-    type_kind: i32,
+    kind: *const c_char,
+    native_kind: i32,
     encoding: i32,
     width: u32,
     has_range: u32,
     is_constant: u32,
+    indexed_children: u32,
     msb: i64,
     lsb: i64,
     variant_count: usize,
@@ -258,14 +259,12 @@ impl Reader {
                 if decl.encoding == -1 {
                     parents.push(Some(ImportedScope {
                         id: scopes.len(),
-                        indexed_children: decl.scope_kind == 10 || decl.type_kind == 8,
+                        indexed_children: decl.indexed_children != 0,
                     }));
-                    let kind = match (decl.scope_kind, decl.type_kind) {
-                        (10, _) | (_, 8) => "array".into(),
-                        (_, 9) => "record".into(),
-                        (3, _) => "architecture".into(),
-                        (6, _) => "module".into(),
-                        (kind, _) => format!("vwdb:scope:{kind}"),
+                    let kind = if decl.kind.is_null() {
+                        format!("vwdb:scope:{}", decl.native_kind)
+                    } else {
+                        text(decl.kind)?
                     };
                     scopes.push(ScopeData {
                         component,
@@ -301,7 +300,7 @@ impl Reader {
                     reader_name: None,
                     name_was_escaped: false,
                     parent,
-                    kind: format!("vwdb:decl:{}", decl.type_kind),
+                    kind: format!("vwdb:decl:{}", decl.native_kind),
                     direction: Direction::Unknown,
                     range: (decl.has_range != 0).then(|| BitRange::new(decl.msb, decl.lsb)),
                     is_constant: decl.is_constant != 0,

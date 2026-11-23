@@ -1039,7 +1039,21 @@
       "recorded": 1476,
       "scope_sha256": "150c9d6c01d5a780efbb89cbd7619b8136713be8f78496899f3d14a6afbc6539",
       "unrecorded": 0,
-      "empty_extra_scopes": []
+      "empty_extra_scopes": [],
+      "local_children": {
+        "shallow": {
+          "scopes": 1,
+          "scope_sha256": "e2c278ffd6fe169b24ed82c3af967923bf14c6a21e88f70f08308fea0fd101b1"
+        },
+        "deep": {
+          "scopes": 1,
+          "scope_sha256": "af4448020bf39ba808e8b8f7177cd46c4fce6c9689da941f4e7295f6aae62005"
+        },
+        "browse": {
+          "scopes": 28,
+          "scope_sha256": "0eaba633fefb5996ce49429e1e350343cc9a98516a0bb893086fb84d8d79459a"
+        }
+      }
     },
     {
       "format": "vwdb",
@@ -1277,7 +1291,21 @@
       "recorded": 29216,
       "scope_sha256": "a3a9477237c81bc74345da04d08b050a1c08a9124408e8357e11afe51e84b7a5",
       "unrecorded": 0,
-      "empty_extra_scopes": []
+      "empty_extra_scopes": [],
+      "local_children": {
+        "shallow": {
+          "scopes": 1,
+          "scope_sha256": "e2c278ffd6fe169b24ed82c3af967923bf14c6a21e88f70f08308fea0fd101b1"
+        },
+        "deep": {
+          "scopes": 1,
+          "scope_sha256": "ec9114fa2f32c7ecec1d9f6a87d7fce665249ca03fa1b58d085381c2b69c8a84"
+        },
+        "browse": {
+          "scopes": 34,
+          "scope_sha256": "9771b4b2f35b37769d9b3ec8ba1a52cfc3bcfe38a80634514fca910c3f6d5c8e"
+        }
+      }
     },
     {
       "format": "vwdb",
@@ -1515,7 +1543,21 @@
       "recorded": 86576,
       "scope_sha256": "1f03a3598cf6dd0f03e94e6e13544b69a7617b514891e31b50d925849072e0f7",
       "unrecorded": 0,
-      "empty_extra_scopes": []
+      "empty_extra_scopes": [],
+      "local_children": {
+        "shallow": {
+          "scopes": 1,
+          "scope_sha256": "e2c278ffd6fe169b24ed82c3af967923bf14c6a21e88f70f08308fea0fd101b1"
+        },
+        "deep": {
+          "scopes": 1,
+          "scope_sha256": "f2f557e0fe1c0c94c69e50e72ca3f861bc1f303484863d2e755929d76cfc71ad"
+        },
+        "browse": {
+          "scopes": 58,
+          "scope_sha256": "6cd9ec62713a5ab9ddbb318f250eb9f7aefec657a6a041a63f449090c20eeb78"
+        }
+      }
     },
     {
       "format": "vwdb",
@@ -1753,7 +1795,21 @@
       "recorded": 94751,
       "scope_sha256": "8da1ffe846cc3c08163f48e49f6ba1e120d76f7124b04961d9fd17be63ce7459",
       "unrecorded": 0,
-      "empty_extra_scopes": []
+      "empty_extra_scopes": [],
+      "local_children": {
+        "shallow": {
+          "scopes": 1,
+          "scope_sha256": "e2c278ffd6fe169b24ed82c3af967923bf14c6a21e88f70f08308fea0fd101b1"
+        },
+        "deep": {
+          "scopes": 1,
+          "scope_sha256": "ec9114fa2f32c7ecec1d9f6a87d7fce665249ca03fa1b58d085381c2b69c8a84"
+        },
+        "browse": {
+          "scopes": 35,
+          "scope_sha256": "ca9d1e615f66c2c6d343df45a822689c626d6fa515080fcf07ddbf192dceb192"
+        }
+      }
     },
     {
       "format": "vwdb",
@@ -1991,7 +2047,21 @@
       "recorded": 29216,
       "scope_sha256": "a3a9477237c81bc74345da04d08b050a1c08a9124408e8357e11afe51e84b7a5",
       "unrecorded": 0,
-      "empty_extra_scopes": []
+      "empty_extra_scopes": [],
+      "local_children": {
+        "shallow": {
+          "scopes": 1,
+          "scope_sha256": "e2c278ffd6fe169b24ed82c3af967923bf14c6a21e88f70f08308fea0fd101b1"
+        },
+        "deep": {
+          "scopes": 1,
+          "scope_sha256": "ec9114fa2f32c7ecec1d9f6a87d7fce665249ca03fa1b58d085381c2b69c8a84"
+        },
+        "browse": {
+          "scopes": 34,
+          "scope_sha256": "9771b4b2f35b37769d9b3ec8ba1a52cfc3bcfe38a80634514fca910c3f6d5c8e"
+        }
+      }
     }
   ],
   "scope_digest_source": "Independent qualified artifact-bound source mappings (native scope prefixes plus declared empty scopes); VWDB and WDB scope digests from independent inventory.",

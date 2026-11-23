@@ -156,7 +156,7 @@ impl Selection<'_> {
                 changes: Vec::new(),
             })
             .collect::<Vec<_>>();
-        let _ = self.scan_each(range, |index, record| {
+        let _ = self.scan_each_with_point_seed(range, true, "trace", |index, record| {
             match record {
                 ScanRef::Initial {
                     value, changed_at, ..

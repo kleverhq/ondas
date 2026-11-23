@@ -19,7 +19,7 @@ handles, native callbacks and format-local indices stay private.
 | GHW | `ghw-native` | Files and shared in-memory bytes | Included; reads GHW directly without conversion |
 | FSDB | `fsdb-lib` | Files only | Optional Cargo feature; requires a local FSDB Reader SDK |
 | SHM | `shm-lib` | Database directories only | Optional Cargo feature; requires a compatible Xcelium reader (2021+) |
-| VWDB | `vwdb-lib` | Database directories only | Optional Cargo feature; requires a compatible Xcelium reader |
+| VWDB | `vwdb-lib` | Database directories only | Optional Cargo feature with a compatible Xcelium reader |
 | WLF | `wlf-lib` | Files only | Optional Cargo feature; requires a local Questa SDK |
 | WDB | `wdb-lib` | Files only | Optional Cargo feature; requires a compatible Vivado reader |
 
