@@ -169,8 +169,10 @@ pub(super) fn parse(text: &str, allow_projection: bool) -> Result<SignalSelector
 
 pub(super) fn simple_name(name: &str) -> bool {
     let mut bytes = name.bytes();
-    bytes.next().is_some_and(|byte| byte.is_ascii_alphabetic())
-        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    bytes
+        .next()
+        .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$'))
 }
 
 pub(super) fn to_verilog(components: &[PathComponent]) -> Result<String, PathFormatError> {

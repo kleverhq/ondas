@@ -7,7 +7,7 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 ### Breaking changes
 
 - A trailing `[msb:lsb]` outside a quoted or escaped name always selects a bit slice in `signal` and `resolve_signal`. Exact path APIs reject the suffix. Quote or escape a literal name such as `data[3:0]`.
-- Logical and SystemVerilog paths write simple names directly. A simple name starts with an ASCII letter and continues with ASCII letters, digits or underscores. Logical output quotes other names. SystemVerilog output escapes other representable names and preserves explicit escapes supplied by readers or the path parser.
+- Logical and SystemVerilog paths write simple names directly. A simple name starts with an ASCII letter or an underscore. The remaining characters are ASCII letters, digits, underscores or dollar signs. Logical output quotes other names. SystemVerilog output escapes other representable names and preserves explicit escapes supplied by readers or the path parser.
 
 ### Added
 

@@ -268,15 +268,17 @@ $var wire 4 " \data[3:0] $end
 $var wire 4 # \absent[3:0] $end
 $var wire 8 $ mem[-1] $end
 $var wire 8 % \mem[-1] $end
+$var wire 1 ( _done $end
+$var wire 1 ) sig$0 $end
 $scope module logic[-1] $end
 $var wire 1 & q $end
 $upscope $end
 $scope module \logic $end
-$var wire 1 ' \q $end
+$var wire 1 ' \sig$0 $end
 $upscope $end
 $upscope $end
 $enddefinitions $end
-#0 b10100101 ! b1111 " b1110 # b1001 $ b0110 % 0& 1'
+#0 b10100101 ! b1111 " b1110 # b1001 $ b0110 % 0& 1' 0( 1)
 "##;
     let mut wave = ondas::open_bytes("selectors.vcd", source.as_slice().into()).unwrap();
     let h = wave.hierarchy().clone();
@@ -312,10 +314,12 @@ $enddefinitions $end
             "top.logic[-1].q",
             "0",
         ),
+        (&["_done"][..], "top._done", "top._done", "0"),
+        (&["sig$0"][..], "top.sig$0", "top.sig$0", "1"),
         (
-            &["logic.q[0:0]"][..],
-            "top.logic.q[0:0]",
-            r"top.\logic .\q [0:0]",
+            &["logic.sig$0[0:0]"][..],
+            "top.logic.sig$0[0:0]",
+            r"top.\logic .\sig$0 [0:0]",
             "1",
         ),
     ] {
@@ -355,8 +359,9 @@ $enddefinitions $end
         h.scope("top.data[3:0]"),
         Err(LookupError::InvalidPath(_))
     ));
-    let declaration = h.variable("top.logic.q").unwrap();
-    let sv = r"top.\logic .\q ";
+    let declaration = h.variable("top.logic.sig$0").unwrap();
+    assert!(declaration.name_was_escaped());
+    let sv = r"top.\logic .\sig$0 ";
     assert_eq!(declaration.path().format(PathStyle::Sv).unwrap(), sv);
     assert!(declaration == h.variable(sv).unwrap());
     assert_eq!(

@@ -1201,12 +1201,13 @@ fn path_styles_round_trip_contract_examples() {
 #[test]
 fn path_styles_handle_sv_escape_boundaries_and_errors() {
     let top = HierarchyPath::parse("top").unwrap();
-    for name in ["logic", "wire", "module"] {
-        let keyword = top.join(name);
-        assert_eq!(
-            keyword.format(PathStyle::Sv).unwrap(),
-            format!("top.{name}")
-        );
+    for name in ["logic", "wire", "module", "_done", "sig$0"] {
+        let path = top.join(name);
+        let bare = format!("top.{name}");
+        assert_eq!(path.to_string(), bare);
+        assert_eq!(path.format(PathStyle::Logical).unwrap(), bare);
+        assert_eq!(path.format(PathStyle::Sv).unwrap(), bare);
+        assert_eq!(HierarchyPath::parse(&bare).unwrap(), path);
     }
 
     let unterminated = r"top.\u_reg[0].q";
@@ -1215,7 +1216,7 @@ fn path_styles_handle_sv_escape_boundaries_and_errors() {
         unterminated.len()
     );
 
-    for name in ["a,b", "bus-0", "sig$0", "1q", "_q", "a b", "été"] {
+    for name in ["a,b", "bus-0", "1q", "$q", "a b", "été"] {
         let path = top.join(PathComponent::indexed(name, -1));
         let logical = format!(r#"top."{name}"[-1]"#);
         assert_eq!(path.to_string(), logical);

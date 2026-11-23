@@ -167,8 +167,9 @@ pub enum PathStyle {
 ///
 /// [`Display`](fmt::Display) and [`PathStyle::Logical`] produce the same
 /// canonical Ondas syntax. Parsing that output recovers the same components.
-/// A simple name starts with an ASCII letter. The remaining characters are
-/// ASCII letters, digits or underscores. Logical output quotes all other names.
+/// A simple name starts with an ASCII letter or an underscore. The remaining
+/// characters are ASCII letters, digits, underscores or dollar signs.
+/// Logical output quotes all other names.
 /// The array index follows the name. Inside quotes, canonical output uses `\"`
 /// and `\\`, the short escapes `\b`, `\f`, `\n`, `\r`, and `\t`, and lowercase
 /// `\u00xx` for the remaining `U+0000..=U+001F` characters. All other characters,
