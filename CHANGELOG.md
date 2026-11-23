@@ -4,14 +4,17 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-11-23
+
 ### Breaking changes
 
-- Hierarchy paths use typed components with a logical name and an optional array index. Iterate over `PathComponent` values and use `PathComponent::indexed` to construct an array element. Quote or escape literal names with brackets in text paths. Declaration `name()` returns the logical name without the array index.
-- `HierarchyPath::to_verilog()` writes simple identifiers without escapes and writes structural indices after the identifier.
+- `HierarchyPath::components()` yields `&PathComponent`. Use `name()` and `index()` to read each component. Use `PathComponent::indexed("u_reg", 0)` to construct an array element for `from_components` or `join`. String arguments create literal names. `HierarchyPath::name()`, `Scope::name()` and `Variable::name()` return the logical name without the index.
+- In a text path, `top.u_reg[0].q` selects array element 0. To select an instance with literal brackets in its name, use `top."u_reg[0]".q` or `top.\u_reg[0] .q`. Lookup relies on the distinctions available in the recording and reader metadata.
+- `HierarchyPath::to_verilog()` now writes ordinary identifiers directly, for example `top.q`. SystemVerilog escaped identifiers end with an ASCII space, even at the end of the path.
 
 ### Added
 
-- `HierarchyPath::format` selects canonical Ondas or SystemVerilog path spelling through `PathStyle`.
+- `HierarchyPath::format(PathStyle::Logical)` matches `Display`. `HierarchyPath::format(PathStyle::Sv)` matches `to_verilog()` and can return `PathFormatError::NotRepresentable`. Both styles write `top.u_reg[0].q` for the array element. For the literal name, logical prints `top."u_reg[0]".q` and SystemVerilog prints `top.\u_reg[0] .q`. The parser accepts both styles.
 
 ## [2.2.0] - 2026-11-20
 
@@ -145,7 +148,8 @@ Initial release of Ondas, a read-only Rust library for waveform analysis.
 - Final-tick state normalization and event occurrence counts, with documented reader limits.
 - Fixture-backed conformance tests, performance benchmarks, and automated release checks.
 
-[Unreleased]: https://github.com/kleverhq/ondas/compare/v2.2.0...HEAD
+[Unreleased]: https://github.com/kleverhq/ondas/compare/v3.0.0...HEAD
+[3.0.0]: https://github.com/kleverhq/ondas/compare/v2.2.0...v3.0.0
 [2.2.0]: https://github.com/kleverhq/ondas/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/kleverhq/ondas/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/kleverhq/ondas/compare/v1.1.1...v2.0.0
