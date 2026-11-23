@@ -126,6 +126,21 @@ impl Timescale {
         Self { factor, unit }
     }
 
+    #[cfg(any(feature = "shm-lib", feature = "vwdb-lib"))]
+    pub(crate) fn decimal_exponent(exponent: i32) -> Option<Self> {
+        let exponent = u32::try_from(exponent.checked_add(15)?).ok()?;
+        let unit = match exponent / 3 {
+            0 => TimeUnit::Femtosecond,
+            1 => TimeUnit::Picosecond,
+            2 => TimeUnit::Nanosecond,
+            3 => TimeUnit::Microsecond,
+            4 => TimeUnit::Millisecond,
+            5 => TimeUnit::Second,
+            _ => return None,
+        };
+        Some(Self::new(10_u32.pow(exponent % 3), unit))
+    }
+
     /// Returns the integer unit multiplier per tick.
     pub const fn factor(self) -> u32 {
         self.factor

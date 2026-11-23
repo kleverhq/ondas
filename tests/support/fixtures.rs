@@ -58,48 +58,56 @@ pub fn verify_artifact(directory: &Path, artifact: &Json, name: &str) -> PathBuf
     assert!(
         matches!(
             extension,
-            "fst" | "vcd" | "fsdb" | "ghw" | "wlf" | "shm" | "wdb"
+            "fst" | "vcd" | "fsdb" | "ghw" | "wlf" | "shm" | "vwdb" | "wdb"
         ),
         "{name}: invalid artifact format"
     );
     let filename = format!("waveform.{extension}");
     assert_eq!(artifact["file"], filename, "{name}: artifact filename");
     let path = directory.join(filename).canonicalize().unwrap();
-    if extension == "shm" {
+    if matches!(extension, "shm" | "vwdb") {
+        let nested = extension == "vwdb";
         assert!(
             path.starts_with(directory) && path.is_dir(),
-            "{name}: SHM directory containment/type"
+            "{name}: directory directory containment/type"
         );
         let components = artifact["files"]
             .as_array()
-            .expect("SHM component manifest");
-        assert!(!components.is_empty(), "{name}: empty SHM manifest");
+            .expect("directory component manifest");
+        assert!(!components.is_empty(), "{name}: empty directory manifest");
         let mut names = BTreeSet::new();
         let mut total = 0_u64;
         for component in components {
-            let object = component.as_object().expect("SHM component object");
+            let object = component.as_object().expect("directory component object");
             assert_eq!(object.len(), 3, "{name}: component fields");
             let filename = component["file"].as_str().unwrap();
             let relative = Path::new(filename);
-            assert!(
+            let valid = if nested {
+                filename.split('/').all(|part| {
+                    !part.is_empty()
+                        && !matches!(part, "." | "..")
+                        && part
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+                })
+            } else {
                 relative.file_name().and_then(|s| s.to_str()) == Some(filename)
                     && !filename.contains('\\')
-                    && !matches!(filename, "." | "..")
                     && matches!(
                         relative.extension().and_then(|s| s.to_str()),
                         Some("dsn" | "trn")
-                    ),
-                "{name}: invalid SHM component name"
-            );
+                    )
+            };
+            assert!(valid, "{name}: invalid directory component name {filename}");
             assert!(
                 names.insert(filename.to_owned()),
-                "{name}: duplicate SHM component"
+                "{name}: duplicate directory component"
             );
             let size = component["size"]
                 .as_u64()
-                .filter(|&size| size > 0)
-                .expect("positive SHM component size");
-            total = total.checked_add(size).expect("SHM size overflow");
+                .filter(|&size| nested || size > 0)
+                .expect("positive directory component size");
+            total = total.checked_add(size).expect("directory size overflow");
             let component_path = path.join(filename).canonicalize().unwrap();
             assert!(
                 component_path.starts_with(&path) && component_path.is_file(),
@@ -107,26 +115,52 @@ pub fn verify_artifact(directory: &Path, artifact: &Json, name: &str) -> PathBuf
             );
             check_artifact(&component_path, component, name);
         }
-        let entries = fs::read_dir(&path)
-            .unwrap()
-            .map(|entry| {
-                entry
-                    .unwrap()
-                    .file_name()
-                    .into_string()
-                    .expect("UTF-8 SHM filename")
+        if nested {
+            assert!(
+                names.contains("vwdb_info.json"),
+                "{name}: missing VWDB marker"
+            );
+        }
+        let directories: BTreeSet<_> = names
+            .iter()
+            .flat_map(|file| {
+                Path::new(file)
+                    .ancestors()
+                    .skip(1)
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                    .map(Path::to_path_buf)
             })
-            .collect::<BTreeSet<_>>();
-        assert_eq!(entries, names, "{name}: SHM component set");
+            .collect();
+        let mut entries = BTreeSet::new();
+        let mut pending = vec![path.clone()];
+        while let Some(parent) = pending.pop() {
+            for entry in fs::read_dir(parent).unwrap() {
+                let entry = entry.unwrap();
+                let component = entry.path();
+                let relative = component.strip_prefix(&path).unwrap();
+                let kind = entry.file_type().unwrap();
+                if nested && kind.is_dir() {
+                    assert!(
+                        directories.contains(relative),
+                        "{name}: extra directory {relative:?}"
+                    );
+                    pending.push(component);
+                } else {
+                    assert!(kind.is_file(), "{name}: non-regular component {relative:?}");
+                    entries.insert(relative.to_str().expect("UTF-8 component name").to_owned());
+                }
+            }
+        }
+        assert_eq!(entries, names, "{name}: directory component set");
         assert_eq!(
             Some(total),
             artifact["size"].as_u64(),
-            "{name}: SHM total size"
+            "{name}: directory total size"
         );
         assert_eq!(
             manifest_sha256(components),
             artifact["sha256"].as_str().unwrap(),
-            "{name}: SHM manifest hash"
+            "{name}: directory manifest hash"
         );
         return path;
     }

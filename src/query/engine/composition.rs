@@ -95,10 +95,11 @@ impl Plan {
 }
 
 fn current(slot: &Slot) -> Option<ValueRef<'_>> {
-    slot.pending
-        .as_ref()
-        .or_else(|| slot.state.as_ref().map(|state| &state.value))
-        .map(Value::as_ref)
+    match &slot.pending {
+        Some(update) => update.value(),
+        None => slot.state.as_ref().map(|state| &state.value),
+    }
+    .map(Value::as_ref)
 }
 
 impl Computation {
@@ -126,11 +127,13 @@ impl Computation {
                         bytes.resize(bytes.len() + width as usize, b'x');
                     }
                 }
-                if !observed {
-                    return;
-                }
                 debug_assert_eq!(bytes.len(), *width as usize);
-                (*slot, Value::Bits(crate::Bits::from_validated_ascii(bytes)))
+                let update = if observed {
+                    Update::Value(Value::Bits(crate::Bits::from_validated_ascii(bytes)))
+                } else {
+                    Update::Missing
+                };
+                (*slot, update)
             }
             Self::Slice {
                 slot,
@@ -140,7 +143,15 @@ impl Computation {
                 let Some(value) = slots[*input].pending.as_ref() else {
                     return;
                 };
-                (*slot, project(value.as_ref(), *signal).to_owned())
+                (
+                    *slot,
+                    match value {
+                        Update::Value(value) => {
+                            Update::Value(project(value.as_ref(), *signal).to_owned())
+                        }
+                        Update::Missing => Update::Missing,
+                    },
+                )
             }
         };
         if slots[slot].pending.is_none() {
@@ -195,10 +206,14 @@ mod tests {
                         slot.state.as_ref().map_or(0, |s| match s.value.as_ref() {
                             ValueRef::Bits(b) => b.width() as usize,
                             _ => 0,
-                        }) + slot.pending.as_ref().map_or(0, |v| match v.as_ref() {
-                            ValueRef::Bits(b) => b.width() as usize,
-                            _ => 0,
-                        })
+                        }) + slot
+                            .pending
+                            .as_ref()
+                            .and_then(Update::value)
+                            .map_or(0, |v| match v.as_ref() {
+                                ValueRef::Bits(b) => b.width() as usize,
+                                _ => 0,
+                            })
                     })
                     .sum();
                 assert_eq!(slots.len(), slot_count);

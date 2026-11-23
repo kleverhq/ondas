@@ -10,10 +10,25 @@ struct State {
     changed_at: Option<Time>,
 }
 
+#[derive(Clone)]
+enum Update {
+    Value(Value),
+    Missing,
+}
+
+impl Update {
+    fn value(&self) -> Option<&Value> {
+        match self {
+            Self::Value(value) => Some(value),
+            Self::Missing => None,
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 pub(super) struct Slot {
     state: Option<State>,
-    pending: Option<Value>,
+    pending: Option<Update>,
     changed: bool,
     events: u64,
 }
@@ -29,9 +44,10 @@ impl Slot {
             };
         }
         let state = self.state.as_ref();
-        let value = time
-            .and(self.pending.as_ref())
-            .or(state.map(|state| &state.value));
+        let value = match time.and(self.pending.as_ref()) {
+            Some(update) => update.value(),
+            None => state.map(|state| &state.value),
+        };
         match value {
             Some(value) => SampleRef::Value {
                 signal,
@@ -95,7 +111,7 @@ fn checkpoint_bytes(slots: &[Slot]) -> usize {
         |bytes, slot| {
             [
                 slot.state.as_ref().map(|state| &state.value),
-                slot.pending.as_ref(),
+                slot.pending.as_ref().and_then(Update::value),
             ]
             .into_iter()
             .flatten()
@@ -222,19 +238,12 @@ fn scan_tick<B>(
     slots: &[Slot],
     slot_indices: &[usize],
     time: Time,
-    range: TimeRange,
-    emitted_initials: &mut bool,
     visitor: &mut impl for<'v> FnMut(usize, ScanRef<'v>) -> ControlFlow<B>,
 ) -> ControlFlow<B> {
-    if !*emitted_initials && time >= range.start() {
-        *emitted_initials = true;
-        initials(signals, slots, slot_indices, visitor)?;
-    }
     for (index, &signal) in signals.iter().enumerate() {
         let slot = &slots[slot_indices[index]];
-        if let Some(value) = &slot.pending
+        if let Some(Update::Value(value)) = &slot.pending
             && slot.changed
-            && time >= range.start()
         {
             visitor(
                 index,
@@ -246,7 +255,7 @@ fn scan_tick<B>(
             )?;
         }
         let events = slot.events;
-        if time >= range.start() && events > 0 {
+        if events > 0 {
             visitor(
                 index,
                 ScanRef::Change {
@@ -280,12 +289,14 @@ fn complete_tick<B>(
         #[cfg(test)]
         streaming_tests::comparison_visit();
         let slot = &mut slots[index];
-        slot.changed = slot.pending.as_ref().is_some_and(|value| {
-            !slot
+        slot.changed = match slot.pending.as_ref() {
+            Some(Update::Value(value)) => !slot
                 .state
                 .as_ref()
-                .is_some_and(|state| state.value.as_ref().same_value(value.as_ref()))
-        });
+                .is_some_and(|state| state.value.as_ref().same_value(value.as_ref())),
+            Some(Update::Missing) => slot.state.is_some(),
+            None => false,
+        };
     }
     if visit_from.is_none_or(|start| time >= start)
         && let ControlFlow::Break(value) = visitor(time, signals, slots)?
@@ -296,13 +307,16 @@ fn complete_tick<B>(
         #[cfg(test)]
         streaming_tests::commit_visit();
         let slot = &mut slots[index];
-        if let Some(value) = slot.pending.take()
+        if let Some(update) = slot.pending.take()
             && slot.changed
         {
-            slot.state = Some(State {
-                value,
-                changed_at: slot.state.as_ref().map(|_| time),
-            });
+            slot.state = match update {
+                Update::Value(value) => Some(State {
+                    value,
+                    changed_at: slot.state.as_ref().map(|_| time),
+                }),
+                Update::Missing => None,
+            };
         }
         slot.events = 0;
         slot.changed = false;
@@ -699,15 +713,18 @@ impl<'w> Selection<'w> {
             return slots;
         };
         for &index in &self.groups[&self.bases[0].index()] {
-            slots[index].pending = Some(source.value.clone());
+            slots[index].pending = Some(Update::Value(source.value.clone()));
         }
         let mut active = Vec::new();
         for computation in &self.computations {
             computation.complete(&mut slots, &mut active);
         }
         for slot in &mut slots {
-            slot.state = slot.pending.take().map(|value| State {
-                value,
+            slot.state = slot.pending.take().map(|update| State {
+                value: match update {
+                    Update::Value(value) => value,
+                    Update::Missing => unreachable!("SHM point does not encode missing updates"),
+                },
                 changed_at: source.changed_at,
             });
         }
@@ -918,8 +935,12 @@ impl<'w> Selection<'w> {
             let value = slot
                 .pending
                 .as_ref()
+                .and_then(Update::value)
                 .or_else(|| slot.state.as_ref().map(|state| &state.value));
-            let changed_at = match (slot.pending.as_ref(), slot.state.as_ref()) {
+            let changed_at = match (
+                slot.pending.as_ref().and_then(Update::value),
+                slot.state.as_ref(),
+            ) {
                 (Some(value), Some(state)) if !state.value.as_ref().same_value(value.as_ref()) => {
                     replay.time
                 }
@@ -950,6 +971,16 @@ impl<'w> Selection<'w> {
         time: Time,
         mut visitor: impl for<'v> FnMut(SampleRef<'v>) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>> {
+        #[cfg(feature = "vwdb-lib")]
+        if matches!(self.waveform.reader, crate::backends::Reader::Vwdb(_)) {
+            let (_, samples) = self.samples_at(&[time])?.pop().expect("one requested time");
+            for sample in &samples {
+                if let ControlFlow::Break(value) = visitor(sample.as_ref()) {
+                    return Ok(ControlFlow::Break(value));
+                }
+            }
+            return Ok(ControlFlow::Continue(()));
+        }
         #[cfg(feature = "shm-lib")]
         if let Some(result) = self.shm_replay_sample_visit(time, &mut visitor) {
             return Ok(result);
@@ -1189,21 +1220,37 @@ impl<'w> Selection<'w> {
             .collect::<Vec<_>>();
         let mut emitted_initials = false;
         let slot_indices = self.slot_indices.clone();
+        let format = self.waveform.format();
+        let backend = self.waveform.backend().to_owned();
         if let ControlFlow::Break(value) = self.read_ticks_from(
             Some(range.start()),
             end,
             &mut slots,
             seed_point,
             |time, signals, slots| {
-                Ok(scan_tick(
-                    signals,
-                    slots,
-                    &slot_indices,
-                    time,
-                    range,
-                    &mut emitted_initials,
-                    &mut visitor,
-                ))
+                if !emitted_initials {
+                    emitted_initials = true;
+                    if let ControlFlow::Break(value) =
+                        initials(signals, slots, &slot_indices, &mut visitor)
+                    {
+                        return Ok(ControlFlow::Break(value));
+                    }
+                }
+                if slot_indices.iter().any(|&index| {
+                    let slot = &slots[index];
+                    slot.changed && matches!(slot.pending, Some(Update::Missing))
+                }) {
+                    return Err(Error::UnsupportedFeature {
+                        format,
+                        backend: backend.clone(),
+                        operation: "scan",
+                        message: format!(
+                            "selected value becomes unavailable at tick {}",
+                            time.ticks()
+                        ),
+                    });
+                }
+                Ok(scan_tick(signals, slots, &slot_indices, time, &mut visitor))
             },
         )? {
             return Ok(ControlFlow::Break(value));
@@ -1337,7 +1384,7 @@ impl<'w> Selection<'w> {
         #[cfg(test)]
         let probe = streaming_tests::probe(&self.waveform.reader);
         // One entering/final value and event count per slot, never intra-tick writes.
-        let mut consume = |record: Option<(usize, Result<ValueRef<'_>>)>,
+        let mut consume = |record: Option<(usize, Result<Option<ValueRef<'_>>>)>,
                            time,
                            position: Option<Position>| {
             let Some((base, value)) = record else {
@@ -1403,11 +1450,11 @@ impl<'w> Selection<'w> {
                 let slot = &mut slots[index];
                 if slot.pending.is_none()
                     && slot.events == 0
-                    && !matches!(value, ValueRef::Event { occurrences: 0 })
+                    && !matches!(value, Some(ValueRef::Event { occurrences: 0 }))
                 {
                     active_slots.push(index);
                 }
-                if let ValueRef::Event { occurrences } = value {
+                if let Some(ValueRef::Event { occurrences }) = value {
                     let Some(count) = slot.events.checked_add(occurrences) else {
                         return ControlFlow::Break(Err(Error::Backend {
                             backend: backend.clone(),
@@ -1417,7 +1464,12 @@ impl<'w> Selection<'w> {
                     };
                     slot.events = count;
                 } else {
-                    slot.pending = Some(project(value, self.retained_signals[index]).to_owned());
+                    slot.pending = Some(match value {
+                        Some(value) => {
+                            Update::Value(project(value, self.retained_signals[index]).to_owned())
+                        }
+                        None => Update::Missing,
+                    });
                 }
             }
             debug_assert!(active_slots.len() <= slots.len());
@@ -1439,13 +1491,17 @@ impl<'w> Selection<'w> {
                     Position::Wdb(_) => unreachable!("reader is fixed for a selection"),
                 });
                 reader.read_from(&self.bases, end, position, |base, time, value, position| {
-                    consume(Some((base, Ok(value))), time, Some(Position::Vcd(position)))
+                    consume(
+                        Some((base, Ok(Some(value)))),
+                        time,
+                        Some(Position::Vcd(position)),
+                    )
                 })
             }
             crate::backends::Reader::Ghw(reader) => {
                 reader.read(&self.bases, end, |event| match event {
                     crate::backends::ghw::Notification::Value { index, time, value } => {
-                        consume(Some((index, Ok(value))), time, None)
+                        consume(Some((index, Ok(Some(value)))), time, None)
                     }
                     crate::backends::ghw::Notification::Tick(time) => consume(None, time, None),
                 })
@@ -1468,7 +1524,7 @@ impl<'w> Selection<'w> {
                 let cacheable = !self.bases.iter().any(|s| s.encoding() == Encoding::Event);
                 reader.read_from(&self.bases, from, end, |base, time, value| {
                     consume(
-                        Some((base, Ok(value))),
+                        Some((base, Ok(Some(value)))),
                         time,
                         cacheable.then_some(Position::Fsdb(time)),
                     )
@@ -1491,7 +1547,7 @@ impl<'w> Selection<'w> {
                     shm_resume && cacheable,
                     |base, time, value| {
                         consume(
-                            Some((base, value)),
+                            Some((base, value.map(Some))),
                             time,
                             cacheable.then_some(Position::Shm(time)),
                         )
@@ -1508,7 +1564,7 @@ impl<'w> Selection<'w> {
                 let cacheable = !self.bases.iter().any(|s| s.encoding() == Encoding::Event);
                 reader.read_from(&self.bases, from, end, |base, time, value| {
                     consume(
-                        Some((base, Ok(value))),
+                        Some((base, Ok(Some(value)))),
                         time,
                         cacheable.then_some(Position::Wdb(time)),
                     )
@@ -1524,7 +1580,7 @@ impl<'w> Selection<'w> {
                 let cacheable = !self.bases.iter().any(|s| s.encoding() == Encoding::Event);
                 reader.read_from(&self.bases, from, end, |base, time, value| {
                     consume(
-                        Some((base, value)),
+                        Some((base, value.map(Some))),
                         time,
                         cacheable.then_some(Position::Wlf(time)),
                     )
@@ -3879,7 +3935,7 @@ mod tests {
                 value: Value::String("old".into()),
                 changed_at: None,
             }),
-            pending: Some(Value::String(pending)),
+            pending: Some(Update::Value(Value::String(pending))),
             ..Slot::default()
         }];
         let _ = complete_tick(
@@ -3950,14 +4006,20 @@ mod tests {
                     ticks.push(time.ticks());
                     if time == Time::ZERO {
                         assert!(slots[0].state.is_none());
-                        assert!(matches!(slots[0].pending, Some(Value::Real(2.0))));
+                        assert!(matches!(
+                            slots[0].pending,
+                            Some(Update::Value(Value::Real(2.0)))
+                        ));
                         assert_eq!(slots[1].events, 2);
                     } else {
                         assert!(matches!(
                             slots[0].state.as_ref().unwrap().value,
                             Value::Real(2.0)
                         ));
-                        assert!(matches!(slots[0].pending, Some(Value::Real(3.0))));
+                        assert!(matches!(
+                            slots[0].pending,
+                            Some(Update::Value(Value::Real(3.0)))
+                        ));
                         assert_eq!(slots[1].events, 0);
                         if fail {
                             return Err(Error::Backend {

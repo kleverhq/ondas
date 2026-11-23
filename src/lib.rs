@@ -19,6 +19,7 @@ handles, native callbacks and format-local indices stay private.
 | GHW | `ghw-native` | Files and shared in-memory bytes | Included; reads GHW directly without conversion |
 | FSDB | `fsdb-lib` | Files only | Optional Cargo feature; requires a local FSDB Reader SDK |
 | SHM | `shm-lib` | Database directories only | Optional Cargo feature; requires a compatible Xcelium reader (2021+) |
+| VWDB | `vwdb-lib` | Database directories only | Optional Cargo feature; requires a compatible Xcelium reader |
 | WLF | `wlf-lib` | Files only | Optional Cargo feature; requires a local Questa SDK |
 | WDB | `wdb-lib` | Files only | Optional Cargo feature; requires a compatible Vivado reader |
 
@@ -62,6 +63,41 @@ let sample = wave.sample(signal, ondas::Time::from_ticks(10))?;
 # Ok(())
 # }
 ```
+
+### VWDB setup
+
+Enable `vwdb-lib` and set `XCELIUM_HOME` to the selected installation when
+building on Linux x86_64 GNU. The build needs a C++17 compiler and zlib development
+files. The reader library must remain at its selected path. Ondas loads it when
+opening VWDB and reports a failed load as [`Error::BackendUnavailable`].
+The `shm-lib` and `vwdb-lib` features can be enabled together.
+
+Pass the directory containing the native VWDB recording, such as
+`ida.db/ida.vwdb`. Its suffix can be `.shm`. A combined recording can also
+contain a separate SHM directory. Open that directory explicitly to access its
+histories, including digital histories from some SystemC recordings.
+
+```no_run
+# #[cfg(feature = "vwdb-lib")]
+# fn example() -> Result<(), Box<dyn std::error::Error>> {
+let mut wave = ondas::open_with("ida.db/ida.vwdb", "vwdb-lib")?;
+let signal = wave.hierarchy().signal("top.ready")?;
+let sample = wave.sample(signal, ondas::Time::from_ticks(10))?;
+# Ok(())
+# }
+```
+
+VWDB exposes recorded bits, native enum keys, reals and events. Each declaration
+has a separate history handle. A native array container appears as a scope.
+Its indexed elements occur at the container's level, so `top.u_reg[0].q`
+selects the index and `top."u_reg[0]".q` selects literal brackets. VHDL roots can
+be empty. A logical path such as `"".ready` preserves that component.
+
+An explicit gap clears persistent state. Samples and query contexts report
+[`Sample::Missing`] until state resumes. A scan or trace reports
+[`Error::UnsupportedFeature`] when a selected value loses known state within
+its range. Earlier scan callbacks remain valid. Keep the database unchanged
+and available while Ondas reads it.
 
 ### WDB setup
 
@@ -218,8 +254,8 @@ candidate list or require another waveform borrow inside a callback.
 - [`Time`] counts absolute source ticks, not indices into a backend time table.
   Ranges include both bounds. A reversed bounded range is empty and returns no error.
 - A point sample reports the final persistent state at its tick. Delta cycles
-  are not modeled. [`Sample::Missing`] means no persistent state is known at or
-  before the requested time.
+  are not modeled. [`Sample::Missing`] means the persistent state is unknown
+  at the requested time.
 - An event sample counts reader-observed occurrences at exactly that tick,
   including zero. Scans and traces carry one positive total count per selection
   entry and tick. These counts cannot recover omitted events or show occurrence

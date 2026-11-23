@@ -56,10 +56,16 @@ _conformance-fsdb: _inside
 conformance-shm: _inside
     tools/repo/shm-sweep just _conformance-shm
 
-_conformance-shm: _inside
-    cargo test --locked --profile conformance --features shm-lib --test conformance shm_ -- --ignored --nocapture
-    cargo test --locked --profile conformance --features shm-lib --lib shm_ -- --ignored --nocapture
-    cargo test --locked --profile conformance --features shm-lib --test exact_names shm_ -- --ignored
+_conformance-shm features="shm-lib": _inside
+    cargo test --locked --profile conformance --features {{features}} --test conformance shm_ -- --ignored --nocapture
+    cargo test --locked --profile conformance --features {{features}} --lib shm_ -- --ignored --nocapture
+    cargo test --locked --profile conformance --features {{features}} --test exact_names shm_ -- --ignored
+
+# Check the VWDB pool and coexistence with SHM.
+conformance-vwdb: _inside
+    cargo test --locked --profile conformance --features vwdb-lib,shm-lib --test conformance vwdb_ -- --ignored --nocapture
+    cargo test --locked --profile conformance --features vwdb-lib,shm-lib --test vwdb_lib -- --ignored --nocapture
+    just _conformance-shm vwdb-lib,shm-lib
 
 # Launch a SHM application without Cargo's runtime environment.
 shm-consumer: _inside

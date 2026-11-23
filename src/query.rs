@@ -313,14 +313,16 @@ impl Selection<'_> {
 /// [reader limits](crate#reader-details) before interpreting that count.
 ///
 /// Query times are not restricted by [`Metadata::time_span`](crate::Metadata::time_span).
-/// After EOF, the last known persistent value is held. Event counts are zero.
+/// After EOF, the final persistent state is held. Event counts are zero.
+/// An explicit VWDB recording gap removes the previously held state until a
+/// later observation. See the [VWDB reader limits](crate#vwdb-setup).
 /// Each result carries its selected [`Signal`], including a slice handle, so
 /// batch results remain self-contained. Owned queries return no partial result
 /// on a file or backend error.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum Sample {
-    /// No persistent value is known at or before the sampled time.
+    /// No persistent value is known at the sampled time.
     Missing {
         /// The sampled signal.
         signal: Signal,
@@ -351,7 +353,7 @@ pub enum Sample {
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub enum SampleRef<'a> {
-    /// No persistent value is known at or before the sampled time.
+    /// No persistent value is known at the sampled time.
     Missing {
         /// The sampled signal.
         signal: Signal,

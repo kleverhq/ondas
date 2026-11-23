@@ -18,7 +18,7 @@ from . import bindings, oracle
 
 ROOT = Path(__file__).resolve().parents[2]
 SDK = {'fsdb-lib': 'VERDI_HOME', 'wlf-lib': 'QUESTA_HOME',
-       'shm-lib': 'XCELIUM_HOME', 'wdb-lib': 'XILINX_VIVADO'}
+       'shm-lib': 'XCELIUM_HOME', 'vwdb-lib': 'XCELIUM_HOME', 'wdb-lib': 'XILINX_VIVADO'}
 _active_child = None
 _protecting_child = False
 _pending_signal = None
@@ -103,11 +103,11 @@ def input_ready(binding):
         wanted = {c['file'] for c in artifact['files']}
         actual = {str(p.relative_to(path)) for p in path.rglob('*') if p.is_file()}
         if actual != wanted:
-            raise ValueError('SHM component set differs')
+            raise ValueError('directory component set differs')
         for component in artifact['files']:
             item = path / component['file']
             if item.stat().st_size != component['size'] or sha256(item) != component['sha256']:
-                raise ValueError(f"SHM component mismatch: {component['file']}")
+                raise ValueError(f"directory component mismatch: {component['file']}")
     elif path.stat().st_size != artifact['size'] or sha256(path) != artifact['sha256']:
         raise ValueError(f'waveform digest/size differs: {path.name}')
     return path
@@ -272,8 +272,13 @@ def build(config, directory):
     with output.open('a') as log:
         process([binary, 'ready'], env, log)
         process(['ldd', binary], env, log)
+    libraries = runtime_libraries(output.read_text())
+    if config['backend'] == 'vwdb-lib':
+        # The shim loads the selected reader on first use, outside ldd's view.
+        reader = Path(config['sdk_home']) / 'tools/lib/64bit/libvwdbr_analog.so'
+        libraries = sorted({*libraries, str(reader.resolve(strict=True))})
     config.update(binary=binary, binary_sha256=sha256(binary), build_log=output.name,
-                  runtime_libraries=runtime_libraries(output.read_text()))
+                  runtime_libraries=libraries)
     # Keep exact local identities in this ignored run, never in the catalog.
     config['runtime_environment'] = {k: env[k] for k in ('LD_LIBRARY_PATH', 'RDI_DATADIR') if k in env}
     return env

@@ -10,3 +10,6 @@ __pycache__/
 /.devcontainer/ci/
 /just.local
 /tools.local/
+
+# Diagnostic created by the native VWDB reader.
+cdns_vwdbr.log

@@ -9,6 +9,9 @@ pub(crate) mod ghw;
 #[allow(unsafe_code)] // Private C ABI; native calls are serialized and user callbacks run unlocked.
 pub(crate) mod shm;
 pub(crate) mod vcd;
+#[cfg(feature = "vwdb-lib")]
+#[allow(unsafe_code)] // Private C ABI with serialized native access.
+pub(crate) mod vwdb;
 #[cfg(feature = "wdb-lib")]
 #[allow(unsafe_code)] // Private C ABI; native calls are serialized and callbacks run unlocked.
 pub(crate) mod wdb;
@@ -34,6 +37,8 @@ pub(crate) enum Reader {
     Fsdb(Box<fsdb::Reader>),
     #[cfg(feature = "shm-lib")]
     Shm(Box<shm::Reader>),
+    #[cfg(feature = "vwdb-lib")]
+    Vwdb(Box<vwdb::Reader>),
     #[cfg(feature = "wlf-lib")]
     Wlf(Box<wlf::Reader>),
     #[cfg(feature = "wdb-lib")]
@@ -53,7 +58,7 @@ impl Reader {
         &mut self,
         signals: &[Signal],
         end: Time,
-        mut visitor: impl for<'v> FnMut(usize, Time, Result<ValueRef<'v>>) -> ControlFlow<B>,
+        mut visitor: impl for<'v> FnMut(usize, Time, Result<Option<ValueRef<'v>>>) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>> {
         if signals.is_empty() {
             return Ok(ControlFlow::Continue(()));
@@ -61,31 +66,39 @@ impl Reader {
         match self {
             Self::Fst(reader) => {
                 reader.read(signals, Time::from_ticks(0), end, |index, time, value| {
-                    visitor(index, time, Ok(value))
+                    visitor(index, time, Ok(Some(value)))
                 })
             }
             Self::Vcd(reader) => reader.read(signals, end, |index, time, value| {
-                visitor(index, time, Ok(value))
+                visitor(index, time, Ok(Some(value)))
             }),
             Self::Ghw(reader) => reader.read(signals, end, |event| match event {
-                ghw::Notification::Value { index, time, value } => visitor(index, time, Ok(value)),
+                ghw::Notification::Value { index, time, value } => {
+                    visitor(index, time, Ok(Some(value)))
+                }
                 ghw::Notification::Tick(_) => ControlFlow::Continue(()),
             }),
             #[cfg(feature = "fsdb-lib")]
             Self::Fsdb(reader) => reader.read(signals, end, |index, time, value| {
-                visitor(index, time, Ok(value))
+                visitor(index, time, Ok(Some(value)))
             }),
             #[cfg(feature = "shm-lib")]
-            Self::Shm(reader) => reader.read(signals, end, visitor),
+            Self::Shm(reader) => reader.read(signals, end, |index, time, value| {
+                visitor(index, time, value.map(Some))
+            }),
+            #[cfg(feature = "vwdb-lib")]
+            Self::Vwdb(reader) => reader.read(signals, end, visitor),
             #[cfg(feature = "wlf-lib")]
-            Self::Wlf(reader) => reader.read(signals, end, visitor),
+            Self::Wlf(reader) => reader.read(signals, end, |index, time, value| {
+                visitor(index, time, value.map(Some))
+            }),
             #[cfg(feature = "wdb-lib")]
             Self::Wdb(reader) => reader.read(signals, end, |index, time, value| {
-                visitor(index, time, Ok(value))
+                visitor(index, time, Ok(Some(value)))
             }),
             #[cfg(test)]
             Self::Generated(reader) => reader.read(signals, end, |index, time, value| {
-                visitor(index, time, Ok(value))
+                visitor(index, time, Ok(Some(value)))
             }),
             #[cfg(test)]
             Self::Memory {
@@ -108,7 +121,7 @@ impl Reader {
                     }
                     if signals.iter().any(|signal| signal.index() == *index)
                         && let ControlFlow::Break(value) =
-                            visitor(*index, *time, Ok(value.as_ref()))
+                            visitor(*index, *time, Ok(Some(value.as_ref())))
                     {
                         return Ok(ControlFlow::Break(value));
                     }

@@ -379,6 +379,12 @@ def check_local(case, job_input, rows):
     qualified = bindings.fixture_binding(case['fixture'],backend)
     scopes = {p[:n] for p in variables for n in range(1,len(p))}
     scopes.update(tuple(p) for p in qualified['empty_extra_scopes'])
+    if backend == 'vwdb-lib':
+        # VWDB exposes array containers and the generator's empty function scopes.
+        arrays = {(*p[:-1], 'word') for p in scopes if p[-1].startswith('word[')}
+        scopes.update(arrays)
+        scopes.update((*p[:-1], name) for p in variables if p[-1] == 'q'
+                      for name in ('binary_word', 'render'))
     target = tuple(job_input['scope_path'])
     parents = [target] if case['workload'] != 'browse-deep' else [target[:n] for n in range(1,len(target)+1)]
     expected_variables = []
