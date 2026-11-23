@@ -134,15 +134,15 @@ impl From<&PathComponent> for PathComponent {
 pub enum PathStyle {
     /// Canonical Ondas syntax. Quotes preserve any name.
     Logical,
-    /// SystemVerilog syntax with escapes where required.
+    /// SystemVerilog escape notation. See [`HierarchyPath::format`].
     Sv,
 }
 
 /// An owned, immutable sequence of exact hierarchy components.
 ///
-/// Identity includes each component's name and optional index. Paths start at
-/// the hierarchy root. Relative paths and navigation components `.` and `..`
-/// are not supported.
+/// Identity includes each component's name and optional index. Exact lookup
+/// starts at the root. [`Hierarchy::resolve_selector`] can qualify a selector
+/// path relative to a scope. Navigation components `.` and `..` are unsupported.
 ///
 /// # Accepted text forms
 ///
@@ -294,7 +294,7 @@ impl HierarchyPath {
 impl FromStr for HierarchyPath {
     type Err = PathError;
 
-    /// Parses a root-based hierarchy path.
+    /// Parses an exact hierarchy path.
     fn from_str(text: &str) -> std::result::Result<Self, Self::Err> {
         Self::parse(text)
     }

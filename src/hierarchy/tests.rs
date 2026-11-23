@@ -1300,6 +1300,16 @@ fn exact_paths_and_selectors_share_component_syntax() {
         assert_eq!(selector.path(), &literal);
         assert_eq!(selector.projection(), None);
     }
+    let literal = HierarchyPath::from_components(["top", "bank[", "m:n", "q]"]);
+    for text in [r#"top.bank[."m:n".q]"#, r"top.bank[.\m:n .q]"] {
+        assert_eq!(HierarchyPath::parse(text).unwrap(), literal);
+        let selector = SignalSelector::parse(text).unwrap();
+        assert_eq!(selector.path(), &literal);
+        assert_eq!(selector.projection(), None);
+        let slice = SignalSelector::parse(&format!("{text}[0:0]")).unwrap();
+        assert_eq!(slice.path(), &literal);
+        assert_eq!(slice.projection(), Some((0, 0)));
+    }
     assert!(matches!(
         SignalSelector::parse(r#"top."été"[3:0]"#).unwrap().format(PathStyle::Sv),
         Err(PathFormatError::NotRepresentable { component }) if component == "été"

@@ -30,12 +30,12 @@ pub(super) fn split_index(text: &str) -> Option<(&str, i64)> {
 }
 
 pub(super) fn parse(text: &str, allow_projection: bool) -> Result<SignalSelector, PathError> {
-    // Find a single final bracket pair with a colon. The lexer still checks
-    // whether the opening bracket belongs to a quoted or escaped name.
+    // Find a final bracket pair with a colon within one component. The lexer
+    // still checks whether the opening bracket belongs to an explicit name.
     let projection_suffix = text.strip_suffix(']').and_then(|prefix| {
         let (base, bounds) = prefix.rsplit_once('[')?;
         let (msb, lsb) = bounds.split_once(':')?;
-        (!bounds.contains(']')).then_some((base.len(), msb, lsb))
+        (!bounds.contains(['.', ']'])).then_some((base.len(), msb, lsb))
     });
     let projection_start = projection_suffix.map(|(start, ..)| start);
     let mut components = Vec::new();
