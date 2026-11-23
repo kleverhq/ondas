@@ -703,12 +703,12 @@ fn interpretation_belongs_to_declarations_not_shared_histories() {
 }
 
 #[test]
-fn exact_lookup_precedes_selectors() {
+fn terminal_projection_selects_the_base() {
     let hierarchy = fixture();
     let data = hierarchy.signal("tb.dut.data").unwrap();
     assert_eq!(
         hierarchy.signal("tb.dut.data[7:0]").unwrap(),
-        hierarchy.signal_at(1)
+        data.slice(7, 0).unwrap()
     );
     assert_eq!(
         hierarchy.signal("tb.dut.data[15:8]").unwrap(),
@@ -780,7 +780,7 @@ fn resolved_selectors_keep_paths_and_explicit_normalized_projections() {
         ("tb.dut.data", "data", None, 32),
         ("tb.dut.data[31:0]", "data", Some((31, 0)), 32),
         ("tb.dut.alias[31:0]", "alias", Some((31, 0)), 32),
-        ("tb.dut.data[7:0]", "data[7:0]", None, 8),
+        ("tb.dut.data[7:0]", "data", Some((7, 0)), 8),
         (r#"tb.dut."data[7:0]""#, "data[7:0]", None, 8),
         (r#"tb.dut."data"[7:0]"#, "data", Some((7, 0)), 8),
         (r#"tb.dut."mem[0]""#, "mem[0]", None, 32),
@@ -857,11 +857,10 @@ fn scoped_selectors_preserve_syntax_and_component_prefixes() {
         );
         assert_eq!(path, wanted);
     }
-    let invalid = r#""data"[x:0]"#;
     for scope in [None, Some(&scope)] {
         assert!(matches!(
-            h.resolve_signal(invalid, scope),
-            Err(LookupError::InvalidPath(PathError { offset: 7, .. }))
+            h.resolve_signal(r#"é."d"[3:x]"#, scope),
+            Err(LookupError::InvalidPath(PathError { offset: 9, .. }))
         ));
     }
 }
@@ -884,7 +883,10 @@ fn scoped_empty_paths_cannot_select_the_prefix_declaration() {
     data.variables[1].component = "[3:0]".into();
     data.variables[1].parent = Some(0);
     let h = Hierarchy::new(data.scopes, data.variables, data.encodings);
-    let literal = h.resolve_signal("[3:0]", Some(&scope)).unwrap();
+    assert!(
+        matches!(h.resolve_signal("[3:0]", Some(&scope)), Err(LookupError::NotFound { path }) if path.is_empty())
+    );
+    let literal = h.resolve_signal(r#""[3:0]""#, Some(&scope)).unwrap();
     assert_eq!(
         literal.declaration().path(),
         HierarchyPath::from_components(["tb", "[3:0]"])
@@ -893,7 +895,7 @@ fn scoped_empty_paths_cannot_select_the_prefix_declaration() {
 }
 
 #[test]
-fn resolved_selector_errors_keep_exact_first_precedence() {
+fn literal_lookup_errors_do_not_affect_projections() {
     for ambiguous in [false, true] {
         let mut data = Arc::try_unwrap(fixture().data).ok().unwrap();
         if ambiguous {
@@ -903,18 +905,21 @@ fn resolved_selector_errors_keep_exact_first_precedence() {
         }
         let h = Hierarchy::new(data.scopes, data.variables, data.encodings);
         let scope = HierarchyPath::parse("tb.dut").unwrap();
-        let error = h.resolve_signal("data[7:0]", Some(&scope)).err().unwrap();
+        let error = h
+            .resolve_signal(r#""data[7:0]""#, Some(&scope))
+            .err()
+            .unwrap();
         if ambiguous {
             assert!(matches!(error, LookupError::Ambiguous { matches: 2, .. }));
         } else {
             assert!(matches!(error, LookupError::NoSignal { .. }));
         }
         assert_eq!(
-            h.signal("tb.dut.data[7:0]").unwrap_err().to_string(),
+            h.signal(r#"tb.dut."data[7:0]""#).unwrap_err().to_string(),
             error.to_string()
         );
         assert_eq!(
-            h.resolve_signal(r#""data"[7:0]"#, Some(&scope))
+            h.resolve_signal("data[7:0]", Some(&scope))
                 .unwrap()
                 .projection(),
             Some((7, 0))
@@ -1137,7 +1142,6 @@ fn indexed_components_keep_literal_names_and_numeric_indices_distinct() {
             path
         );
     }
-    assert_eq!(root.join("module").to_verilog().unwrap(), r"top.\module ");
     assert_eq!(HierarchyPath::parse("[0]").unwrap().name(), Some("[0]"));
     assert_eq!(
         root.join("arr[10][0]"),
@@ -1197,13 +1201,13 @@ fn path_styles_round_trip_contract_examples() {
 #[test]
 fn path_styles_handle_sv_escape_boundaries_and_errors() {
     let top = HierarchyPath::parse("top").unwrap();
-    let keyword = top.join("module");
-    assert_eq!(keyword.format(PathStyle::Sv).unwrap(), r"top.\module ");
-    let indexed_keyword = top.join(PathComponent::indexed("module", 0));
-    assert_eq!(
-        indexed_keyword.format(PathStyle::Sv).unwrap(),
-        r"top.\module [0]"
-    );
+    for name in ["logic", "wire", "module"] {
+        let keyword = top.join(name);
+        assert_eq!(
+            keyword.format(PathStyle::Sv).unwrap(),
+            format!("top.{name}")
+        );
+    }
 
     let unterminated = r"top.\u_reg[0].q";
     assert_eq!(
@@ -1211,11 +1215,90 @@ fn path_styles_handle_sv_escape_boundaries_and_errors() {
         unterminated.len()
     );
 
-    let spaced = top.join("a b");
-    assert_eq!(spaced.format(PathStyle::Logical).unwrap(), r#"top."a b""#);
+    for name in ["a,b", "bus-0", "sig$0", "1q", "_q", "a b", "été"] {
+        let path = top.join(PathComponent::indexed(name, -1));
+        let logical = format!(r#"top."{name}"[-1]"#);
+        assert_eq!(path.to_string(), logical);
+        assert_eq!(path.format(PathStyle::Logical).unwrap(), logical);
+        assert_eq!(HierarchyPath::parse(&logical).unwrap(), path);
+        let sv = path.format(PathStyle::Sv);
+        if matches!(name, "a b" | "été") {
+            assert!(matches!(
+                sv,
+                Err(PathFormatError::NotRepresentable { component }) if component == name
+            ));
+        } else {
+            let sv = sv.unwrap();
+            assert_eq!(sv, format!(r"top.\{name} [-1]"));
+            assert_eq!(HierarchyPath::parse(&sv).unwrap(), path);
+        }
+    }
+}
+
+#[test]
+fn escape_spelling_does_not_affect_path_identity() {
+    use std::collections::{BTreeSet, HashSet};
+
+    let plain = "top.logic[-1].q";
+    let escaped = r"top.\logic [-1].\q ";
+    let a = HierarchyPath::parse(plain).unwrap();
+    let b = HierarchyPath::parse(escaped).unwrap();
+    assert_eq!(a, b);
+    assert_eq!(HashSet::from([&a, &b]).len(), 1);
+    assert_eq!(
+        BTreeSet::from([
+            a.components().nth(1).unwrap(),
+            b.components().nth(1).unwrap()
+        ])
+        .len(),
+        1
+    );
+    assert_eq!(a.to_verilog().unwrap(), plain);
+    assert_eq!(b.to_verilog().unwrap(), escaped);
+    assert_eq!(b.to_string(), plain);
+}
+
+#[test]
+fn exact_paths_and_selectors_share_component_syntax() {
+    for (text, base) in [
+        ("top.data[3:0]", "top.data"),
+        (r#"top."data"[3:0]"#, "top.data"),
+        (r"top.\data [3:0]", "top.data"),
+        ("top.mem[-1][3:0]", "top.mem[-1]"),
+        (r#"top."mem"[-1][3:0]"#, "top.mem[-1]"),
+        (r"top.\mem [-1][3:0]", "top.mem[-1]"),
+        (r#"top."mem[-1]"[3:0]"#, r#"top."mem[-1]""#),
+        ("top.arr[10][0][3:0]", r#"top."arr[10][0]""#),
+        ("top.bank[7:0].data[3:0]", r#"top."bank[7:0]".data"#),
+        (r#"é."d"[3:0]"#, r#""é".d"#),
+    ] {
+        let range_start = text.len() - "[3:0]".len();
+        assert_eq!(HierarchyPath::parse(text).unwrap_err().offset, range_start);
+        let selector = SignalSelector::parse(text).unwrap();
+        assert_eq!(selector.path(), &HierarchyPath::parse(base).unwrap());
+        assert_eq!(selector.projection(), Some((3, 0)));
+    }
+    let literal = HierarchyPath::from_components(["top", "data[3:0]"]);
+    for text in [r#"top."data[3:0]""#, r"top.\data[3:0] "] {
+        assert_eq!(HierarchyPath::parse(text).unwrap(), literal);
+        let selector = SignalSelector::parse(text).unwrap();
+        assert_eq!(selector.path(), &literal);
+        assert_eq!(selector.projection(), None);
+    }
+    assert_eq!(
+        HierarchyPath::parse("top.bank[3:0].q").unwrap(),
+        HierarchyPath::from_components(["top", "bank[3:0]", "q"])
+    );
+    let literal = HierarchyPath::from_components(["top", "bank[3:0", "q]"]);
+    for text in [r#"top."bank[3:0".q]"#, r"top.\bank[3:0 .q]"] {
+        assert_eq!(HierarchyPath::parse(text).unwrap(), literal);
+        let selector = SignalSelector::parse(text).unwrap();
+        assert_eq!(selector.path(), &literal);
+        assert_eq!(selector.projection(), None);
+    }
     assert!(matches!(
-        spaced.format(PathStyle::Sv),
-        Err(PathFormatError::NotRepresentable { component }) if component == "a b"
+        SignalSelector::parse(r#"top."été"[3:0]"#).unwrap().format(PathStyle::Sv),
+        Err(PathFormatError::NotRepresentable { component }) if component == "été"
     ));
 }
 

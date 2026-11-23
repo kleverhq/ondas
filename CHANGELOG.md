@@ -4,6 +4,15 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+### Breaking changes
+
+- A trailing `[msb:lsb]` outside a quoted or escaped name always selects a bit slice in `signal` and `resolve_signal`. Exact path APIs reject the suffix. Quote or escape a literal name such as `data[3:0]`.
+- Logical and SystemVerilog paths write simple names directly. A simple name starts with an ASCII letter and continues with ASCII letters, digits or underscores. Logical output quotes other names. SystemVerilog output escapes other representable names and preserves explicit escapes supplied by readers or the path parser.
+
+### Added
+
+- `SignalSelector` and `Hierarchy::resolve_selector` for typed lookup with an optional projection. `ResolvedSelector::selector` returns the full declaration path with the explicit slice, including full-width slices.
+
 ## [3.0.0] - 2026-11-23
 
 ### Breaking changes
