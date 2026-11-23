@@ -30,8 +30,8 @@ pub(super) fn split_index(text: &str) -> Option<(&str, i64)> {
 }
 
 pub(super) fn parse(text: &str, allow_projection: bool) -> Result<SignalSelector, PathError> {
-    // Find the final range-shaped suffix. The component lexer still checks
-    // whether that opening bracket belongs to a quoted or escaped name.
+    // Find a single final bracket pair with a colon. The lexer still checks
+    // whether the opening bracket belongs to a quoted or escaped name.
     let projection_suffix = text.strip_suffix(']').and_then(|prefix| {
         let (base, bounds) = prefix.rsplit_once('[')?;
         let (msb, lsb) = bounds.split_once(':')?;

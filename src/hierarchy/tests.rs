@@ -1285,10 +1285,14 @@ fn exact_paths_and_selectors_share_component_syntax() {
         assert_eq!(selector.path(), &literal);
         assert_eq!(selector.projection(), None);
     }
-    assert_eq!(
-        HierarchyPath::parse("top.bank[3:0].q").unwrap(),
-        HierarchyPath::from_components(["top", "bank[3:0]", "q"])
-    );
+    for leaf in ["q", "q]"] {
+        let text = format!("top.bank[3:0].{leaf}");
+        let literal = HierarchyPath::from_components(["top", "bank[3:0]", leaf]);
+        assert_eq!(HierarchyPath::parse(&text).unwrap(), literal);
+        let selector = SignalSelector::parse(&text).unwrap();
+        assert_eq!(selector.path(), &literal);
+        assert_eq!(selector.projection(), None);
+    }
     let literal = HierarchyPath::from_components(["top", "bank[3:0", "q]"]);
     for text in [r#"top."bank[3:0".q]"#, r"top.\bank[3:0 .q]"] {
         assert_eq!(HierarchyPath::parse(text).unwrap(), literal);

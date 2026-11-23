@@ -961,7 +961,8 @@ impl Hierarchy {
     /// Resolves a [`SignalSelector`] from text and returns its query handle.
     ///
     /// `tb.data[3:0]` slices `data`. To select a literal `data[3:0]`,
-    /// use `tb."data[3:0]"` or `tb.\data[3:0] `.
+    /// use `tb."data[3:0]"` or `tb.\data[3:0]␠`, where `␠` is the required
+    /// trailing ASCII space.
     /// Use [`Self::resolve_signal`] to retain the declaration and explicit slice.
     ///
     /// Returns [`LookupError`] for invalid syntax, missing or ambiguous metadata,
