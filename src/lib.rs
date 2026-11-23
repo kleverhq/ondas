@@ -174,13 +174,13 @@ For a file, start with `ondas::open("dump.fst")?` instead. The [`Waveform`] exam
 also shows escaped hierarchy names, a bit slice and a trace over a bounded range.
 File-based examples use `no_run` because they require the named signals.
 
-[`HierarchyPath`] represents exact names and escaping. [`Hierarchy::signal`]
-first looks up an exact variable path, then considers one trailing `[msb:lsb]`
-slice if exact lookup fails. To separate name lookup from slicing, use [`Hierarchy::signal_path`]
-followed by [`Signal::slice`]. Slice indices are normalized value positions,
-not HDL indices.
-Use [`Hierarchy::resolve_signal`] to retain the selected declaration and explicit
-slice bounds, with an optional scope prefix.
+[`HierarchyPath`] represents exact names and indices. [`SignalSelector`]
+adds an optional trailing `[msb:lsb]` slice. Quote or escape a name to include
+this suffix literally. Slice indices are positions in the value, with zero at
+the least-significant bit.
+Use [`Hierarchy::resolve_selector`] to look up a parsed selector or
+[`Hierarchy::resolve_signal`] for text. Both retain the declaration and
+explicit slice and accept an optional scope prefix.
 
 ## Choose a query
 
@@ -513,8 +513,8 @@ pub use error::{
 /// Types describing waveform hierarchy and queryable signals.
 pub use hierarchy::{
     BitRange, Direction, Encoding, Enumeration, EnumerationVariant, Hierarchy, HierarchyPath, Item,
-    LogicDomain, Packing, PathComponent, PathStyle, ResolvedSelector, Scope, Signal, Signedness,
-    Variable,
+    LogicDomain, Packing, PathComponent, PathStyle, ResolvedSelector, Scope, Signal,
+    SignalSelector, Signedness, Variable,
 };
 /// Owned and borrowed waveform query results.
 pub use query::{Change, Initial, QueryContext, Sample, SampleRef, ScanRef, Selection, Trace};

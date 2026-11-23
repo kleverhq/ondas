@@ -93,7 +93,7 @@ b11 #
     let plain = hierarchy.variable("top.plain").unwrap();
     assert!(plain.name_was_escaped());
     assert_eq!(plain.path().to_string(), "top.plain");
-    assert_eq!(plain.path().to_verilog().unwrap(), "top.plain");
+    assert_eq!(plain.path().to_verilog().unwrap(), r"top.\plain ");
     for (text, component, value, msb, lsb) in [
         ("top.bus[0]", PathComponent::indexed("bus", 0), "10", 3, 2),
         ("top.bus[1]", PathComponent::indexed("bus", 1), "01", 1, 0),

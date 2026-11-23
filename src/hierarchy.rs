@@ -4,7 +4,9 @@ mod tests;
 mod path;
 
 use std::{
-    fmt,
+    cmp, fmt,
+    fmt::Write,
+    hash::{Hash, Hasher},
     str::FromStr,
     sync::{
         Arc, OnceLock,
@@ -16,11 +18,13 @@ use crate::{LookupError, PathError, PathFormatError, Result, SliceError};
 
 /// One logical hierarchy name and an optional array index.
 ///
-/// A literal `u_reg[0]` and index `0` of `u_reg` are distinct components.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Equality, ordering and hashing use the name and index. A literal
+/// `u_reg[0]` and index `0` of `u_reg` are distinct components.
+#[derive(Debug, Clone, Eq)]
 pub struct PathComponent {
     name: String,
     index: Option<i64>,
+    name_was_escaped: bool,
 }
 
 impl PathComponent {
@@ -29,6 +33,7 @@ impl PathComponent {
         Self {
             name: name.into(),
             index: None,
+            name_was_escaped: false,
         }
     }
 
@@ -37,6 +42,7 @@ impl PathComponent {
         Self {
             name: name.into(),
             index: Some(index),
+            name_was_escaped: false,
         }
     }
 
@@ -48,6 +54,15 @@ impl PathComponent {
     /// Returns the array index, if present.
     pub fn index(&self) -> Option<i64> {
         self.index
+    }
+
+    fn identity(&self) -> (&str, Option<i64>) {
+        (&self.name, self.index)
+    }
+
+    fn with_escape(mut self, name_was_escaped: bool) -> Self {
+        self.name_was_escaped = name_was_escaped;
+        self
     }
 
     pub(crate) fn from_index_spelling(mut name: String) -> Self {
@@ -78,6 +93,30 @@ impl PathComponent {
     }
 }
 
+impl PartialEq for PathComponent {
+    fn eq(&self, other: &Self) -> bool {
+        self.identity() == other.identity()
+    }
+}
+
+impl Ord for PathComponent {
+    fn cmp(&self, other: &Self) -> cmp::Ordering {
+        self.identity().cmp(&other.identity())
+    }
+}
+
+impl PartialOrd for PathComponent {
+    fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Hash for PathComponent {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.identity().hash(state);
+    }
+}
+
 impl<T: Into<String>> From<T> for PathComponent {
     fn from(name: T) -> Self {
         Self::new(name)
@@ -95,15 +134,15 @@ impl From<&PathComponent> for PathComponent {
 pub enum PathStyle {
     /// Canonical Ondas syntax. Quotes preserve any name.
     Logical,
-    /// SystemVerilog syntax with escapes where required.
+    /// SystemVerilog escape notation. See [`HierarchyPath::format`].
     Sv,
 }
 
 /// An owned, immutable sequence of exact hierarchy components.
 ///
-/// Identity includes each component's name and optional index. Paths start at
-/// the hierarchy root. Relative paths and navigation components `.` and `..`
-/// are not supported.
+/// Identity includes each component's name and optional index. Exact lookup
+/// starts at the root. [`Hierarchy::resolve_selector`] can qualify a selector
+/// path relative to a scope. Navigation components `.` and `..` are unsupported.
 ///
 /// # Accepted text forms
 ///
@@ -128,8 +167,9 @@ pub enum PathStyle {
 ///
 /// [`Display`](fmt::Display) and [`PathStyle::Logical`] produce the same
 /// canonical Ondas syntax. Parsing that output recovers the same components.
-/// Empty names and names containing separators, whitespace, brackets,
-/// quotes, backslashes or control characters are quoted.
+/// A simple name starts with an ASCII letter or an underscore. The remaining
+/// characters are ASCII letters, digits, underscores or dollar signs.
+/// Logical output quotes all other names.
 /// The array index follows the name. Inside quotes, canonical output uses `\"`
 /// and `\\`, the short escapes `\b`, `\f`, `\n`, `\r`, and `\t`, and lowercase
 /// `\u00xx` for the remaining `U+0000..=U+001F` characters. All other characters,
@@ -141,8 +181,8 @@ pub enum PathStyle {
 /// # Path versus selector
 ///
 /// A signed decimal index selects an array element at one hierarchy level.
-/// [`Hierarchy::signal`] and [`Hierarchy::resolve_signal`] interpret an optional
-/// trailing `[msb:lsb]` as a bit projection after exact lookup fails.
+/// Use [`SignalSelector`] for a trailing `[msb:lsb]` bit projection. An exact
+/// path rejects this suffix. Quote or escape the name to include it literally.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct HierarchyPath {
     components: Vec<PathComponent>,
@@ -153,10 +193,10 @@ impl HierarchyPath {
     ///
     /// Returns [`PathError`] with a byte offset for invalid syntax.
     pub fn parse(text: &str) -> std::result::Result<Self, PathError> {
-        path::parse(text).map(|components| Self { components })
+        path::parse(text, false).map(|selector| selector.path)
     }
 
-    /// Builds a path from exact, unescaped hierarchy components.
+    /// Builds a path from exact hierarchy components.
     ///
     /// String inputs are literal names. Use [`PathComponent::indexed`] for
     /// an array element.
@@ -210,7 +250,8 @@ impl HierarchyPath {
     /// same path.
     ///
     /// [`PathStyle::Logical`] matches [`Display`](fmt::Display) and supports every
-    /// name. [`PathStyle::Sv`] escapes names where required, including keywords.
+    /// name. [`PathStyle::Sv`] writes simple names directly and escapes other
+    /// names. It also retains explicit escapes from input text or reader metadata.
     /// It ends each escaped name with an ASCII space, including at the end of a
     /// path. An array index follows the name and any terminating space.
     ///
@@ -254,7 +295,7 @@ impl HierarchyPath {
 impl FromStr for HierarchyPath {
     type Err = PathError;
 
-    /// Parses a root-based hierarchy path.
+    /// Parses an exact hierarchy path.
     fn from_str(text: &str) -> std::result::Result<Self, Self::Err> {
         Self::parse(text)
     }
@@ -268,20 +309,67 @@ impl fmt::Display for HierarchyPath {
                 formatter.write_str(".")?;
             }
             let name = component.name();
-            if name.is_empty()
-                || name.chars().any(|c| {
-                    c.is_whitespace() || c.is_control() || matches!(c, '.' | '[' | ']' | '"' | '\\')
-                })
-            {
-                formatter.write_str(&serde_json::to_string(name).map_err(|_| fmt::Error)?)?;
-            } else {
+            if path::simple_name(name) {
                 formatter.write_str(name)?;
+            } else {
+                formatter.write_str(&serde_json::to_string(name).map_err(|_| fmt::Error)?)?;
             }
             if let Some(index) = component.index() {
                 write!(formatter, "[{index}]")?;
             }
         }
         Ok(())
+    }
+}
+
+/// An owned signal path and optional explicit bit projection.
+///
+/// The path can be relative to a scope for [`Hierarchy::resolve_selector`].
+/// Projection bounds are inclusive positions in the whole signal.
+/// Position zero is the least-significant bit.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SignalSelector {
+    path: HierarchyPath,
+    projection: Option<(u32, u32)>,
+}
+
+impl SignalSelector {
+    /// Creates a selector from an exact path and optional `(msb, lsb)` bounds.
+    ///
+    /// Resolution checks the order of the bounds and the signal width.
+    pub fn new(path: HierarchyPath, projection: Option<(u32, u32)>) -> Self {
+        Self { path, projection }
+    }
+
+    /// Parses a hierarchy path and an optional final `[msb:lsb]` projection.
+    ///
+    /// The bounds are unsigned decimal `u32` values. Brackets inside a quoted
+    /// or SystemVerilog escaped name are part of the name. An array index can
+    /// precede the projection, as in `top.mem[-1][3:0]`.
+    /// Invalid syntax returns [`PathError`] with a byte offset.
+    pub fn parse(text: &str) -> std::result::Result<Self, PathError> {
+        path::parse(text, true)
+    }
+
+    /// Returns the path without the projection.
+    pub fn path(&self) -> &HierarchyPath {
+        &self.path
+    }
+
+    /// Returns the explicit inclusive `(msb, lsb)` projection, if present.
+    pub fn projection(&self) -> Option<(u32, u32)> {
+        self.projection
+    }
+
+    /// Formats the path in the selected style and appends any projection.
+    ///
+    /// See [`HierarchyPath::format`] for the spelling rules and errors.
+    pub fn format(&self, style: PathStyle) -> std::result::Result<String, PathFormatError> {
+        let mut output = self.path.format(style)?;
+        if let Some((msb, lsb)) = self.projection {
+            write!(output, "[{msb}:{lsb}]").expect("writing to a String succeeds");
+        }
+        Ok(output)
     }
 }
 
@@ -502,6 +590,12 @@ impl<'h> ResolvedSelector<'h> {
     /// An exact declaration, including a literal name such as `data[7:0]`, returns `None`.
     pub fn projection(&self) -> Option<(u32, u32)> {
         self.projection
+    }
+
+    /// Returns the fully qualified path of the chosen declaration and its
+    /// original explicit projection.
+    pub fn selector(&self) -> SignalSelector {
+        SignalSelector::new(self.declaration.path(), self.projection)
     }
 }
 
@@ -799,7 +893,7 @@ impl Hierarchy {
         let mut components = Vec::new();
         while let Some(current) = index {
             let scope = &self.data.scopes[current];
-            components.push(scope.component.clone());
+            components.push(scope.component.clone().with_escape(scope.name_was_escaped));
             index = scope.parent;
         }
         components.reverse();
@@ -865,17 +959,12 @@ impl Hierarchy {
         self.variable_path(&HierarchyPath::parse(text)?)
     }
 
-    /// Resolves an exact variable path first, then an optional trailing bit slice.
+    /// Resolves a [`SignalSelector`] from text and returns its query handle.
     ///
-    /// The lookup first treats the entire selector as an exact variable path. If
-    /// that variable is not found, one trailing `[msb:lsb]` can specify a
-    /// [`Signal::slice`]. An actual variable named `data[7:0]` therefore takes
-    /// priority over slicing `data`. `[n]` is never a slice. Select one bit with `[n:n]`.
-    ///
-    /// For example, `tb.mem[0]` names a whole signal, while `tb.mem[0][7:0]`
-    /// can slice it. Use [`Self::signal_path`] followed by [`Signal::slice`] to
-    /// avoid ambiguity. This is not an expression language or a dynamic index.
-    /// Use [`Self::resolve_signal`] to retain the selected declaration and explicit slice.
+    /// `tb.data[3:0]` slices `data`. To select a literal `data[3:0]`,
+    /// use `tb."data[3:0]"` or `tb.\data[3:0]␠`, where `␠` is the required
+    /// trailing ASCII space.
+    /// Use [`Self::resolve_signal`] to retain the declaration and explicit slice.
     ///
     /// Returns [`LookupError`] for invalid syntax, missing or ambiguous metadata,
     /// a declaration without a history, or an invalid slice.
@@ -884,25 +973,29 @@ impl Hierarchy {
             .map(|resolved| resolved.signal())
     }
 
-    /// Resolves a selector and retains its declaration and explicit bit slice.
+    /// Parses a [`SignalSelector`] and resolves it with [`Self::resolve_selector`].
     ///
-    /// Uses the exact-first rules of [`Self::signal`]. Exact ambiguous declarations
-    /// and declarations without a signal return errors without trying a slice.
-    /// Full-width slices retain their bounds in [`ResolvedSelector::projection`].
+    /// Syntax error offsets refer to bytes in the supplied text.
+    pub fn resolve_signal(
+        &self,
+        selector: &str,
+        scope: Option<&HierarchyPath>,
+    ) -> std::result::Result<ResolvedSelector<'_>, LookupError> {
+        self.resolve_selector(&SignalSelector::parse(selector)?, scope)
+    }
+
+    /// Resolves a parsed selector and retains its declaration and explicit bit slice.
     ///
     /// `scope` is a root-based component prefix, not a scope identity. An empty
     /// prefix or `None` selects from the root. A candidate that starts with the
     /// prefix and has at least one further component is already qualified.
-    /// Otherwise, the prefix is added once. This applies to both the exact path
-    /// and the slice base, without changing quoted or escaped names. An empty
-    /// candidate or slice base is not prefixed and returns [`LookupError::NotFound`]
-    /// with an empty path. There is no search in other scopes and no separate scope lookup;
-    /// duplicate scope paths need not make the final declaration ambiguous.
+    /// Otherwise, the prefix is added once. An empty path returns
+    /// [`LookupError::NotFound`] with an empty path. Duplicate scope paths can
+    /// still resolve to a unique declaration.
     ///
-    /// Returns the same [`LookupError`] categories as [`Self::signal`]. Syntax
-    /// error offsets refer to the supplied selector, before qualification.
-    /// Lookup error paths identify the attempted qualified path, or the qualified
-    /// base without bounds when a slice was attempted.
+    /// Lookup error paths identify the qualified base. If a unique declaration
+    /// has a signal, resolution applies the projection with [`Signal::slice`].
+    /// A full-width slice retains its bounds in [`ResolvedSelector::projection`].
     ///
     /// ```
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -912,54 +1005,47 @@ impl Hierarchy {
     /// let h = wave.hierarchy().clone();
     /// let scope = ondas::HierarchyPath::parse("top")?;
     /// let whole = h.resolve_signal("flag", Some(&scope))?;
-    /// let full = h.resolve_signal(r#""flag"[0:0]"#, Some(&scope))?;
+    /// let selector = ondas::SignalSelector::parse(r#""flag"[0:0]"#)?;
+    /// assert_eq!(selector.path().len(), 1);
+    /// let full = h.resolve_selector(&selector, Some(&scope))?;
     /// assert_eq!(whole.signal(), full.signal());
     /// assert_eq!(whole.projection(), None);
     /// assert_eq!(full.projection(), Some((0, 0)));
-    /// assert_eq!(full.declaration().path().to_string(), "top.flag");
+    /// assert_eq!(full.selector().format(ondas::PathStyle::Logical)?, "top.flag[0:0]");
     /// let sample = wave.sample(full.signal(), ondas::Time::ZERO)?;
     /// # Ok(())
     /// # }
     /// ```
-    pub fn resolve_signal(
+    pub fn resolve_selector(
         &self,
-        selector: &str,
+        selector: &SignalSelector,
         scope: Option<&HierarchyPath>,
     ) -> std::result::Result<ResolvedSelector<'_>, LookupError> {
-        let resolve = |mut path: HierarchyPath, projection: Option<(u32, u32)>| {
-            if let Some(scope) = scope.filter(|scope| !scope.is_empty())
-                && !path.is_empty()
-                && !(path.len() > scope.len() && path.components.starts_with(&scope.components))
-            {
-                path = HierarchyPath::from_components(scope.components().chain(path.components()));
-            }
-            let declaration = self.variable_path(&path)?;
-            let signal = declaration
-                .signal()
-                .ok_or_else(|| LookupError::NoSignal { path: path.clone() })?;
-            let signal = match projection {
-                Some((msb, lsb)) => signal.slice(msb, lsb)?,
-                None => signal,
-            };
-            Ok(ResolvedSelector {
-                declaration,
-                signal,
-                projection,
-            })
+        let path = selector.path();
+        let qualified;
+        let path = if let Some(scope) = scope.filter(|scope| !scope.is_empty())
+            && !path.is_empty()
+            && !(path.len() > scope.len() && path.components.starts_with(&scope.components))
+        {
+            qualified = HierarchyPath::from_components(scope.components().chain(path.components()));
+            &qualified
+        } else {
+            path
         };
-        let exact = HierarchyPath::parse(selector)
-            .map_err(LookupError::from)
-            .and_then(|path| resolve(path, None));
-        if !matches!(
-            &exact,
-            Err(LookupError::NotFound { .. } | LookupError::InvalidPath(_))
-        ) {
-            return exact;
-        }
-        if let Some((path, msb, lsb)) = path::selector(selector)? {
-            return resolve(path, Some((msb, lsb)));
-        }
-        exact
+        let declaration = self.variable_path(path)?;
+        let signal = declaration
+            .signal()
+            .ok_or_else(|| LookupError::NoSignal { path: path.clone() })?;
+        let projection = selector.projection();
+        let signal = match projection {
+            Some((msb, lsb)) => signal.slice(msb, lsb)?,
+            None => signal,
+        };
+        Ok(ResolvedSelector {
+            declaration,
+            signal,
+            projection,
+        })
     }
 
     /// Resolves an already parsed exact scope path.
@@ -1276,8 +1362,10 @@ impl<'h> Variable<'h> {
 
     /// Returns the declaration's owned, root-based path.
     pub fn path(&self) -> HierarchyPath {
-        let mut path = self.hierarchy.scope_path_at(self.data().parent);
-        path.components.push(self.data().component.clone());
+        let data = self.data();
+        let mut path = self.hierarchy.scope_path_at(data.parent);
+        path.components
+            .push(data.component.clone().with_escape(data.name_was_escaped));
         path
     }
 

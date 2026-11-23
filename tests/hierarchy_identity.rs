@@ -1,4 +1,6 @@
-use ondas::{HierarchyPath, Item, LookupError, Scope, Time, Value, Variable};
+use ondas::{
+    HierarchyPath, Item, LookupError, PathStyle, Scope, SignalSelector, Time, Value, Variable,
+};
 
 const SOURCE: &[u8] = br##"$scope module top $end
 $var wire 8 ! \literal[7:0] $end
@@ -123,12 +125,10 @@ fn exact_names_keep_declarations_and_component_boundaries() {
     assert!(nested != literal);
     assert_ne!(nested.path(), literal.path());
     assert!(nested.parent() != literal.parent());
-    for _ in 0..2 {
-        assert!(matches!(
-            hierarchy.signal("top.duplicate[7:0]"),
-            Err(LookupError::Ambiguous { matches: 2, .. })
-        ));
-    }
+    assert!(matches!(
+        hierarchy.signal(r#"top."duplicate[7:0]""#),
+        Err(LookupError::Ambiguous { matches: 2, .. })
+    ));
     let top = hierarchy.scope("top").unwrap();
     let children: Vec<_> = top.children().collect();
     assert_eq!(children.len(), 11);
@@ -178,36 +178,26 @@ fn selector_results_preserve_aliases_projection_and_output_roundtrip() {
     assert_eq!(selected[0].signal(), selected[1].signal());
     assert_eq!(selected[0].signal(), selected[2].signal());
     assert!(selected[0].declaration() != selected[2].declaration());
-    for (selection, expected) in selected.iter().zip([
-        "10100101", "10100101", "10100101", "11110000", "0000", "10100101",
+    for (selection, (logical, sv, expected)) in selected.iter().zip([
+        ("top.alias", "top.alias", "10100101"),
+        ("top.alias[7:0]", "top.alias[7:0]", "10100101"),
+        (r#"top."literal[7:0]""#, r"top.\literal[7:0] ", "10100101"),
+        ("top.literal[7:0]", r"top.\literal [7:0]", "11110000"),
+        ("top.literal[3:0]", r"top.\literal [3:0]", "0000"),
+        ("top.alias", "top.alias", "10100101"),
     ]) {
-        // Components and explicit bounds suffice; no input selector parser is needed.
-        let path = selection.declaration().path();
-        let emitted = match selection.projection() {
-            None => path.to_string(),
-            Some((msb, lsb)) => {
-                let base = path
-                    .components()
-                    .map(|c| {
-                        let name = serde_json::to_string(c.name()).unwrap();
-                        match c.index() {
-                            Some(index) => format!("{name}[{index}]"),
-                            None => name,
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join(".");
-                format!("{base}[{msb}:{lsb}]")
-            }
-        };
-        let again = h.resolve_signal(&emitted, None).unwrap();
-        assert!(again.declaration() == selection.declaration());
-        assert_eq!(again.projection(), selection.projection());
-        assert_eq!(again.signal(), selection.signal());
+        for (style, spelling) in [(PathStyle::Logical, logical), (PathStyle::Sv, sv)] {
+            let emitted = selection.selector().format(style).unwrap();
+            assert_eq!(emitted, spelling);
+            let again = h.resolve_signal(&emitted, None).unwrap();
+            assert!(again.declaration() == selection.declaration());
+            assert_eq!(again.projection(), selection.projection());
+            assert_eq!(again.signal(), selection.signal());
+        }
         let ondas::Sample::Value {
             value: Value::Bits(bits),
             ..
-        } = wave.sample(again.signal(), Time::ZERO).unwrap()
+        } = wave.sample(selection.signal(), Time::ZERO).unwrap()
         else {
             panic!("expected bits");
         };
@@ -215,8 +205,9 @@ fn selector_results_preserve_aliases_projection_and_output_roundtrip() {
     }
     let retained = {
         let scope = HierarchyPath::parse(r#"top.\a.b "#).unwrap();
-        let selector = String::from(r#""c"[0:0]"#);
-        h.resolve_signal(&selector, Some(&scope)).unwrap()
+        let selector = SignalSelector::parse(r#""c"[0:0]"#).unwrap();
+        assert_eq!(selector.path().len(), 1);
+        h.resolve_selector(&selector, Some(&scope)).unwrap()
     };
     assert_eq!(
         retained.declaration().path(),
@@ -236,13 +227,11 @@ fn public_selector_failures_keep_typed_errors_and_qualified_paths() {
         assert_eq!(selected.projection(), projection);
     }
     assert!(matches!(
-        h.resolve_signal("duplicate[7:0]", Some(&scope)),
+        h.resolve_signal(r#""duplicate[7:0]""#, Some(&scope)),
         Err(LookupError::Ambiguous { path, matches: 2 })
             if path == HierarchyPath::from_components(["top", "duplicate[7:0]"])
     ));
-    let forced = h
-        .resolve_signal(r#""duplicate"[7:0]"#, Some(&scope))
-        .unwrap();
+    let forced = h.resolve_signal("duplicate[7:0]", Some(&scope)).unwrap();
     assert_eq!(forced.declaration().name(), "duplicate");
     assert_eq!(forced.projection(), Some((7, 0)));
     assert!(matches!(
@@ -269,4 +258,119 @@ fn public_selector_failures_keep_typed_errors_and_qualified_paths() {
             lsb: 1
         }))
     ));
+}
+
+#[test]
+fn selector_spelling_and_lookup_follow_the_declared_path() {
+    let source = br##"$scope module top $end
+$var wire 8 ! data $end
+$var wire 4 " \data[3:0] $end
+$var wire 4 # \absent[3:0] $end
+$var wire 8 $ mem[-1] $end
+$var wire 8 % \mem[-1] $end
+$var wire 1 ( _done $end
+$var wire 1 ) sig$0 $end
+$scope module logic[-1] $end
+$var wire 1 & q $end
+$upscope $end
+$scope module \logic $end
+$var wire 1 ' \sig$0 $end
+$upscope $end
+$upscope $end
+$enddefinitions $end
+#0 b10100101 ! b1111 " b1110 # b1001 $ b0110 % 0& 1' 0( 1)
+"##;
+    let mut wave = ondas::open_bytes("selectors.vcd", source.as_slice().into()).unwrap();
+    let h = wave.hierarchy().clone();
+    let scope = HierarchyPath::parse("top").unwrap();
+    for (inputs, logical, sv, expected_bits) in [
+        (
+            &["data[3:0]", r#""data"[3:0]"#, r"\data [3:0]"][..],
+            "top.data[3:0]",
+            "top.data[3:0]",
+            "0101",
+        ),
+        (
+            &[r#""data[3:0]""#, r"\data[3:0] "][..],
+            r#"top."data[3:0]""#,
+            r"top.\data[3:0] ",
+            "1111",
+        ),
+        (
+            &["mem[-1][3:0]"][..],
+            "top.mem[-1][3:0]",
+            "top.mem[-1][3:0]",
+            "1001",
+        ),
+        (
+            &[r#""mem[-1]"[3:0]"#][..],
+            r#"top."mem[-1]"[3:0]"#,
+            r"top.\mem[-1] [3:0]",
+            "0110",
+        ),
+        (
+            &["logic[-1].q"][..],
+            "top.logic[-1].q",
+            "top.logic[-1].q",
+            "0",
+        ),
+        (&["_done"][..], "top._done", "top._done", "0"),
+        (&["sig$0"][..], "top.sig$0", "top.sig$0", "1"),
+        (
+            &["logic.sig$0[0:0]"][..],
+            "top.logic.sig$0[0:0]",
+            r"top.\logic .\sig$0 [0:0]",
+            "1",
+        ),
+    ] {
+        for input in inputs {
+            let selector = SignalSelector::parse(input).unwrap();
+            let resolved = h.resolve_selector(&selector, Some(&scope)).unwrap();
+            let from_text = h.resolve_signal(input, Some(&scope)).unwrap();
+            assert!(resolved.declaration() == from_text.declaration());
+            assert_eq!(resolved.projection(), from_text.projection());
+            assert_eq!(resolved.signal(), from_text.signal());
+            for (style, spelling) in [(PathStyle::Logical, logical), (PathStyle::Sv, sv)] {
+                let emitted = resolved.selector().format(style).unwrap();
+                assert_eq!(emitted, spelling);
+                let again = h.resolve_signal(&emitted, None).unwrap();
+                assert!(again.declaration() == resolved.declaration());
+                assert_eq!(again.projection(), resolved.projection());
+            }
+            let ondas::Sample::Value {
+                value: Value::Bits(bits),
+                ..
+            } = wave.sample(resolved.signal(), Time::ZERO).unwrap()
+            else {
+                panic!("expected bits for {input}");
+            };
+            assert_eq!(bits.as_ref().to_string(), expected_bits);
+        }
+    }
+    assert!(matches!(
+        h.resolve_signal("absent[3:0]", Some(&scope)),
+        Err(LookupError::NotFound { path }) if path == scope.join("absent")
+    ));
+    assert!(matches!(
+        h.variable("top.data[3:0]"),
+        Err(LookupError::InvalidPath(_))
+    ));
+    assert!(matches!(
+        h.scope("top.data[3:0]"),
+        Err(LookupError::InvalidPath(_))
+    ));
+    let declaration = h.variable("top.logic.sig$0").unwrap();
+    assert!(declaration.name_was_escaped());
+    let sv = r"top.\logic .\sig$0 ";
+    assert_eq!(declaration.path().format(PathStyle::Sv).unwrap(), sv);
+    assert!(declaration == h.variable(sv).unwrap());
+    assert_eq!(
+        declaration
+            .parent()
+            .unwrap()
+            .path()
+            .format(PathStyle::Sv)
+            .unwrap(),
+        r"top.\logic "
+    );
 }
