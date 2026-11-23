@@ -4,6 +4,10 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+## [3.0.1] - 2026-11-23
+
+This hotfix supersedes 3.0.0.
+
 ### Breaking changes
 
 - A trailing `[msb:lsb]` outside a quoted or escaped name always selects a bit slice in `signal` and `resolve_signal`. Exact path APIs reject the suffix. Quote or escape a literal name such as `data[3:0]`.
@@ -157,7 +161,8 @@ Initial release of Ondas, a read-only Rust library for waveform analysis.
 - Final-tick state normalization and event occurrence counts, with documented reader limits.
 - Fixture-backed conformance tests, performance benchmarks, and automated release checks.
 
-[Unreleased]: https://github.com/kleverhq/ondas/compare/v3.0.0...HEAD
+[Unreleased]: https://github.com/kleverhq/ondas/compare/v3.0.1...HEAD
+[3.0.1]: https://github.com/kleverhq/ondas/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/kleverhq/ondas/compare/v2.2.0...v3.0.0
 [2.2.0]: https://github.com/kleverhq/ondas/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/kleverhq/ondas/compare/v2.0.0...v2.1.0
