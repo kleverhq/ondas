@@ -1911,13 +1911,27 @@ fn pool_queries(fixture: &Fixture, bytes: bool, context: &str) -> bool {
         return true;
     };
     metadata(&wave, &fixture.oracle["metadata"], bytes, fixture);
-    if fixture.format == Format::Vwdb
-        && fixture.path.parent().and_then(Path::file_name) == Some("vwdb0000-enum-core".as_ref())
-    {
+    if fixture.format == Format::Vwdb {
         let hierarchy = wave.hierarchy();
-        let parent = hierarchy.scope("top").unwrap();
-        for path in ["top.array_values[0]", "top.array_values[1]"] {
-            assert!(hierarchy.variable(path).unwrap().parent().as_ref() == Some(&parent));
+        let fixture_name = fixture
+            .path
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str());
+        match fixture_name {
+            Some("vwdb0000-enum-core") => {
+                let parent = hierarchy.scope("top").unwrap();
+                for path in ["top.array_values[0]", "top.array_values[1]"] {
+                    assert!(hierarchy.variable(path).unwrap().parent().as_ref() == Some(&parent));
+                }
+            }
+            Some("vwdb0006-ghw-generate-order") => {
+                let parent = hierarchy.scope("\"\"").unwrap();
+                for path in ["\"\".gen[0]", "\"\".gen[1]"] {
+                    assert!(hierarchy.scope(path).unwrap().parent().as_ref() == Some(&parent));
+                }
+            }
+            _ => {}
         }
     }
     let signals = hierarchy(&wave, &fixture.oracle, false);

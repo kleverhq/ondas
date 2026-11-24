@@ -80,6 +80,37 @@ fn vhdl_ranges_are_declaration_indices() {
 
 #[test]
 #[ignore = "requires installed VWDB fixtures"]
+fn vhdl_enum_reads_recorded_codes_and_labels() {
+    let mut wave = ondas::open(fixture("vwdb/vwdb0036-wdb-vhdl-enum/waveform.vwdb")).unwrap();
+    let variable = wave.hierarchy().variable("\"\".phase").unwrap();
+    let signal = variable.signal().unwrap();
+    assert_eq!(signal.width(), Some(8));
+    let table = variable.enumeration().unwrap();
+    let variants = table
+        .variants()
+        .map(|variant| (variant.encoded.to_string(), variant.label))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        variants,
+        [
+            ("00000000".into(), "idle"),
+            ("00000001".into(), "busy"),
+            ("00000010".into(), "done"),
+        ]
+    );
+    for (tick, expected) in [
+        (0, "00000000"),
+        (4_000_000, "00000001"),
+        (9_000_000, "00000010"),
+        (15_000_000, "00000000"),
+    ] {
+        let sample = wave.sample(signal, Time::from_ticks(tick)).unwrap();
+        assert_eq!(bits(sample.as_ref()).as_deref(), Some(expected));
+    }
+}
+
+#[test]
+#[ignore = "requires installed VWDB fixtures"]
 fn exact_paths_and_independent_handles() {
     for (slug, cases) in [
         (
@@ -474,4 +505,50 @@ fn waveform_owners_move_across_threads() {
         gap_reader.join().unwrap();
         history_reader.join().unwrap();
     });
+}
+
+#[cfg(feature = "shm-lib")]
+#[test]
+#[ignore = "requires installed SHM and VWDB fixtures"]
+fn reader_orders_in_fresh_processes() {
+    const ORDER: &str = "ONDAS_TEST_VWDB_FIRST_READER";
+    let Ok(first) = std::env::var(ORDER) else {
+        for backend in ["shm-lib", "vwdb-lib"] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--ignored", "--exact", "reader_orders_in_fresh_processes"])
+                .env(ORDER, backend)
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains("1 passed"),
+                "{backend} first: {stdout}{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        return;
+    };
+    let shm =
+        || ondas::open_with(fixture("shm/shm0088-time-scale/waveform.shm"), "shm-lib").unwrap();
+    let vwdb = || gap_wave();
+    let (mut a, mut b) = match first.as_str() {
+        "shm-lib" => (shm(), vwdb()),
+        "vwdb-lib" => {
+            let b = vwdb();
+            (shm(), b)
+        }
+        _ => panic!("unexpected first reader {first}"),
+    };
+    let signal_a = a.hierarchy().signal("top.value").unwrap();
+    let signal_b = b.hierarchy().signal("top.glitch").unwrap();
+    for _ in 0..2 {
+        assert_eq!(
+            bits(a.sample(signal_a, Time::from_ticks(100)).unwrap().as_ref()).as_deref(),
+            Some("1")
+        );
+        assert_eq!(
+            bits(b.sample(signal_b, Time::from_ticks(4)).unwrap().as_ref()).as_deref(),
+            Some("0")
+        );
+    }
 }

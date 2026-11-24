@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "fixtures_revision": "e3cd9208a7f41c29cb9a335f6e12c99589e7cbb4",
-  "scope_digest": "sha256 of compact ASCII JSON sorted arrays of literal native scope components; no newline",
+  "scope_digest": "SHA-256 of compact ASCII JSON sorted scope path arrays, without a newline. VWDB uses the typed path projection for array children, for example word/0 becomes word[0] under the original parent.",
   "bindings": [
     {
       "format": "vcd",

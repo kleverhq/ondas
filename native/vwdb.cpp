@@ -172,10 +172,21 @@ Handle object_type(Native object) {
 struct Declaration {
     ondas_vwdb_decl descriptor{};
     int relation, type_kind = -1, raw_bits = -1;
+    bool raw_enum = false;
     size_t ordinal;
     std::string name;
     std::vector<std::pair<std::string, std::string>> variants;
 };
+
+std::string binary_bytes(const char *data, size_t size) {
+    std::string bits;
+    bits.reserve(size * 8);
+    for (size_t i = 0; i < size; ++i) {
+        const auto byte = static_cast<unsigned char>(data[i]);
+        for (int bit = 7; bit >= 0; --bit) bits.push_back((byte >> bit) & 1 ? '1' : '0');
+    }
+    return bits;
+}
 
 void import_range(Declaration &decl, Native type) {
     auto &d = decl.descriptor;
@@ -207,6 +218,10 @@ void import_enum(Declaration &decl, Native type) {
         require(raw, "missing VWDB enum key");
         // The formatter and accessors share temporary SDK buffers.
         const std::string copy(raw, (static_cast<size_t>(decl.raw_bits) + 7) / 8);
+        if (decl.raw_enum) {
+            decl.variants.emplace_back(binary_bytes(copy.data(), copy.size()), std::move(label_name));
+            continue;
+        }
         const char *encoded = abi().format(FormattedValue, type, RawValue, copy.data(),
             static_cast<int>(copy.size()), ValueFormat, binary_format, EndOptions);
         require(encoded, "cannot format VWDB enum key");
@@ -241,9 +256,13 @@ void inventory(Native owner, std::vector<Declaration> &decls, size_t parent = ro
                 decl.raw_bits = extent(RawBits, type.get());
                 const int width = extent(Width, type.get());
                 const int kind = decl.type_kind;
-                if ((kind == Scalar || kind == Enum || kind == Vector || kind == Character) && width > 0) {
+                // Enums without a logical width store byte-aligned codes
+                // directly. Their formatter returns labels instead of bits.
+                decl.raw_enum = kind == Enum && width <= 0 && decl.raw_bits > 0 && decl.raw_bits % 8 == 0;
+                if (decl.raw_enum ||
+                    ((kind == Scalar || kind == Enum || kind == Vector || kind == Character) && width > 0)) {
                     d.encoding = bits;
-                    d.width = static_cast<uint32_t>(width);
+                    d.width = static_cast<uint32_t>(decl.raw_enum ? decl.raw_bits : width);
                     import_range(decl, type.get());
                 } else if (kind == Real && (decl.raw_bits == 32 || decl.raw_bits == 64)) {
                     d.encoding = real;
@@ -341,13 +360,14 @@ Payload read_value(const Declaration &decl, Native cursor) {
         require(state == 2, "invalid VWDB event state");
         return {event, {}};
     }
-    if (encoding == real) {
+    if (encoding == real || decl.raw_enum) {
         if (state == -1) return {missing, {}};
         DString raw{};
         abi().string_init(&raw);
         std::unique_ptr<DString, decltype(Abi::string_free)> storage(&raw, abi().string_free);
         require(abi().get_bytes(RawValue, cursor, &raw) >= 0 && raw.length == decl.raw_bits / 8,
-                "cannot read VWDB real value");
+                "cannot read VWDB raw value");
+        if (decl.raw_enum) return {bits, binary_bytes(raw.string, static_cast<size_t>(raw.length))};
         return {real, std::string(raw.string, raw.length)};
     }
     require(encoding == bits, "unsupported VWDB encoding");
@@ -462,8 +482,9 @@ struct Stream {
                 auto type = object_type(signal);
                 require(type_kind(type.get()) == decl.type_kind && type &&
                         extent(RawBits, type.get()) == decl.raw_bits &&
-                        (decl.descriptor.encoding != bits ||
-                         extent(Width, type.get()) == static_cast<int>(decl.descriptor.width)),
+                        (decl.descriptor.encoding != bits || (decl.raw_enum
+                            ? extent(Width, type.get()) <= 0
+                            : extent(Width, type.get()) == static_cast<int>(decl.descriptor.width))),
                         "VWDB declaration changed after open");
                 auto &cursor = cursors[i];
                 cursor = std::make_unique<Cursor>(signal);

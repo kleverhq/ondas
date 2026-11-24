@@ -351,10 +351,20 @@ fn open_input(
     })
 }
 
+fn metadata_if_present(path: &Path) -> std::io::Result<Option<std::fs::Metadata>> {
+    match path.metadata() {
+        Ok(metadata) => Ok(Some(metadata)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 fn directory_format(path: &Path) -> Result<Format> {
     // Early VWDB recordings can use a .shm directory. The native database
     // layout also identifies a VWDB whose SHM component was never recorded.
-    if path.join("vwdb_info.json").is_file() && path.join("dsn_0").is_dir() {
+    if metadata_if_present(&path.join("vwdb_info.json"))?.is_some_and(|meta| meta.is_file())
+        && metadata_if_present(&path.join("dsn_0"))?.is_some_and(|meta| meta.is_dir())
+    {
         return Ok(Format::Vwdb);
     }
     let extension = path.extension().unwrap_or_default();
@@ -374,11 +384,7 @@ fn directory_format(path: &Path) -> Result<Format> {
         };
         let kind = entry.file_type()?;
         let regular = if kind.is_symlink() {
-            match component.metadata() {
-                Ok(metadata) => metadata.is_file(),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-                Err(error) => return Err(error.into()),
-            }
+            metadata_if_present(&component)?.is_some_and(|metadata| metadata.is_file())
         } else {
             kind.is_file()
         };

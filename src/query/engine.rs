@@ -29,6 +29,7 @@ impl Update {
 pub(super) struct Slot {
     state: Option<State>,
     pending: Option<Update>,
+    // A completed tick has a new persistent state or recorded events.
     changed: bool,
     events: u64,
 }
@@ -240,33 +241,26 @@ fn scan_tick<B>(
     time: Time,
     visitor: &mut impl for<'v> FnMut(usize, ScanRef<'v>) -> ControlFlow<B>,
 ) -> ControlFlow<B> {
-    for (index, &signal) in signals.iter().enumerate() {
-        let slot = &slots[slot_indices[index]];
-        if let Some(Update::Value(value)) = &slot.pending
-            && slot.changed
-        {
-            visitor(
-                index,
-                ScanRef::Change {
-                    signal,
-                    time,
-                    value: value.as_ref(),
-                },
-            )?;
+    for (index, &slot_index) in slot_indices.iter().enumerate() {
+        let slot = &slots[slot_index];
+        if !slot.changed {
+            continue;
         }
-        let events = slot.events;
-        if events > 0 {
-            visitor(
-                index,
-                ScanRef::Change {
-                    signal,
-                    time,
-                    value: ValueRef::Event {
-                        occurrences: events,
-                    },
-                },
-            )?;
-        }
+        let value = match &slot.pending {
+            Some(Update::Value(value)) => value.as_ref(),
+            None => ValueRef::Event {
+                occurrences: slot.events,
+            },
+            Some(Update::Missing) => continue,
+        };
+        visitor(
+            index,
+            ScanRef::Change {
+                signal: signals[index],
+                time,
+                value,
+            },
+        )?;
     }
     ControlFlow::Continue(())
 }
@@ -300,7 +294,7 @@ fn complete_tick<B>(
                 lost_value |= changed;
                 changed
             }
-            None => false,
+            None => slot.events > 0,
         };
     }
     if visit_from.is_none_or(|start| time >= start)
@@ -1235,10 +1229,7 @@ impl<'w> Selection<'w> {
             &mut slots,
             true,
             |time, _, slots, _| {
-                if slot_indices.iter().any(|&index| {
-                    let slot = &slots[index];
-                    slot.changed || slot.events > 0
-                }) {
+                if slot_indices.iter().any(|&index| slots[index].changed) {
                     return Ok(visitor(time));
                 }
                 Ok(ControlFlow::Continue(()))
@@ -1270,9 +1261,7 @@ impl<'w> Selection<'w> {
             .collect::<Vec<_>>();
         let mut emitted_initials = false;
         let slot_indices = self.slot_indices.clone();
-        let format = self.waveform.format();
-        let backend = self.waveform.backend().to_owned();
-        if let ControlFlow::Break(value) = self.read_ticks_from(
+        let result = self.read_ticks_from(
             Some(range.start()),
             end,
             &mut slots,
@@ -1283,7 +1272,7 @@ impl<'w> Selection<'w> {
                     if let ControlFlow::Break(value) =
                         initials(signals, slots, &slot_indices, &mut visitor)
                     {
-                        return Ok(ControlFlow::Break(value));
+                        return Ok(ControlFlow::Break(Ok(value)));
                     }
                 }
                 if lost_value
@@ -1292,20 +1281,25 @@ impl<'w> Selection<'w> {
                         slot.changed && matches!(slot.pending, Some(Update::Missing))
                     })
                 {
-                    return Err(Error::UnsupportedFeature {
-                        format,
-                        backend: backend.clone(),
-                        operation,
-                        message: format!(
-                            "selected value becomes unavailable at tick {}",
-                            time.ticks()
-                        ),
-                    });
+                    return Ok(ControlFlow::Break(Err(time)));
                 }
-                Ok(scan_tick(signals, slots, &slot_indices, time, &mut visitor))
+                Ok(scan_tick(signals, slots, &slot_indices, time, &mut visitor).map_break(Ok))
             },
-        )? {
-            return Ok(ControlFlow::Break(value));
+        )?;
+        match result {
+            ControlFlow::Break(Ok(value)) => return Ok(ControlFlow::Break(value)),
+            ControlFlow::Break(Err(time)) => {
+                return Err(Error::UnsupportedFeature {
+                    format: self.waveform.format(),
+                    backend: self.waveform.backend().into(),
+                    operation,
+                    message: format!(
+                        "selected value becomes unavailable at tick {}",
+                        time.ticks()
+                    ),
+                });
+            }
+            ControlFlow::Continue(()) => {}
         }
         if !emitted_initials {
             let replay = self.replay.take();
