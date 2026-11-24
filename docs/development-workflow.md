@@ -20,11 +20,13 @@ An earlier Ondas setup installed a copy of the hook in an `ondas-hooks` director
 git config --show-scope --get-all core.hooksPath
 ```
 
-If a `worktree` entry points to the directory installed by Ondas, remove that exact value with the command below. A linked worktree can show a copy of another checkout's hook path. Replace the example path with the path from the entry.
+If a `worktree` entry points to the directory installed by Ondas, remove that exact value from the same checkout or worktree. A linked worktree can show a copy of another checkout's hook path. Replace the example path with the path from the entry.
 
 ```sh
 git config --worktree --fixed-value --unset-all core.hooksPath '/path/to/ondas-hooks'
 ```
+
+Run the first command again in the same worktree to confirm that the Ondas entry is gone.
 
 Run `./dev just check-local` for an offline check. The pull request workflow runs this recipe as part of `just ci`.
 

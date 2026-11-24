@@ -4,4 +4,4 @@
 
 The standalone consumers launch outside Cargo's loader environment. A library test can pass while an ordinary downstream executable still cannot load its native dependencies. FSDB output assertions also distinguish successful compatible reads from newer-input startup skips. The WDB consumer always reads a compatible DBG004 recording; a version skip cannot satisfy this gate.
 
-The automation tests use temporary repositories and fake commands. They check host index/path dispatch and SDK sweep behavior. They do not qualify a native reader. Real SDK and waveform behavior belongs to reader conformance.
+The automation tests check release metadata, SDK sweeps, and native transport behavior with test inputs. Reader conformance checks real SDK and waveform behavior.
