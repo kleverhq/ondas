@@ -87,7 +87,7 @@ impl Reader {
                 visitor(index, time, value.map(Some))
             }),
             #[cfg(feature = "vwdb-lib")]
-            Self::Vwdb(reader) => reader.read(signals, end, visitor),
+            Self::Vwdb(reader) => reader.read(signals, Time::ZERO, end, visitor),
             #[cfg(feature = "wlf-lib")]
             Self::Wlf(reader) => reader.read(signals, end, |index, time, value| {
                 visitor(index, time, value.map(Some))

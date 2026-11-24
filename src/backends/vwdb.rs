@@ -2,7 +2,7 @@
 //! The Rust visitor runs unlocked with an owned, bounded batch.
 use crate::{
     BitRange, BitsRef, Direction, Encoding, Error, Format, Hierarchy, Metadata, PathComponent,
-    Result, Signal, Time, TimeSpan, Timescale, ValueRef,
+    Result, Sample, Signal, Time, TimeSpan, Timescale, ValueRef,
     hierarchy::{EnumerationData, ScopeData, VariableData},
 };
 use std::{
@@ -64,6 +64,13 @@ struct Record {
     len: usize,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct Point {
+    changed_at: u64,
+    width: u32,
+}
+
 unsafe extern "C" {
     fn ondas_vwdb_open(
         path: *const c_char,
@@ -87,7 +94,19 @@ unsafe extern "C" {
         reader: *mut c_void,
         ids: *const usize,
         count: usize,
+        start: u64,
         end: u64,
+        error: *mut c_char,
+        cap: usize,
+    ) -> c_int;
+    fn ondas_vwdb_sample_bits(
+        reader: *mut c_void,
+        ids: *const usize,
+        count: usize,
+        tick: u64,
+        points: *mut Point,
+        data: *mut u8,
+        len: usize,
         error: *mut c_char,
         cap: usize,
     ) -> c_int;
@@ -329,9 +348,78 @@ impl Reader {
         ))
     }
 
+    pub(crate) fn with_bits_at<B>(
+        &mut self,
+        bases: &[Signal],
+        time: Time,
+        visitor: impl FnOnce(Vec<Sample>) -> B,
+    ) -> Result<B> {
+        let ids = bases
+            .iter()
+            .map(|signal| self.ids[signal.index()])
+            .collect::<Vec<_>>();
+        let len = bases
+            .iter()
+            .try_fold(0usize, |total, signal| {
+                total.checked_add(signal.width()? as usize)
+            })
+            .filter(|&len| len <= isize::MAX as usize)
+            .ok_or_else(|| error("read point", "invalid VWDB point buffer width"))?;
+        let mut bytes = vec![0; len];
+        let mut points = vec![Point::default(); bases.len()];
+        let mut traversal = Traversal {
+            handle: &mut self.handle,
+            keep_session: false,
+        };
+        let mut buffer = [0; 512];
+        {
+            let _lock = lock();
+            // SAFETY: the live owner is locked, and the output arrays have the
+            // requested descriptor count and total width.
+            let code = unsafe {
+                ondas_vwdb_sample_bits(
+                    traversal.handle.0.as_ptr(),
+                    ids.as_ptr(),
+                    ids.len(),
+                    time.ticks(),
+                    points.as_mut_ptr(),
+                    bytes.as_mut_ptr(),
+                    bytes.len(),
+                    buffer.as_mut_ptr(),
+                    buffer.len(),
+                )
+            };
+            status(code, "read point", &buffer)?;
+        }
+        let mut payload = bytes.as_slice();
+        let mut samples = Vec::with_capacity(bases.len());
+        for (&signal, point) in bases.iter().zip(points) {
+            let width = signal.width().expect("validated bit width");
+            let (value, rest) = payload.split_at(width as usize);
+            payload = rest;
+            match point.width {
+                0 if point.changed_at == 0 => samples.push(Sample::Missing { signal }),
+                actual if actual == width && point.changed_at <= time.ticks() => {
+                    let value = decode(1, value)?.expect("bit payload").to_owned();
+                    samples.push(Sample::Value {
+                        signal,
+                        value,
+                        changed_at: (point.changed_at != 0)
+                            .then_some(Time::from_ticks(point.changed_at)),
+                    });
+                }
+                _ => return Err(error("read point", "invalid VWDB point descriptor")),
+            }
+        }
+        let result = visitor(samples);
+        traversal.keep_session = true;
+        Ok(result)
+    }
+
     pub(crate) fn read<B>(
         &mut self,
         signals: &[Signal],
+        start: Time,
         end: Time,
         mut visitor: impl for<'v> FnMut(usize, Time, Result<Option<ValueRef<'v>>>) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>> {
@@ -356,6 +444,7 @@ impl Reader {
                     raw,
                     ids.as_ptr(),
                     ids.len(),
+                    start.ticks(),
                     end.ticks(),
                     buffer.as_mut_ptr(),
                     buffer.len(),

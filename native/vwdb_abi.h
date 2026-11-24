@@ -15,7 +15,7 @@ enum Property {
     FirstIndex = 0x11b, Load = 0x12f, Time = 0x136, Unload = 0x13f,
     FormattedValue = 0x15a, RawBits = 0x164, TypeKind = 0x173, NextValue = 0x17f,
     ElementCount = 0x184, HasRange = 0x192, Ascending = 0x1a2, State = 0x1a3,
-    PackedLayout = 0x1b2, ValueFormat = 0x1b3, Type = 0x1be, IndexType = 0x1de,
+    SeekBound = 0x126, PackedLayout = 0x1b2, ValueFormat = 0x1b3, Type = 0x1be, IndexType = 0x1de,
     EnumElements = 0x1fe, FormatOptions = 0x204, History = 0x22e,
     Scopes = 0x2ae, Variables = 0x2be, AllowSummary = 0x302, Width = 0x3d4,
 };

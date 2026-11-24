@@ -552,3 +552,50 @@ fn reader_orders_in_fresh_processes() {
         );
     }
 }
+
+#[test]
+#[ignore = "requires installed VWDB fixtures"]
+fn window_resumes_after_session_eviction() {
+    let mut wave = ondas::open(fixture("vwdb/vwdb0013-history-long/waveform.vwdb")).unwrap();
+    let phase = wave.hierarchy().signal("top.phase_0").unwrap();
+    let mut observed = Vec::new();
+    let mut initial = None;
+    let range = TimeRange::closed(Time::from_ticks(17), Time::from_ticks(128));
+    let _ = wave
+        .select(&[phase])
+        .unwrap()
+        .scan(range, |record| {
+            match record {
+                ondas::ScanRef::Initial {
+                    value: ValueRef::Bits(bits),
+                    changed_at,
+                    ..
+                } => initial = Some((bits.to_string(), changed_at)),
+                ondas::ScanRef::Change {
+                    time,
+                    value: ValueRef::Bits(bits),
+                    ..
+                } => {
+                    observed.push((time.ticks(), bits.to_string()));
+                    if matches!(time.ticks(), 17 | 81) {
+                        let mut other = gap_wave();
+                        let glitch = other.hierarchy().signal("top.glitch").unwrap();
+                        assert!(matches!(
+                            other.sample(glitch, Time::from_ticks(2)).unwrap().as_ref(),
+                            SampleRef::Missing { .. }
+                        ));
+                    }
+                }
+                _ => panic!("expected a phase bit"),
+            }
+            ControlFlow::<()>::Continue(())
+        })
+        .unwrap();
+    assert_eq!(initial, Some(("0".to_owned(), Some(Time::from_ticks(16)))));
+    assert_eq!(
+        observed,
+        (17..=128)
+            .map(|tick| (tick, (tick % 2).to_string()))
+            .collect::<Vec<_>>()
+    );
+}

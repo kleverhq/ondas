@@ -66,6 +66,27 @@ impl Slot {
     }
 }
 
+#[cfg(feature = "vwdb-lib")]
+fn apply_vwdb_points(
+    groups: &HashMap<usize, Vec<usize>>,
+    slots: &mut [Slot],
+    samples: Vec<Sample>,
+) {
+    for sample in samples {
+        if let Sample::Value {
+            signal,
+            value,
+            changed_at,
+        } = sample
+        {
+            let [index] = groups[&signal.index()].as_slice() else {
+                unreachable!("one retained slot per whole base");
+            };
+            slots[*index].state = Some(State { value, changed_at });
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 enum Position {
     Vcd(crate::backends::vcd::Position),
@@ -965,13 +986,38 @@ impl<'w> Selection<'w> {
         Some(ControlFlow::Continue(()))
     }
 
+    #[cfg(feature = "vwdb-lib")]
+    fn vwdb_whole_bits(&self) -> bool {
+        matches!(&self.waveform.reader, crate::backends::Reader::Vwdb(_))
+            && self.computations.is_empty()
+            && !self.bases.is_empty()
+            && self.retained_signals.iter().all(|signal| {
+                matches!(signal.encoding(), Encoding::Bits { .. }) && !signal.is_slice()
+            })
+    }
+
     pub(super) fn sample_visit<B>(
         &mut self,
         time: Time,
         mut visitor: impl for<'v> FnMut(SampleRef<'v>) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>> {
         #[cfg(feature = "vwdb-lib")]
-        if matches!(self.waveform.reader, crate::backends::Reader::Vwdb(_)) {
+        let seek_point = self.vwdb_whole_bits();
+        #[cfg(feature = "vwdb-lib")]
+        if let crate::backends::Reader::Vwdb(reader) = &mut self.waveform.reader {
+            if seek_point {
+                let mut slots = vec![Slot::default(); self.retained_signals.len()];
+                let signals = &self.signals;
+                let groups = &self.groups;
+                let indices = &self.slot_indices;
+                return reader.with_bits_at(&self.bases, time, |samples| {
+                    apply_vwdb_points(groups, &mut slots, samples);
+                    for (&signal, &index) in signals.iter().zip(indices) {
+                        visitor(slots[index].sample(signal, None))?;
+                    }
+                    ControlFlow::Continue(())
+                });
+            }
             let indices = self.slot_indices.clone();
             let mut slots = vec![Slot::default(); self.retained_signals.len()];
             let mut observe = |signals: &[Signal], slots: &[Slot], tick| {
@@ -1396,6 +1442,19 @@ impl<'w> Selection<'w> {
                 });
             }
         }
+        #[cfg(feature = "vwdb-lib")]
+        let vwdb_start =
+            start.filter(|start| seed_point && *start > Time::ZERO && self.vwdb_whole_bits());
+        #[cfg(feature = "vwdb-lib")]
+        if let Some(start) = vwdb_start {
+            let crate::backends::Reader::Vwdb(reader) = &mut self.waveform.reader else {
+                unreachable!("VWDB point reader");
+            };
+            let at = Time::from_ticks(start.ticks() - 1);
+            reader.with_bits_at(&self.bases, at, |samples| {
+                apply_vwdb_points(&self.groups, slots, samples);
+            })?;
+        }
         let mut checkpoint = self.checkpoint.take();
         let retained = self.replay.take().filter(&eligible);
         let replay = retained.as_ref().or_else(|| {
@@ -1634,6 +1693,13 @@ impl<'w> Selection<'w> {
                     )
                 })
             }
+            #[cfg(feature = "vwdb-lib")]
+            crate::backends::Reader::Vwdb(reader) => reader.read(
+                &self.bases,
+                vwdb_start.unwrap_or(Time::ZERO),
+                end,
+                |base, time, value| consume(Some((base, value)), time, None),
+            ),
             reader => reader.read(&self.bases, end, |base, time, value| {
                 consume(Some((base, value)), time, None)
             }),

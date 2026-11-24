@@ -330,6 +330,10 @@ public:
     void start() {
         require(checked(abi().handle(Load, signal)).get() == success, "cannot load VWDB history");
         loaded = true;
+        restart();
+    }
+    void restart() {
+        cursor.reset();
         cursor = checked(abi().configure(History, signal, AllowSummary, 0,
                                          ValueFormat, binary_format, EndOptions));
         require(cursor.get() != success, "invalid VWDB history cursor");
@@ -339,6 +343,25 @@ public:
         Stamp time{};
         require(abi().get_stamp(Time, get(), &time) >= 0, "cannot read VWDB history time");
         return time;
+    }
+    void seek(uint64_t bound) {
+        const auto result = checked(abi().configure(NextValue, get(), SeekBound,
+                                                   Stamp{bound, UINT64_MAX - 1}, EndOptions));
+        require(result.get() == success, "cannot seek VWDB history");
+        require(time().tick <= bound, "VWDB seek exceeded its bound");
+    }
+    bool enter(uint64_t start) {
+        if (!get()) return false;
+        if (start == 0 || time().tick >= start) return true;
+        seek(start - 1);
+        // The window has its own fresh cursor. Advance past any remaining
+        // records at the entering tick, including equal stamps.
+        auto current = time();
+        while (current.tick < start) {
+            if (!advance(current)) return false;
+            current = time();
+        }
+        return true;
     }
     bool advance(Stamp previous) {
         const auto next = checked(abi().handle(NextValue, get()));
@@ -380,6 +403,87 @@ Payload read_value(const Declaration &decl, Native cursor) {
     return {bits, value};
 }
 
+struct CompletedBits {
+    uint64_t tick = 0;
+    std::string bytes;
+};
+
+CompletedBits completed_bits(const Declaration &decl, Cursor &cursor, uint64_t bound) {
+    if (!cursor.get() || cursor.time().tick > bound) return {};
+    cursor.seek(bound);
+    CompletedBits completed;
+    auto stamp = cursor.time();
+    do {
+        completed.tick = stamp.tick;
+        completed.bytes = read_value(decl, cursor.get()).bytes;
+        for (char &byte : completed.bytes) {
+            if (byte >= 'A' && byte <= 'Z') byte += 'a' - 'A';
+            require(byte != '\0' && std::strchr("01xzuhwl-", byte), "invalid VWDB logic state");
+        }
+        if (!cursor.advance(stamp)) break;
+        stamp = cursor.time();
+    } while (stamp.tick <= bound);
+    return completed;
+}
+
+ondas_vwdb_point sample_bits(const Declaration &decl, Native signal, uint64_t tick, uint8_t *data) {
+    Cursor cursor(signal);
+    cursor.start();
+    const auto at = completed_bits(decl, cursor, tick);
+    if (at.bytes.empty()) return {};
+    uint64_t changed_at = 0;
+    for (auto last = at.tick; last > 0;) {
+        // Reposition a fresh history cursor for each bound. The previous
+        // cursor advanced to verify the last raw write at the completed tick.
+        cursor.restart();
+        const auto before = completed_bits(decl, cursor, last - 1);
+        if (before.bytes.empty()) break;
+        if (before.bytes != at.bytes) {
+            changed_at = last;
+            break;
+        }
+        last = before.tick;
+    }
+    std::memcpy(data, at.bytes.data(), at.bytes.size());
+    return {changed_at, decl.descriptor.width};
+}
+
+void validate_type(const Declaration &decl, Native signal) {
+    auto type = object_type(signal);
+    require(type && type_kind(type.get()) == decl.type_kind &&
+            extent(RawBits, type.get()) == decl.raw_bits &&
+            (decl.descriptor.encoding != bits || (decl.raw_enum
+                ? extent(Width, type.get()) <= 0
+                : extent(Width, type.get()) == static_cast<int>(decl.descriptor.width))),
+            "VWDB declaration changed after open");
+}
+
+struct SelectedHandles {
+    Resolved resolved;
+    std::vector<size_t> owned_ids;
+
+    ~SelectedHandles() { clear(); }
+
+    void clear() {
+        // The declaration import is preorder. Release children before parents.
+        for (size_t id : owned_ids) resolved.erase(id);
+        owned_ids.clear();
+    }
+
+    void add_route(Routes &routes, std::unordered_set<size_t> &seen,
+                   const std::vector<Declaration> &decls, size_t id) {
+        for (; id != root && seen.insert(id).second; id = decls[id].descriptor.parent) {
+            routes[decls[id].descriptor.parent].push_back(id);
+            owned_ids.push_back(id);
+        }
+    }
+
+    void resolve_routes(Native database, const std::vector<Declaration> &decls, Routes &routes) {
+        std::sort(owned_ids.rbegin(), owned_ids.rend());
+        resolve(database, root, decls, routes, resolved);
+    }
+};
+
 struct HistoryState {
     size_t id;
     size_t consumed = 0;
@@ -404,18 +508,17 @@ struct Stream {
     SessionSlot &owner;
     const std::string &path;
     const std::vector<Declaration> &decls;
-    uint64_t end;
+    uint64_t start, end;
     std::vector<HistoryState> histories;
-    Resolved resolved;
+    SelectedHandles selected;
     std::vector<std::unique_ptr<Cursor>> cursors;
-    std::vector<size_t> owned_ids;
     std::vector<size_t> heap;
     std::string output;
     size_t refill = root;
 
     Stream(SessionSlot &owner, const std::string &path, const std::vector<Declaration> &decls,
-           const size_t *ids, size_t count, uint64_t end)
-        : owner(owner), path(path), decls(decls), end(end) {
+           const size_t *ids, size_t count, uint64_t start, uint64_t end)
+        : owner(owner), path(path), decls(decls), start(start), end(end) {
         histories.reserve(count);
         for (size_t i = 0; i < count; ++i) {
             require(ids[i] < decls.size() && decls[ids[i]].descriptor.encoding > 0,
@@ -429,10 +532,7 @@ struct Stream {
         // Cursors unload through live signal handles. Drop children before
         // closing their common database.
         cursors.clear();
-        // The declaration import is preorder. Release children before parents.
-        for (size_t id : owned_ids) resolved.erase(id);
-        owned_ids.clear();
-        resolved.clear();
+        selected.clear();
         heap.clear();
         refill = root;
         if (owner.stream == this) owner.stream = nullptr;
@@ -475,32 +575,22 @@ struct Stream {
             std::unordered_set<size_t> seen;
             for (const auto &history : histories) {
                 if (history.finished) continue;
-                for (size_t id = history.id; id != root && seen.insert(id).second;
-                     id = decls[id].descriptor.parent) {
-                    routes[decls[id].descriptor.parent].push_back(id);
-                    owned_ids.push_back(id);
-                }
+                selected.add_route(routes, seen, decls, history.id);
             }
-            std::sort(owned_ids.rbegin(), owned_ids.rend());
-            resolve(owner.session->get(), root, decls, routes, resolved);
+            selected.resolve_routes(owner.session->get(), decls, routes);
             cursors.resize(histories.size());
             for (size_t i = 0; i < histories.size(); ++i) {
                 auto &history = histories[i];
                 if (history.finished) continue;
                 const auto &decl = decls[history.id];
-                auto signal = resolved.at(history.id).get();
-                auto type = object_type(signal);
-                require(type_kind(type.get()) == decl.type_kind && type &&
-                        extent(RawBits, type.get()) == decl.raw_bits &&
-                        (decl.descriptor.encoding != bits || (decl.raw_enum
-                            ? extent(Width, type.get()) <= 0
-                            : extent(Width, type.get()) == static_cast<int>(decl.descriptor.width))),
-                        "VWDB declaration changed after open");
+                auto signal = selected.resolved.at(history.id).get();
+                validate_type(decl, signal);
                 auto &cursor = cursors[i];
                 cursor = std::make_unique<Cursor>(signal);
                 cursor->start();
-                // Equal tick/sequence pairs can occur, so resume by source ordinal.
-                bool more = cursor->get() != nullptr;
+                // Resume by source ordinal relative to the same window start.
+                // Several writes can share both the tick and sequence.
+                bool more = cursor->enter(start);
                 for (size_t skipped = 0; skipped < history.consumed; ++skipped) {
                     require(more, "VWDB history changed after open");
                     more = cursor->advance(cursor->time());
@@ -517,6 +607,7 @@ struct Stream {
     }
 
     bool next(ondas_vwdb_record &record) {
+        if (start > end) return false;
         activate();
         if (refill != root) {
             const size_t index = std::exchange(refill, root);
@@ -626,15 +717,55 @@ extern "C" void ondas_vwdb_enum_variant(const ondas_vwdb *reader, size_t declara
     const auto &item = reader->decls[declaration].variants[variant];
     *out = {item.first.c_str(), item.second.c_str()};
 }
-extern "C" int ondas_vwdb_read(ondas_vwdb *reader, const size_t *ids, size_t count, uint64_t end,
-                               char *error, size_t cap) {
+extern "C" int ondas_vwdb_read(ondas_vwdb *reader, const size_t *ids, size_t count,
+                               uint64_t start, uint64_t end, char *error, size_t cap) {
     reader->stream.reset();
     return report([&] {
         reader->stream = std::make_unique<Stream>(reader->owner, reader->path, reader->decls,
-                                                  ids, count, std::min(end, reader->meta.last));
+                                                  ids, count, start, std::min(end, reader->meta.last));
         return 0;
     }, error, cap);
 }
+extern "C" int ondas_vwdb_sample_bits(ondas_vwdb *reader, const size_t *ids, size_t count,
+                                      uint64_t tick, ondas_vwdb_point *points, uint8_t *data,
+                                      size_t len, char *error, size_t cap) {
+    return report([&] {
+        if (count == 0) return 0;
+        require(!reader->stream, "VWDB point requires no active stream on this reader");
+        require(ids && points && data, "missing VWDB point buffers");
+        try {
+            SelectedHandles selected;
+            Routes routes;
+            std::unordered_set<size_t> seen;
+            size_t remaining = len;
+            for (size_t i = 0; i < count; ++i) {
+                const auto id = ids[i];
+                require(id < reader->decls.size(), "invalid VWDB history identity");
+                const auto &desc = reader->decls[id].descriptor;
+                require(desc.encoding == bits && desc.width > 0, "VWDB point requires full bits");
+                require(desc.width <= remaining, "VWDB point buffer is too small");
+                remaining -= desc.width;
+                selected.add_route(routes, seen, reader->decls, id);
+            }
+            reader->owner.open(reader->path);
+            selected.resolve_routes(reader->owner.session->get(), reader->decls, routes);
+            size_t offset = 0;
+            for (size_t i = 0; i < count; ++i) {
+                const auto &decl = reader->decls[ids[i]];
+                const auto signal = selected.resolved.at(ids[i]).get();
+                validate_type(decl, signal);
+                points[i] = sample_bits(decl, signal, std::min(tick, reader->meta.last), data + offset);
+                offset += decl.descriptor.width;
+            }
+        } catch (...) {
+            reader->owner.close();
+            throw;
+        }
+        drain_ready_events();
+        return 0;
+    }, error, cap);
+}
+
 extern "C" int ondas_vwdb_next(ondas_vwdb *reader, ondas_vwdb_record *out, char *error, size_t cap) {
     *out = {root, 0, 0, nullptr, 0};
     return report([&] { return reader->stream->next(*out) ? 1 : 0; }, error, cap);
