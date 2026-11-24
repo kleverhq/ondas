@@ -42,7 +42,8 @@ void ondas_vwdb_declaration(const ondas_vwdb *, size_t, ondas_vwdb_decl *);
 void ondas_vwdb_enum_variant(const ondas_vwdb *, size_t, size_t, ondas_vwdb_variant *);
 /* A nonzero start excludes the entering records. Read them with sample_bits. */
 int ondas_vwdb_read(ondas_vwdb *, const size_t *, size_t, uint64_t start, uint64_t end, char *, size_t);
-/* Data offsets use declared widths. Width zero reports Missing. Change time zero is unknown. */
+/* Data offsets use declared widths. Width zero reports Missing. Change time zero is unknown.
+ * Finish the point with ondas_vwdb_end. */
 int ondas_vwdb_sample_bits(ondas_vwdb *, const size_t *, size_t, uint64_t tick,
                            ondas_vwdb_point *, uint8_t *, size_t, char *, size_t);
 int ondas_vwdb_next(ondas_vwdb *, ondas_vwdb_record *, char *, size_t);

@@ -345,6 +345,7 @@ public:
         return time;
     }
     void seek(uint64_t bound) {
+        // Exclude the SDK end marker at the maximum sequence.
         const auto result = checked(abi().configure(NextValue, get(), SeekBound,
                                                    Stamp{bound, UINT64_MAX - 1}, EndOptions));
         require(result.get() == success, "cannot seek VWDB history");
@@ -354,8 +355,7 @@ public:
         if (!get()) return false;
         if (start == 0 || time().tick >= start) return true;
         seek(start - 1);
-        // The window has its own fresh cursor. Advance past any remaining
-        // records at the entering tick, including equal stamps.
+        // Enter the inclusive window after advancing past earlier records.
         auto current = time();
         while (current.tick < start) {
             if (!advance(current)) return false;
@@ -761,7 +761,6 @@ extern "C" int ondas_vwdb_sample_bits(ondas_vwdb *reader, const size_t *ids, siz
             reader->owner.close();
             throw;
         }
-        drain_ready_events();
         return 0;
     }, error, cap);
 }

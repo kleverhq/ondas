@@ -215,6 +215,31 @@ fn gap_point_batch_query_and_scan() {
                 .all(|sample| bits(sample.as_ref()).as_deref() == expected)
         );
     }
+    let input = wave.hierarchy().signal("top.inst.in_bus").unwrap();
+    let expected = [
+        (1, Some("000000000"), None),
+        (2, None, None),
+        (3, None, None),
+        (4, Some("000000101"), None),
+        (5, Some("111111111"), Some(5)),
+        (6, Some("000000000"), Some(6)),
+        (8, Some("000000000"), Some(6)),
+        (9, Some("000000000"), Some(6)),
+    ];
+    let input_times = expected.map(|(tick, _, _)| Time::from_ticks(tick));
+    let inputs = wave.samples_at(&[input, input], &input_times).unwrap();
+    for ((tick, value, changed_at), (time, samples)) in expected.into_iter().zip(inputs) {
+        assert_eq!(time.ticks(), tick);
+        let point = wave.sample(input, time).unwrap();
+        for sample in std::iter::once(&point).chain(&samples) {
+            assert_eq!(bits(sample.as_ref()).as_deref(), value);
+            let actual = match sample.as_ref() {
+                SampleRef::Value { changed_at, .. } => changed_at.map(Time::ticks),
+                _ => None,
+            };
+            assert_eq!(actual, changed_at);
+        }
+    }
     let trace = wave
         .trace(glitch, TimeRange::closed(times[3], Time::from_ticks(8)))
         .unwrap();
