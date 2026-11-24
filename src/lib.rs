@@ -98,7 +98,7 @@ An explicit gap clears persistent state. Samples and query contexts report
 [`Sample::Missing`] until state resumes. A scan or trace reports
 [`Error::UnsupportedFeature`] when a selected value loses known state within
 its range. Earlier scan callbacks remain valid. Keep the database unchanged
-and available while Ondas reads it.
+and available while its waveform is open.
 
 ### WDB setup
 

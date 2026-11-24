@@ -600,8 +600,12 @@ extern "C" int ondas_vwdb_open(const char *path, const char *library, int metada
         reader->owner.open(reader->path);
         const auto database = reader->owner.session->get();
         reader->meta = metadata(database);
-        if (metadata_only) reader->owner.close();
-        else inventory(database, reader->decls);
+        if (metadata_only) {
+            reader->owner.close();
+        } else {
+            inventory(database, reader->decls);
+            drain_ready_events();
+        }
         *out = reader.release();
         return 0;
     }, error, cap);

@@ -1,4 +1,4 @@
-//! Private native reader. Native cursors and sessions are mutually exclusive.
+//! Private native reader. One waveform holds the native session at a time.
 //! The Rust visitor runs unlocked with an owned, bounded batch.
 use crate::{
     BitRange, BitsRef, Direction, Encoding, Error, Format, Hierarchy, Metadata, PathComponent,
@@ -368,6 +368,7 @@ impl Reader {
         loop {
             let mut payload_len = 0;
             let mut terminal = Ok(false);
+            // A native failure closes the session even after an earlier visitor stop.
             let mut batch_failed = false;
             {
                 let _lock = lock();

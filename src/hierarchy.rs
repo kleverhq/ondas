@@ -1053,8 +1053,24 @@ impl Hierarchy {
     /// Returns [`LookupError::Ambiguous`] when distinct scopes share the path.
     /// Those scopes remain accessible through [`Self::scopes`] and [`Scope::children`].
     pub fn scope_path(&self, path: &HierarchyPath) -> std::result::Result<Scope<'_>, LookupError> {
+        let Some((name, ancestors)) = path.components.split_last() else {
+            return Err(LookupError::NotFound { path: path.clone() });
+        };
         let mut matches = self.scopes().filter(|scope| {
-            Some(&scope.data().component) == path.components.last() && scope.path() == *path
+            let data = scope.data();
+            if &data.component != name {
+                return false;
+            }
+            let mut current = data.parent;
+            for component in ancestors.iter().rev() {
+                let Some(index) = current else { return false };
+                let candidate = &self.data.scopes[index];
+                if candidate.component != *component {
+                    return false;
+                }
+                current = candidate.parent;
+            }
+            current.is_none()
         });
         let first = matches.next();
         match (first, matches.count()) {
