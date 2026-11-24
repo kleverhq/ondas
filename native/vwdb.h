@@ -38,7 +38,7 @@ void ondas_vwdb_declaration(const ondas_vwdb *, size_t, ondas_vwdb_decl *);
 void ondas_vwdb_enum_variant(const ondas_vwdb *, size_t, size_t, ondas_vwdb_variant *);
 int ondas_vwdb_read(ondas_vwdb *, const size_t *, size_t, uint64_t, char *, size_t);
 int ondas_vwdb_next(ondas_vwdb *, ondas_vwdb_record *, char *, size_t);
-void ondas_vwdb_end(ondas_vwdb *);
+void ondas_vwdb_end(ondas_vwdb *, int);
 
 #ifdef __cplusplus
 }

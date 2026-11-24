@@ -117,11 +117,14 @@ public:
     }
 };
 
+void drain_ready_events() {
+    // The SDK defers handle reclamation to its Tcl scheduler.
+    while (abi().process_event(tcl_dont_wait | tcl_timer_events | tcl_idle_events)) {}
+}
+
 void close_database(Native database) {
     abi().close(database);
-    // The SDK defers handle reclamation to its Tcl scheduler. Run its ready
-    // cleanup events so later sessions can reuse the released handle slots.
-    while (abi().process_event(tcl_dont_wait | tcl_timer_events | tcl_idle_events)) {}
+    drain_ready_events();
 }
 
 class Session {
@@ -385,15 +388,24 @@ struct HistoryState {
 };
 
 struct Stream;
-Stream *active = nullptr;
-void suspend_active();
+struct SessionSlot {
+    std::unique_ptr<Session> session;
+    Stream *stream = nullptr;
+
+    ~SessionSlot() { close(); }
+    void open(const std::string &path);
+    void close();
+};
+
+// Serialized by the Rust SDK lock. Only one live reader holds a native session.
+SessionSlot *active = nullptr;
 
 struct Stream {
+    SessionSlot &owner;
     const std::string &path;
     const std::vector<Declaration> &decls;
     uint64_t end;
     std::vector<HistoryState> histories;
-    std::unique_ptr<Session> session;
     Resolved resolved;
     std::vector<std::unique_ptr<Cursor>> cursors;
     std::vector<size_t> owned_ids;
@@ -401,9 +413,9 @@ struct Stream {
     std::string output;
     size_t refill = root;
 
-    Stream(const std::string &path, const std::vector<Declaration> &decls,
+    Stream(SessionSlot &owner, const std::string &path, const std::vector<Declaration> &decls,
            const size_t *ids, size_t count, uint64_t end)
-        : path(path), decls(decls), end(end) {
+        : owner(owner), path(path), decls(decls), end(end) {
         histories.reserve(count);
         for (size_t i = 0; i < count; ++i) {
             require(ids[i] < decls.size() && decls[ids[i]].descriptor.encoding > 0,
@@ -421,10 +433,9 @@ struct Stream {
         for (size_t id : owned_ids) resolved.erase(id);
         owned_ids.clear();
         resolved.clear();
-        session.reset();
         heap.clear();
         refill = root;
-        if (active == this) active = nullptr;
+        if (owner.stream == this) owner.stream = nullptr;
     }
 
     bool later(size_t lhs, size_t rhs) const {
@@ -456,10 +467,9 @@ struct Stream {
     }
 
     void activate() {
-        if (active == this) return;
-        suspend_active();
+        if (owner.stream == this) return;
         try {
-            session = std::make_unique<Session>(path);
+            owner.open(path);
             Routes routes;
             // One route per shared ancestor, using only owned native ordinals.
             std::unordered_set<size_t> seen;
@@ -472,7 +482,7 @@ struct Stream {
                 }
             }
             std::sort(owned_ids.rbegin(), owned_ids.rend());
-            resolve(session->get(), root, decls, routes, resolved);
+            resolve(owner.session->get(), root, decls, routes, resolved);
             cursors.resize(histories.size());
             for (size_t i = 0; i < histories.size(); ++i) {
                 auto &history = histories[i];
@@ -498,9 +508,10 @@ struct Stream {
                 history.finished = !more;
                 if (more) queue(i);
             }
-            active = this;
+            owner.stream = this;
         } catch (...) {
             suspend();
+            owner.close();
             throw;
         }
     }
@@ -531,8 +542,17 @@ struct Stream {
     }
 };
 
-void suspend_active() {
-    if (active) active->suspend();
+void SessionSlot::open(const std::string &path) {
+    if (session) return;
+    if (active) active->close();
+    session = std::make_unique<Session>(path);
+    active = this;
+}
+
+void SessionSlot::close() {
+    if (stream) stream->suspend();
+    session.reset();
+    if (active == this) active = nullptr;
 }
 
 template<class Operation>
@@ -557,6 +577,7 @@ struct ondas_vwdb {
     std::string path;
     ondas_vwdb_meta meta{};
     std::vector<Declaration> decls;
+    SessionSlot owner;
     std::unique_ptr<Stream> stream;
 };
 
@@ -574,12 +595,13 @@ extern "C" int ondas_vwdb_open(const char *path, const char *library, int metada
     *out = nullptr;
     return report([&] {
         abi(library);
-        suspend_active();
         auto reader = std::make_unique<ondas_vwdb>();
         reader->path = path;
-        Session session(reader->path);
-        reader->meta = metadata(session.get());
-        if (!metadata_only) inventory(session.get(), reader->decls);
+        reader->owner.open(reader->path);
+        const auto database = reader->owner.session->get();
+        reader->meta = metadata(database);
+        if (metadata_only) reader->owner.close();
+        else inventory(database, reader->decls);
         *out = reader.release();
         return 0;
     }, error, cap);
@@ -604,8 +626,8 @@ extern "C" int ondas_vwdb_read(ondas_vwdb *reader, const size_t *ids, size_t cou
                                char *error, size_t cap) {
     reader->stream.reset();
     return report([&] {
-        reader->stream = std::make_unique<Stream>(reader->path, reader->decls, ids, count,
-                                                  std::min(end, reader->meta.last));
+        reader->stream = std::make_unique<Stream>(reader->owner, reader->path, reader->decls,
+                                                  ids, count, std::min(end, reader->meta.last));
         return 0;
     }, error, cap);
 }
@@ -613,4 +635,8 @@ extern "C" int ondas_vwdb_next(ondas_vwdb *reader, ondas_vwdb_record *out, char 
     *out = {root, 0, 0, nullptr, 0};
     return report([&] { return reader->stream->next(*out) ? 1 : 0; }, error, cap);
 }
-extern "C" void ondas_vwdb_end(ondas_vwdb *reader) { reader->stream.reset(); }
+extern "C" void ondas_vwdb_end(ondas_vwdb *reader, int keep_session) {
+    reader->stream.reset();
+    if (!keep_session) reader->owner.close();
+    else if (reader->owner.session) drain_ready_events();
+}

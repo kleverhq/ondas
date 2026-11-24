@@ -97,7 +97,7 @@ unsafe extern "C" {
         error: *mut c_char,
         cap: usize,
     ) -> c_int;
-    fn ondas_vwdb_end(reader: *mut c_void);
+    fn ondas_vwdb_end(reader: *mut c_void, keep_session: c_int);
 }
 
 fn error(operation: &'static str, message: impl Into<String>) -> Error {
@@ -343,6 +343,10 @@ impl Reader {
             .map(|signal| self.ids[signal.index()])
             .collect::<Vec<_>>();
         let raw = self.handle.0.as_ptr();
+        let mut traversal = Traversal {
+            handle: &mut self.handle,
+            keep_session: false,
+        };
         let mut buffer = [0; 512];
         {
             let _lock = lock();
@@ -359,12 +363,12 @@ impl Reader {
             };
             status(code, "start read", &buffer)?;
         }
-        let _traversal = Traversal(&mut self.handle);
         let mut batch = Vec::new();
         let mut limit = 64;
         loop {
             let mut payload_len = 0;
             let mut terminal = Ok(false);
+            let mut batch_failed = false;
             {
                 let _lock = lock();
                 while batch.len() < limit && payload_len < 64 * 1024 {
@@ -384,6 +388,7 @@ impl Reader {
                         .copied()
                         .flatten()
                     else {
+                        batch_failed = true;
                         terminal = result.and_then(|()| {
                             Err(error("read history", "invalid VWDB history identity"))
                         });
@@ -404,6 +409,7 @@ impl Reader {
                     let failed = value.is_err();
                     batch.push((index, time, record.encoding, value));
                     if failed {
+                        batch_failed = true;
                         terminal = Ok(true);
                         break;
                     }
@@ -416,6 +422,7 @@ impl Reader {
                 };
                 let failed = decoded.is_err();
                 if let ControlFlow::Break(value) = visitor(index, time, decoded) {
+                    traversal.keep_session = !batch_failed && !failed;
                     return Ok(ControlFlow::Break(value));
                 }
                 if failed {
@@ -426,6 +433,7 @@ impl Reader {
                 }
             }
             if terminal? {
+                traversal.keep_session = true;
                 return Ok(ControlFlow::Continue(()));
             }
             limit = 1024;
@@ -453,11 +461,14 @@ fn decode(encoding: i32, bytes: &[u8]) -> Result<Option<ValueRef<'_>>> {
     Ok(Some(value))
 }
 
-struct Traversal<'a>(&'a mut Handle);
+struct Traversal<'a> {
+    handle: &'a mut Handle,
+    keep_session: bool,
+}
 impl Drop for Traversal<'_> {
     fn drop(&mut self) {
         let _lock = lock();
         // SAFETY: this lease ends before the owner is destroyed.
-        unsafe { ondas_vwdb_end(self.0.0.as_ptr()) };
+        unsafe { ondas_vwdb_end(self.handle.0.as_ptr(), self.keep_session.into()) };
     }
 }
