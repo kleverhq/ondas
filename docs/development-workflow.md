@@ -28,7 +28,7 @@ git config --worktree --fixed-value --unset-all core.hooksPath '/path/to/ondas-h
 
 Run the first command again in the same worktree to confirm that the Ondas entry is gone.
 
-Run `./dev just check-local` for an offline check. The pull request workflow runs this recipe as part of `just ci`.
+Run `./dev just check-local` for local checks without waveform fixtures. The pull request workflow runs this recipe as part of `just ci`.
 
 ## SDK selection is part of the experiment
 

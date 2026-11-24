@@ -171,7 +171,7 @@ fixtures-install: _inside
     @test -f fixtures/justfile || { echo "error: run git submodule update --init fixtures on the host first" >&2; exit 1; }
     just --justfile fixtures/justfile install
 
-# Run offline quality checks without external fixtures.
+# Run quality checks without waveform fixtures.
 check-local: fmt-check lint check docs test tools-test
 
 # Validate release metadata and the actual crates.io package without publishing.
