@@ -8,7 +8,7 @@ Public API contracts and usage examples belong in Rustdoc in `src/`.
 
 Target Simplified Technical English in `docs/` and public Rustdoc.
 
-Keep Git, editors, agents, credentials and signing on the host. Run project commands through `./dev`. Follow `development-workflow.md` for hooks, required checks and release policy.
+Keep Git, editors, agents, credentials and signing on the host. Run project commands through `./dev`. Follow `development-workflow.md` for required checks and release policy.
 
 Keep materialized fixtures, vendor files, credentials and user-environment details out of Git and Docker build contexts. Use ignored local configuration and logs.
 

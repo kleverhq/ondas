@@ -12,11 +12,23 @@ The host sources `.env` as Bash, so this file can execute commands. `ONDAS_DEV_C
 
 The launcher fingerprints profile files and the Git common-directory path. The fingerprint does not cover all expanded environment values. A changed SDK path or mount variable can therefore leave the old container in use. Recreate the container when these inputs change. Linked worktrees also need the shared Git directory mounted at its host path. The launcher supplies this mount.
 
-## Hooks are reviewed snapshots
+## Remove an installed Ondas hook
 
-Install reviewed hooks in each new checkout or worktree with `./dev --install-hooks`. This copies the launcher and `tools/repo/git-hook` into the worktree's Git metadata. Switching branches does not update the active hook. Reinstall after reviewing changes to either source.
+An earlier Ondas setup installed a copy of the hook in an `ondas-hooks` directory inside the Git metadata. Git keeps using that copy after you update the checkout. Run this command from each checkout and linked worktree to see the configured hook paths and their scopes.
 
-The hook uses only `--exec-only`. A commit cannot start, rebuild or recreate its container. Start the worktree container before committing. Do not bypass hooks unless the user explicitly requests it. The hook runs `check-local` without fixtures. The `ci` gate also runs external conformance. A local commit therefore does not prove reader conformance.
+```sh
+git config --show-scope --get-all core.hooksPath
+```
+
+If a `worktree` entry points to the directory installed by Ondas, remove that exact value from the same checkout or worktree. A linked worktree can show a copy of another checkout's hook path. Replace the example path with the path from the entry.
+
+```sh
+git config --worktree --fixed-value --unset-all core.hooksPath '/path/to/ondas-hooks'
+```
+
+Run the first command again in the same worktree to confirm that the Ondas entry is gone.
+
+Run `./dev just check-local` for local checks without waveform fixtures. The pull request workflow runs this recipe as part of `just ci`.
 
 ## SDK selection is part of the experiment
 
