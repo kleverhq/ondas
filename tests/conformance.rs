@@ -83,6 +83,7 @@ impl Fixture {
             Format::Ghw => "ghw-native",
             Format::Fsdb => "fsdb-lib",
             Format::Shm => "shm-lib",
+            Format::Vwdb => "vwdb-lib",
 
             Format::Wlf => "wlf-lib",
             Format::Wdb => "wdb-lib",
@@ -97,6 +98,7 @@ impl Fixture {
             Format::Ghw => "conformance.ghw",
             Format::Fsdb => "conformance.fsdb",
             Format::Shm => "conformance.shm",
+            Format::Vwdb => "conformance.vwdb",
 
             Format::Wlf => "conformance.wlf",
             Format::Wdb => "conformance.wdb",
@@ -141,12 +143,22 @@ fn path(value: &Json) -> HierarchyPath {
 
 // Version 1 oracles store flattened names. Match this spelling during
 // enumeration, then use the declaration's typed path to verify lookup.
-fn oracle_path(path: HierarchyPath) -> HierarchyPath {
+fn oracle_path(path: HierarchyPath, format: Format) -> HierarchyPath {
     if path
         .components()
         .all(|component| component.index().is_none())
     {
         return path;
+    }
+    if format == Format::Vwdb {
+        return HierarchyPath::from_components(path.components().flat_map(|component| {
+            [
+                Some(component.name().to_owned()),
+                component.index().map(|index| index.to_string()),
+            ]
+            .into_iter()
+            .flatten()
+        }));
     }
     HierarchyPath::from_components(path.components().map(|component| match component.index() {
         Some(index) => format!("{}[{index}]", component.name()),
@@ -157,16 +169,27 @@ fn oracle_path(path: HierarchyPath) -> HierarchyPath {
 fn oracle_variables<'h>(
     hierarchy: &'h ondas::Hierarchy,
     wanted: &HashSet<HierarchyPath>,
+    format: Format,
 ) -> HashMap<HierarchyPath, ondas::Variable<'h>> {
     let names: HashSet<_> = wanted
         .iter()
-        .filter_map(HierarchyPath::name)
-        .flat_map(|name| [Some(name), name.rsplit_once('[').map(|(base, _)| base)])
+        .flat_map(|path| {
+            let name = path.name();
+            let container =
+                if format == Format::Vwdb && name.is_some_and(|n| n.parse::<i64>().is_ok()) {
+                    let mut components = path.components();
+                    let index = components.len().saturating_sub(2);
+                    components.nth(index).map(|c| c.name())
+                } else {
+                    name.and_then(|n| n.rsplit_once('[').map(|(base, _)| base))
+                };
+            [name, container]
+        })
         .flatten()
         .collect();
     let mut variables = HashMap::new();
     for variable in hierarchy.variables().filter(|v| names.contains(v.name())) {
-        let path = oracle_path(variable.path());
+        let path = oracle_path(variable.path(), format);
         if wanted.contains(&path) {
             assert!(
                 variables.insert(path.clone(), variable).is_none(),
@@ -393,6 +416,7 @@ fn load_conformance_fixture(root: &Path, name: &str) -> Option<Fixture> {
         "ghw" => Format::Ghw,
         "fsdb" if cfg!(feature = "fsdb-lib") => Format::Fsdb,
         "shm" if cfg!(feature = "shm-lib") => Format::Shm,
+        "vwdb" if cfg!(feature = "vwdb-lib") => Format::Vwdb,
 
         "wlf" if cfg!(feature = "wlf-lib") => Format::Wlf,
         "wdb" if cfg!(feature = "wdb-lib") => Format::Wdb,
@@ -690,13 +714,27 @@ fn has_alias_identity(wave: &Waveform) -> bool {
     if wave.backend() == "shm-lib" {
         return env!("ONDAS_SHM_ALIAS_PATH") == "shared";
     }
-    let _ = wave;
-    true
+    wave.format() != Format::Vwdb
 }
 
 fn hierarchy(wave: &Waveform, oracle: &Json, check_lookups: bool) -> BTreeMap<String, Vec<Signal>> {
     let hierarchy = wave.hierarchy();
     let cloned = hierarchy.clone();
+    let format = wave.format();
+    let expected_parent = |observed: HierarchyPath, expected: &HierarchyPath| {
+        let parent = expected.parent();
+        let parent = if format == Format::Vwdb
+            && observed
+                .components()
+                .last()
+                .is_some_and(|c| c.index().is_some())
+        {
+            parent.and_then(|p| p.parent())
+        } else {
+            parent
+        };
+        parent.filter(|p| !p.is_empty())
+    };
     // Index only oracle-listed declarations from public traversal. Large FSTs
     // can list thousands of aliases; repeated linear lookups would be quadratic.
     let wanted_scopes: HashSet<_> = list(&oracle["hierarchy"], "scopes")
@@ -709,7 +747,7 @@ fn hierarchy(wave: &Waveform, oracle: &Json, check_lookups: bool) -> BTreeMap<St
         .collect();
     let mut scopes = HashMap::new();
     for scope in hierarchy.scopes() {
-        let path = oracle_path(scope.path());
+        let path = oracle_path(scope.path(), format);
         if wanted_scopes.contains(&path) {
             assert!(
                 scopes.insert(path.clone(), scope).is_none(),
@@ -717,15 +755,15 @@ fn hierarchy(wave: &Waveform, oracle: &Json, check_lookups: bool) -> BTreeMap<St
             );
         }
     }
-    let variables = oracle_variables(hierarchy, &wanted_variables);
+    let variables = oracle_variables(hierarchy, &wanted_variables, format);
     for expected in list(&oracle["hierarchy"], "scopes") {
         let path = path(&expected["path"]);
         let scope = scopes
             .get(&path)
             .unwrap_or_else(|| panic!("missing scope {path}"));
         assert_eq!(
-            scope.parent().map(|p| oracle_path(p.path())),
-            path.parent().filter(|p| !p.is_empty())
+            scope.parent().map(|p| oracle_path(p.path(), format)),
+            expected_parent(scope.path(), &path)
         );
         let path = scope.path();
         if check_lookups {
@@ -770,8 +808,8 @@ fn hierarchy(wave: &Waveform, oracle: &Json, check_lookups: bool) -> BTreeMap<St
             .get(&path)
             .unwrap_or_else(|| panic!("missing variable {path}"));
         assert_eq!(
-            variable.parent().map(|p| oracle_path(p.path())),
-            path.parent().filter(|p| !p.is_empty())
+            variable.parent().map(|p| oracle_path(p.path(), format)),
+            expected_parent(variable.path(), &path)
         );
         let path = variable.path();
         if check_lookups {
@@ -1775,8 +1813,93 @@ fn static_composition_queries(
     }
 }
 
+// The published SystemC windows describe the explicitly selected digital SHM
+// component. The sidecars express all coordinates on the external VWDB grid.
+fn systemc_embedded_shm(fixture: &Fixture) -> Fixture {
+    // Embedded grid from the independent recording qualification.
+    let name = fixture.path.parent().unwrap().file_name().unwrap();
+    let (unit, denominator) = match name.to_str().unwrap() {
+        "vwdb0076-systemc-ace-ace-example"
+        | "vwdb0077-systemc-ace-axi-example"
+        | "vwdb0080-systemc-axi-axi-example"
+        | "vwdb0081-systemc-axi4-tlm-pin-tlm-example"
+        | "vwdb0082-systemc-axi4lite-tlm-pin-tlm-example"
+        | "vwdb0084-systemc-lwtr4axi-example"
+        | "vwdb0087-systemc-simple-system" => ("fs", 1),
+        "vwdb0078-systemc-ahb-bfm"
+        | "vwdb0079-systemc-apb-bfm"
+        | "vwdb0083-systemc-cxs-channel"
+        | "vwdb0085-systemc-lwtr4tlm2"
+        | "vwdb0086-systemc-scc-tlm-target-bfs-example" => ("ps", 1000),
+        other => panic!("unqualified embedded SystemC SHM grid for {other}"),
+    };
+    assert_eq!(
+        fixture.oracle["metadata"]["timescale"],
+        json!({"factor":1,"unit":"ps"})
+    );
+    let mut oracle = fixture.oracle.clone();
+    let convert = |row: &mut Json, fields: &[&str]| {
+        for &key in fields {
+            if let Some(value) = row.get_mut(key).filter(|v| !v.is_null()) {
+                let femtoseconds = u128::from(tick(value)) * 1000;
+                assert_eq!(femtoseconds % denominator, 0, "nonintegral SHM tick");
+                *value = json!(
+                    u64::try_from(femtoseconds / denominator)
+                        .unwrap()
+                        .to_string()
+                );
+            }
+        }
+    };
+    oracle["metadata"]["timescale"] = json!({"factor":1,"unit":unit});
+    convert(&mut oracle["metadata"]["time_span"], &["first", "last"]);
+    for signal in oracle["signals"].as_object_mut().unwrap().values_mut() {
+        if let Some(samples) = signal.get_mut("samples").and_then(Json::as_array_mut) {
+            for sample in samples {
+                convert(sample, &["time", "changed_at"]);
+            }
+        }
+        if let Some(windows) = signal.get_mut("windows").and_then(Json::as_array_mut) {
+            for window in windows {
+                convert(window, &["start", "end"]);
+                convert(&mut window["initial"], &["changed_at"]);
+                for change in window["changes"].as_array_mut().unwrap() {
+                    convert(change, &["time"]);
+                }
+            }
+        }
+    }
+    Fixture {
+        path: fixture.path.join("waves_ida.shm"),
+        oracle,
+        format: Format::Shm,
+        non_ascii: BTreeMap::new(),
+    }
+}
+
 fn pool_queries(fixture: &Fixture, bytes: bool, context: &str) -> bool {
-    let result = open(fixture, bytes);
+    let mut result = open(fixture, bytes);
+    let embedded;
+    let fixture = if fixture.format == Format::Vwdb
+        && fixture
+            .path
+            .parent()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("-systemc-")
+    {
+        let outer = result.expect("open external SystemC VWDB");
+        metadata(&outer, &fixture.oracle["metadata"], false, fixture);
+        metadata_matches_open(&fixture.path).expect("VWDB metadata");
+        embedded = systemc_embedded_shm(fixture);
+        result = open(&embedded, false);
+        &embedded
+    } else {
+        fixture
+    };
     if let Err(error) = &result
         && (fsdb_compatibility::is_version_error(error)
             || wdb_compatibility::is_version_error(error))
@@ -1788,6 +1911,29 @@ fn pool_queries(fixture: &Fixture, bytes: bool, context: &str) -> bool {
         return true;
     };
     metadata(&wave, &fixture.oracle["metadata"], bytes, fixture);
+    if fixture.format == Format::Vwdb {
+        let hierarchy = wave.hierarchy();
+        let fixture_name = fixture
+            .path
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str());
+        match fixture_name {
+            Some("vwdb0000-enum-core") => {
+                let parent = hierarchy.scope("top").unwrap();
+                for path in ["top.array_values[0]", "top.array_values[1]"] {
+                    assert!(hierarchy.variable(path).unwrap().parent().as_ref() == Some(&parent));
+                }
+            }
+            Some("vwdb0006-ghw-generate-order") => {
+                let parent = hierarchy.scope("\"\"").unwrap();
+                for path in ["\"\".gen[0]", "\"\".gen[1]"] {
+                    assert!(hierarchy.scope(path).unwrap().parent().as_ref() == Some(&parent));
+                }
+            }
+            _ => {}
+        }
+    }
     let signals = hierarchy(&wave, &fixture.oracle, false);
     string_rejections(&mut wave, fixture, &signals);
     let mut samples = BTreeMap::<_, Vec<_>>::new();
@@ -1837,7 +1983,7 @@ fn pool_queries(fixture: &Fixture, bytes: bool, context: &str) -> bool {
         scan_queries(&mut wave, &handles, range, context);
         if matches!(
             fixture.format,
-            Format::Fsdb | Format::Ghw | Format::Wlf | Format::Wdb
+            Format::Fsdb | Format::Ghw | Format::Wlf | Format::Wdb | Format::Vwdb
         ) {
             // Candidate-time and duplicate-selection assertions are derived from
             // supplied complete windows, without extending the oracle schema.
@@ -2468,7 +2614,7 @@ fn run_pool(root: &Path, extension: &str) {
         };
         let modes: &[bool] = if matches!(
             fixture.format,
-            Format::Fsdb | Format::Shm | Format::Wlf | Format::Wdb
+            Format::Fsdb | Format::Shm | Format::Wlf | Format::Wdb | Format::Vwdb
         ) {
             &[false]
         } else {
@@ -2502,10 +2648,10 @@ fn run_pool(root: &Path, extension: &str) {
         "{extension} pool failures:\n{}",
         failures.join("\n")
     );
-    if extension == "ghw" {
+    if matches!(extension, "ghw" | "vwdb") {
         assert_eq!(
             skipped, 0,
-            "every GHW artifact must have independent oracle evidence"
+            "every {extension} artifact must have independent oracle evidence"
         );
     }
     assert!(passed > 0, "no {extension} conformance cases executed");
@@ -3174,6 +3320,16 @@ fn oracle_comparison_rules() {
     );
 }
 
+#[cfg(feature = "vwdb-lib")]
+#[test]
+#[ignore = "requires installed VWDB fixtures and the SHM and VWDB features"]
+fn full_vwdb_pool() {
+    #[cfg(not(feature = "shm-lib"))]
+    panic!("SystemC digital histories require shm-lib. Run just conformance-vwdb.");
+    #[cfg(feature = "shm-lib")]
+    full_pool("vwdb");
+}
+
 #[cfg(feature = "shm-lib")]
 #[test]
 #[ignore = "requires Xcelium and installed fixtures; run just conformance-shm"]
@@ -3417,6 +3573,25 @@ fn shm_manifest_ascii_hash_matches_independent_python_digest() {
 }
 
 #[test]
+fn vwdb_manifest_tracks_empty_and_nested_components() {
+    let dir = std::env::temp_dir().join(format!("ondas-vwdb-manifest-{}", std::process::id()));
+    let path = dir.join("waveform.vwdb");
+    fs::create_dir_all(path.join("trn_0_0")).unwrap();
+    let dir = dir.canonicalize().unwrap();
+    let files = ["vwdb_info.json", "trn_0_0/component"].map(|name| {
+        fs::write(path.join(name), b"").unwrap();
+        json!({"file":name,"size":0,"sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"})
+    });
+    let artifact = json!({"file":"waveform.vwdb","format":"vwdb","size":0,
+        "sha256":fixture_support::manifest_sha256(&files),"files":files});
+    let verify = || fixture_support::verify_artifact(&dir, &artifact, "VWDB manifest");
+    assert_eq!(verify(), path.canonicalize().unwrap());
+    fs::write(path.join("trn_0_0/extra"), b"").unwrap();
+    assert!(std::panic::catch_unwind(verify).is_err());
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn shm_directory_manifest_rejects_changed_or_missing_components() {
     use sha2::{Digest, Sha256};
     let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -3594,6 +3769,7 @@ fn wdb_changed_type_conformance() {
         let variables = oracle_variables(
             wave.hierarchy(),
             &items.iter().map(|item| path(&item["path"])).collect(),
+            Format::Wdb,
         );
         let mut selected = BTreeSet::new();
         for item in items {

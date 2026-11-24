@@ -18,7 +18,7 @@ use crate::{
 ///
 /// FST uses `fst-lib`. VCD uses `vcd-native`. GHW uses `ghw-native`.
 /// FSDB, WLF and WDB files use the optional `fsdb-lib`, `wlf-lib` and `wdb-lib` features.
-/// SHM directories use the optional `shm-lib` feature. Content recognition takes
+/// SHM and VWDB directories use the optional `shm-lib` and `vwdb-lib` features. Content recognition takes
 /// priority over the filename. A recognized extension is a fallback hint.
 /// A recognized format without a reader returns [`Error::NoBackend`].
 /// Unrecognized input returns
@@ -38,13 +38,13 @@ pub fn open(path: impl AsRef<Path>) -> Result<Waveform> {
 
 /// Reads owned source metadata without retaining a waveform or hierarchy.
 ///
-/// FSDB, SHM, WLF and WDB read native source metadata without materializing declarations.
+/// FSDB, SHM, VWDB, WLF and WDB read native source metadata without materializing declarations.
 /// FST, VCD and GHW use their regular readers, so this is not a fast path for those
 /// formats. Format detection matches [`open`], as do metadata values for sources
 /// that open successfully. Unlike [`open`], it does not validate a vendor
 /// declaration tree. Use [`open`] for validated hierarchy or signal access.
 ///
-/// This function accepts filesystem paths, including SHM directories, not bytes.
+/// This function accepts filesystem paths, including SHM and VWDB directories.
 pub fn read_metadata(path: impl AsRef<Path>) -> Result<Metadata> {
     let result = read_metadata_path(path.as_ref());
     #[cfg(feature = "wdb-lib")]
@@ -60,11 +60,13 @@ fn read_metadata_path(path: &Path) -> Result<Metadata> {
     let name = path.to_string_lossy().into_owned();
     if std::fs::metadata(path)?.is_dir() {
         let format = directory_format(path)?;
-        #[cfg(feature = "shm-lib")]
-        if format == Format::Shm {
-            return crate::backends::shm::read_metadata(path, name);
-        }
-        return Err(Error::NoBackend { format });
+        return match format {
+            #[cfg(feature = "shm-lib")]
+            Format::Shm => crate::backends::shm::read_metadata(path, name),
+            #[cfg(feature = "vwdb-lib")]
+            Format::Vwdb => crate::backends::vwdb::read_metadata(path, name),
+            _ => Err(Error::NoBackend { format }),
+        };
     }
     let file = File::open(path)?;
     let vcd_file = file.try_clone().ok();
@@ -84,12 +86,9 @@ fn read_metadata_path(path: &Path) -> Result<Metadata> {
         Format::Wlf => crate::backends::wlf::read_metadata(path, name),
         #[cfg(feature = "wdb-lib")]
         Format::Wdb => crate::backends::wdb::read_metadata(path, name),
-        #[cfg(not(all(
-            feature = "fsdb-lib",
-            feature = "shm-lib",
-            feature = "wlf-lib",
-            feature = "wdb-lib"
-        )))]
+        #[cfg(feature = "vwdb-lib")]
+        Format::Vwdb => Err(directory_input("vwdb-lib", crate::InputKind::File)),
+        #[allow(unreachable_patterns)]
         _ => Err(Error::NoBackend { format }),
     }
 }
@@ -97,7 +96,7 @@ fn read_metadata_path(path: &Path) -> Result<Metadata> {
 /// Opens a waveform source with only the named backend, without fallback.
 ///
 /// Available names are `fst-lib`, `vcd-native`, `ghw-native`, and feature-enabled
-/// `fsdb-lib`, `shm-lib`, `wlf-lib` and `wdb-lib`. SHM input must be a database directory.
+/// `fsdb-lib`, `shm-lib`, `vwdb-lib`, `wlf-lib` and `wdb-lib`. SHM and VWDB use database directories.
 /// A disabled optional backend is an unknown name. Unknown names return
 /// [`Error::UnknownBackend`]. A format unsupported by the selected backend returns
 /// [`Error::BackendDoesNotSupport`]. See [`open`] for detection and reader limits.
@@ -110,8 +109,8 @@ pub fn open_with(path: impl AsRef<Path>, backend: &str) -> Result<Waveform> {
 /// `name` is the logical [`Metadata::source_name`] and a format-detection hint.
 /// The input stays alive through the shared ownership of `bytes`. Detection,
 /// errors, and reader limitations are the same as [`open`]. FST, VCD and GHW readers
-/// support file and byte input. `fsdb-lib`, `wlf-lib` and `wdb-lib` read files only. `shm-lib`
-/// reads directories only. An enabled FSDB, SHM, WLF or WDB filename hint returns
+/// support file and byte input. `fsdb-lib`, `wlf-lib` and `wdb-lib` read files only.
+/// `shm-lib` and `vwdb-lib` read directories only. An enabled native filename hint returns
 /// [`Error::UnsupportedInput`].
 /// The SDK's content probe is only available for file paths.
 pub fn open_bytes(name: impl Into<String>, bytes: Arc<[u8]>) -> Result<Waveform> {
@@ -122,7 +121,7 @@ pub fn open_bytes(name: impl Into<String>, bytes: Arc<[u8]>) -> Result<Waveform>
 ///
 /// Combines [`open_bytes`]' input ownership with [`open_with`]'s explicit reader
 /// selection and error categories. Selecting enabled `fsdb-lib`, `shm-lib`,
-/// `wlf-lib` or `wdb-lib` returns [`Error::UnsupportedInput`] without creating a temporary file.
+/// `vwdb-lib`, `wlf-lib` or `wdb-lib` returns [`Error::UnsupportedInput`] without creating a temporary file.
 pub fn open_bytes_with(
     name: impl Into<String>,
     bytes: Arc<[u8]>,
@@ -142,6 +141,7 @@ fn check_backend(backend: Option<&str>) -> Result<()> {
         && !matches!(backend, "fst-lib" | "vcd-native" | "ghw-native")
         && !(cfg!(feature = "fsdb-lib") && backend == "fsdb-lib")
         && !(cfg!(feature = "shm-lib") && backend == "shm-lib")
+        && !(cfg!(feature = "vwdb-lib") && backend == "vwdb-lib")
         && !(cfg!(feature = "wlf-lib") && backend == "wlf-lib")
         && !(cfg!(feature = "wdb-lib") && backend == "wdb-lib")
     {
@@ -166,32 +166,7 @@ fn open_file(path: &Path, backend: Option<&str>) -> Result<Waveform> {
 fn open_file_path(path: &Path, backend: Option<&str>) -> Result<Waveform> {
     check_backend(backend)?;
     if std::fs::metadata(path)?.is_dir() {
-        let format = if backend == Some("shm-lib") {
-            Format::Shm
-        } else {
-            directory_format(path)?
-        };
-        if let Some(backend) = backend
-            && backend != "shm-lib"
-        {
-            return Err(Error::BackendDoesNotSupport {
-                backend: backend.into(),
-                format,
-            });
-        }
-        #[cfg(feature = "shm-lib")]
-        {
-            let (reader, hierarchy, metadata) =
-                crate::backends::shm::Reader::open(path, path.to_string_lossy().into_owned())?;
-            return Ok(Waveform {
-                compositions: composition::Compositions::default(),
-                reader: Reader::Shm(Box::new(reader)),
-                hierarchy,
-                metadata,
-            });
-        }
-        #[cfg(not(feature = "shm-lib"))]
-        return Err(Error::NoBackend { format });
+        return open_directory(path, backend);
     }
     let file = File::open(path)?;
     let vcd_file = file.try_clone().ok();
@@ -202,6 +177,58 @@ fn open_file_path(path: &Path, backend: Option<&str>) -> Result<Waveform> {
         Some(path),
         vcd_file,
     )
+}
+
+fn open_directory(path: &Path, backend: Option<&str>) -> Result<Waveform> {
+    let format = match directory_format(path) {
+        Err(Error::UnknownFormat) if backend == Some("shm-lib") => Format::Shm,
+        result => result?,
+    };
+    match (format, backend) {
+        #[cfg(feature = "shm-lib")]
+        (Format::Shm, None | Some("shm-lib")) => {
+            let (reader, hierarchy, metadata) =
+                crate::backends::shm::Reader::open(path, path.to_string_lossy().into_owned())?;
+            Ok(directory_waveform(
+                Reader::Shm(Box::new(reader)),
+                hierarchy,
+                metadata,
+            ))
+        }
+        #[cfg(feature = "vwdb-lib")]
+        (Format::Vwdb, None | Some("vwdb-lib")) => {
+            let (reader, hierarchy, metadata) =
+                crate::backends::vwdb::Reader::open(path, path.to_string_lossy().into_owned())?;
+            Ok(directory_waveform(
+                Reader::Vwdb(Box::new(reader)),
+                hierarchy,
+                metadata,
+            ))
+        }
+        (_, Some(backend)) => Err(Error::BackendDoesNotSupport {
+            backend: backend.into(),
+            format,
+        }),
+        (_, None) => Err(Error::NoBackend { format }),
+    }
+}
+
+#[cfg(any(feature = "shm-lib", feature = "vwdb-lib"))]
+fn directory_waveform(reader: Reader, hierarchy: Hierarchy, metadata: Metadata) -> Waveform {
+    Waveform {
+        compositions: composition::Compositions::default(),
+        reader,
+        hierarchy,
+        metadata,
+    }
+}
+
+#[cfg(feature = "vwdb-lib")]
+fn directory_input(backend: &str, input: crate::InputKind) -> Error {
+    Error::UnsupportedInput {
+        backend: backend.into(),
+        input,
+    }
 }
 
 fn open_input(
@@ -240,6 +267,10 @@ fn open_input(
             backend: "shm-lib".into(),
             input: crate::InputKind::Bytes,
         });
+    }
+    #[cfg(feature = "vwdb-lib")]
+    if backend == Some("vwdb-lib") && _path.is_none() {
+        return Err(directory_input("vwdb-lib", crate::InputKind::Bytes));
     }
     let format = detect_format(&mut *input, &name, _path)?;
     let (reader, hierarchy, metadata) = match (format, backend) {
@@ -291,18 +322,25 @@ fn open_input(
             let (reader, hierarchy, metadata) = crate::backends::wdb::Reader::open(path, name)?;
             (Reader::Wdb(Box::new(reader)), hierarchy, metadata)
         }
+        #[cfg(feature = "vwdb-lib")]
+        (Format::Vwdb, None | Some("vwdb-lib")) => {
+            return Err(directory_input(
+                "vwdb-lib",
+                if _path.is_some() {
+                    crate::InputKind::File
+                } else {
+                    crate::InputKind::Bytes
+                },
+            ));
+        }
         (_, Some(backend)) => {
             return Err(Error::BackendDoesNotSupport {
                 backend: backend.into(),
                 format,
             });
         }
-        #[cfg(not(all(
-            feature = "fsdb-lib",
-            feature = "shm-lib",
-            feature = "wlf-lib",
-            feature = "wdb-lib"
-        )))]
+
+        #[allow(unreachable_patterns)]
         (_, None) => return Err(Error::NoBackend { format }),
     };
     Ok(Waveform {
@@ -313,11 +351,24 @@ fn open_input(
     })
 }
 
+fn metadata_if_present(path: &Path) -> std::io::Result<Option<std::fs::Metadata>> {
+    match path.metadata() {
+        Ok(metadata) => Ok(Some(metadata)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 fn directory_format(path: &Path) -> Result<Format> {
-    if path
-        .extension()
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("shm"))
+    // Early VWDB recordings can use a .shm directory. The native database
+    // layout also identifies a VWDB whose SHM component was never recorded.
+    if metadata_if_present(&path.join("vwdb_info.json"))?.is_some_and(|meta| meta.is_file())
+        && metadata_if_present(&path.join("dsn_0"))?.is_some_and(|meta| meta.is_dir())
     {
+        return Ok(Format::Vwdb);
+    }
+    let extension = path.extension().unwrap_or_default();
+    if extension.eq_ignore_ascii_case("shm") {
         return Ok(Format::Shm);
     }
     // Confirmed SST2 DSN/TRN headers, independent of the directory suffix.
@@ -331,7 +382,13 @@ fn directory_format(path: &Path) -> Result<Format> {
             Some("trn") => [0xa1, 0x95, 0x11, 0xbf, 0, 0, 0, 4],
             _ => continue,
         };
-        if !entry.file_type()?.is_file() {
+        let kind = entry.file_type()?;
+        let regular = if kind.is_symlink() {
+            metadata_if_present(&component)?.is_some_and(|metadata| metadata.is_file())
+        } else {
+            kind.is_file()
+        };
+        if !regular {
             continue;
         }
         let mut header = [0; 8];
@@ -344,7 +401,10 @@ fn directory_format(path: &Path) -> Result<Format> {
         }
     }
     if designs == 1 && transitions > 0 {
-        Ok(Format::Shm)
+        return Ok(Format::Shm);
+    }
+    if extension.eq_ignore_ascii_case("vwdb") {
+        Ok(Format::Vwdb)
     } else {
         Err(Error::UnknownFormat)
     }
@@ -407,6 +467,7 @@ fn detect_format(input: &mut dyn Input, name: &str, _path: Option<&Path>) -> Res
             "wlf" => Ok(Format::Wlf),
             "wdb" => Ok(Format::Wdb),
             "shm" => Ok(Format::Shm),
+            "vwdb" => Ok(Format::Vwdb),
             _ => Err(Error::UnknownFormat),
         }
     }
@@ -432,6 +493,8 @@ pub enum Format {
     Wdb,
     /// Simulation History Manager database directory.
     Shm,
+    /// Verisium waveform database directory.
+    Vwdb,
 }
 
 /// An opened, read-only waveform and its query interface.
@@ -501,6 +564,8 @@ impl Waveform {
             Reader::Fsdb(_) => Format::Fsdb,
             #[cfg(feature = "shm-lib")]
             Reader::Shm(_) => Format::Shm,
+            #[cfg(feature = "vwdb-lib")]
+            Reader::Vwdb(_) => Format::Vwdb,
             #[cfg(feature = "wlf-lib")]
             Reader::Wlf(_) => Format::Wlf,
             #[cfg(feature = "wdb-lib")]
@@ -523,6 +588,8 @@ impl Waveform {
             Reader::Fsdb(_) => "fsdb-lib",
             #[cfg(feature = "shm-lib")]
             Reader::Shm(_) => "shm-lib",
+            #[cfg(feature = "vwdb-lib")]
+            Reader::Vwdb(_) => "vwdb-lib",
             #[cfg(feature = "wlf-lib")]
             Reader::Wlf(_) => "wlf-lib",
             #[cfg(feature = "wdb-lib")]
@@ -793,6 +860,32 @@ mod tests {
         ));
         std::fs::write(root.join("wave.trn"), b"invalid").unwrap();
         assert!(matches!(directory_format(&root), Err(Error::UnknownFormat)));
+    }
+
+    #[cfg(not(feature = "vwdb-lib"))]
+    #[test]
+    fn vwdb_recognition_without_the_feature() {
+        let root =
+            std::env::temp_dir().join(format!("ondas-vwdb-disabled-{}.shm", std::process::id()));
+        std::fs::create_dir_all(root.join("dsn_0")).unwrap();
+        std::fs::write(root.join("vwdb_info.json"), b"{}").unwrap();
+        let opened = open(&root);
+        let metadata = read_metadata(&root);
+        let explicit = open_with(&root, "vwdb-lib");
+        std::fs::remove_dir_all(root).unwrap();
+        assert!(matches!(
+            opened,
+            Err(Error::NoBackend {
+                format: Format::Vwdb
+            })
+        ));
+        assert!(matches!(
+            metadata,
+            Err(Error::NoBackend {
+                format: Format::Vwdb
+            })
+        ));
+        assert!(matches!(explicit, Err(Error::UnknownBackend { .. })));
     }
 
     #[test]

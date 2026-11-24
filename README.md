@@ -1,6 +1,6 @@
 # ondas
 
-A read-only Rust library for waveform analysis across VCD, FST, GHW, FSDB, SHM, WLF and WDB.
+A read-only Rust library for waveform analysis across VCD, FST, GHW, FSDB, SHM, VWDB, WLF and WDB.
 
 ![Ondas architecture: readers supply declarations and observations to the common query engine.](docs/images/architecture.drawio.svg)
 
@@ -35,6 +35,7 @@ ondas = { version = "=3.0.0", features = ["fsdb-lib"] }
 | `ghw-native` | GHW | Built-in Rust parser | `ghw-reader.md` |
 | `fsdb-lib` | FSDB | Optional Verdi Reader SDK; file input | `fsdb-reader.md` |
 | `shm-lib` | SHM | Optional Xcelium reader; directory input | `shm-reader.md` |
+| `vwdb-lib` | VWDB | Optional Xcelium reader for native database directories | `vwdb-reader.md` |
 | `wlf-lib` | WLF | Optional Questa SDK; file input | `wlf-reader.md` |
 | `wdb-lib` | WDB | Optional Vivado reader; file input | `wdb-reader.md` |
 

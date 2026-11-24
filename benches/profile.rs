@@ -24,7 +24,9 @@ fn roundtrip<C: consumer::Consumer>(job: &Job, out: &mut C) {
 fn main() {
     let args = env::args().collect::<Vec<_>>();
     if args.get(1).map(String::as_str) == Some("ready") {
-        // Executable/loader readiness only. No waveform API here.
+        // Probe the optional runtime without opening a waveform.
+        #[cfg(feature = "vwdb-lib")]
+        vwdb_ready();
         println!("OPB ready");
         return;
     }
@@ -39,6 +41,42 @@ fn main() {
         }
         _ => panic!("unknown mode"),
     }
+}
+
+#[cfg(feature = "vwdb-lib")]
+fn vwdb_ready() {
+    use std::ffi::{CStr, c_char, c_int};
+
+    unsafe extern "C" {
+        fn ondas_vwdb_ready(
+            library: *const c_char,
+            resolved_path: *mut *const c_char,
+            error: *mut c_char,
+            cap: usize,
+        ) -> c_int;
+    }
+    let mut error = [0; 512];
+    let mut resolved_path = std::ptr::null();
+    let library = concat!(env!("ONDAS_VWDB_READER"), "\0");
+    // SAFETY: the shim receives a terminated path and writable error storage.
+    // Readiness runs before a waveform or any worker thread is created.
+    let status = unsafe {
+        ondas_vwdb_ready(
+            library.as_ptr().cast(),
+            &mut resolved_path,
+            error.as_mut_ptr(),
+            error.len(),
+        )
+    };
+    if status != 0 {
+        // SAFETY: the shim terminates the error string within this buffer.
+        let detail = unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy();
+        eprintln!("VWDB runtime unavailable: {detail}");
+        std::process::exit(1);
+    }
+    // SAFETY: success returns the loader's terminated process-lifetime path.
+    let selected = unsafe { CStr::from_ptr(resolved_path) }.to_string_lossy();
+    println!("OPB VWDB reader: {selected}");
 }
 
 fn measure(job: &Job) {

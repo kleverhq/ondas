@@ -8,6 +8,7 @@ import multiprocessing
 import os
 from pathlib import Path
 import signal
+from stat import S_ISDIR, S_ISREG
 import subprocess
 import sys
 import tempfile
@@ -18,7 +19,7 @@ from . import bindings, oracle
 
 ROOT = Path(__file__).resolve().parents[2]
 SDK = {'fsdb-lib': 'VERDI_HOME', 'wlf-lib': 'QUESTA_HOME',
-       'shm-lib': 'XCELIUM_HOME', 'wdb-lib': 'XILINX_VIVADO'}
+       'shm-lib': 'XCELIUM_HOME', 'vwdb-lib': 'XCELIUM_HOME', 'wdb-lib': 'XILINX_VIVADO'}
 _active_child = None
 _protecting_child = False
 _pending_signal = None
@@ -100,14 +101,27 @@ def input_ready(binding):
         raise ValueError(f"fixture metadata differs from pinned OPB input: {binding['fixture']}")
     path = directory / artifact['file']
     if 'files' in artifact:
-        wanted = {c['file'] for c in artifact['files']}
-        actual = {str(p.relative_to(path)) for p in path.rglob('*') if p.is_file()}
+        if path.is_symlink() or not path.is_dir():
+            raise ValueError('directory artifact must be a real directory')
+        wanted = {Path(c['file']) for c in artifact['files']}
+        directories = {parent for file in wanted for parent in file.parents if parent != Path('.')}
+        actual = set()
+        for item in path.rglob('*'):
+            relative = item.relative_to(path)
+            mode = item.lstat().st_mode
+            if S_ISDIR(mode):
+                if relative not in directories:
+                    raise ValueError(f'extra directory component: {relative}')
+            elif S_ISREG(mode):
+                actual.add(relative)
+            else:
+                raise ValueError(f'non-regular directory component: {relative}')
         if actual != wanted:
-            raise ValueError('SHM component set differs')
+            raise ValueError('directory component set differs')
         for component in artifact['files']:
             item = path / component['file']
             if item.stat().st_size != component['size'] or sha256(item) != component['sha256']:
-                raise ValueError(f"SHM component mismatch: {component['file']}")
+                raise ValueError(f"directory component mismatch: {component['file']}")
     elif path.stat().st_size != artifact['size'] or sha256(path) != artifact['sha256']:
         raise ValueError(f'waveform digest/size differs: {path.name}')
     return path
@@ -122,6 +136,8 @@ def environment(config):
         home = Path(config['sdk_home'])
         if not config['sdk_home'] or not home.is_dir():
             raise ValueError(f"{key} must select an available SDK")
+        if config['backend'] == 'vwdb-lib':
+            home = home.resolve(strict=True)
         env[key] = str(home)
         env.pop(sweep_variable(key), None)
         target /= str(config['position'])
@@ -254,6 +270,10 @@ def runtime_libraries(output):
 
 def build(config, directory):
     env = environment(config)
+    vwdb_reader = None
+    if config['backend'] == 'vwdb-lib':
+        reader = Path(env[config['sdk_variable']]) / 'tools/lib/64bit/libvwdbr_analog.so'
+        vwdb_reader = str(reader.resolve(strict=True))
     command = ['cargo', 'bench', '--locked', '--bench', 'profile', '--no-run', '--message-format=json']
     if config['sdk_variable']:
         command += ['--features', config['backend']]
@@ -272,8 +292,17 @@ def build(config, directory):
     with output.open('a') as log:
         process([binary, 'ready'], env, log)
         process(['ldd', binary], env, log)
+    output_text = output.read_text()
+    libraries = runtime_libraries(output_text)
+    if vwdb_reader is not None:
+        # Readiness reports the reader the shim actually loaded, outside ldd's view.
+        prefix = 'OPB VWDB reader: '
+        selected = [line.removeprefix(prefix) for line in output_text.splitlines() if line.startswith(prefix)]
+        if selected != [vwdb_reader]:
+            raise ValueError(f'profile VWDB reader {selected!r} differs from selected reader {vwdb_reader!r}')
+        libraries = sorted({*libraries, vwdb_reader})
     config.update(binary=binary, binary_sha256=sha256(binary), build_log=output.name,
-                  runtime_libraries=runtime_libraries(output.read_text()))
+                  runtime_libraries=libraries)
     # Keep exact local identities in this ignored run, never in the catalog.
     config['runtime_environment'] = {k: env[k] for k in ('LD_LIBRARY_PATH', 'RDI_DATADIR') if k in env}
     return env

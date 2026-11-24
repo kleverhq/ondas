@@ -10,3 +10,5 @@ worktrees
 fixtures
 tools.local
 just.local
+
+**/cdns_vwdbr.log

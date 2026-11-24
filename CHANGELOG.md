@@ -4,6 +4,8 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+- Read native VWDB recordings with the optional `vwdb-lib` backend.
+
 ## [3.0.1] - 2026-11-23
 
 This hotfix supersedes 3.0.0.

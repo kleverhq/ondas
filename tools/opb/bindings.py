@@ -10,7 +10,7 @@ from . import layout, model
 ROOT = Path(__file__).resolve().parent
 CATALOG = json.loads((ROOT / 'cases.json').read_text())
 QUALIFICATION = json.loads((ROOT / 'qualification.json').read_text())
-BACKENDS = ('vcd-native', 'fst-lib', 'ghw-native', 'fsdb-lib', 'wlf-lib', 'shm-lib', 'wdb-lib')
+BACKENDS = ('vcd-native', 'fst-lib', 'ghw-native', 'fsdb-lib', 'wlf-lib', 'shm-lib', 'vwdb-lib', 'wdb-lib')
 IMPLEMENTED = frozenset(c['id'] for c in CATALOG['cases'])
 QUICK = frozenset({'OPB-POINT-028'})
 

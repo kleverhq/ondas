@@ -10,6 +10,8 @@ fn main() {
     fsdb();
     #[cfg(feature = "shm-lib")]
     shm();
+    #[cfg(feature = "vwdb-lib")]
+    vwdb();
     #[cfg(feature = "wlf-lib")]
     wlf();
     #[cfg(feature = "wdb-lib")]
@@ -94,6 +96,44 @@ fn shm() {
     .expect("shm-lib: write reader linker script");
     println!("cargo:rustc-link-search=native={}", out.display());
     println!("cargo:rustc-link-lib=dylib=ondas_shm_reader");
+    println!("cargo:rustc-link-lib=z");
+}
+
+#[cfg(feature = "vwdb-lib")]
+fn vwdb() {
+    use std::{env, path};
+
+    println!("cargo:rerun-if-env-changed=XCELIUM_HOME");
+    for source in ["native/vwdb.cpp", "native/vwdb.h", "native/vwdb_abi.h"] {
+        println!("cargo:rerun-if-changed={source}");
+    }
+    assert_eq!(
+        env::var("TARGET").unwrap(),
+        "x86_64-unknown-linux-gnu",
+        "vwdb-lib requires x86_64-unknown-linux-gnu"
+    );
+    let home = env::var_os("XCELIUM_HOME").expect("vwdb-lib requires XCELIUM_HOME");
+    let selected = path::absolute(home)
+        .expect("vwdb-lib: resolve XCELIUM_HOME")
+        .join("tools/lib/64bit/libvwdbr_analog.so");
+    assert!(
+        selected.is_file(),
+        "vwdb-lib: missing XCELIUM_HOME/tools/lib/64bit/libvwdbr_analog.so"
+    );
+    let path = selected.to_str().expect("vwdb-lib: SDK path must be UTF-8");
+    assert!(
+        !path.contains(['\n', '\r']),
+        "vwdb-lib: newline in SDK path"
+    );
+    // Resolve SDK links on first load. Cargo's mtime checks cannot reliably
+    // detect a link replaced by an existing link with an older timestamp.
+    println!("cargo:rustc-env=ONDAS_VWDB_READER={path}");
+    cc::Build::new()
+        .cpp(true)
+        .std("c++17")
+        .file("native/vwdb.cpp")
+        .compile("ondas_vwdb_shim");
+    println!("cargo:rustc-link-lib=dl");
     println!("cargo:rustc-link-lib=z");
 }
 

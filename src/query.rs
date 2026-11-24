@@ -156,7 +156,7 @@ impl Selection<'_> {
                 changes: Vec::new(),
             })
             .collect::<Vec<_>>();
-        let _ = self.scan_each(range, |index, record| {
+        let _ = self.scan_each_with_point_seed(range, true, "trace", |index, record| {
             match record {
                 ScanRef::Initial {
                     value, changed_at, ..
@@ -257,6 +257,7 @@ impl Selection<'_> {
     /// times are allowed. For a slice, these may include changes to other bits of
     /// its base signal. A backend may use an activity index for these candidates,
     /// but callers must not assume that the operation avoids decoding values.
+    /// Explicit loss and restoration of a known state can contribute times.
     ///
     /// Initial states do not contribute timestamps. The union does not identify the
     /// changing signal or event count. Repeated handles and multiple occurrences at
@@ -283,16 +284,7 @@ impl Selection<'_> {
         {
             return Ok(result);
         }
-        let mut last = None;
-        self.scan(range, |record| {
-            if let ScanRef::Change { time, .. } = record
-                && last != Some(time)
-            {
-                last = Some(time);
-                return visitor(time);
-            }
-            ControlFlow::Continue(())
-        })
+        self.candidate_times_from_history(range, end, visitor)
     }
 }
 
@@ -305,7 +297,7 @@ impl Selection<'_> {
 /// An unreliable timestamp is `None`. Changes that return to the entering value
 /// within one tick do not advance this timestamp.
 ///
-/// [`Self::Missing`] means no persistent value is known at or before that time,
+/// [`Self::Missing`] means no persistent value is known at the sampled time,
 /// not a read error or an HDL unknown logic value. Events have no persistent
 /// state and never use `Missing`. [`Self::Event`] counts occurrences at exactly
 /// the requested tick, including zero. The FST reader can expose initialization
@@ -313,14 +305,16 @@ impl Selection<'_> {
 /// [reader limits](crate#reader-details) before interpreting that count.
 ///
 /// Query times are not restricted by [`Metadata::time_span`](crate::Metadata::time_span).
-/// After EOF, the last known persistent value is held. Event counts are zero.
+/// After EOF, the final persistent state is held. Event counts are zero.
+/// An explicit VWDB recording gap removes the previously held state until a
+/// later observation. See the [VWDB reader limits](crate#vwdb-setup).
 /// Each result carries its selected [`Signal`], including a slice handle, so
 /// batch results remain self-contained. Owned queries return no partial result
 /// on a file or backend error.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum Sample {
-    /// No persistent value is known at or before the sampled time.
+    /// No persistent value is known at the sampled time.
     Missing {
         /// The sampled signal.
         signal: Signal,
@@ -351,7 +345,7 @@ pub enum Sample {
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub enum SampleRef<'a> {
-    /// No persistent value is known at or before the sampled time.
+    /// No persistent value is known at the sampled time.
     Missing {
         /// The sampled signal.
         signal: Signal,

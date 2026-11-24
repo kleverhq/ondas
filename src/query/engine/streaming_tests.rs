@@ -45,7 +45,7 @@ pub(super) fn observe_pending(probe: &Option<Probe>, slots: &[Slot]) {
             .as_ref()
             .map(|state| &state.value)
             .into_iter()
-            .chain(slot.pending.as_ref())
+            .chain(slot.pending.as_ref().and_then(Update::value))
         {
             records += 1;
             bytes += match value {

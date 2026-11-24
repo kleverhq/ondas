@@ -2,7 +2,7 @@
 //! before another operation changes the shared files or global time unit.
 use crate::{
     BitRange, BitsRef, Direction, Encoding, Error, Hierarchy, Metadata, PathComponent, Result,
-    Signal, Time, TimeSpan, TimeUnit, Timescale, ValueRef,
+    Signal, Time, TimeSpan, Timescale, ValueRef,
     hierarchy::{EnumerationData, ScopeData, VariableData},
 };
 use std::{
@@ -243,30 +243,11 @@ fn metadata(handle: &Handle, source_name: String) -> Result<Metadata> {
     let _lock = lock();
     // SAFETY: a live Ondas-owned immutable metadata object and writable output.
     unsafe { ondas_shm_metadata(handle.0.as_ptr(), &mut meta) };
-    let (factor, unit) = match meta.exponent {
-        -15..=-13 => (
-            10_u32.pow((meta.exponent + 15) as u32),
-            TimeUnit::Femtosecond,
-        ),
-        -12..=-10 => (
-            10_u32.pow((meta.exponent + 12) as u32),
-            TimeUnit::Picosecond,
-        ),
-        -9..=-7 => (10_u32.pow((meta.exponent + 9) as u32), TimeUnit::Nanosecond),
-        -6..=-4 => (
-            10_u32.pow((meta.exponent + 6) as u32),
-            TimeUnit::Microsecond,
-        ),
-        -3..=-1 => (
-            10_u32.pow((meta.exponent + 3) as u32),
-            TimeUnit::Millisecond,
-        ),
-        0..=2 => (10_u32.pow(meta.exponent as u32), TimeUnit::Second),
-        _ => return Err(error("unsupported SHM timescale exponent")),
-    };
+    let timescale = Timescale::decimal_exponent(meta.exponent)
+        .ok_or_else(|| error("unsupported SHM timescale exponent"))?;
     Ok(Metadata {
         source_name,
-        timescale: Some(Timescale::new(factor, unit)),
+        timescale: Some(timescale),
         time_span: Some(TimeSpan::new(
             Time::from_ticks(meta.first),
             Time::from_ticks(meta.last),
