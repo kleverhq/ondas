@@ -43,6 +43,6 @@ A native feature can make the executable depend on its SDK before Rust starts. T
 
 ## Development
 
-Contributor entry points are `dev` and `justfile`. `AGENTS.md` gives repository rules. `development-workflow.md` explains hooks, required checks and environment limits. `fixture-conformance.md` explains independent evidence. Benchmark interpretation belongs in `benchmark-methodology.md`.
+Contributor entry points are `dev` and `justfile`. `AGENTS.md` gives repository rules. `development-workflow.md` explains required checks and environment limits. `fixture-conformance.md` explains independent evidence. Benchmark interpretation belongs in `benchmark-methodology.md`.
 
 Licensed under Apache License 2.0.
