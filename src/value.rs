@@ -127,9 +127,11 @@ impl ValueRef<'_> {
 }
 
 impl Value {
-    #[cfg(test)]
     pub(crate) fn same_value(&self, other: &Self) -> bool {
-        self.as_ref().same_value(other.as_ref())
+        match (self, other) {
+            (Self::Bits(left), Self::Bits(right)) => left == right,
+            _ => self.as_ref().same_value(other.as_ref()),
+        }
     }
 
     /// Borrows this owned value without copying its payload.
@@ -247,7 +249,7 @@ impl Eq for BitsRef<'_> {}
 
 impl PartialEq for Bits {
     fn eq(&self, other: &Self) -> bool {
-        self.as_ref() == other.as_ref()
+        self.data == other.data
     }
 }
 
@@ -333,7 +335,8 @@ impl<'a> BitsRef<'a> {
     /// Copies this borrowed vector into owned storage.
     pub fn to_owned(self) -> Bits {
         Bits {
-            data: self.data.iter().map(u8::to_ascii_lowercase).collect(),
+            // Only uppercase logic letters lack this bit in valid logic bytes.
+            data: self.data.iter().map(|&digit| digit | b' ').collect(),
         }
     }
 }

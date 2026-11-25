@@ -309,7 +309,7 @@ fn complete_tick<B>(
             Some(Update::Value(value)) => !slot
                 .state
                 .as_ref()
-                .is_some_and(|state| state.value.as_ref().same_value(value.as_ref())),
+                .is_some_and(|state| state.value.same_value(value)),
             Some(Update::Missing) => {
                 let changed = slot.state.is_some();
                 lost_value |= changed;
