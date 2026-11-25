@@ -54,6 +54,15 @@ pub(crate) enum Reader {
 }
 
 impl Reader {
+    #[inline]
+    pub(crate) fn visit_after_read<B>(&mut self, visitor: impl FnOnce() -> B) -> B {
+        #[cfg(feature = "vwdb-lib")]
+        if let Self::Vwdb(reader) = self {
+            return reader.visit_after_read(visitor);
+        }
+        visitor()
+    }
+
     pub(crate) fn read<B>(
         &mut self,
         signals: &[Signal],

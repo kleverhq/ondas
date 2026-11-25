@@ -1,13 +1,15 @@
 #![cfg(feature = "vwdb-lib")]
 
-use std::{ops::ControlFlow, panic::AssertUnwindSafe, path::PathBuf};
+use std::{
+    fs,
+    ops::ControlFlow,
+    panic::AssertUnwindSafe,
+    path::{Path, PathBuf},
+};
 
 use ondas::{
     Error, Format, HierarchyPath, InputKind, PathComponent, SampleRef, Time, TimeRange, ValueRef,
 };
-#[cfg(feature = "shm-lib")]
-use std::fs;
-
 #[path = "support/indexed_paths.rs"]
 mod indexed_paths;
 
@@ -342,6 +344,81 @@ fn gap_point_batch_query_and_scan() {
         bits(selection.samples(Time::ZERO).unwrap()[0].as_ref()).as_deref(),
         Some("0")
     );
+}
+
+#[test]
+#[ignore = "requires installed VWDB fixtures"]
+fn late_callback_panic_releases_session() {
+    fn copy_recording(from: &Path, to: &Path) {
+        for entry in fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                fs::create_dir(&target).unwrap();
+                copy_recording(&entry.path(), &target);
+            } else {
+                fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+
+    fn assert_closed(path: &Path) {
+        let open = fs::read_dir("/proc/self/fd")
+            .unwrap()
+            .flatten()
+            .filter_map(|entry| fs::read_link(entry.path()).ok())
+            .filter(|target| target.starts_with(path))
+            .collect::<Vec<_>>();
+        assert!(
+            open.is_empty(),
+            "VWDB session retained descriptors {open:?}"
+        );
+    }
+
+    struct RemoveRecording(PathBuf);
+    impl Drop for RemoveRecording {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    struct VisitorPanic;
+
+    let root = std::env::temp_dir()
+        .canonicalize()
+        .unwrap()
+        .join(format!("ondas-vwdb-unwind-{}.vwdb", std::process::id()));
+    let source = fixture("vwdb/vwdb0023-probe-gap/waveform.vwdb");
+    fs::create_dir(&root).unwrap();
+    let _remove = RemoveRecording(root.clone());
+    copy_recording(&source, &root);
+    let mut wave = ondas::open(&root).unwrap();
+    let glitch = wave.hierarchy().signal("top.glitch").unwrap();
+    let past_end = Time::from_ticks(9);
+    for time in [Time::ZERO, past_end] {
+        let mut selected = wave.select(&[glitch]).unwrap();
+        let unwind = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            let _ = selected.scan(TimeRange::point(time), |_| -> ControlFlow<()> {
+                std::panic::panic_any(VisitorPanic)
+            });
+        }));
+        assert!(unwind.unwrap_err().is::<VisitorPanic>());
+        assert_closed(&root);
+    }
+
+    let bit = wave
+        .hierarchy()
+        .signal("top.inst.in_bus")
+        .unwrap()
+        .slice(0, 0)
+        .unwrap();
+    let mut selected = wave.select(&[bit]).unwrap();
+    let unwind = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let _ = selected.visit_samples(past_end, |_| -> ControlFlow<()> {
+            std::panic::panic_any(VisitorPanic)
+        });
+    }));
+    assert!(unwind.unwrap_err().is::<VisitorPanic>());
+    assert_closed(&root);
 }
 
 #[cfg(feature = "shm-lib")]

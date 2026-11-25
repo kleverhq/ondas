@@ -435,6 +435,17 @@ impl Reader {
         .visit(visitor)
     }
 
+    pub(crate) fn visit_after_read<B>(&mut self, visitor: impl FnOnce() -> B) -> B {
+        let traversal = Traversal {
+            handle: &mut self.handle,
+            keep_session: false,
+        };
+        let result = visitor();
+        // The read already released its cursors. Close the session on unwind.
+        std::mem::forget(traversal);
+        result
+    }
+
     pub(crate) fn read<B>(
         &mut self,
         signals: &[Signal],

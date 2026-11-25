@@ -1062,7 +1062,11 @@ impl<'w> Selection<'w> {
             )? {
                 return Ok(result);
             }
-            return Ok(observe(&self.signals, &slots, None));
+            let signals = &self.signals;
+            return Ok(self
+                .waveform
+                .reader
+                .visit_after_read(|| observe(signals, &slots, None)));
         }
         #[cfg(feature = "shm-lib")]
         if let Some(result) = self.shm_replay_sample_visit(time, &mut visitor) {
@@ -1373,7 +1377,11 @@ impl<'w> Selection<'w> {
         if !emitted_initials {
             let replay = self.replay.take();
             let checkpoint = self.checkpoint.take();
-            let result = initials(&self.signals, &slots, &slot_indices, &mut visitor);
+            let signals = &self.signals;
+            let result = self
+                .waveform
+                .reader
+                .visit_after_read(|| initials(signals, &slots, &slot_indices, &mut visitor));
             if result.is_continue() {
                 self.replay = replay;
                 self.checkpoint = checkpoint;
@@ -1794,15 +1802,19 @@ impl<'w> Selection<'w> {
         };
         // Only successful EOF completes the final pending tick.
         let result = if let Some(time) = pending_time {
-            complete_tick(
-                &self.computations,
-                &self.signals,
-                slots,
-                &mut active_slots,
-                time,
-                start,
-                &mut visitor,
-            )?
+            let computations = &self.computations;
+            let signals = &self.signals;
+            self.waveform.reader.visit_after_read(|| {
+                complete_tick(
+                    computations,
+                    signals,
+                    slots,
+                    &mut active_slots,
+                    time,
+                    start,
+                    &mut visitor,
+                )
+            })?
         } else {
             ControlFlow::Continue(())
         };
