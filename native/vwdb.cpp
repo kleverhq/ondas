@@ -232,55 +232,87 @@ void import_enum(Declaration &decl, Native type) {
     }
 }
 
-void inventory(Native owner, std::vector<Declaration> &decls, size_t parent = root,
-               size_t depth = 0) {
-    if (depth >= 256) throw Unsupported("VWDB hierarchy exceeds 256 levels");
-    for (int relation : {Scopes, Variables}) {
-        Iterator children(relation, owner);
-        for (size_t ordinal = 0; auto child = children.next(); ++ordinal) {
-            auto type = object_type(child.get());
-            Declaration decl{};
-            decl.relation = relation;
-            decl.ordinal = ordinal;
-            decl.name = name(child.get());
-            auto &d = decl.descriptor;
-            d.parent = parent;
-            decl.type_kind = type_kind(type.get());
-            const bool scope = relation == Scopes || decl.type_kind == Array || decl.type_kind == Record;
-            d.native_kind = scope ? abi().get(ScopeKind, child.get()) : decl.type_kind;
-            d.encoding = scope ? -1 : 0;
-            if (scope) {
-                d.indexed_children = d.native_kind == ArrayScope || decl.type_kind == Array;
-                if (d.indexed_children) d.kind = "array";
-                else if (decl.type_kind == Record) d.kind = "record";
-                else if (d.native_kind == ArchitectureScope) d.kind = "architecture";
-                else if (d.native_kind == ModuleScope) d.kind = "module";
-            } else if (type) {
-                decl.raw_bits = extent(RawBits, type.get());
-                const int width = extent(Width, type.get());
-                const int kind = decl.type_kind;
-                // Enums without a logical width store byte-aligned codes
-                // directly. Their formatter returns labels instead of bits.
-                decl.raw_enum = kind == Enum && width <= 0 && decl.raw_bits > 0 && decl.raw_bits % 8 == 0;
-                if (decl.raw_enum ||
-                    ((kind == Scalar || kind == Enum || kind == Vector || kind == Character) && width > 0)) {
-                    d.encoding = bits;
-                    d.width = static_cast<uint32_t>(decl.raw_enum ? decl.raw_bits : width);
-                    import_range(decl, type.get());
-                } else if (kind == Real && (decl.raw_bits == 32 || decl.raw_bits == 64)) {
-                    d.encoding = real;
-                } else if (kind == Event) {
-                    d.encoding = event;
+void import_value_type(Declaration &decl, Native type) {
+    auto &d = decl.descriptor;
+    decl.raw_bits = extent(RawBits, type);
+    const int width = extent(Width, type);
+    const int kind = decl.type_kind;
+    // Enums without a logical width store byte-aligned codes
+    // directly. Their formatter returns labels instead of bits.
+    decl.raw_enum = kind == Enum && width <= 0 && decl.raw_bits > 0 && decl.raw_bits % 8 == 0;
+    if (decl.raw_enum ||
+        ((kind == Scalar || kind == Enum || kind == Vector || kind == Character) && width > 0)) {
+        d.encoding = bits;
+        d.width = static_cast<uint32_t>(decl.raw_enum ? decl.raw_bits : width);
+        import_range(decl, type);
+    } else if (kind == Real && (decl.raw_bits == 32 || decl.raw_bits == 64)) {
+        d.encoding = real;
+    } else if (kind == Event) {
+        d.encoding = event;
+    }
+    import_enum(decl, type);
+}
+
+class Inventory {
+    struct Type {
+        size_t declaration;
+        Handle handle;
+    };
+
+    std::vector<Declaration> &decls;
+    std::unordered_map<Native, Type> types;
+
+public:
+    explicit Inventory(std::vector<Declaration> &decls) : decls(decls) {}
+
+    void read(Native owner, size_t parent = root, size_t depth = 0) {
+        if (depth >= 256) throw Unsupported("VWDB hierarchy exceeds 256 levels");
+        for (int relation : {Scopes, Variables}) {
+            Iterator children(relation, owner);
+            for (size_t ordinal = 0; auto child = children.next(); ++ordinal) {
+                auto type = object_type(child.get());
+                const auto description = type ? types.find(type.get()) : types.end();
+                const size_t index = decls.size();
+                Declaration decl{};
+                decl.relation = relation;
+                decl.ordinal = ordinal;
+                decl.name = name(child.get());
+                auto &d = decl.descriptor;
+                d.parent = parent;
+                decl.type_kind = description == types.end()
+                    ? type_kind(type.get()) : decls[description->second.declaration].type_kind;
+                const bool scope = relation == Scopes || decl.type_kind == Array || decl.type_kind == Record;
+                d.native_kind = scope ? abi().get(ScopeKind, child.get()) : decl.type_kind;
+                d.encoding = scope ? -1 : 0;
+                if (scope) {
+                    d.indexed_children = d.native_kind == ArrayScope || decl.type_kind == Array;
+                    if (d.indexed_children) d.kind = "array";
+                    else if (decl.type_kind == Record) d.kind = "record";
+                    else if (d.native_kind == ArchitectureScope) d.kind = "architecture";
+                    else if (d.native_kind == ModuleScope) d.kind = "module";
+                } else if (type) {
+                    const bool constant = abi().get(IsConstant, child.get()) > 0;
+                    if (description == types.end()) {
+                        const auto key = type.get();
+                        import_value_type(decl, key);
+                        // Keep the native handle alive while its address is in use.
+                        types.emplace(key, Type{index, std::move(type)});
+                    } else {
+                        const auto &first = decls[description->second.declaration];
+                        d = first.descriptor;
+                        d.parent = parent;
+                        decl.raw_bits = first.raw_bits;
+                        decl.raw_enum = first.raw_enum;
+                        decl.variants = first.variants;
+                    }
+                    d.is_constant = constant;
                 }
-                d.is_constant = abi().get(IsConstant, child.get()) > 0;
-                import_enum(decl, type.get());
+                decls.push_back(std::move(decl));
+                if (scope) read(child.get(), index, depth + 1);
             }
-            const size_t index = decls.size();
-            decls.push_back(std::move(decl));
-            if (scope) inventory(child.get(), decls, index, depth + 1);
         }
     }
-}
+};
 
 using Routes = std::unordered_map<size_t, std::vector<size_t>>;
 using Resolved = std::unordered_map<size_t, Handle>;
@@ -694,7 +726,7 @@ extern "C" int ondas_vwdb_open(const char *path, const char *library, int metada
         if (metadata_only) {
             reader->owner.close();
         } else {
-            inventory(database, reader->decls);
+            Inventory(reader->decls).read(database);
             drain_ready_events();
         }
         *out = reader.release();

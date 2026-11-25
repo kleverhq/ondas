@@ -357,6 +357,8 @@ impl<'w> Selection<'w> {
             computations: plan.computations,
             replay: None,
             checkpoint: None,
+            #[cfg(feature = "vwdb-lib")]
+            vwdb_point: None,
         })
     }
 
@@ -1006,17 +1008,38 @@ impl<'w> Selection<'w> {
         #[cfg(feature = "vwdb-lib")]
         if let crate::backends::Reader::Vwdb(reader) = &mut self.waveform.reader {
             if seek_point {
-                let mut slots = vec![Slot::default(); self.retained_signals.len()];
-                let signals = &self.signals;
-                let groups = &self.groups;
-                let indices = &self.slot_indices;
-                return reader.with_bits_at(&self.bases, time, |samples| {
-                    apply_vwdb_points(groups, &mut slots, samples);
-                    for (&signal, &index) in signals.iter().zip(indices) {
-                        visitor(slots[index].sample(signal, None))?;
+                let mut visit = |samples: &[Sample]| {
+                    for &index in &self.slot_indices {
+                        visitor(samples[index].as_ref())?;
                     }
                     ControlFlow::Continue(())
-                });
+                };
+                let samples = match self.vwdb_point.take() {
+                    Some((when, samples)) if when == time => {
+                        let result = reader.visit_retained_point(|| visit(&samples));
+                        if result.is_continue() {
+                            self.vwdb_point = Some((when, samples));
+                        }
+                        return Ok(result);
+                    }
+                    Some((_, samples)) => samples,
+                    None => Vec::new(),
+                };
+                let (result, retained) = reader.with_bits_at(
+                    &self.retained_signals,
+                    time,
+                    samples,
+                    |samples, payload| {
+                        let result = visit(&samples);
+                        let bytes =
+                            payload.saturating_add(std::mem::size_of_val(samples.as_slice()));
+                        let retained = (result.is_continue() && bytes <= CHECKPOINT_BYTES)
+                            .then_some((time, samples));
+                        (result, retained)
+                    },
+                )?;
+                self.vwdb_point = retained;
+                return Ok(result);
             }
             let indices = self.slot_indices.clone();
             let mut slots = vec![Slot::default(); self.retained_signals.len()];
@@ -1451,7 +1474,7 @@ impl<'w> Selection<'w> {
                 unreachable!("VWDB point reader");
             };
             let at = Time::from_ticks(start.ticks() - 1);
-            reader.with_bits_at(&self.bases, at, |samples| {
+            reader.with_bits_at(&self.bases, at, Vec::new(), |samples, _| {
                 apply_vwdb_points(&self.groups, slots, samples);
             })?;
         }

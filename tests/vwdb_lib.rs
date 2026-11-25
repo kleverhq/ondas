@@ -228,10 +228,21 @@ fn gap_point_batch_query_and_scan() {
     ];
     let input_times = expected.map(|(tick, _, _)| Time::from_ticks(tick));
     let inputs = wave.samples_at(&[input, input], &input_times).unwrap();
+    let mut point_selection = wave.select(&[input, glitch, input]).unwrap();
     for ((tick, value, changed_at), (time, samples)) in expected.into_iter().zip(inputs) {
         assert_eq!(time.ticks(), tick);
-        let point = wave.sample(input, time).unwrap();
-        for sample in std::iter::once(&point).chain(&samples) {
+        let point = point_selection.samples(time).unwrap();
+        let repeated = point_selection.samples(time).unwrap();
+        for row in [&point, &repeated] {
+            assert_eq!(
+                row.iter().map(ondas::Sample::signal).collect::<Vec<_>>(),
+                [input, glitch, input]
+            );
+        }
+        for sample in [&point[0], &point[2], &repeated[0], &repeated[2]]
+            .into_iter()
+            .chain(&samples)
+        {
             assert_eq!(bits(sample.as_ref()).as_deref(), value);
             let actual = match sample.as_ref() {
                 SampleRef::Value { changed_at, .. } => changed_at.map(Time::ticks),
@@ -239,6 +250,20 @@ fn gap_point_batch_query_and_scan() {
             };
             assert_eq!(actual, changed_at);
         }
+    }
+    let end = input_times[7];
+    let unwind = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let _ = point_selection.visit_samples(end, |_| -> ControlFlow<()> {
+            panic!("stop from retained point");
+        });
+    }));
+    assert!(unwind.is_err());
+    let recovered = point_selection.samples(end).unwrap();
+    for sample in [&recovered[0], &recovered[2]] {
+        assert!(matches!(
+            sample.as_ref(),
+            SampleRef::Value { changed_at: Some(time), .. } if time.ticks() == 6
+        ));
     }
     let trace = wave
         .trace(glitch, TimeRange::closed(times[3], Time::from_ticks(8)))

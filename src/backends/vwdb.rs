@@ -225,6 +225,14 @@ struct ImportedScope {
     indexed_children: bool,
 }
 
+fn canonical_index(name: &str) -> Option<i64> {
+    match name.as_bytes() {
+        [b'0'] => Some(0),
+        [b'1'..=b'9', ..] | [b'-', b'1'..=b'9', ..] => name.parse().ok(),
+        _ => None,
+    }
+}
+
 // SAFETY: the descriptor points to a terminated string on the live shim owner.
 unsafe fn text(pointer: *const c_char) -> Result<String> {
     unsafe { CStr::from_ptr(pointer) }
@@ -261,9 +269,9 @@ impl Reader {
                 let mut decl = Declaration::default();
                 ondas_vwdb_declaration(raw, id, &mut decl);
                 let name = text(decl.name)?;
-                let mut parent = None;
-                let mut component = PathComponent::new(name.as_str());
-                if decl.parent != usize::MAX {
+                let (parent, component) = if decl.parent == usize::MAX {
+                    (None, PathComponent::new(name))
+                } else {
                     let scope = parents
                         .get(decl.parent)
                         .and_then(Option::as_ref)
@@ -271,15 +279,16 @@ impl Reader {
                     let container = &scopes[scope.id];
                     if scope.indexed_children
                         && container.component.index().is_none()
-                        && let Ok(index) = name.parse::<i64>()
-                        && name == index.to_string()
+                        && let Some(index) = canonical_index(&name)
                     {
-                        component = PathComponent::indexed(container.component.name(), index);
-                        parent = container.parent;
+                        (
+                            container.parent,
+                            PathComponent::indexed(container.component.name(), index),
+                        )
                     } else {
-                        parent = Some(scope.id);
+                        (Some(scope.id), PathComponent::new(name))
                     }
-                }
+                };
                 if decl.encoding == -1 {
                     parents.push(Some(ImportedScope {
                         id: scopes.len(),
@@ -337,13 +346,15 @@ impl Reader {
             }
         }
         drop(guard);
+        let hierarchy = Hierarchy::new(scopes, variables, encodings);
+        hierarchy.prepare_name_lookup();
         Ok((
             Self {
                 handle,
                 ids,
                 by_declaration,
             },
-            Hierarchy::new(scopes, variables, encodings),
+            hierarchy,
             meta,
         ))
     }
@@ -352,7 +363,8 @@ impl Reader {
         &mut self,
         bases: &[Signal],
         time: Time,
-        visitor: impl FnOnce(Vec<Sample>) -> B,
+        mut samples: Vec<Sample>,
+        visitor: impl FnOnce(Vec<Sample>, usize) -> B,
     ) -> Result<B> {
         let ids = bases
             .iter()
@@ -367,7 +379,7 @@ impl Reader {
             .ok_or_else(|| error("read point", "invalid VWDB point buffer width"))?;
         let mut bytes = vec![0; len];
         let mut points = vec![Point::default(); bases.len()];
-        let mut traversal = Traversal {
+        let traversal = Traversal {
             handle: &mut self.handle,
             keep_session: false,
         };
@@ -392,7 +404,8 @@ impl Reader {
             status(code, "read point", &buffer)?;
         }
         let mut payload = bytes.as_slice();
-        let mut samples = Vec::with_capacity(bases.len());
+        samples.clear();
+        samples.reserve_exact(bases.len());
         for (&signal, point) in bases.iter().zip(points) {
             let width = signal.width().expect("validated bit width");
             let (value, rest) = payload.split_at(width as usize);
@@ -411,9 +424,15 @@ impl Reader {
                 _ => return Err(error("read point", "invalid VWDB point descriptor")),
             }
         }
-        let result = visitor(samples);
-        traversal.keep_session = true;
-        Ok(result)
+        Ok(traversal.visit(|| visitor(samples, len)))
+    }
+
+    pub(crate) fn visit_retained_point<B>(&mut self, visitor: impl FnOnce() -> B) -> B {
+        Traversal {
+            handle: &mut self.handle,
+            keep_session: false,
+        }
+        .visit(visitor)
     }
 
     pub(crate) fn read<B>(
@@ -555,6 +574,14 @@ struct Traversal<'a> {
     handle: &'a mut Handle,
     keep_session: bool,
 }
+impl Traversal<'_> {
+    fn visit<B>(mut self, visitor: impl FnOnce() -> B) -> B {
+        let result = visitor();
+        self.keep_session = true;
+        result
+    }
+}
+
 impl Drop for Traversal<'_> {
     fn drop(&mut self) {
         let _lock = lock();

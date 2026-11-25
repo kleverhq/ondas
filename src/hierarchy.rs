@@ -1180,10 +1180,15 @@ impl Hierarchy {
         }
     }
 
-    fn declarations_named(&self, parent: Option<usize>, name: &PathComponent) -> &[usize] {
+    #[cfg(feature = "vwdb-lib")]
+    pub(crate) fn prepare_name_lookup(&self) {
+        self.name_index();
+    }
+
+    fn name_index(&self) -> &NameIndex {
         // Keep only declaration indices. Full paths duplicate every ancestor's
         // name for each variable and are unnecessary for component lookup.
-        let index = self.data.declarations_by_name.get_or_init(|| {
+        self.data.declarations_by_name.get_or_init(|| {
             let root = self.data.scopes.len();
             let count = root + self.data.variables.len();
             let mut offsets = vec![0; root + 2];
@@ -1210,7 +1215,11 @@ impl Hierarchy {
                 offsets,
                 declarations,
             }
-        });
+        })
+    }
+
+    fn declarations_named(&self, parent: Option<usize>, name: &PathComponent) -> &[usize] {
+        let index = self.name_index();
         let parent = parent.unwrap_or(self.data.scopes.len());
         let index = &index.declarations[index.offsets[parent]..index.offsets[parent + 1]];
         let start = index.partition_point(|item| self.declaration_key(*item).1 < name);
