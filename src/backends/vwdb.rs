@@ -83,6 +83,7 @@ unsafe extern "C" {
     fn ondas_vwdb_close(reader: *mut c_void);
     fn ondas_vwdb_metadata(reader: *const c_void, out: *mut Meta);
     fn ondas_vwdb_decl_count(reader: *const c_void) -> usize;
+    fn ondas_vwdb_scope_count(reader: *const c_void) -> usize;
     fn ondas_vwdb_declaration(reader: *const c_void, index: usize, out: *mut Declaration);
     fn ondas_vwdb_enum_variant(
         reader: *const c_void,
@@ -263,6 +264,12 @@ impl Reader {
         // and its strings are copied while the native owner and lock are held.
         unsafe {
             let count = ondas_vwdb_decl_count(raw);
+            let scope_count = ondas_vwdb_scope_count(raw);
+            let variable_count = count - scope_count;
+            scopes.reserve_exact(scope_count);
+            variables.reserve_exact(variable_count);
+            ids.reserve_exact(variable_count);
+            encodings.reserve_exact(variable_count);
             parents.reserve(count);
             by_declaration.resize(count, None);
             for (id, signal) in by_declaration.iter_mut().enumerate() {

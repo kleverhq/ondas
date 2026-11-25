@@ -38,6 +38,7 @@ int ondas_vwdb_open(const char *, const char *, int, ondas_vwdb **, char *, size
 void ondas_vwdb_close(ondas_vwdb *);
 void ondas_vwdb_metadata(const ondas_vwdb *, ondas_vwdb_meta *);
 size_t ondas_vwdb_decl_count(const ondas_vwdb *);
+size_t ondas_vwdb_scope_count(const ondas_vwdb *);
 void ondas_vwdb_declaration(const ondas_vwdb *, size_t, ondas_vwdb_decl *);
 void ondas_vwdb_enum_variant(const ondas_vwdb *, size_t, size_t, ondas_vwdb_variant *);
 /* A nonzero start excludes the entering records. Read them with sample_bits. */

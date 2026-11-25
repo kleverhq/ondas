@@ -261,8 +261,9 @@ class Inventory {
 public:
     explicit Inventory(std::vector<Declaration> &decls) : decls(decls) {}
 
-    void read(Native owner, size_t parent = root, size_t depth = 0) {
+    size_t read(Native owner, size_t parent = root, size_t depth = 0) {
         if (depth >= 256) throw Unsupported("VWDB hierarchy exceeds 256 levels");
+        size_t scopes = 0;
         for (int relation : {Scopes, Variables}) {
             Iterator children(relation, owner);
             for (size_t ordinal = 0; auto child = children.next(); ++ordinal) {
@@ -304,9 +305,10 @@ public:
                     d.is_constant = constant;
                 }
                 decls.push_back(std::move(decl));
-                if (scope) read(child.get(), index, depth + 1);
+                if (scope) scopes += 1 + read(child.get(), index, depth + 1);
             }
         }
+        return scopes;
     }
 };
 
@@ -696,6 +698,7 @@ struct ondas_vwdb {
     std::string path;
     ondas_vwdb_meta meta{};
     std::vector<Declaration> decls;
+    size_t scope_count = 0;
     SessionSlot owner;
     std::unique_ptr<Stream> stream;
 };
@@ -722,7 +725,7 @@ extern "C" int ondas_vwdb_open(const char *path, const char *library, int metada
         if (metadata_only) {
             reader->owner.close();
         } else {
-            Inventory(reader->decls).read(database);
+            reader->scope_count = Inventory(reader->decls).read(database);
             drain_ready_events();
         }
         *out = reader.release();
@@ -734,6 +737,7 @@ extern "C" void ondas_vwdb_metadata(const ondas_vwdb *reader, ondas_vwdb_meta *o
     *out = reader->meta;
 }
 extern "C" size_t ondas_vwdb_decl_count(const ondas_vwdb *reader) { return reader->decls.size(); }
+extern "C" size_t ondas_vwdb_scope_count(const ondas_vwdb *reader) { return reader->scope_count; }
 extern "C" void ondas_vwdb_declaration(const ondas_vwdb *reader, size_t index, ondas_vwdb_decl *out) {
     const auto &decl = reader->decls[index];
     *out = decl.descriptor;
