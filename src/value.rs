@@ -236,7 +236,7 @@ pub struct BitsRef<'a> {
 /// rules of [`BitsRef`], without copying the bit payload.
 #[derive(Debug, Clone)]
 pub struct Bits {
-    data: Box<[u8]>,
+    data: Box<[u8]>, // Canonical lowercase logic digits.
 }
 
 impl PartialEq<BitsRef<'_>> for BitsRef<'_> {
