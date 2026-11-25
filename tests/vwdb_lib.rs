@@ -349,6 +349,27 @@ fn gap_point_batch_query_and_scan() {
 #[test]
 #[ignore = "requires installed VWDB fixtures"]
 fn late_callback_panic_releases_session() {
+    const CHILD: &str = "ONDAS_TEST_VWDB_LATE_PANIC_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        // Another VWDB open in this process can close the session under test.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "late_callback_panic_releases_session",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "{stdout}{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+
     fn copy_recording(from: &Path, to: &Path) {
         for entry in fs::read_dir(from).unwrap() {
             let entry = entry.unwrap();
