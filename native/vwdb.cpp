@@ -254,13 +254,9 @@ void import_value_type(Declaration &decl, Native type) {
 }
 
 class Inventory {
-    struct Type {
-        size_t declaration;
-        Handle handle;
-    };
-
     std::vector<Declaration> &decls;
-    std::unordered_map<Native, Type> types;
+    Handle previous_type;
+    size_t previous_declaration = 0;
 
 public:
     explicit Inventory(std::vector<Declaration> &decls) : decls(decls) {}
@@ -271,7 +267,7 @@ public:
             Iterator children(relation, owner);
             for (size_t ordinal = 0; auto child = children.next(); ++ordinal) {
                 auto type = object_type(child.get());
-                const auto description = type ? types.find(type.get()) : types.end();
+                const bool repeated_type = type && type.get() == previous_type.get();
                 const size_t index = decls.size();
                 Declaration decl{};
                 decl.relation = relation;
@@ -279,8 +275,8 @@ public:
                 decl.name = name(child.get());
                 auto &d = decl.descriptor;
                 d.parent = parent;
-                decl.type_kind = description == types.end()
-                    ? type_kind(type.get()) : decls[description->second.declaration].type_kind;
+                decl.type_kind = repeated_type
+                    ? decls[previous_declaration].type_kind : type_kind(type.get());
                 const bool scope = relation == Scopes || decl.type_kind == Array || decl.type_kind == Record;
                 d.native_kind = scope ? abi().get(ScopeKind, child.get()) : decl.type_kind;
                 d.encoding = scope ? -1 : 0;
@@ -292,18 +288,18 @@ public:
                     else if (d.native_kind == ModuleScope) d.kind = "module";
                 } else if (type) {
                     const bool constant = abi().get(IsConstant, child.get()) > 0;
-                    if (description == types.end()) {
-                        const auto key = type.get();
-                        import_value_type(decl, key);
-                        // Keep the native handle alive while its address is in use.
-                        types.emplace(key, Type{index, std::move(type)});
-                    } else {
-                        const auto &first = decls[description->second.declaration];
-                        d = first.descriptor;
+                    if (repeated_type) {
+                        const auto &previous = decls[previous_declaration];
+                        d = previous.descriptor;
                         d.parent = parent;
-                        decl.raw_bits = first.raw_bits;
-                        decl.raw_enum = first.raw_enum;
-                        decl.variants = first.variants;
+                        decl.raw_bits = previous.raw_bits;
+                        decl.raw_enum = previous.raw_enum;
+                        decl.variants = previous.variants;
+                    } else {
+                        import_value_type(decl, type.get());
+                        // Keep the native handle alive while its address is in use.
+                        previous_type = std::move(type);
+                        previous_declaration = index;
                     }
                     d.is_constant = constant;
                 }
