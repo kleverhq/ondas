@@ -29,6 +29,8 @@ pub struct Selection<'w> {
     computations: Vec<engine::Computation>,
     replay: Option<engine::Replay>,
     checkpoint: Option<engine::Replay>,
+    #[cfg(feature = "vwdb-lib")]
+    vwdb_point: Option<(Time, Vec<Sample>)>,
 }
 
 /// Selective reads at one completed candidate tick of [`Selection::query`].

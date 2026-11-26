@@ -94,11 +94,16 @@ Its indexed elements occur at the container's level, so `top.u_reg[0].q`
 selects the index and `top."u_reg[0]".q` selects literal brackets. VHDL roots can
 be empty. A logical path such as `"".ready` preserves that component.
 
+A whole-bit point, scan, or query can seek past earlier records. It reports
+failures from loading and positioning selected histories and from reading and
+decoding the visited records. An explicit-time batch reads from the beginning
+of the selected histories.
+
 An explicit gap clears persistent state. Samples and query contexts report
 [`Sample::Missing`] until state resumes. A scan or trace reports
 [`Error::UnsupportedFeature`] when a selected value loses known state within
 its range. Earlier scan callbacks remain valid. Keep the database unchanged
-and available while Ondas reads it.
+and available while its waveform is open.
 
 ### WDB setup
 

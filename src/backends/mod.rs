@@ -54,6 +54,15 @@ pub(crate) enum Reader {
 }
 
 impl Reader {
+    #[inline]
+    pub(crate) fn visit_after_read<B>(&mut self, visitor: impl FnOnce() -> B) -> B {
+        #[cfg(feature = "vwdb-lib")]
+        if let Self::Vwdb(reader) = self {
+            return reader.visit_after_read(visitor);
+        }
+        visitor()
+    }
+
     pub(crate) fn read<B>(
         &mut self,
         signals: &[Signal],
@@ -87,7 +96,7 @@ impl Reader {
                 visitor(index, time, value.map(Some))
             }),
             #[cfg(feature = "vwdb-lib")]
-            Self::Vwdb(reader) => reader.read(signals, end, visitor),
+            Self::Vwdb(reader) => reader.read(signals, Time::ZERO, end, visitor),
             #[cfg(feature = "wlf-lib")]
             Self::Wlf(reader) => reader.read(signals, end, |index, time, value| {
                 visitor(index, time, value.map(Some))

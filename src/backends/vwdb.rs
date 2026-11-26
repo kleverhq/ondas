@@ -1,8 +1,8 @@
-//! Private native reader. Native cursors and sessions are mutually exclusive.
+//! Private native reader. One waveform holds the native session at a time.
 //! The Rust visitor runs unlocked with an owned, bounded batch.
 use crate::{
     BitRange, BitsRef, Direction, Encoding, Error, Format, Hierarchy, Metadata, PathComponent,
-    Result, Signal, Time, TimeSpan, Timescale, ValueRef,
+    Result, Sample, Signal, Time, TimeSpan, Timescale, ValueRef,
     hierarchy::{EnumerationData, ScopeData, VariableData},
 };
 use std::{
@@ -64,6 +64,13 @@ struct Record {
     len: usize,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct Point {
+    changed_at: u64,
+    width: u32,
+}
+
 unsafe extern "C" {
     fn ondas_vwdb_open(
         path: *const c_char,
@@ -76,6 +83,7 @@ unsafe extern "C" {
     fn ondas_vwdb_close(reader: *mut c_void);
     fn ondas_vwdb_metadata(reader: *const c_void, out: *mut Meta);
     fn ondas_vwdb_decl_count(reader: *const c_void) -> usize;
+    fn ondas_vwdb_scope_count(reader: *const c_void) -> usize;
     fn ondas_vwdb_declaration(reader: *const c_void, index: usize, out: *mut Declaration);
     fn ondas_vwdb_enum_variant(
         reader: *const c_void,
@@ -87,7 +95,19 @@ unsafe extern "C" {
         reader: *mut c_void,
         ids: *const usize,
         count: usize,
+        start: u64,
         end: u64,
+        error: *mut c_char,
+        cap: usize,
+    ) -> c_int;
+    fn ondas_vwdb_sample_bits(
+        reader: *mut c_void,
+        ids: *const usize,
+        count: usize,
+        tick: u64,
+        points: *mut Point,
+        data: *mut u8,
+        len: usize,
         error: *mut c_char,
         cap: usize,
     ) -> c_int;
@@ -97,7 +117,7 @@ unsafe extern "C" {
         error: *mut c_char,
         cap: usize,
     ) -> c_int;
-    fn ondas_vwdb_end(reader: *mut c_void);
+    fn ondas_vwdb_end(reader: *mut c_void, keep_session: c_int);
 }
 
 fn error(operation: &'static str, message: impl Into<String>) -> Error {
@@ -206,6 +226,14 @@ struct ImportedScope {
     indexed_children: bool,
 }
 
+fn canonical_index(name: &str) -> Option<i64> {
+    match name.as_bytes() {
+        [b'0'] => Some(0),
+        [b'1'..=b'9', ..] | [b'-', b'1'..=b'9', ..] => name.parse().ok(),
+        _ => None,
+    }
+}
+
 // SAFETY: the descriptor points to a terminated string on the live shim owner.
 unsafe fn text(pointer: *const c_char) -> Result<String> {
     unsafe { CStr::from_ptr(pointer) }
@@ -236,15 +264,21 @@ impl Reader {
         // and its strings are copied while the native owner and lock are held.
         unsafe {
             let count = ondas_vwdb_decl_count(raw);
+            let scope_count = ondas_vwdb_scope_count(raw);
+            let variable_count = count - scope_count;
+            scopes.reserve_exact(scope_count);
+            variables.reserve_exact(variable_count);
+            ids.reserve_exact(variable_count);
+            encodings.reserve_exact(variable_count);
             parents.reserve(count);
             by_declaration.resize(count, None);
             for (id, signal) in by_declaration.iter_mut().enumerate() {
                 let mut decl = Declaration::default();
                 ondas_vwdb_declaration(raw, id, &mut decl);
                 let name = text(decl.name)?;
-                let mut parent = None;
-                let mut component = PathComponent::new(name.as_str());
-                if decl.parent != usize::MAX {
+                let (parent, component) = if decl.parent == usize::MAX {
+                    (None, PathComponent::new(name))
+                } else {
                     let scope = parents
                         .get(decl.parent)
                         .and_then(Option::as_ref)
@@ -252,15 +286,16 @@ impl Reader {
                     let container = &scopes[scope.id];
                     if scope.indexed_children
                         && container.component.index().is_none()
-                        && let Ok(index) = name.parse::<i64>()
-                        && name == index.to_string()
+                        && let Some(index) = canonical_index(&name)
                     {
-                        component = PathComponent::indexed(container.component.name(), index);
-                        parent = container.parent;
+                        (
+                            container.parent,
+                            PathComponent::indexed(container.component.name(), index),
+                        )
                     } else {
-                        parent = Some(scope.id);
+                        (Some(scope.id), PathComponent::new(name))
                     }
-                }
+                };
                 if decl.encoding == -1 {
                     parents.push(Some(ImportedScope {
                         id: scopes.len(),
@@ -318,20 +353,110 @@ impl Reader {
             }
         }
         drop(guard);
+        let hierarchy = Hierarchy::new(scopes, variables, encodings);
+        hierarchy.prepare_name_lookup();
         Ok((
             Self {
                 handle,
                 ids,
                 by_declaration,
             },
-            Hierarchy::new(scopes, variables, encodings),
+            hierarchy,
             meta,
         ))
+    }
+
+    pub(crate) fn with_bits_at<B>(
+        &mut self,
+        bases: &[Signal],
+        time: Time,
+        mut samples: Vec<Sample>,
+        visitor: impl FnOnce(Vec<Sample>, usize) -> B,
+    ) -> Result<B> {
+        let ids = bases
+            .iter()
+            .map(|signal| self.ids[signal.index()])
+            .collect::<Vec<_>>();
+        let len = bases
+            .iter()
+            .try_fold(0usize, |total, signal| {
+                total.checked_add(signal.width()? as usize)
+            })
+            .filter(|&len| len <= isize::MAX as usize)
+            .ok_or_else(|| error("read point", "invalid VWDB point buffer width"))?;
+        let mut bytes = vec![0; len];
+        let mut points = vec![Point::default(); bases.len()];
+        let traversal = Traversal {
+            handle: &mut self.handle,
+            keep_session: false,
+        };
+        let mut buffer = [0; 512];
+        {
+            let _lock = lock();
+            // SAFETY: the live owner is locked, and the output arrays have the
+            // requested descriptor count and total width.
+            let code = unsafe {
+                ondas_vwdb_sample_bits(
+                    traversal.handle.0.as_ptr(),
+                    ids.as_ptr(),
+                    ids.len(),
+                    time.ticks(),
+                    points.as_mut_ptr(),
+                    bytes.as_mut_ptr(),
+                    bytes.len(),
+                    buffer.as_mut_ptr(),
+                    buffer.len(),
+                )
+            };
+            status(code, "read point", &buffer)?;
+        }
+        let mut payload = bytes.as_slice();
+        samples.clear();
+        samples.reserve_exact(bases.len());
+        for (&signal, point) in bases.iter().zip(points) {
+            let width = signal.width().expect("validated bit width");
+            let (value, rest) = payload.split_at(width as usize);
+            payload = rest;
+            match point.width {
+                0 if point.changed_at == 0 => samples.push(Sample::Missing { signal }),
+                actual if actual == width && point.changed_at <= time.ticks() => {
+                    let value = decode(1, value)?.expect("bit payload").to_owned();
+                    samples.push(Sample::Value {
+                        signal,
+                        value,
+                        changed_at: (point.changed_at != 0)
+                            .then_some(Time::from_ticks(point.changed_at)),
+                    });
+                }
+                _ => return Err(error("read point", "invalid VWDB point descriptor")),
+            }
+        }
+        Ok(traversal.visit(|| visitor(samples, len)))
+    }
+
+    pub(crate) fn visit_retained_point<B>(&mut self, visitor: impl FnOnce() -> B) -> B {
+        Traversal {
+            handle: &mut self.handle,
+            keep_session: false,
+        }
+        .visit(visitor)
+    }
+
+    pub(crate) fn visit_after_read<B>(&mut self, visitor: impl FnOnce() -> B) -> B {
+        let traversal = Traversal {
+            handle: &mut self.handle,
+            keep_session: false,
+        };
+        let result = visitor();
+        // The read already released its cursors. Close the session on unwind.
+        std::mem::forget(traversal);
+        result
     }
 
     pub(crate) fn read<B>(
         &mut self,
         signals: &[Signal],
+        start: Time,
         end: Time,
         mut visitor: impl for<'v> FnMut(usize, Time, Result<Option<ValueRef<'v>>>) -> ControlFlow<B>,
     ) -> Result<ControlFlow<B>> {
@@ -343,6 +468,10 @@ impl Reader {
             .map(|signal| self.ids[signal.index()])
             .collect::<Vec<_>>();
         let raw = self.handle.0.as_ptr();
+        let mut traversal = Traversal {
+            handle: &mut self.handle,
+            keep_session: false,
+        };
         let mut buffer = [0; 512];
         {
             let _lock = lock();
@@ -352,6 +481,7 @@ impl Reader {
                     raw,
                     ids.as_ptr(),
                     ids.len(),
+                    start.ticks(),
                     end.ticks(),
                     buffer.as_mut_ptr(),
                     buffer.len(),
@@ -359,12 +489,13 @@ impl Reader {
             };
             status(code, "start read", &buffer)?;
         }
-        let _traversal = Traversal(&mut self.handle);
         let mut batch = Vec::new();
         let mut limit = 64;
         loop {
             let mut payload_len = 0;
             let mut terminal = Ok(false);
+            // A native failure closes the session even after an earlier visitor stop.
+            let mut batch_failed = false;
             {
                 let _lock = lock();
                 while batch.len() < limit && payload_len < 64 * 1024 {
@@ -384,6 +515,7 @@ impl Reader {
                         .copied()
                         .flatten()
                     else {
+                        batch_failed = true;
                         terminal = result.and_then(|()| {
                             Err(error("read history", "invalid VWDB history identity"))
                         });
@@ -404,6 +536,7 @@ impl Reader {
                     let failed = value.is_err();
                     batch.push((index, time, record.encoding, value));
                     if failed {
+                        batch_failed = true;
                         terminal = Ok(true);
                         break;
                     }
@@ -416,6 +549,7 @@ impl Reader {
                 };
                 let failed = decoded.is_err();
                 if let ControlFlow::Break(value) = visitor(index, time, decoded) {
+                    traversal.keep_session = !batch_failed && !failed;
                     return Ok(ControlFlow::Break(value));
                 }
                 if failed {
@@ -426,6 +560,7 @@ impl Reader {
                 }
             }
             if terminal? {
+                traversal.keep_session = true;
                 return Ok(ControlFlow::Continue(()));
             }
             limit = 1024;
@@ -453,11 +588,22 @@ fn decode(encoding: i32, bytes: &[u8]) -> Result<Option<ValueRef<'_>>> {
     Ok(Some(value))
 }
 
-struct Traversal<'a>(&'a mut Handle);
+struct Traversal<'a> {
+    handle: &'a mut Handle,
+    keep_session: bool,
+}
+impl Traversal<'_> {
+    fn visit<B>(mut self, visitor: impl FnOnce() -> B) -> B {
+        let result = visitor();
+        self.keep_session = true;
+        result
+    }
+}
+
 impl Drop for Traversal<'_> {
     fn drop(&mut self) {
         let _lock = lock();
         // SAFETY: this lease ends before the owner is destroyed.
-        unsafe { ondas_vwdb_end(self.0.0.as_ptr()) };
+        unsafe { ondas_vwdb_end(self.handle.0.as_ptr(), self.keep_session.into()) };
     }
 }

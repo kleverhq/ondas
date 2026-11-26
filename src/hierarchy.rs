@@ -1053,8 +1053,24 @@ impl Hierarchy {
     /// Returns [`LookupError::Ambiguous`] when distinct scopes share the path.
     /// Those scopes remain accessible through [`Self::scopes`] and [`Scope::children`].
     pub fn scope_path(&self, path: &HierarchyPath) -> std::result::Result<Scope<'_>, LookupError> {
+        let Some((name, ancestors)) = path.components.split_last() else {
+            return Err(LookupError::NotFound { path: path.clone() });
+        };
         let mut matches = self.scopes().filter(|scope| {
-            Some(&scope.data().component) == path.components.last() && scope.path() == *path
+            let data = scope.data();
+            if &data.component != name {
+                return false;
+            }
+            let mut current = data.parent;
+            for component in ancestors.iter().rev() {
+                let Some(index) = current else { return false };
+                let candidate = &self.data.scopes[index];
+                if candidate.component != *component {
+                    return false;
+                }
+                current = candidate.parent;
+            }
+            current.is_none()
         });
         let first = matches.next();
         match (first, matches.count()) {
@@ -1164,10 +1180,15 @@ impl Hierarchy {
         }
     }
 
-    fn declarations_named(&self, parent: Option<usize>, name: &PathComponent) -> &[usize] {
+    #[cfg(feature = "vwdb-lib")]
+    pub(crate) fn prepare_name_lookup(&self) {
+        self.name_index();
+    }
+
+    fn name_index(&self) -> &NameIndex {
         // Keep only declaration indices. Full paths duplicate every ancestor's
         // name for each variable and are unnecessary for component lookup.
-        let index = self.data.declarations_by_name.get_or_init(|| {
+        self.data.declarations_by_name.get_or_init(|| {
             let root = self.data.scopes.len();
             let count = root + self.data.variables.len();
             let mut offsets = vec![0; root + 2];
@@ -1194,7 +1215,11 @@ impl Hierarchy {
                 offsets,
                 declarations,
             }
-        });
+        })
+    }
+
+    fn declarations_named(&self, parent: Option<usize>, name: &PathComponent) -> &[usize] {
+        let index = self.name_index();
         let parent = parent.unwrap_or(self.data.scopes.len());
         let index = &index.declarations[index.offsets[parent]..index.offsets[parent + 1]];
         let start = index.partition_point(|item| self.declaration_key(*item).1 < name);

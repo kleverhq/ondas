@@ -1,13 +1,15 @@
 #![cfg(feature = "vwdb-lib")]
 
-use std::{ops::ControlFlow, panic::AssertUnwindSafe, path::PathBuf};
+use std::{
+    fs,
+    ops::ControlFlow,
+    panic::AssertUnwindSafe,
+    path::{Path, PathBuf},
+};
 
 use ondas::{
     Error, Format, HierarchyPath, InputKind, PathComponent, SampleRef, Time, TimeRange, ValueRef,
 };
-#[cfg(feature = "shm-lib")]
-use std::fs;
-
 #[path = "support/indexed_paths.rs"]
 mod indexed_paths;
 
@@ -215,6 +217,56 @@ fn gap_point_batch_query_and_scan() {
                 .all(|sample| bits(sample.as_ref()).as_deref() == expected)
         );
     }
+    let input = wave.hierarchy().signal("top.inst.in_bus").unwrap();
+    let expected = [
+        (1, Some("000000000"), None),
+        (2, None, None),
+        (3, None, None),
+        (4, Some("000000101"), None),
+        (5, Some("111111111"), Some(5)),
+        (6, Some("000000000"), Some(6)),
+        (8, Some("000000000"), Some(6)),
+        (9, Some("000000000"), Some(6)),
+    ];
+    let input_times = expected.map(|(tick, _, _)| Time::from_ticks(tick));
+    let inputs = wave.samples_at(&[input, input], &input_times).unwrap();
+    let mut point_selection = wave.select(&[input, glitch, input]).unwrap();
+    for ((tick, value, changed_at), (time, samples)) in expected.into_iter().zip(inputs) {
+        assert_eq!(time.ticks(), tick);
+        let point = point_selection.samples(time).unwrap();
+        let repeated = point_selection.samples(time).unwrap();
+        for row in [&point, &repeated] {
+            assert_eq!(
+                row.iter().map(ondas::Sample::signal).collect::<Vec<_>>(),
+                [input, glitch, input]
+            );
+        }
+        for sample in [&point[0], &point[2], &repeated[0], &repeated[2]]
+            .into_iter()
+            .chain(&samples)
+        {
+            assert_eq!(bits(sample.as_ref()).as_deref(), value);
+            let actual = match sample.as_ref() {
+                SampleRef::Value { changed_at, .. } => changed_at.map(Time::ticks),
+                _ => None,
+            };
+            assert_eq!(actual, changed_at);
+        }
+    }
+    let end = input_times[7];
+    let unwind = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let _ = point_selection.visit_samples(end, |_| -> ControlFlow<()> {
+            panic!("stop from retained point");
+        });
+    }));
+    assert!(unwind.is_err());
+    let recovered = point_selection.samples(end).unwrap();
+    for sample in [&recovered[0], &recovered[2]] {
+        assert!(matches!(
+            sample.as_ref(),
+            SampleRef::Value { changed_at: Some(time), .. } if time.ticks() == 6
+        ));
+    }
     let trace = wave
         .trace(glitch, TimeRange::closed(times[3], Time::from_ticks(8)))
         .unwrap();
@@ -292,6 +344,102 @@ fn gap_point_batch_query_and_scan() {
         bits(selection.samples(Time::ZERO).unwrap()[0].as_ref()).as_deref(),
         Some("0")
     );
+}
+
+#[test]
+#[ignore = "requires installed VWDB fixtures"]
+fn late_callback_panic_releases_session() {
+    const CHILD: &str = "ONDAS_TEST_VWDB_LATE_PANIC_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        // Another VWDB open in this process can close the session under test.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "late_callback_panic_releases_session",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "{stdout}{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+
+    fn copy_recording(from: &Path, to: &Path) {
+        for entry in fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                fs::create_dir(&target).unwrap();
+                copy_recording(&entry.path(), &target);
+            } else {
+                fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+
+    fn assert_closed(path: &Path) {
+        let open = fs::read_dir("/proc/self/fd")
+            .unwrap()
+            .flatten()
+            .filter_map(|entry| fs::read_link(entry.path()).ok())
+            .filter(|target| target.starts_with(path))
+            .collect::<Vec<_>>();
+        assert!(
+            open.is_empty(),
+            "VWDB session retained descriptors {open:?}"
+        );
+    }
+
+    struct RemoveRecording(PathBuf);
+    impl Drop for RemoveRecording {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    struct VisitorPanic;
+
+    let root = std::env::temp_dir()
+        .canonicalize()
+        .unwrap()
+        .join(format!("ondas-vwdb-unwind-{}.vwdb", std::process::id()));
+    let source = fixture("vwdb/vwdb0023-probe-gap/waveform.vwdb");
+    fs::create_dir(&root).unwrap();
+    let _remove = RemoveRecording(root.clone());
+    copy_recording(&source, &root);
+    let mut wave = ondas::open(&root).unwrap();
+    let glitch = wave.hierarchy().signal("top.glitch").unwrap();
+    let past_end = Time::from_ticks(9);
+    for time in [Time::ZERO, past_end] {
+        let mut selected = wave.select(&[glitch]).unwrap();
+        let unwind = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            let _ = selected.scan(TimeRange::point(time), |_| -> ControlFlow<()> {
+                std::panic::panic_any(VisitorPanic)
+            });
+        }));
+        assert!(unwind.unwrap_err().is::<VisitorPanic>());
+        assert_closed(&root);
+    }
+
+    let bit = wave
+        .hierarchy()
+        .signal("top.inst.in_bus")
+        .unwrap()
+        .slice(0, 0)
+        .unwrap();
+    let mut selected = wave.select(&[bit]).unwrap();
+    let unwind = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let _ = selected.visit_samples(past_end, |_| -> ControlFlow<()> {
+            std::panic::panic_any(VisitorPanic)
+        });
+    }));
+    assert!(unwind.unwrap_err().is::<VisitorPanic>());
+    assert_closed(&root);
 }
 
 #[cfg(feature = "shm-lib")]
@@ -551,4 +699,51 @@ fn reader_orders_in_fresh_processes() {
             Some("0")
         );
     }
+}
+
+#[test]
+#[ignore = "requires installed VWDB fixtures"]
+fn window_resumes_after_session_eviction() {
+    let mut wave = ondas::open(fixture("vwdb/vwdb0013-history-long/waveform.vwdb")).unwrap();
+    let phase = wave.hierarchy().signal("top.phase_0").unwrap();
+    let mut observed = Vec::new();
+    let mut initial = None;
+    let range = TimeRange::closed(Time::from_ticks(17), Time::from_ticks(128));
+    let _ = wave
+        .select(&[phase])
+        .unwrap()
+        .scan(range, |record| {
+            match record {
+                ondas::ScanRef::Initial {
+                    value: ValueRef::Bits(bits),
+                    changed_at,
+                    ..
+                } => initial = Some((bits.to_string(), changed_at)),
+                ondas::ScanRef::Change {
+                    time,
+                    value: ValueRef::Bits(bits),
+                    ..
+                } => {
+                    observed.push((time.ticks(), bits.to_string()));
+                    if matches!(time.ticks(), 17 | 81) {
+                        let mut other = gap_wave();
+                        let glitch = other.hierarchy().signal("top.glitch").unwrap();
+                        assert!(matches!(
+                            other.sample(glitch, Time::from_ticks(2)).unwrap().as_ref(),
+                            SampleRef::Missing { .. }
+                        ));
+                    }
+                }
+                _ => panic!("expected a phase bit"),
+            }
+            ControlFlow::<()>::Continue(())
+        })
+        .unwrap();
+    assert_eq!(initial, Some(("0".to_owned(), Some(Time::from_ticks(16)))));
+    assert_eq!(
+        observed,
+        (17..=128)
+            .map(|tick| (tick, (tick % 2).to_string()))
+            .collect::<Vec<_>>()
+    );
 }
