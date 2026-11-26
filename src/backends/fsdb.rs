@@ -321,7 +321,7 @@ impl Reader {
                             parent,
                             spelling,
                             d.entry,
-                            component.index().is_some(),
+                            !component.indices().is_empty(),
                             name_was_escaped,
                         );
                         let definition_name = string(d.definition)?;

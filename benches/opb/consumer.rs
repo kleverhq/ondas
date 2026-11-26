@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    fmt::Write as _,
     hint::black_box,
     io::{BufWriter, Write},
 };
@@ -132,9 +133,12 @@ fn bits(value: ValueRef<'_>) -> String {
 // The OPB record format uses flattened component strings for paths and names.
 fn wire_path(path: &HierarchyPath) -> Vec<String> {
     path.components()
-        .map(|component| match component.index() {
-            Some(index) => format!("{}[{index}]", component.name()),
-            None => component.name().to_owned(),
+        .map(|component| {
+            let mut name = component.name().to_owned();
+            for index in component.indices() {
+                write!(&mut name, "[{index}]").unwrap();
+            }
+            name
         })
         .collect()
 }

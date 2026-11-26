@@ -5,7 +5,7 @@ pub fn check_q(wave: &mut Waveform, parent: &str, literal: bool, escaped: bool, 
     let component = if literal {
         PathComponent::new("u_reg[0]")
     } else {
-        PathComponent::indexed("u_reg", 0)
+        PathComponent::with_indices("u_reg", &[0])
     };
     let scope_path = parent.join(&component);
     let variable_path = scope_path.join("q");

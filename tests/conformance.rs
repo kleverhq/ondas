@@ -4,6 +4,7 @@
 //! OPB fixtures are reserved for performance benchmarks.
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    fmt::Write,
     fs,
     ops::ControlFlow,
     path::{Path, PathBuf},
@@ -146,23 +147,22 @@ fn path(value: &Json) -> HierarchyPath {
 fn oracle_path(path: HierarchyPath, format: Format) -> HierarchyPath {
     if path
         .components()
-        .all(|component| component.index().is_none())
+        .all(|component| component.indices().is_empty())
     {
         return path;
     }
     if format == Format::Vwdb {
         return HierarchyPath::from_components(path.components().flat_map(|component| {
-            [
-                Some(component.name().to_owned()),
-                component.index().map(|index| index.to_string()),
-            ]
-            .into_iter()
-            .flatten()
+            std::iter::once(component.name().to_owned())
+                .chain(component.indices().iter().map(i64::to_string))
         }));
     }
-    HierarchyPath::from_components(path.components().map(|component| match component.index() {
-        Some(index) => format!("{}[{index}]", component.name()),
-        None => component.name().to_owned(),
+    HierarchyPath::from_components(path.components().map(|component| {
+        let mut name = component.name().to_owned();
+        for index in component.indices() {
+            write!(&mut name, "[{index}]").unwrap();
+        }
+        name
     }))
 }
 
@@ -171,22 +171,18 @@ fn oracle_variables<'h>(
     wanted: &HashSet<HierarchyPath>,
     format: Format,
 ) -> HashMap<HierarchyPath, ondas::Variable<'h>> {
-    let names: HashSet<_> = wanted
-        .iter()
-        .flat_map(|path| {
-            let name = path.name();
-            let container =
-                if format == Format::Vwdb && name.is_some_and(|n| n.parse::<i64>().is_ok()) {
-                    let mut components = path.components();
-                    let index = components.len().saturating_sub(2);
-                    components.nth(index).map(|c| c.name())
-                } else {
-                    name.and_then(|n| n.rsplit_once('[').map(|(base, _)| base))
-                };
-            [name, container]
-        })
-        .flatten()
-        .collect();
+    let mut names = HashSet::new();
+    for path in wanted {
+        if let Some(name) = path.name() {
+            names.insert(name);
+            if format == Format::Vwdb && name.parse::<i64>().is_ok() {
+                let parent_index = path.len().saturating_sub(2);
+                names.extend(path.components().nth(parent_index).map(|c| c.name()));
+            } else {
+                names.extend(name.match_indices('[').map(|(start, _)| &name[..start]));
+            }
+        }
+    }
     let mut variables = HashMap::new();
     for variable in hierarchy.variables().filter(|v| names.contains(v.name())) {
         let path = oracle_path(variable.path(), format);
@@ -727,7 +723,7 @@ fn hierarchy(wave: &Waveform, oracle: &Json, check_lookups: bool) -> BTreeMap<St
             && observed
                 .components()
                 .last()
-                .is_some_and(|c| c.index().is_some())
+                .is_some_and(|c| !c.indices().is_empty())
         {
             parent.and_then(|p| p.parent())
         } else {

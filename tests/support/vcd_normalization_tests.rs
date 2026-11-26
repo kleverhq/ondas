@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use ondas::{Encoding, HierarchyPath, Item, Waveform};
+use ondas::{Encoding, HierarchyPath, Item, PathComponent, Waveform};
 
 use super::fixture_support;
 
@@ -99,16 +99,17 @@ fn vcd_split_public_hierarchy_and_aliases() {
 
 #[test]
 #[ignore = "requires installed VCD fixtures; run just conformance"]
-fn vcd_literal_array_elements_stay_separate() {
+fn vcd_multidimensional_array_elements_stay_separate() {
     for bytes in [false, true] {
         let wave = open("vcd/vcd0017-nonzero-ranges", bytes);
         let hierarchy = wave.hierarchy();
-        let signals: Vec<_> = ["arr_elem[10][0]", "arr_elem[10][1]"]
-            .map(|name| {
-                let variable = hierarchy
-                    .variable_path(&HierarchyPath::from_components(["TOP", "tb", name]))
-                    .unwrap();
-                assert_eq!(variable.name(), name);
+        let signals: Vec<_> = [0, 1]
+            .map(|index| {
+                let path = HierarchyPath::from_components(["TOP", "tb"])
+                    .join(PathComponent::with_indices("arr_elem", &[10, index]));
+                let variable = hierarchy.variable_path(&path).unwrap();
+                assert_eq!(variable.name(), "arr_elem");
+                assert_eq!(variable.path(), path);
                 assert!(variable.range().is_none());
                 let signal = variable.signal().unwrap();
                 assert_eq!(signal.width(), Some(1));

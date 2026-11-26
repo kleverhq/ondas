@@ -4,7 +4,18 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+## [3.0.2] - 2026-11-26
+
+This hotfix supersedes 3.0.1.
+
+### Added
+
 - Read native VWDB recordings with the optional `vwdb-lib` backend.
+
+### Breaking changes
+
+- `PathComponent::indices()` replaces `index()`. Use `PathComponent::with_indices("mem", &[1, 2])` to construct an array element and pass `&[i]` for one index. This replaces `PathComponent::indexed()`.
+- An unquoted `mem[1][2]` addresses a multidimensional array element. Readers that recognize Verilog index spelling also split the full numeric suffix. Quote or escape a literal name when the recording preserves it. Both path styles preserve the order of the indices.
 
 ## [3.0.1] - 2026-11-23
 
@@ -163,7 +174,8 @@ Initial release of Ondas, a read-only Rust library for waveform analysis.
 - Final-tick state normalization and event occurrence counts, with documented reader limits.
 - Fixture-backed conformance tests, performance benchmarks, and automated release checks.
 
-[Unreleased]: https://github.com/kleverhq/ondas/compare/v3.0.1...HEAD
+[Unreleased]: https://github.com/kleverhq/ondas/compare/v3.0.2...HEAD
+[3.0.2]: https://github.com/kleverhq/ondas/compare/v3.0.1...v3.0.2
 [3.0.1]: https://github.com/kleverhq/ondas/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/kleverhq/ondas/compare/v2.2.0...v3.0.0
 [2.2.0]: https://github.com/kleverhq/ondas/compare/v2.1.0...v2.2.0

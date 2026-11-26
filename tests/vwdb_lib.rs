@@ -138,7 +138,7 @@ fn exact_paths_and_independent_handles() {
     .unwrap();
     let path = HierarchyPath::from_components([
         PathComponent::new(""),
-        PathComponent::indexed("integers", 1),
+        PathComponent::with_indices("integers", &[1]),
     ]);
     assert_eq!(HierarchyPath::parse(&path.to_string()).unwrap(), path);
     assert!(vhdl.hierarchy().signal_path(&path).is_ok());
@@ -148,7 +148,7 @@ fn exact_paths_and_independent_handles() {
     .unwrap();
     let path = HierarchyPath::from_components([
         PathComponent::new("tb_complex_types"),
-        PathComponent::indexed("unpacked_2d1", 1),
+        PathComponent::with_indices("unpacked_2d1", &[1]),
         PathComponent::new("2"),
     ]);
     assert!(nested.hierarchy().signal_path(&path).is_ok());

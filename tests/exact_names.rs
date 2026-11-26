@@ -95,8 +95,20 @@ b11 #
     assert_eq!(plain.path().to_string(), "top.plain");
     assert_eq!(plain.path().to_verilog().unwrap(), r"top.\plain ");
     for (text, component, value, msb, lsb) in [
-        ("top.bus[0]", PathComponent::indexed("bus", 0), "10", 3, 2),
-        ("top.bus[1]", PathComponent::indexed("bus", 1), "01", 1, 0),
+        (
+            "top.bus[0]",
+            PathComponent::with_indices("bus", &[0]),
+            "10",
+            3,
+            2,
+        ),
+        (
+            "top.bus[1]",
+            PathComponent::with_indices("bus", &[1]),
+            "01",
+            1,
+            0,
+        ),
         (r#"top."bus[0]""#, PathComponent::new("bus[0]"), "11", 3, 2),
     ] {
         let variable = hierarchy.variable(text).unwrap();
@@ -116,6 +128,71 @@ b11 #
         };
         assert_eq!(bits.as_ref().to_string(), value);
     }
+}
+
+#[test]
+fn vcd_multidimensional_and_literal_paths_resolve_to_their_own_histories() {
+    use ondas::{LookupError, PathStyle};
+
+    let bytes = br#"$scope module top $end
+$var wire 8 ! bus[-1][2] [7:0] $end
+$var wire 8 " \bus[-1][2] [7:0] $end
+$var wire 1 # \literal[1][2] $end
+$var wire 8 $ bus[2][-1] [7:0] $end
+$var wire 8 % duplicate[1][2] [7:0] $end
+$var wire 8 & duplicate[1][2] [7:0] $end
+$upscope $end
+$enddefinitions $end
+#0
+b01100000 !
+b10100101 "
+1#
+b00000000 $
+b00000001 %
+b00000010 &
+"#;
+    let mut wave =
+        ondas::open_bytes_with("arrays.vcd", bytes.as_slice().into(), "vcd-native").unwrap();
+    let hierarchy = wave.hierarchy().clone();
+    let mut signals = Vec::new();
+    for (logical, sv, indices, projected) in [
+        ("top.bus[-1][2]", "top.bus[-1][2]", &[-1, 2][..], "0110"),
+        (r#"top."bus[-1][2]""#, r"top.\bus[-1][2] ", &[][..], "1010"),
+    ] {
+        let declaration = hierarchy.variable(logical).unwrap();
+        let path = declaration.path();
+        assert_eq!(path.components().last().unwrap().indices(), indices);
+        signals.push(declaration.signal().unwrap());
+        for (style, expected) in [(PathStyle::Logical, logical), (PathStyle::Sv, sv)] {
+            let spelling = path.format(style).unwrap();
+            assert_eq!(spelling, expected);
+            assert!(hierarchy.variable(&spelling).unwrap() == declaration);
+            let selection = hierarchy
+                .resolve_signal(&format!("{spelling}[7:4]"), None)
+                .unwrap();
+            assert!(selection.declaration() == declaration);
+            let Sample::Value {
+                value: Value::Bits(bits),
+                ..
+            } = wave.sample(selection.signal(), Time::ZERO).unwrap()
+            else {
+                panic!("missing projected sample");
+            };
+            assert_eq!(bits.as_ref().to_string(), projected);
+        }
+    }
+    assert_ne!(signals[0], signals[1]);
+    let reversed = hierarchy.signal("top.bus[2][-1]").unwrap();
+    assert!(!signals.contains(&reversed));
+    assert!(matches!(
+        hierarchy.signal("top.duplicate[1][2]"),
+        Err(LookupError::Ambiguous { matches: 2, .. })
+    ));
+    assert!(matches!(
+        hierarchy.signal("top.literal[1][2]"),
+        Err(LookupError::NotFound { .. })
+    ));
+    assert!(hierarchy.signal(r#"top."literal[1][2]""#).is_ok());
 }
 
 #[test]
@@ -205,7 +282,15 @@ fn vcd_vhdl_names_keep_literal_brackets() {
         .unwrap();
     assert_eq!(scope.kind(), "record");
     assert_eq!(scope.name(), "rec_array_signal[0]");
-    assert_eq!(scope.path().components().last().unwrap().index(), None);
+    assert!(
+        scope
+            .path()
+            .components()
+            .last()
+            .unwrap()
+            .indices()
+            .is_empty()
+    );
     let declaration = variable(hierarchy, &["comprehensive2_tb", "array_signal[0]"]);
     assert_eq!(declaration.range(), Some(ondas::BitRange::new(7, 0)));
     assert!(matches!(

@@ -294,7 +294,7 @@ impl Reader {
                 ondas_shm_declaration(handle.0.as_ptr(), index, &mut d);
                 let name = string(d.name)?.unwrap_or_default();
                 let component = if d.has_array_index != 0 {
-                    PathComponent::indexed(name, d.array_index)
+                    PathComponent::with_indices(name, &[d.array_index])
                 } else {
                     PathComponent::new(name)
                 };

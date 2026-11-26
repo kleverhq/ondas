@@ -16,14 +16,14 @@ use std::{
 
 use crate::{LookupError, PathError, PathFormatError, Result, SliceError};
 
-/// One logical hierarchy name and an optional array index.
+/// One logical hierarchy name and its array indices.
 ///
-/// Equality, ordering and hashing use the name and index. A literal
-/// `u_reg[0]` and index `0` of `u_reg` are distinct components.
+/// Equality, ordering and hashing use the name and the full index sequence.
+/// A literal `mem[1][2]` and element `[1][2]` of `mem` are distinct.
 #[derive(Debug, Clone, Eq)]
 pub struct PathComponent {
     name: String,
-    index: Option<i64>,
+    indices: Box<[i64]>,
     name_was_escaped: bool,
 }
 
@@ -32,32 +32,34 @@ impl PathComponent {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
-            index: None,
+            indices: Box::default(),
             name_was_escaped: false,
         }
     }
 
-    /// Creates a component for one element of an array.
-    pub fn indexed(name: impl Into<String>, index: i64) -> Self {
+    /// Creates a component with the given indices in path order.
+    ///
+    /// The name is literal. An empty index slice is equivalent to [`Self::new`].
+    pub fn with_indices(name: impl Into<String>, indices: &[i64]) -> Self {
         Self {
             name: name.into(),
-            index: Some(index),
+            indices: indices.into(),
             name_was_escaped: false,
         }
     }
 
-    /// Returns the logical name, without the array index.
+    /// Returns the logical name, without the array indices.
     pub fn name(&self) -> &str {
         &self.name
     }
 
-    /// Returns the array index, if present.
-    pub fn index(&self) -> Option<i64> {
-        self.index
+    /// Returns the signed array indices in path order.
+    pub fn indices(&self) -> &[i64] {
+        &self.indices
     }
 
-    fn identity(&self) -> (&str, Option<i64>) {
-        (&self.name, self.index)
+    fn identity(&self) -> (&str, &[i64]) {
+        (&self.name, &self.indices)
     }
 
     fn with_escape(mut self, name_was_escaped: bool) -> Self {
@@ -65,13 +67,9 @@ impl PathComponent {
         self
     }
 
-    pub(crate) fn from_index_spelling(mut name: String) -> Self {
-        if let Some((base, index)) = path::split_index(&name) {
-            name.truncate(base.len());
-            Self::indexed(name, index)
-        } else {
-            Self::new(name)
-        }
+    pub(crate) fn from_index_spelling(name: String) -> Self {
+        let indices = path::split_indices(&name);
+        Self::from_spelling(name, indices)
     }
 
     pub(crate) fn from_reader_name(name: String, recognize_index: bool) -> Self {
@@ -83,12 +81,22 @@ impl PathComponent {
     }
 
     #[cfg(any(feature = "wdb-lib", feature = "wlf-lib"))]
-    pub(crate) fn from_array_spelling(mut name: String, base_len: usize) -> Self {
-        if let Some(index) = path::index_suffix(&name[base_len..]) {
+    pub(crate) fn from_array_spelling(name: String, base_len: usize) -> Self {
+        let indices = path::indices_at_end(&name, base_len).map(|indices| (base_len, indices));
+        Self::from_spelling(name, indices)
+    }
+
+    fn from_spelling(mut name: String, indices: Option<(usize, Vec<i64>)>) -> Self {
+        let indices = if let Some((base_len, indices)) = indices {
             name.truncate(base_len);
-            Self::indexed(name, index)
+            indices.into_boxed_slice()
         } else {
-            Self::new(name)
+            Box::default()
+        };
+        Self {
+            name,
+            indices,
+            name_was_escaped: false,
         }
     }
 }
@@ -140,14 +148,14 @@ pub enum PathStyle {
 
 /// An owned, immutable sequence of exact hierarchy components.
 ///
-/// Identity includes each component's name and optional index. Exact lookup
+/// Identity includes each component's name and array indices. Exact lookup
 /// starts at the root. [`Hierarchy::resolve_selector`] can qualify a selector
 /// path relative to a scope. Navigation components `.` and `..` are unsupported.
 ///
 /// # Accepted text forms
 ///
 /// - Ordinary components: `tb.dut.data`.
-/// - Indexed components: `tb.u_reg[0].data`. Quote or escape the name to
+/// - Indexed components: `tb.u_reg[0].data` or `tb.mem[-1][2]`. Quote or escape the name to
 ///   include literal brackets, as in `tb."u_reg[0]".data`.
 /// - SystemVerilog escaped identifiers: `tb.\gen.blk[0] .data`. A leading
 ///   backslash starts the identifier. Whitespace ends it. Embedded dots and
@@ -170,7 +178,7 @@ pub enum PathStyle {
 /// A simple name starts with an ASCII letter or an underscore. The remaining
 /// characters are ASCII letters, digits, underscores or dollar signs.
 /// Logical output quotes all other names.
-/// The array index follows the name. Inside quotes, canonical output uses `\"`
+/// Array indices follow the name. Inside quotes, canonical output uses `\"`
 /// and `\\`, the short escapes `\b`, `\f`, `\n`, `\r`, and `\t`, and lowercase
 /// `\u00xx` for the remaining `U+0000..=U+001F` characters. All other characters,
 /// including `/` and non-ASCII Unicode, are written literally. Output does not
@@ -180,7 +188,7 @@ pub enum PathStyle {
 ///
 /// # Path versus selector
 ///
-/// A signed decimal index selects an array element at one hierarchy level.
+/// Signed decimal indices select an array element at one hierarchy level.
 /// Use [`SignalSelector`] for a trailing `[msb:lsb]` bit projection. An exact
 /// path rejects this suffix. Quote or escape the name to include it literally.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -198,7 +206,7 @@ impl HierarchyPath {
 
     /// Builds a path from exact hierarchy components.
     ///
-    /// String inputs are literal names. Use [`PathComponent::indexed`] for
+    /// String inputs are literal names. Use [`PathComponent::with_indices`] for
     /// an array element.
     pub fn from_components<I, C>(components: I) -> Self
     where
@@ -253,7 +261,7 @@ impl HierarchyPath {
     /// name. [`PathStyle::Sv`] writes simple names directly and escapes other
     /// names. It also retains explicit escapes from input text or reader metadata.
     /// It ends each escaped name with an ASCII space, including at the end of a
-    /// path. An array index follows the name and any terminating space.
+    /// path. Array indices follow the name and any terminating space.
     ///
     /// # Errors
     ///
@@ -314,7 +322,7 @@ impl fmt::Display for HierarchyPath {
             } else {
                 formatter.write_str(&serde_json::to_string(name).map_err(|_| fmt::Error)?)?;
             }
-            if let Some(index) = component.index() {
+            for index in component.indices() {
                 write!(formatter, "[{index}]")?;
             }
         }
@@ -717,6 +725,7 @@ impl Hierarchy {
         bytes = bytes.saturating_add(vec_bytes::<ScopeData>(data.scopes.capacity()));
         for scope in &data.scopes {
             bytes = bytes.saturating_add(scope.component.name.capacity());
+            bytes = bytes.saturating_add(vec_bytes::<i64>(scope.component.indices().len()));
             bytes = bytes.saturating_add(scope.kind.capacity());
             bytes = bytes.saturating_add(
                 scope
@@ -728,6 +737,7 @@ impl Hierarchy {
         bytes = bytes.saturating_add(vec_bytes::<VariableData>(data.variables.capacity()));
         for variable in &data.variables {
             bytes = bytes.saturating_add(variable.component.name.capacity());
+            bytes = bytes.saturating_add(vec_bytes::<i64>(variable.component.indices().len()));
             bytes = bytes.saturating_add(variable.kind.capacity());
             bytes = bytes.saturating_add(
                 variable
@@ -1271,7 +1281,7 @@ impl<'h> Scope<'h> {
         &self.hierarchy.data.scopes[self.index]
     }
 
-    /// Returns the scope's logical local name, without the array index.
+    /// Returns the scope's logical local name, without the array indices.
     pub fn name(&self) -> &'h str {
         self.data().component.name()
     }
@@ -1349,7 +1359,7 @@ impl<'h> Variable<'h> {
         &self.hierarchy.data.variables[self.index]
     }
 
-    /// Returns the declaration's logical local name, without the array index.
+    /// Returns the declaration's logical local name, without the array indices.
     ///
     /// Recognized Verilog escape syntax is excluded. Literal backslashes,
     /// brackets, dots and whitespace remain name data. Use [`Self::path`] for

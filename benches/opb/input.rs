@@ -42,7 +42,7 @@ fn path(v: &Value) -> HierarchyPath {
         if let Some(index) = name.strip_prefix("word[").and_then(|s| s.strip_suffix(']'))
             && let Ok(index) = index.parse::<i64>()
         {
-            return PathComponent::indexed("word", index);
+            return PathComponent::with_indices("word", &[index]);
         }
         PathComponent::new(name)
     }))

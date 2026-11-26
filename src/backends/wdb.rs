@@ -1154,7 +1154,7 @@ mod tests {
     #[test]
     fn wdb_declaration_components_use_scope_and_member_evidence() {
         let literal = PathComponent::new("u_reg[0]");
-        let indexed = PathComponent::indexed("u_reg", 0);
+        let indexed = PathComponent::with_indices("u_reg", &[0]);
         let escaped_sv = r"\u_reg[0] ";
         let escaped_vhdl = r"\u_reg[0]\";
         for (raw, syntax, base_len, native_scope, expected, escaped) in [
@@ -1164,11 +1164,11 @@ mod tests {
             ("u_reg[0]", 0, 0, true, literal.clone(), false),
             (escaped_vhdl, 2, 0, false, literal, false),
             (
-                r"\u_reg[0] [-2]",
+                r"\u_reg[0] [-2][3]",
                 1,
                 escaped_sv.len(),
                 false,
-                PathComponent::indexed("u_reg[0]", -2),
+                PathComponent::with_indices("u_reg[0]", &[-2, 3]),
                 true,
             ),
             (
@@ -1176,7 +1176,7 @@ mod tests {
                 2,
                 escaped_vhdl.len(),
                 false,
-                PathComponent::indexed("u_reg[0]", 3),
+                PathComponent::with_indices("u_reg[0]", &[3]),
                 false,
             ),
         ] {

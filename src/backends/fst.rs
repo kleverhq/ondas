@@ -141,7 +141,7 @@ impl Reader {
                         );
                         // The source spelling alone cannot distinguish a literal
                         // VHDL name from an indexed Verilog name.
-                        let key = (parent, spelling, component.index().is_some());
+                        let key = (parent, spelling, !component.indices().is_empty());
                         let kind = scope_kind(tpe);
                         let definition_name = (!definition.is_empty()).then_some(definition);
                         let packing = pending_packing.take();
@@ -243,10 +243,9 @@ impl Reader {
                         let enumeration = pending_enum.take().and_then(|(name, variants)| {
                             EnumerationData::for_encoding(name, variants, encoding)
                         });
-                        // Keep single-bit suffixes printed as a separate token
-                        // in the literal declaration name.
+                        // Whitespace before the first bracket keeps the suffix literal.
                         let separated_suffix = name
-                            .rsplit_once('[')
+                            .split_once('[')
                             .is_some_and(|(base, _)| base.ends_with(char::is_whitespace));
                         variables.push(VariableData {
                             component: PathComponent::from_reader_name(
