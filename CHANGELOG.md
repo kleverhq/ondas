@@ -6,6 +6,11 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 - Read native VWDB recordings with the optional `vwdb-lib` backend.
 
+### Breaking changes
+
+- `PathComponent::indices()` replaces `index()`. Use `PathComponent::with_indices("mem", &[1, 2])` to construct an array element and pass `&[i]` for one index. This replaces `PathComponent::indexed()`.
+- An unquoted `mem[1][2]` addresses a multidimensional array element. Readers that recognize Verilog index spelling also split the full numeric suffix. Quote or escape a literal name when the recording preserves it. Both path styles preserve the order of the indices.
+
 ## [3.0.1] - 2026-11-23
 
 This hotfix supersedes 3.0.0.

@@ -271,27 +271,18 @@ mod tests {
             ("\\literal[7:0]\t", "literal[7:0]"),
             ("\\\\leading ", r"\leading"),
         ] {
-            for suffix in ["[0]", "[1][2]"] {
+            for (suffix, indices) in [("[0]", &[0][..]), ("[1][2]", &[1, 2][..])] {
                 let raw = format!("{base}{suffix}");
-                let expected = if suffix == "[0]" {
-                    PathComponent::indexed(logical, 0)
-                } else {
-                    PathComponent::new(format!("{logical}{suffix}"))
-                };
                 assert_eq!(
                     declaration_name(raw.clone(), true, base.len()).unwrap(),
-                    (expected, Some(raw.clone()))
+                    (
+                        PathComponent::with_indices(logical, indices),
+                        Some(raw.clone())
+                    )
                 );
                 assert_eq!(
-                    declaration_name(raw.clone(), false, base.len()).unwrap(),
-                    (
-                        if suffix == "[0]" {
-                            PathComponent::indexed(base, 0)
-                        } else {
-                            raw.into()
-                        },
-                        None
-                    )
+                    declaration_name(raw, false, base.len()).unwrap(),
+                    (PathComponent::with_indices(base, indices), None)
                 );
             }
         }

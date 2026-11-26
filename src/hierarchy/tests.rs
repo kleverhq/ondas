@@ -1116,7 +1116,7 @@ fn indexed_components_keep_literal_names_and_numeric_indices_distinct() {
         HierarchyPath::from_components([Box::<str>::from("top"), "u_reg[0]".into()]),
         literal
     );
-    let indexed = root.join(PathComponent::indexed("u_reg", 0));
+    let indexed = root.join(PathComponent::with_indices("u_reg", &[0]));
     assert_ne!(literal, indexed);
     assert_eq!(
         std::collections::HashSet::from([&literal, &indexed]).len(),
@@ -1129,10 +1129,10 @@ fn indexed_components_keep_literal_names_and_numeric_indices_distinct() {
     assert_eq!(literal, HierarchyPath::parse(r"top.\u_reg[0] ").unwrap());
     assert_eq!(indexed, "top.u_reg[0]".parse().unwrap());
     for component in [
-        PathComponent::indexed("a.b", i64::MIN),
-        PathComponent::indexed("a[0]", i64::MAX),
-        PathComponent::indexed("a", -1),
-        PathComponent::indexed("module", 0),
+        PathComponent::with_indices("a.b", &[i64::MIN]),
+        PathComponent::with_indices("a[0]", &[i64::MIN, i64::MAX]),
+        PathComponent::with_indices("a", &[-1]),
+        PathComponent::with_indices("module", &[0]),
     ] {
         let path = root.join(component);
         assert_eq!(HierarchyPath::from_components(path.components()), path);
@@ -1143,9 +1143,21 @@ fn indexed_components_keep_literal_names_and_numeric_indices_distinct() {
         );
     }
     assert_eq!(HierarchyPath::parse("[0]").unwrap().name(), Some("[0]"));
+    let multidimensional = root.join(PathComponent::with_indices("arr", &[10, 0]));
     assert_eq!(
-        root.join("arr[10][0]"),
-        HierarchyPath::parse("top.arr[10][0]").unwrap()
+        HierarchyPath::parse("top.arr[10][0]").unwrap(),
+        multidimensional
+    );
+    assert_ne!(root.join("arr[10][0]"), multidimensional);
+    assert_eq!(multidimensional.len(), 2);
+    assert_eq!(multidimensional.parent(), Some(root));
+    let first = PathComponent::with_indices("arr", &[1, 2]);
+    let second = PathComponent::with_indices("arr", &[2, 1]);
+    assert!(first < second);
+    assert_ne!(first, second);
+    assert_eq!(
+        PathComponent::with_indices("arr", &[]),
+        PathComponent::new("arr")
     );
 }
 
@@ -1169,7 +1181,8 @@ fn path_styles_round_trip_contract_examples() {
             &["bar.foo[0].baz"][..],
             "bar.foo[0].baz",
             "bar.foo[0].baz",
-            bar.join(PathComponent::indexed("foo", 0)).join("baz"),
+            bar.join(PathComponent::with_indices("foo", &[0]))
+                .join("baz"),
         ),
         (
             &[r#"bar."foo[0]".baz"#, r"bar.\foo[0] .baz"][..],
@@ -1217,7 +1230,7 @@ fn path_styles_handle_sv_escape_boundaries_and_errors() {
     );
 
     for name in ["a,b", "bus-0", "1q", "$q", "a b", "été"] {
-        let path = top.join(PathComponent::indexed(name, -1));
+        let path = top.join(PathComponent::with_indices(name, &[-1]));
         let logical = format!(r#"top."{name}"[-1]"#);
         assert_eq!(path.to_string(), logical);
         assert_eq!(path.format(PathStyle::Logical).unwrap(), logical);
@@ -1269,7 +1282,9 @@ fn exact_paths_and_selectors_share_component_syntax() {
         (r#"top."mem"[-1][3:0]"#, "top.mem[-1]"),
         (r"top.\mem [-1][3:0]", "top.mem[-1]"),
         (r#"top."mem[-1]"[3:0]"#, r#"top."mem[-1]""#),
-        ("top.arr[10][0][3:0]", r#"top."arr[10][0]""#),
+        ("top.arr[10][0][3:0]", "top.arr[10][0]"),
+        (r#"top."arr[10]"[0][-2][3:0]"#, r#"top."arr[10]"[0][-2]"#),
+        (r"top.\arr[10] [0][-2][3:0]", r#"top."arr[10]"[0][-2]"#),
         ("top.bank[7:0].data[3:0]", r#"top."bank[7:0]".data"#),
         (r#"é."d"[3:0]"#, r#""é".d"#),
     ] {

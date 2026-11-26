@@ -17,16 +17,32 @@ fn array_index(text: &str) -> Option<i64> {
     text.parse().ok()
 }
 
-pub(super) fn index_suffix(text: &str) -> Option<i64> {
-    array_index(text.strip_prefix('[')?.strip_suffix(']')?)
+fn parse_indices(text: &str, mut offset: usize) -> Result<(Vec<i64>, usize), PathError> {
+    let mut indices = Vec::new();
+    while let Some(suffix) = text[offset..].strip_prefix('[') {
+        let end = suffix
+            .find(']')
+            .ok_or_else(|| error(offset, "unterminated array index"))?;
+        let index =
+            array_index(&suffix[..end]).ok_or_else(|| error(offset + 1, "invalid array index"))?;
+        indices.push(index);
+        offset += end + 2;
+    }
+    Ok((indices, offset))
 }
 
-pub(super) fn split_index(text: &str) -> Option<(&str, i64)> {
-    let (name, suffix) = text.strip_suffix(']')?.rsplit_once('[')?;
-    if name.is_empty() || name.contains(['[', ']']) {
+pub(super) fn indices_at_end(text: &str, start: usize) -> Option<Vec<i64>> {
+    let (indices, end) = parse_indices(text, start).ok()?;
+    (end == text.len() && !indices.is_empty()).then_some(indices)
+}
+
+pub(super) fn split_indices(text: &str) -> Option<(usize, Vec<i64>)> {
+    let (name, _) = text.strip_suffix(']')?.split_once('[')?;
+    if name.is_empty() || name.contains(']') {
         return None;
     }
-    Some((name, array_index(suffix)?))
+    let start = name.len();
+    Some((start, indices_at_end(text, start)?))
 }
 
 pub(super) fn parse(text: &str, allow_projection: bool) -> Result<SignalSelector, PathError> {
@@ -115,22 +131,14 @@ pub(super) fn parse(text: &str, allow_projection: bool) -> Result<SignalSelector
             }
         };
         let component = if matches!(first, b'"' | b'\\') {
-            let index = if projection_start != Some(offset)
-                && let Some(suffix) = text[offset..].strip_prefix('[')
-            {
-                let end = suffix
-                    .find(']')
-                    .ok_or_else(|| error(offset, "unterminated array index"))?;
-                let index = index_suffix(&text[offset..offset + end + 2])
-                    .ok_or_else(|| error(offset + 1, "invalid array index"))?;
-                offset += end + 2;
-                Some(index)
-            } else {
-                None
-            };
+            let end = projection_start
+                .filter(|&start| start >= offset)
+                .unwrap_or(text.len());
+            let (indices, next) = parse_indices(&text[..end], offset)?;
+            offset = next;
             PathComponent {
                 name,
-                index,
+                indices: indices.into_boxed_slice(),
                 name_was_escaped: first == b'\\',
             }
         } else {
@@ -194,7 +202,7 @@ pub(super) fn to_verilog(components: &[PathComponent]) -> Result<String, PathFor
             output.push_str(name);
             output.push(' ');
         }
-        if let Some(index) = component.index() {
+        for index in component.indices() {
             write!(&mut output, "[{index}]").expect("writing to a String succeeds");
         }
     }

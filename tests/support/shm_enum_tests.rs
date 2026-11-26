@@ -61,8 +61,8 @@ fn shm_enum_tables_match_whole_values() {
     let enum_path = |value: &Json| {
         HierarchyPath::from_components(value.as_array().unwrap().iter().map(|component| {
             match component.as_str().unwrap() {
-                "array_values[0]" => ondas::PathComponent::indexed("array_values", 0),
-                "array_values[1]" => ondas::PathComponent::indexed("array_values", 1),
+                "array_values[0]" => ondas::PathComponent::with_indices("array_values", &[0]),
+                "array_values[1]" => ondas::PathComponent::with_indices("array_values", &[1]),
                 name => ondas::PathComponent::new(name),
             }
         }))
@@ -83,7 +83,7 @@ fn shm_enum_tables_match_whole_values() {
             let path = enum_path(&declaration["path"]);
             let variable = hierarchy.variable_path(&path).unwrap();
             let signal = variable.signal().unwrap();
-            if path.components().last().unwrap().index().is_some() {
+            if !path.components().last().unwrap().indices().is_empty() {
                 assert_eq!(variable.name(), "array_values");
                 assert_eq!(variable.path(), path);
                 assert!(!variable.name_was_escaped());

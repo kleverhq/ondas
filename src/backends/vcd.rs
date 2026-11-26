@@ -468,7 +468,7 @@ impl Reader {
                     let component =
                         PathComponent::from_reader_name(name, !name_was_escaped && !is_vhdl);
                     // VHDL and Verilog can give the same spelling different meanings.
-                    let key = (parent, spelling, component.index().is_some());
+                    let key = (parent, spelling, !component.indices().is_empty());
                     let index = if let Some(&index) = scope_ids.get(&key) {
                         if scopes[index].kind != kind {
                             return Err(tokens.error("conflicting scope kind"));

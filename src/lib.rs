@@ -529,7 +529,7 @@ on stdout or stderr. Input files must remain unchanged and available.
 
 The API does not model writing or conversion, live ingestion, transactions,
 assertions, coverage, design connectivity, async operations, relative hierarchy
-paths, dynamic or multidimensional projections, or an expression language. There
+paths, dynamic or multidimensional bit projections, or an expression language. There
 is no public backend trait or plugin ABI, global timestamp table, strategy
 selection, query capability flags, or format-specific downcasting.
 "#]

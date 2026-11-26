@@ -45,8 +45,8 @@ fn wlf_enum_tables_and_samples() {
                 ondas::HierarchyPath::from_components(
                     variable["path"].as_array().unwrap().iter().map(|p| {
                         match p.as_str().unwrap() {
-                            "array_values[0]" => PathComponent::indexed("array_values", 0),
-                            "array_values[1]" => PathComponent::indexed("array_values", 1),
+                            "array_values[0]" => PathComponent::with_indices("array_values", &[0]),
+                            "array_values[1]" => PathComponent::with_indices("array_values", &[1]),
                             name => PathComponent::new(name),
                         }
                     }),

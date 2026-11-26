@@ -285,12 +285,12 @@ impl Reader {
                         .ok_or_else(|| error("open", "invalid VWDB parent declaration"))?;
                     let container = &scopes[scope.id];
                     if scope.indexed_children
-                        && container.component.index().is_none()
+                        && container.component.indices().is_empty()
                         && let Some(index) = canonical_index(&name)
                     {
                         (
                             container.parent,
-                            PathComponent::indexed(container.component.name(), index),
+                            PathComponent::with_indices(container.component.name(), &[index]),
                         )
                     } else {
                         (Some(scope.id), PathComponent::new(name))
